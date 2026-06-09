@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output (the Docker image / CI builds this from source)
+dist/
+
+# Internal/dev docs — not published; public docs live in README only
+docs/
+
+# Local environment & secrets — NEVER commit
+.env
+.env.*
+!.env.evaluator.example
+
+# Runtime data (encrypted key vault, reports, logs, sqlite db)
+评测数据/
+evaluator_data/
+app-data/
+.vault/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs / OS / editor
+*.log
+.DS_Store
+.idea/
+.vscode/

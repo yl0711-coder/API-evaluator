@@ -1,0 +1,4 @@
+# pnpm 11 build-script approval. esbuild (a vite dependency) ships a native binary
+# via its install script; approve it so `pnpm install` builds it (else frozen install fails).
+allowBuilds:
+  esbuild: true

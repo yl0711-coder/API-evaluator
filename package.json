@@ -1,0 +1,45 @@
+{
+  "name": "api-evaluator",
+  "version": "0.1.5",
+  "private": false,
+  "description": "Self-hosted evaluation platform for any OpenAI-compatible / Claude-compatible API gateway or relay: connectivity, stability, scenario and admission tests with cost estimates and exportable reports.",
+  "license": "MIT",
+  "type": "module",
+  "author": "API-evaluator contributors",
+  "homepage": "https://github.com/yl0711-coder/API-evaluator#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yl0711-coder/API-evaluator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yl0711-coder/API-evaluator/issues"
+  },
+  "keywords": [
+    "llm",
+    "evaluation",
+    "openai-compatible",
+    "claude",
+    "api-gateway",
+    "relay",
+    "benchmark",
+    "model-testing"
+  ],
+  "packageManager": "pnpm@11.2.2",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:server": "node server.mjs",
+    "start": "node server.mjs",
+    "build": "vite build",
+    "check": "node --check server.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "devDependencies": {
+    "vite": "^7.2.4"
+  },
+  "dependencies": {
+    "gpt-tokenizer": "^3.4.0"
+  }
+}

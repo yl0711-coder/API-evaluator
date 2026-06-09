@@ -1,0 +1,167 @@
+import { summarizeText } from "./utils.mjs";
+
+const MAX_ANALYSIS_TEXT = 3000;
+
+export function isAiReportAnalysisEnabled(value) {
+  return value === true || value === "true" || value === "1" || value === "on" || value === "yes";
+}
+
+export function buildAiReportAnalysisPrompt({ reportType, summary }) {
+  const compact = compactReportData(reportType, summary);
+  return [
+    "你是一名 AI API 评测报告分析员。请根据下面的脱敏测试摘要，输出一份中文 Markdown 分析。",
+    "",
+    "要求：",
+    "- 只依据给出的摘要数据，不要编造不存在的请求、错误、价格或业务背景。",
+    "- 先给非技术人员能看懂的人话结论，再给技术人员看的数据依据。",
+    "- 明确说明是否推荐继续测试、观察、暂不推荐。",
+    "- 如果数据不足，要明确写“数据不足”，不要强行下结论。",
+    "- 如果看到内容安全场景风险，要提醒必须人工复核原始回答。",
+    "- 不要输出 API Key、密钥、鉴权信息，也不要要求用户提供密钥。",
+    "- 控制在 800 字以内。",
+    "",
+    "输出结构必须是：",
+    "## AI 人话结论",
+    "## AI 数据依据",
+    "## AI 风险点",
+    "## AI 下一步建议",
+    "",
+    "脱敏测试摘要 JSON：",
+    "```json",
+    JSON.stringify(compact, null, 2),
+    "```",
+  ].join("\n");
+}
+
+export function buildAiAnalysisResult(record) {
+  if (!record?.success || !record.responseText) {
+    return {
+      enabled: true,
+      success: false,
+      error: record?.normalizedError || record?.rawError || "AI 分析请求失败。",
+      requestId: record?.requestId || "",
+      inputTokens: record?.inputTokens ?? null,
+      outputTokens: record?.outputTokens ?? null,
+    };
+  }
+  return {
+    enabled: true,
+    success: true,
+    text: trimAnalysisText(record.responseText),
+    requestId: record.requestId || "",
+    inputTokens: record.inputTokens ?? null,
+    outputTokens: record.outputTokens ?? null,
+  };
+}
+
+function compactReportData(reportType, summary) {
+  if (reportType === "stability") {
+    return compactStabilitySummary(summary);
+  }
+  if (reportType === "batch-stability") {
+    return compactBatchSummary(summary);
+  }
+  if (reportType === "scenario") {
+    return compactScenarioSummary(summary);
+  }
+  return { reportType, summary: summarizeText(JSON.stringify(summary || {})) };
+}
+
+function compactStabilitySummary(summary) {
+  return {
+    reportType: "稳定性测试",
+    apiName: summary.profileName,
+    provider: summary.provider,
+    model: summary.model,
+    protocol: summary.protocol,
+    rounds: summary.rounds,
+    concurrency: summary.concurrency,
+    successRate: summary.successRateText,
+    successCount: summary.successCount,
+    failureCount: summary.failureCount,
+    avgFirstByteMs: summary.avgFirstByteMs,
+    avgTotalMs: summary.avgTotalMs,
+    p50TotalMs: summary.p50TotalMs,
+    p95TotalMs: summary.p95TotalMs,
+    minTotalMs: summary.minTotalMs,
+    maxTotalMs: summary.maxTotalMs,
+    inputTokens: summary.inputTokens,
+    outputTokens: summary.outputTokens,
+    recommendation: summary.recommendation,
+    errorCounts: summary.errorCounts,
+    diagnostics: compactDiagnostics(summary.diagnostics),
+  };
+}
+
+function compactBatchSummary(summary) {
+  return {
+    reportType: "批量稳定性测试",
+    profileCount: summary.profileCount,
+    rounds: summary.rounds,
+    maxParallelProfiles: summary.maxParallelProfiles,
+    requestConcurrency: summary.requestConcurrency,
+    durationMs: summary.durationMs,
+    results: (summary.results || []).map((result) => ({
+      apiName: result.profileName,
+      model: result.model,
+      successRate: result.successRateText,
+      avgTotalMs: result.avgTotalMs,
+      p95TotalMs: result.p95TotalMs,
+      recommendation: result.recommendation?.title,
+      error: result.error || "",
+      errorCounts: result.errorCounts || {},
+      diagnostics: compactDiagnostics(result.diagnostics),
+    })),
+  };
+}
+
+function compactScenarioSummary(summary) {
+  return {
+    reportType: "复杂场景测试",
+    profileCount: summary.profileCount,
+    scenarioCount: summary.scenarioCount,
+    repeats: summary.repeats,
+    maxParallelProfiles: summary.maxParallelProfiles,
+    requestConcurrency: summary.requestConcurrency,
+    durationMs: summary.durationMs,
+    scenarios: (summary.scenarios || []).map((scenario) => ({
+      id: scenario.id,
+      name: scenario.name,
+      category: scenario.category,
+      difficulty: scenario.difficulty,
+    })),
+    results: (summary.results || []).map((result) => ({
+      apiName: result.profileName,
+      model: result.model,
+      successRate: result.successRateText,
+      avgQualityScore: result.avgQualityScore,
+      avgTotalMs: result.avgTotalMs,
+      p95TotalMs: result.p95TotalMs,
+      recommendation: result.recommendation?.title,
+      errorCounts: result.errorCounts || {},
+      diagnostics: compactDiagnostics(result.diagnostics),
+      scenarios: (result.scenarios || []).map((scenario) => ({
+        name: scenario.scenarioName,
+        category: scenario.category,
+        successRate: scenario.successRateText,
+        avgQualityScore: scenario.avgQualityScore,
+        avgTotalMs: scenario.avgTotalMs,
+        p95TotalMs: scenario.p95TotalMs,
+        issues: scenario.issues || [],
+      })),
+    })),
+  };
+}
+
+function compactDiagnostics(diagnostics) {
+  return (diagnostics || []).map((item) => ({
+    code: item.code,
+    count: item.count,
+    title: item.title,
+    action: item.action,
+  }));
+}
+
+function trimAnalysisText(text) {
+  return String(text || "").trim().slice(0, MAX_ANALYSIS_TEXT);
+}

@@ -1,0 +1,68 @@
+export function buildDemoData() {
+  return {
+    profiles: [
+      {
+        id: "demo-fast",
+        role: "target",
+        name: "演示渠道 A",
+        provider: "演示数据",
+        protocol: "openai_compatible",
+        defaultModel: "demo-fast-model",
+        apiKey: "演示模式，无真实 Key",
+        hasKey: true,
+      },
+      {
+        id: "demo-missing-key",
+        role: "target",
+        name: "演示渠道 B（缺 Key）",
+        provider: "演示数据",
+        protocol: "claude_messages",
+        defaultModel: "demo-claude-model",
+        apiKey: "",
+        hasKey: false,
+      },
+    ],
+    requests: [
+      {
+        profileName: "演示渠道 A",
+        model: "demo-fast-model",
+        success: true,
+        statusCode: 200,
+        firstByteMs: 620,
+        totalMs: 1480,
+        responseSummary: "演示响应正常。",
+      },
+      {
+        profileName: "演示渠道 B（缺 Key）",
+        model: "demo-claude-model",
+        success: false,
+        statusCode: 401,
+        firstByteMs: "-",
+        totalMs: 430,
+        normalizedError: "auth_failed",
+      },
+    ],
+    testRuns: [
+      {
+        type: "stability",
+        profileId: "demo-fast",
+        profileName: "演示渠道 A",
+        model: "demo-fast-model",
+        successRate: 0.9,
+        successRateText: "90%",
+        successCount: 9,
+        rounds: 10,
+        concurrency: 1,
+        avgTotalMs: 1800,
+        avgFirstByteMs: 700,
+        p95TotalMs: 4200,
+        maxTotalMs: 4600,
+        recommendation: { level: "watch", title: "可继续观察", detail: "演示数据：整体可用，但偶尔偏慢。" },
+        reportPath: "演示模式不生成真实报告",
+        reportHtmlPath: "演示模式不生成真实报告",
+        startedAt: new Date().toISOString(),
+      },
+    ],
+    taskEvents: [],
+  };
+}

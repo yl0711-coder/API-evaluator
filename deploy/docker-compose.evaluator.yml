@@ -1,0 +1,55 @@
+# API-evaluator — docker-compose for self-hosting.
+# 要点：不映射宿主端口（仅在 docker 网络内暴露给反向代理）、mem/cpu 安全带、独立网络、/data 卷。
+# 启动（先在构建机/CI 构建镜像，再运行）：
+#   docker compose --env-file .env.evaluator -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
+services:
+  evaluator:
+    # build 段供构建机 / CI 用。在资源紧张的小机上建议在别处构建
+    #   （docker build -> docker save -> scp -> docker load），再 `up -d --no-build` 运行：
+    #   下方 mem_limit/cpus 只约束运行时容器，**管不到 build 过程**，本地编译可能打满 CPU 拖垮整机。
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: evaluator:latest
+    container_name: evaluator
+    restart: unless-stopped
+    # 不映射宿主端口：只经反向代理在 docker 网络内访问，缩小暴露面
+    expose:
+      - "5180"
+    env_file:
+      - ../.env.evaluator
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "5180"
+      EVALUATOR_DATA_DIR: "/data"
+    volumes:
+      - evaluator_data:/data
+    # 资源安全带：cgroup 硬限制——超限只会本容器被 OOM kill，不会拖垮宿主或同机其它服务。
+    # 这是小机（如 2 vCPU / 2 GB）上的保守起步值（评测本身轻，几百 MB 足够）；压测取峰值后再定死。
+    # 小机另可设 EVALUATOR_MAX_CONCURRENT_TASKS=2 / EVALUATOR_OFFLINE_TOKENIZER=off（见 README）。
+    mem_limit: 512m
+    cpus: "0.75"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5180/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - evaluator_net
+
+# 独立 docker 网络。把你的反向代理加入本网络（或把本服务接入反代所在网络），
+# 才能用容器名 evaluator:5180 反代。
+networks:
+  evaluator_net:
+    name: evaluator-net
+    driver: bridge
+
+volumes:
+  evaluator_data:
+    name: evaluator-data

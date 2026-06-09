@@ -1,0 +1,47 @@
+export const BASIC_SCENARIOS = [
+  {
+    id: "connectivity-basic",
+    name: "连通性：基础响应",
+    category: "connectivity",
+    difficulty: "small",
+    prompt: "请用一句话回复：服务正常，并简单说明你是谁。",
+    minChars: 12,
+    requiredAny: ["正常", "服务", "可以", "ready", "working"],
+  },
+  {
+    id: "speed-short",
+    name: "速度：短问题",
+    category: "speed",
+    difficulty: "small",
+    prompt: "请用 3 条要点说明 API 渠道测试最应该关注哪些指标。",
+    minChars: 60,
+    requiredAny: ["延迟", "稳定", "成功率", "错误", "速度"],
+  },
+  {
+    id: "structured-json",
+    name: "结构化输出：JSON",
+    category: "structured",
+    difficulty: "normal",
+    prompt: [
+      "请只输出 JSON，不要输出 Markdown。",
+      "场景：评估一个 AI API 渠道是否适合上线。",
+      "JSON 字段必须包含 latencyRisk、stabilityRisk、recommendation、checklist。",
+      "checklist 是字符串数组，至少 3 项。",
+    ].join("\n"),
+    minChars: 100,
+    expectsJson: true,
+    requiredAny: ["latencyRisk", "stabilityRisk", "recommendation", "checklist"],
+  },
+  {
+    id: "business-writing",
+    name: "写作：运营说明",
+    category: "writing",
+    difficulty: "normal",
+    prompt: [
+      "请写一段给非技术客户看的说明，解释为什么同一个 AI 模型在不同渠道下速度和稳定性会不一样。",
+      "要求：口语化、清楚、不夸张、不超过 250 字。",
+    ].join("\n"),
+    minChars: 120,
+    requiredAny: ["渠道", "速度", "稳定", "网络", "服务"],
+  },
+];

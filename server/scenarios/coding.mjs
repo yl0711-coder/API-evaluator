@@ -1,0 +1,28 @@
+export const CODING_SCENARIOS = [
+  {
+    id: "coding-debug",
+    name: "复杂问题：代码排错",
+    category: "coding",
+    difficulty: "complex",
+    prompt: [
+      "你是一名资深后端工程师。请分析下面的 Node.js 代码为什么偶发超时，并给出修复方案和测试方案。",
+      "",
+      "```js",
+      "async function callUpstream(url, payload) {",
+      "  const controller = new AbortController();",
+      "  setTimeout(() => controller.abort(), 30000);",
+      "  const response = await fetch(url, {",
+      "    method: 'POST',",
+      "    body: JSON.stringify(payload),",
+      "    signal: controller.signal",
+      "  });",
+      "  return response.json();",
+      "}",
+      "```",
+      "",
+      "要求：分成 问题原因、修复代码、测试用例、上线风险 四部分。",
+    ].join("\n"),
+    minChars: 500,
+    requiredAny: ["问题原因", "修复", "测试", "风险", "AbortController", "clearTimeout"],
+  },
+];
