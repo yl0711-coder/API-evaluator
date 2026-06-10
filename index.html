@@ -76,13 +76,13 @@
               <section class="panel pilot hero">
                 <p class="eyebrow">当前进度</p>
                 <div class="rail">
-                  <div class="workflow-step" data-step="profiles"><span class="bead">1</span><span class="name">配置</span></div>
+                  <div class="workflow-step" data-step="channels"><span class="bead">1</span><span class="name">渠道</span></div>
                   <span class="connector"></span>
-                  <div class="workflow-step" data-step="admission"><span class="bead">2</span><span class="name">准入</span></div>
+                  <div class="workflow-step" data-step="models"><span class="bead">2</span><span class="name">模型</span></div>
                   <span class="connector"></span>
-                  <div class="workflow-step" data-step="standard"><span class="bead">3</span><span class="name">标准</span></div>
+                  <div class="workflow-step" data-step="admission"><span class="bead">3</span><span class="name">准入</span></div>
                   <span class="connector"></span>
-                  <div class="workflow-step" data-step="reports"><span class="bead">4</span><span class="name">报告</span></div>
+                  <div class="workflow-step" data-step="standard"><span class="bead">4</span><span class="name">标准</span></div>
                   <span class="connector"></span>
                   <div class="workflow-step" data-step="handoff"><span class="bead">5</span><span class="name">交付</span></div>
                 </div>
@@ -117,7 +117,7 @@
         <section class="page" id="admission-test">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 2 步 · 准入评测</span>模型准入评测</h2>
+              <h2><span class="step">第 3 步 · 准入评测</span>模型准入评测</h2>
               <p class="section-desc">先判断这个渠道是否值得继续测试。它会检查连通、结构化输出、标称一致性、工具调用、流式结构、基础编程和行为一致性，生成准入等级和报告。</p>
             </div>
           </div>
@@ -212,7 +212,7 @@
         <section class="page" id="standard-eval">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 3 步 · 标准评测</span>标准评测</h2>
+              <h2><span class="step">第 4 步 · 标准评测</span>标准评测</h2>
               <p class="section-desc">推荐优先使用这一页。它是一键流程，会自动执行快速测试、稳定性测试和少量复杂场景测试。单独的稳定性/场景测试属于高级复测。</p>
             </div>
           </div>
@@ -888,12 +888,12 @@
 
           <div class="panel">
             <label>
-              选择渠道
+              选择测试目标
               <select id="trend-profile-select"></select>
             </label>
             <div id="trend-regression" class="next-step-panel hidden"></div>
             <h3>成功率趋势</h3>
-            <div id="trend-chart" class="trend-chart">选择渠道后显示历次测试曲线。</div>
+            <div id="trend-chart" class="trend-chart">选择测试目标后显示历次测试曲线。</div>
             <h3>历次测试</h3>
             <div id="trend-table" class="result-box">—</div>
             <h3>回归告警</h3>
@@ -904,7 +904,7 @@
         <section class="page" id="reports">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 4 步 · 报告中心</span>所有结论、排行与日志</h2>
+              <h2><span class="step">第 5 步 · 报告中心</span>所有结论、排行与日志</h2>
               <p class="section-desc">先看极简结论，再看结论卡片、排行榜和记录。给负责人汇报时优先用交付模板。</p>
             </div>
             <div class="action-row">
@@ -1038,7 +1038,7 @@
         <section class="page" id="handoff">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 5 步 · 测试交付</span>测试交付模板</h2>
+              <h2><span class="step">第 6 步 · 测试交付</span>测试交付模板</h2>
             </div>
             <button id="copy-handoff-template" class="secondary" type="button">复制交付模板</button>
           </div>
