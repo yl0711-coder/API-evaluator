@@ -56,6 +56,8 @@ cp .env.evaluator.example .env.evaluator
 # Edit .env.evaluator and set at least:
 #   EVALUATOR_SESSION_SECRET   ->  openssl rand -hex 32
 #   EVALUATOR_ADMIN_PASSWORD   ->  your admin password (local auth, see below)
+#   EVALUATOR_COOKIE_SECURE=false  ->  for plain-http local debugging only, so the
+#                                      session cookie is sent over http (keep true behind HTTPS)
 
 pnpm build                      # build the frontend into dist/
 node --env-file=.env.evaluator server.mjs

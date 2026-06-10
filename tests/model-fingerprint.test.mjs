@@ -14,8 +14,16 @@ import {
 test("model family helpers infer common model families", () => {
   assert.equal(inferModelFamily("claude-opus-4-7"), "claude");
   assert.equal(inferModelFamily("gpt-4.1"), "openai");
+  assert.equal(inferModelFamily("gpt-5-codex"), "openai");
   assert.equal(inferModelFamily("gemini-2.5-pro"), "gemini");
+  assert.equal(inferModelFamily("qwen-max"), "qwen");
+  assert.equal(inferModelFamily("mistral-large-latest"), "mistral");
+  assert.equal(inferModelFamily("glm-4.6"), "glm");
+  assert.equal(inferModelFamily("kimi-k2-0905-preview"), "kimi");
+  assert.equal(inferModelFamily("doubao-seed-1-6"), "doubao");
+  assert.equal(inferModelFamily("ernie-4.5"), "ernie");
   assert.equal(normalizeModelFamily("Anthropic Claude"), "claude");
+  assert.equal(normalizeModelFamily("我是阿里通义千问"), "qwen");
   assert.equal(normalizeModelFamily("I cannot confirm"), "unknown");
 });
 

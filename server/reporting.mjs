@@ -1,111 +1,38 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+// server/reporting.mjs
+// 报告渲染：把各类测试汇总（稳定性 / 准入 / 场景 / 批量 / 快检 / 回放 / 回归）渲染成
+// Markdown 报告正文。权威性头与免责见 report-authority.mjs，文件落盘见 report-files.mjs。
 import { ERROR_DIAGNOSTICS } from "./diagnostics.mjs";
-import { REPORTS_DIR } from "./paths.mjs";
-import { renderReportHtml } from "./report-html.mjs";
 import { escapeMarkdownTable, formatPercent, redactSensitiveText } from "./utils.mjs";
 import { compareProportions } from "./stats.mjs";
-import { recordReport } from "./db.mjs";
-import { APP_VERSION } from "./version.mjs";
 
-// ---------------------------------------------------------------------------
-// 报告权威性：版本/溯源头、方法学说明、参考文献、复核、"疑似"免责
-// ---------------------------------------------------------------------------
+// 报告权威性层与文件 I/O 已拆到独立模块。此处 import 供内部 formatter 调用，
+// 并整体 re-export 以保持对外 import 路径不变（facade）。
+import {
+  REPORT_TOOL_VERSION,
+  REPORT_TEMPLATE_VERSION,
+  SUSPECTED_WORDING_DISCLAIMER,
+  buildReportAuthorityHeader,
+  buildMethodologyNotes,
+  buildBibliography,
+  collectHighSensitivityFindings,
+  buildReviewSection,
+  buildReportAppendix,
+} from "./report-authority.mjs";
+import { saveReportFiles, sanitizeReportBaseName } from "./report-files.mjs";
 
-export const REPORT_TOOL_VERSION = APP_VERSION;
-export const REPORT_TEMPLATE_VERSION = "2.0.0";
-
-export const SUSPECTED_WORDING_DISCLAIMER =
-  "本报告涉及身份/纯度/计费的判断均为基于软件黑盒的概率性结论，仅表述为“疑似/证据支持/需上游解释”，" +
-  "不构成“确定造假”的事实认定；量化降级（如 8-bit）等情形存在检测盲区。";
-
-// 报告头 7 项版本/溯源信息。缺失项以占位符渲染，绝不留空。
-export function buildReportAuthorityHeader(summary = {}, options = {}) {
-  const meta = options.meta || summary.meta || {};
-  return [
-    "## 报告信息（版本与溯源）",
-    "",
-    `- 工具版本：${options.toolVersion || REPORT_TOOL_VERSION}`,
-    `- 报告模板版本：${REPORT_TEMPLATE_VERSION}`,
-    `- 模型快照时间：${meta.modelSnapshotTime || summary.startedAt || "-"}`,
-    `- 测试包标识：${meta.testPackId || summary.runId || summary.batchId || "-"}`,
-    `- 评测人：${meta.evaluator || "-"}`,
-    `- 复核人：${meta.reviewer || "待复核"}`,
-    `- 复核状态：${meta.reviewStatus || "待复核"}`,
-    "",
-  ];
-}
-
-export function buildMethodologyNotes() {
-  return [
-    "## 方法学说明",
-    "",
-    "- 比例指标（成功率等）给出样本数与 95% 置信区间（Wilson，小样本安全），小样本不用 CLT 正态近似。",
-    "- 延迟为重尾分布，报告 P50/P95/P99，不以平均值代表稳定性。",
-    "- 多渠道对比做显著性判定：置信区间重叠或不显著时不下“A 优于 B”。",
-    "- 身份/纯度：tokenizer 计数粗筛 + 行为指纹 +（高价档）RUT 排序均匀性检验，结论为概率判断。",
-    "- 计费：PALACE 风格估算对照（本地估算 vs 上游 usage），异常仅作“疑似”信号。",
-    "- 质量分若由 LLM 裁判产生，多裁判一致性（Krippendorff α）低于 0.8 标注“需人工复核”。",
-    "",
-  ];
-}
-
-export function buildBibliography() {
-  return [
-    "## 参考文献 / 方法学出处",
-    "",
-    "- Wilson (1927) score interval；Efron bootstrap 置信区间。",
-    "- McNemar / Wilcoxon signed-rank / paired-t 显著性检验。",
-    "- Google SRE 四黄金信号与 SLI/SLO（稳定性与延迟分位数）。",
-    "- 模型替换检测：RUT 排序均匀性检验、FDLLM 家族指纹（Model Substitution Detection）。",
-    "- 计费审计：PALACE / CoIn token 真实性方法学。",
-    "- LLM-as-Judge：MT-Bench / G-Eval；Krippendorff α、Gwet AC 一致性系数。",
-    "- 协议兼容：Anthropic Messages / OpenAI 规范、WHATWG SSE Living Standard。",
-    "",
-  ];
-}
-
-// 收集高敏感结论（疑似降智/换模型/灌水/不建议接入），需第二人复核。
-export function collectHighSensitivityFindings(summary = {}) {
-  const findings = [];
-  const level = summary.recommendation?.level;
-  if (level === "reject" || level === "avoid" || level === "not_recommended") {
-    findings.push("不建议接入：请第二人复核失败证据与结论。");
-  }
-  for (const f of summary.tokenAuditFindings || []) {
-    if (f.level === "high" || f.level === "medium") findings.push(`计费疑似异常：${f.note || f.code}`);
-  }
-  if (summary.identitySuspected) findings.push("身份/纯度疑似异常：需第二人复核证据链。");
-  return findings;
-}
-
-export function buildReviewSection(findings = []) {
-  if (!findings.length) {
-    return ["## 复核", "", "- 本报告未触发高敏感结论，无需第二人复核。", ""];
-  }
-  return [
-    "## 复核（高敏感结论，需第二人签字）",
-    "",
-    ...findings.map((f) => `- ${f}`),
-    "",
-    "- 复核人：__________   复核结论：__________   日期：__________",
-    "",
-  ];
-}
-
-// 报告尾部权威性附录：方法学说明 + 参考文献 + 复核 + 免责。
-export function buildReportAppendix(summary = {}, options = {}) {
-  return [
-    ...buildMethodologyNotes(),
-    ...buildBibliography(),
-    ...buildReviewSection(options.highSensitivityFindings || collectHighSensitivityFindings(summary)),
-    "## 免责声明",
-    "",
-    `- ${SUSPECTED_WORDING_DISCLAIMER}`,
-    "- 报告不包含 API Key；敏感字段已脱敏。",
-    "",
-  ];
-}
+export {
+  REPORT_TOOL_VERSION,
+  REPORT_TEMPLATE_VERSION,
+  SUSPECTED_WORDING_DISCLAIMER,
+  buildReportAuthorityHeader,
+  buildMethodologyNotes,
+  buildBibliography,
+  collectHighSensitivityFindings,
+  buildReviewSection,
+  buildReportAppendix,
+  saveReportFiles,
+  sanitizeReportBaseName,
+};
 
 export function buildScenarioRecommendation(successRate, avgQualityScore, p95TotalMs, errorCounts = {}) {
   if (successRate >= 0.95 && avgQualityScore >= 80 && (!p95TotalMs || p95TotalMs <= 45000)) {
@@ -214,6 +141,9 @@ export function formatClientReplayReport(summary) {
     "## 1. 结论",
     "",
     `- 数据来源：${escapeMarkdownTable(summary.sourceName || "-")}`,
+    ...(summary.spendIncurred
+      ? [`- ⚠ 真实回放：用真实 Key 重打了 ${summary.replayedCount ?? "-"} 次请求、消耗了上游额度。触发人：${escapeMarkdownTable(summary.triggeredBy || "未知")}。`]
+      : []),
     `- 请求数量：${summary.recordCount}`,
     `- 成功率：${summary.successRateText}`,
     `- 失败数量：${summary.failureCount}`,
@@ -1133,46 +1063,6 @@ function formatEstimatedCost(value) {
 function formatEstimatedMargin(value) {
   if (!Number.isFinite(Number(value))) return "-";
   return formatPercent(Number(value));
-}
-
-export async function saveReportFiles(baseName, markdown, title) {
-  await mkdir(REPORTS_DIR, { recursive: true });
-  const safeBaseName = sanitizeReportBaseName(baseName);
-  const markdownPath = join(REPORTS_DIR, `${safeBaseName}.md`);
-  const htmlPath = join(REPORTS_DIR, `${safeBaseName}.html`);
-  await writeFile(markdownPath, markdown, "utf8");
-  await writeFile(htmlPath, renderReportHtml(markdown, title), "utf8");
-  // 登记报告元数据（共享报告中心 + 留存清理）。best-effort，不影响出报告。
-  await recordReport({
-    reportId: safeBaseName,
-    runId: String(baseName || ""),
-    type: inferReportType(baseName),
-    title: title || "",
-    pathMd: markdownPath,
-    pathHtml: htmlPath,
-    createdAt: new Date().toISOString(),
-  }).catch(() => {});
-  return { markdownPath, htmlPath };
-}
-
-function inferReportType(baseName) {
-  const name = String(baseName || "");
-  if (name.startsWith("scenario")) return "scenario";
-  if (name.startsWith("stability")) return "stability";
-  if (name.startsWith("batch")) return "batch";
-  if (name.includes("admission")) return "admission";
-  if (name.includes("replay")) return "replay";
-  if (name.includes("supplier")) return "supplier-evidence";
-  return "report";
-}
-
-export function sanitizeReportBaseName(baseName) {
-  const safeName = String(baseName || "")
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^\.+/, "")
-    .slice(0, 120);
-  return safeName || "report";
 }
 
 function getMainError(errorCounts) {

@@ -1,3 +1,6 @@
+// server/model-fingerprint.mjs
+// 模型身份与纯度：从模型名推断家族、构造行为指纹探针、做 token 计费审计与纯度评估，
+// 给出"自述模型 vs 实际表现"是否一致的概率性判断（疑似换模型/降级/灌水，非事实认定）。
 import { formatPercent, sumNullable } from "./utils.mjs";
 
 export const FINGERPRINT_LIBRARY_VERSION = "2026.06.01";
@@ -11,6 +14,13 @@ const FAMILY_LABELS = {
   doubao: "豆包",
   kimi: "Kimi",
   grok: "Grok",
+  qwen: "通义千问 Qwen",
+  mistral: "Mistral",
+  llama: "Llama",
+  ernie: "文心一言 Ernie",
+  hunyuan: "混元 Hunyuan",
+  minimax: "MiniMax",
+  yi: "零一万物 Yi",
   unknown: "未知",
 };
 
@@ -23,6 +33,13 @@ export function inferModelFamily(modelName) {
   if (/doubao|ark|volc|豆包/.test(text)) return "doubao";
   if (/kimi|moonshot/.test(text)) return "kimi";
   if (/grok|xai/.test(text)) return "grok";
+  if (/qwen|qwq|通义|千问/.test(text)) return "qwen";
+  if (/mistral|mixtral|magistral|ministral|codestral/.test(text)) return "mistral";
+  if (/llama|meta-llama/.test(text)) return "llama";
+  if (/ernie|wenxin|文心/.test(text)) return "ernie";
+  if (/hunyuan|混元/.test(text)) return "hunyuan";
+  if (/minimax|abab/.test(text)) return "minimax";
+  if (/(^|[-_])yi-|零一万物|01[-.]?ai/.test(text)) return "yi";
   if (/gpt|openai|codex|(^|[-_])o[134](?:[-_]|$)|o\d/.test(text)) return "openai";
   return "";
 }
@@ -37,6 +54,13 @@ export function normalizeModelFamily(value) {
   if (/doubao|豆包|volc|bytedance|ark/.test(text)) return "doubao";
   if (/kimi|moonshot/.test(text)) return "kimi";
   if (/grok|xai/.test(text)) return "grok";
+  if (/qwen|qwq|通义|千问|alibaba|阿里/.test(text)) return "qwen";
+  if (/mistral|mixtral/.test(text)) return "mistral";
+  if (/llama|meta-llama/.test(text)) return "llama";
+  if (/ernie|wenxin|文心|baidu|百度/.test(text)) return "ernie";
+  if (/hunyuan|混元|tencent|腾讯/.test(text)) return "hunyuan";
+  if (/minimax|abab/.test(text)) return "minimax";
+  if (/(^|[-_])yi-|零一万物|01[-.]?ai/.test(text)) return "yi";
   if (/openai|gpt|codex|(^|[^a-z])o[134]([^a-z]|$)/.test(text)) return "openai";
   if (/unknown|无法|不能确认|not sure|cannot|can't/.test(text)) return "unknown";
   return "";

@@ -1,3 +1,6 @@
+// server/secret-store.mjs
+// 加密密钥库：API Key 经系统钥匙串或本地 AES-GCM 文件库加密存储，按 profile 读写/删除。
+// 明文密钥仅在请求时临时取出，绝不返回浏览器、绝不入日志。
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";

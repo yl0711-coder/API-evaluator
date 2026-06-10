@@ -1,3 +1,6 @@
+// server/utils.mjs
+// 通用纯函数工具：JSON 安全解析、文本脱敏与摘要、JSONL 追加写与尾部读取（带大小封顶）、
+// 数值/百分比统计与格式化等，供各模块复用。
 import { appendFile, open, readFile, stat, writeFile } from "node:fs/promises";
 
 export const DEFAULT_JSONL_MAX_BYTES = 8 * 1024 * 1024;

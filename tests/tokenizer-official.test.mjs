@@ -9,6 +9,8 @@ test("resolveOpenAiEncoding 把模型名映射到正确编码", () => {
   assert.equal(resolveOpenAiEncoding("gpt-4o-mini"), "o200k_base");
   assert.equal(resolveOpenAiEncoding("o3-mini"), "o200k_base");
   assert.equal(resolveOpenAiEncoding("gpt-5"), "o200k_base");
+  assert.equal(resolveOpenAiEncoding("gpt-5-codex"), "o200k_base");
+  assert.equal(resolveOpenAiEncoding("codex-mini-latest"), "o200k_base");
   assert.equal(resolveOpenAiEncoding("gpt-4-turbo"), "cl100k_base");
   assert.equal(resolveOpenAiEncoding("gpt-3.5-turbo"), "cl100k_base");
   assert.equal(resolveOpenAiEncoding("claude-sonnet-4-5"), null); // 非 OpenAI → null（回退）

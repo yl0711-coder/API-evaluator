@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, extname, join, resolve } from "node:path";
+import { basename, extname, join, resolve, sep } from "node:path";
+import { envCompat } from "./env-compat.mjs";
 
 const LOG_EXTENSIONS = new Set([".log", ".txt", ".json", ".jsonl"]);
 const DEFAULT_MAX_FILES = 30;
@@ -7,11 +8,35 @@ const HARD_MAX_FILES = 80;
 const DEFAULT_MAX_BYTES_PER_FILE = 2 * 1024 * 1024;
 const HARD_MAX_TOTAL_BYTES = 12 * 1024 * 1024;
 
+// 安全：只允许从超管经 EVALUATOR_LOG_IMPORT_ROOTS 配置的根目录导入日志，避免登录用户
+// （含 role 10 实习生）读到宿主机任意目录。未配置则不开放目录导入（fail-closed）。
+function allowedImportRoots() {
+  return String(envCompat("LOG_IMPORT_ROOTS") || "")
+    .split(/[,;]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => resolve(part));
+}
+
+function assertWithinAllowedRoots(target) {
+  const roots = allowedImportRoots();
+  if (!roots.length) {
+    throw new Error(
+      "未配置允许导入的日志目录。请由管理员在 EVALUATOR_LOG_IMPORT_ROOTS 设置允许的根目录（多个用逗号分隔）后再试。",
+    );
+  }
+  const ok = roots.some((root) => target === root || target.startsWith(root + sep));
+  if (!ok) {
+    throw new Error("该目录不在允许导入的范围内（由 EVALUATOR_LOG_IMPORT_ROOTS 限定）。");
+  }
+}
+
 export async function readClientLogDirectory(directoryPath, options = {}) {
-  const root = resolve(String(directoryPath || "").trim());
   if (!String(directoryPath || "").trim()) {
     throw new Error("请填写本机日志目录路径。");
   }
+  const root = resolve(String(directoryPath || "").trim());
+  assertWithinAllowedRoots(root);
 
   const rootStat = await stat(root);
   if (!rootStat.isDirectory()) {

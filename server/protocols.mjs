@@ -1,3 +1,6 @@
+// server/protocols.mjs
+// 协议适配层：按渠道协议（OpenAI Chat / OpenAI 兼容 / Claude Messages）构造请求，
+// 解析响应与 SSE 流、抽取输出文本 / 工具调用 / usage，并把上游错误归一化为统一错误码。
 export function buildProtocolRequest(profile, prompt) {
   const model = profile.defaultModel;
   const text = prompt.trim() || "请用一句话说明你现在可以正常工作。";
@@ -154,17 +157,6 @@ export function buildProtocolStreamRequest(profile, prompt) {
       stream: true,
     },
   };
-}
-
-// 大输出流式专项探针（根因1）：要求 >400 行输出，放大上游双层翻译丢
-// content_block_start 的概率。配合 summarizeStreamStructure 的 content_block_dropped 检测。
-export function buildLargeOutputStreamRequest(profile, lineCount = 450) {
-  const count = Math.max(400, Math.floor(lineCount) || 450);
-  const prompt = [
-    `请输出从 1 到 ${count} 的连续整数列表，每个数字单独占一行。`,
-    "必须逐行完整输出，不要省略、不要用省略号、不要合并成一行、不要附加解释。",
-  ].join("\n");
-  return buildProtocolStreamRequest(profile, prompt);
 }
 
 export function parseSseEvents(raw) {

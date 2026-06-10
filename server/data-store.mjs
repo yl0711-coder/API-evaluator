@@ -1,3 +1,6 @@
+// server/data-store.mjs
+// 数据目录布局与读取：确保可见的数据目录结构、迁移旧版 app-data，
+// 读取最近的请求 / 错误 / 测试运行 / 任务记录。
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";

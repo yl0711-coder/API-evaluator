@@ -948,7 +948,7 @@ function renderEditionBanner() {
   const safetyEnabled = Boolean(state.health?.safetyScenariosEnabled);
   editionBanner.classList.toggle("hidden", !safetyEnabled);
   editionBanner.innerHTML = safetyEnabled
-    ? `<strong>内部风控版</strong>已启用内容安全合规测试。请只由负责人或受训测试人员使用。`
+    ? `<strong>安全场景模式</strong>已启用内容安全合规测试。建议仅由负责人或受训测试人员使用。`
     : "";
 }
 

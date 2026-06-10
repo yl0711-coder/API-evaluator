@@ -1,3 +1,6 @@
+// server/client-log-analyzer.mjs
+// 客户端日志分析：解析/归一化客户端与 nginx 日志、分类错误、产出供应商证据与回放候选。
+// 输出前做字段白名单与脱敏，原始 body/headers 不外泄。
 import { countErrors, buildErrorDiagnostics, buildRecommendation } from "./reporting.mjs";
 import { formatPercent, mean, percentile, redactSensitiveText, safeJson, summarizeText, sumNullable } from "./utils.mjs";
 

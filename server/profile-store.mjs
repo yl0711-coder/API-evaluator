@@ -1,3 +1,6 @@
+// server/profile-store.mjs
+// 渠道配置（profile）的规范化、脱敏、导入导出、判重与合并。
+// 判重按 url + model + key 哈希全等；Key 以哈希参与判重，明文不外泄。
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";

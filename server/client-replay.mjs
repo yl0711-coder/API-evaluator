@@ -1,3 +1,6 @@
+// server/client-replay.mjs
+// 客户端回放：把从客户端日志还原的请求重新打到被测渠道，复现线上报错并归类，
+// 用于排障对照（注意会真实消耗上游额度）。
 import { performance } from "node:perf_hooks";
 import { classifyClientError, normalizeClientLogRecord } from "./client-log-analyzer.mjs";
 import { readProfileApiKey } from "./secret-store.mjs";

@@ -1,3 +1,6 @@
+// server/task-manager.mjs
+// 重测试任务生命周期 + 全局并发队列：创建/排队/取消/进度上报，超出并发上限的任务排队并给 ETA。
+// 不关心具体测试怎么跑（runner 由调用方注入），便于独立测试任务状态机。
 import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
 
@@ -53,23 +56,39 @@ export function createTaskManager({
   }
   async function runWithSlot(task, payload) {
     await acquireSlot();
-    // 排队的任务拿到槽位后才真正"开始"；中途已取消的，拿到槽位直接放掉、不执行。
-    if (task.cancelRequested) {
-      task.status = "cancelled";
-      task.message = "任务已取消。";
-      task.endedAt = new Date().toISOString();
-      await appendTaskEvent(taskEventsFile, task, "cancelled");
-      releaseSlot();
-      return;
-    }
-    if (task.status === "queued") {
-      task.status = "running";
-      task.startedAt = new Date().toISOString();
-      task.message = "任务已开始。";
-      await appendTaskEvent(taskEventsFile, task, "started");
-    }
+    // 取到槽位后的整段都纳入一个 try/finally：无论走取消早返回、started 转换还是 runTask，
+    // releaseSlot 都恰好执行一次，绝不因中途异常（如 appendTaskEvent 落盘失败）泄漏槽位、卡死队列。
     try {
+      // 排队的任务拿到槽位后才真正"开始"；中途已取消的，拿到槽位直接放掉、不执行。
+      if (task.cancelRequested) {
+        task.status = "cancelled";
+        task.message = "任务已取消。";
+        task.endedAt = new Date().toISOString();
+        await appendTaskEvent(taskEventsFile, task, "cancelled");
+        return;
+      }
+      if (task.status === "queued") {
+        task.status = "running";
+        task.startedAt = new Date().toISOString();
+        task.message = "任务已开始。";
+        await appendTaskEvent(taskEventsFile, task, "started");
+      }
       await runTask(task, payload);
+    } catch (error) {
+      // 调度层兜底：runTask 自身已处理业务异常，这里只会兜到基础设施异常（如落盘失败）。
+      // 既不能逃逸成 unhandled rejection（本函数由 void 调用），也不能吞掉——标记失败并尽力记录。
+      if (task.status !== "cancelled") {
+        task.status = "failed";
+        task.message = "任务调度失败，请查看本地错误日志。";
+        task.endedAt = task.endedAt || new Date().toISOString();
+        if (logTechnicalError) {
+          await logTechnicalError(errorLogFile, {
+            source: "task-scheduler",
+            error,
+            context: { taskId: task.id, taskType: task.type },
+          }).catch(() => {});
+        }
+      }
     } finally {
       releaseSlot();
     }

@@ -112,9 +112,14 @@ export function clearSessionCookie() {
   if (cookieSecure()) flags.push("Secure");
   return `${SESSION_COOKIE_NAME}=; ${flags.join("; ")}`;
 }
+// 登录限流用的客户端 IP。默认只认 socket 真实地址：X-Forwarded-For 头可被客户端伪造，
+// 直连可达时若信任它，攻击者每次换个假 IP 就能绕过限流、无限撞库。仅当部署在会覆写 XFF
+// 的可信反代后、且显式设置 EVALUATOR_TRUST_PROXY=true 时，才采用 XFF 第一段当真实客户端。
 export function clientIp(req) {
-  const xff = req.headers?.["x-forwarded-for"];
-  if (typeof xff === "string" && xff.length) return xff.split(",")[0].trim();
+  if (process.env.EVALUATOR_TRUST_PROXY === "true") {
+    const xff = req.headers?.["x-forwarded-for"];
+    if (typeof xff === "string" && xff.length) return xff.split(",")[0].trim();
+  }
   return req.socket?.remoteAddress || "unknown";
 }
 

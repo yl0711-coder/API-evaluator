@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildLargeOutputStreamRequest, summarizeStreamStructure } from "../server/protocols.mjs";
+import { summarizeStreamStructure } from "../server/protocols.mjs";
 
 // 构造 Claude SSE 原文的小工具
 function sse(lines) {
@@ -78,14 +78,4 @@ test("valid tool_use json does not trigger tool_args_lost", () => {
   ]);
   const s = summarizeStreamStructure("claude_messages", raw);
   assert.equal(s.flags.toolArgsLost, false);
-});
-
-test("buildLargeOutputStreamRequest asks for >400 lines and streams", () => {
-  const profile = { protocol: "claude_messages", baseUrl: "https://x.test", apiKey: "k", defaultModel: "claude-x", maxTokens: 1024 };
-  const req = buildLargeOutputStreamRequest(profile, 450);
-  assert.equal(req.body.stream, true);
-  assert.match(req.body.messages[0].content, /450/);
-  // 下限保护：即便传入过小值也至少 400
-  const req2 = buildLargeOutputStreamRequest(profile, 10);
-  assert.match(req2.body.messages[0].content, /400/);
 });

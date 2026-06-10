@@ -1,3 +1,6 @@
+// server/summaries.mjs
+// 汇总层：把逐请求测试记录聚合成稳定性 / 场景 汇总（成功率与置信区间、延迟分位、
+// token 与成本、错误分布、纯度与计费审计），供 reporting.mjs 渲染报告。
 import { maskScenario } from "./profile-store.mjs";
 import { aggregateUsage, buildRunConsumption, estimateProfileRunEconomics } from "./costing.mjs";
 import { proportionReport } from "./stats.mjs";

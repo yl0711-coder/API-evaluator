@@ -310,6 +310,9 @@ async function handleApi(req, res) {
     summary.replayCandidateCount = candidates.length;
     summary.replayedCount = replayRecords.length;
     summary.replayLimit = replayLimit;
+    // 审计：批量回放真实消耗上游额度，明确记录触发人 / 消费标记。
+    summary.triggeredBy = req.session?.username || null;
+    summary.spendIncurred = true;
     const artifactFiles = await saveRunArtifacts(runId, {
       summary: {
         ...summary,
@@ -402,6 +405,10 @@ async function handleApi(req, res) {
     });
     summary.workspaceDir = artifactFiles.workspaceDir;
     summary.rawJsonPath = artifactFiles.rawJsonPath;
+    // 审计：回放会真实消耗上游额度，明确记录触发人 / 消费标记 / 回放次数。
+    summary.triggeredBy = req.session?.username || null;
+    summary.spendIncurred = true;
+    summary.replayedCount = summary.records?.length || 1;
     const reportMarkdown = formatClientReplayReport(summary);
     const reportFiles = await saveReportFiles(runId, reportMarkdown, "真实客户端请求回放报告");
     const { records: normalizedRecords, ...safeSummary } = summary;

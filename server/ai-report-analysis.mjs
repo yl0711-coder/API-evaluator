@@ -1,3 +1,6 @@
+// server/ai-report-analysis.mjs
+// 可选的 AI 辅助分析：按脱敏后的报告摘要构造提示词、解析被测模型返回的分析结果。
+// 仅作辅助解释，最终判断仍以本地规则结论为准。
 import { summarizeText } from "./utils.mjs";
 
 const MAX_ANALYSIS_TEXT = 3000;

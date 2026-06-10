@@ -1,3 +1,6 @@
+// server/test-runner.mjs
+// 测试执行引擎：构造并发起对被测 API 的探测请求（普通生成 / 工具调用 / 流式结构），
+// 归一化结果与错误、落库为脱敏测试记录，并编排准入 / 稳定性 / 场景 / 快检各类测试。
 import crypto from "node:crypto";
 import {
   buildAiAnalysisResult,
@@ -1246,343 +1249,154 @@ export function linkExternalAbort(controller, signal) {
   return () => signal.removeEventListener("abort", onAbort);
 }
 
+// 上游探测的统一骨架：三类探测（普通生成 / 工具调用 / 流式结构）只在
+//   ① buildRequest 构造请求 ② interpret 解释成功响应 ③ computeSuccess 成功判定 三处不同；
+// 其余（超时 / 外部中止 / 截断保护 / 计时 / auth-fail / finalize 落库）完全一致。
+// API key 仅请求时读取，绝不进日志/报告（finalizeTestRecord 只写脱敏元数据）。
+async function runUpstreamProbe(profile, options, { buildRequest, interpret, computeSuccess, captureFirstToken = false }) {
+  const requestId = crypto.randomUUID();
+  const startedAt = new Date();
+  const timeoutMs = Number(profile.timeoutMs || 60000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
+
+  // 贯穿各 finalize 分支的可变结果（含变体特有字段 toolCall / streamValidation / firstTokenMs）。
+  const r = {
+    firstByteMs: null,
+    firstTokenMs: null,
+    totalMs: null,
+    statusCode: null,
+    responseText: "",
+    usage: null,
+    rawError: "",
+    normalizedError: "",
+    toolCall: null,
+    streamValidation: null,
+  };
+  const finalize = () =>
+    finalizeTestRecord({
+      options,
+      profile,
+      requestId,
+      startedAt,
+      firstByteMs: r.firstByteMs,
+      firstTokenMs: r.firstTokenMs,
+      totalMs: r.totalMs,
+      statusCode: r.statusCode,
+      responseText: r.responseText,
+      usage: r.usage,
+      rawError: r.rawError,
+      normalizedError: r.normalizedError,
+      toolCall: r.toolCall,
+      streamValidation: r.streamValidation,
+      successOverride: computeSuccess(r),
+    });
+
+  try {
+    const apiKey = await readProfileApiKey(profile);
+    if (!apiKey) {
+      r.rawError = "API Key 未配置或无法从密钥存储读取。";
+      r.normalizedError = "auth_failed";
+      r.totalMs = 0;
+      return await finalize();
+    }
+
+    const request = buildRequest({ ...profile, apiKey });
+    const started = performance.now();
+    await assertPublicTarget(request.url);
+    const response = await fetch(request.url, {
+      method: "POST",
+      headers: request.headers,
+      body: JSON.stringify(request.body),
+      signal: controller.signal,
+      redirect: "error",
+    });
+    r.firstByteMs = Math.round(performance.now() - started);
+    r.statusCode = response.status;
+    const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
+    r.totalMs = Math.round(performance.now() - started);
+    // 真 TTFT：首个流式分片到达时刻（≈首 token）。仅流式可测；非流式 JSON 整体返回、
+    // 无 token 级时序，故 captureFirstToken=false 时保持 null。
+    if (captureFirstToken && rawResult.firstChunkAt != null) {
+      r.firstTokenMs = Math.max(0, Math.round(rawResult.firstChunkAt - started));
+    }
+    if (rawResult.truncated) {
+      r.rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
+      r.normalizedError = "response_too_large";
+      return await finalize();
+    }
+
+    const raw = rawResult.text;
+    if (!response.ok) {
+      r.rawError = summarizeText(raw);
+      r.normalizedError = normalizeHttpError(response.status, raw);
+    } else {
+      interpret(r, raw);
+    }
+  } catch (error) {
+    r.totalMs = r.totalMs ?? timeoutMs;
+    r.rawError = error instanceof Error ? error.message : String(error);
+    r.normalizedError = /abort|timeout|timed out/i.test(r.rawError) ? "timeout" : "network_error";
+  } finally {
+    clearTimeout(timer);
+    unlinkAbort();
+  }
+
+  return finalize();
+}
+
+// 普通生成探测：解析输出文本与 usage；空回复按 normalizeEmptyResponse 归一。
 export async function executeTestRequest(profile, prompt, options = {}) {
-  const requestId = crypto.randomUUID();
-  const startedAt = new Date();
-  const timeoutMs = Number(profile.timeoutMs || 60000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
-  let firstByteMs = null;
-  let totalMs = null;
-  let statusCode = null;
-  let responseText = "";
-  let usage = null;
-  let rawError = "";
-  let normalizedError = "";
-
-  try {
-    // API keys are loaded only at request time and are never copied into logs or
-    // reports. finalizeTestRecord writes only redacted request metadata.
-    const apiKey = await readProfileApiKey(profile);
-    if (!apiKey) {
-      rawError = "API Key 未配置或无法从密钥存储读取。";
-      normalizedError = "auth_failed";
-      totalMs = 0;
-      return await finalizeTestRecord({
-        options,
-        profile,
-        requestId,
-        startedAt,
-        firstByteMs,
-        totalMs,
-        statusCode,
-        responseText,
-        usage,
-        rawError,
-        normalizedError,
-      });
-    }
-    const request = buildProtocolRequest({ ...profile, apiKey }, prompt);
-    const started = performance.now();
-    await assertPublicTarget(request.url);
-    const response = await fetch(request.url, {
-      method: "POST",
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal: controller.signal,
-      redirect: "error",
-    });
-    firstByteMs = Math.round(performance.now() - started);
-    statusCode = response.status;
-    const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
-    totalMs = Math.round(performance.now() - started);
-    if (rawResult.truncated) {
-      rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
-      normalizedError = "response_too_large";
-      return await finalizeTestRecord({
-        options,
-        profile,
-        requestId,
-        startedAt,
-        firstByteMs,
-        totalMs,
-        statusCode,
-        responseText,
-        usage,
-        rawError,
-        normalizedError,
-      });
-    }
-    const raw = rawResult.text;
-
-    if (!response.ok) {
-      rawError = summarizeText(raw);
-      normalizedError = normalizeHttpError(response.status, raw);
-    } else {
+  return runUpstreamProbe(profile, options, {
+    buildRequest: (p) => buildProtocolRequest(p, prompt),
+    interpret: (r, raw) => {
       const parsed = safeJson(raw);
-      responseText = extractOutputText(profile.protocol, parsed);
-      usage = extractUsage(parsed);
-      if (!responseText) {
-        rawError = summarizeText(raw);
-        normalizedError = normalizeEmptyResponse(raw);
+      r.responseText = extractOutputText(profile.protocol, parsed);
+      r.usage = extractUsage(parsed);
+      if (!r.responseText) {
+        r.rawError = summarizeText(raw);
+        r.normalizedError = normalizeEmptyResponse(raw);
       }
-    }
-  } catch (error) {
-    totalMs = totalMs ?? timeoutMs;
-    rawError = error instanceof Error ? error.message : String(error);
-    normalizedError = /abort|timeout|timed out/i.test(rawError) ? "timeout" : "network_error";
-  } finally {
-    clearTimeout(timer);
-    unlinkAbort();
-  }
-
-  return finalizeTestRecord({
-    options,
-    profile,
-    requestId,
-    startedAt,
-    firstByteMs,
-    totalMs,
-    statusCode,
-    responseText,
-    usage,
-    rawError,
-    normalizedError,
+    },
+    computeSuccess: () => undefined, // 走 finalize 默认：2xx + 有输出
   });
 }
 
-async function executeToolCallTestRequest(profile, options = {}) {
-  const requestId = crypto.randomUUID();
-  const startedAt = new Date();
-  const timeoutMs = Number(profile.timeoutMs || 60000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
-  let firstByteMs = null;
-  let totalMs = null;
-  let statusCode = null;
-  let responseText = "";
-  let usage = null;
-  let rawError = "";
-  let normalizedError = "";
-  let toolCall = null;
-
-  try {
-    const apiKey = await readProfileApiKey(profile);
-    if (!apiKey) {
-      rawError = "API Key 未配置或无法从密钥存储读取。";
-      normalizedError = "auth_failed";
-      totalMs = 0;
-      return await finalizeTestRecord({
-        options,
-        profile,
-        requestId,
-        startedAt,
-        firstByteMs,
-        totalMs,
-        statusCode,
-        responseText,
-        usage,
-        rawError,
-        normalizedError,
-        toolCall,
-        successOverride: false,
-      });
-    }
-
-    const request = buildProtocolToolRequest({ ...profile, apiKey });
-    const started = performance.now();
-    await assertPublicTarget(request.url);
-    const response = await fetch(request.url, {
-      method: "POST",
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal: controller.signal,
-      redirect: "error",
-    });
-    firstByteMs = Math.round(performance.now() - started);
-    statusCode = response.status;
-    const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
-    totalMs = Math.round(performance.now() - started);
-    if (rawResult.truncated) {
-      rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
-      normalizedError = "response_too_large";
-      return await finalizeTestRecord({
-        options,
-        profile,
-        requestId,
-        startedAt,
-        firstByteMs,
-        totalMs,
-        statusCode,
-        responseText,
-        usage,
-        rawError,
-        normalizedError,
-        toolCall,
-        successOverride: false,
-      });
-    }
-
-    const raw = rawResult.text;
-    if (!response.ok) {
-      rawError = summarizeText(raw);
-      normalizedError = normalizeHttpError(response.status, raw);
-    } else {
+// 工具调用探测：要求模型返回 tool_call；缺失记 tool_call_missing。成功 = 2xx 且拿到 toolCall。
+export async function executeToolCallTestRequest(profile, options = {}) {
+  return runUpstreamProbe(profile, options, {
+    buildRequest: (p) => buildProtocolToolRequest(p),
+    interpret: (r, raw) => {
       const parsed = safeJson(raw);
-      toolCall = extractToolCall(profile.protocol, parsed);
-      usage = extractUsage(parsed);
-      responseText = toolCall ? `tool_call:${toolCall.name}` : extractOutputText(profile.protocol, parsed);
-      if (!toolCall) {
-        rawError = summarizeText(raw);
-        normalizedError = "tool_call_missing";
+      r.toolCall = extractToolCall(profile.protocol, parsed);
+      r.usage = extractUsage(parsed);
+      r.responseText = r.toolCall ? `tool_call:${r.toolCall.name}` : extractOutputText(profile.protocol, parsed);
+      if (!r.toolCall) {
+        r.rawError = summarizeText(raw);
+        r.normalizedError = "tool_call_missing";
       }
-    }
-  } catch (error) {
-    totalMs = totalMs ?? timeoutMs;
-    rawError = error instanceof Error ? error.message : String(error);
-    normalizedError = /abort|timeout|timed out/i.test(rawError) ? "timeout" : "network_error";
-  } finally {
-    clearTimeout(timer);
-    unlinkAbort();
-  }
-
-  return finalizeTestRecord({
-    options,
-    profile,
-    requestId,
-    startedAt,
-    firstByteMs,
-    totalMs,
-    statusCode,
-    responseText,
-    usage,
-    rawError,
-    normalizedError,
-    toolCall,
-    successOverride: Boolean(statusCode && statusCode >= 200 && statusCode < 300 && toolCall),
+    },
+    computeSuccess: (r) => Boolean(r.statusCode && r.statusCode >= 200 && r.statusCode < 300 && r.toolCall),
   });
 }
 
-async function executeStreamStructureTestRequest(profile, prompt, options = {}) {
-  const requestId = crypto.randomUUID();
-  const startedAt = new Date();
-  const timeoutMs = Number(profile.timeoutMs || 60000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
-  let firstTokenMs = null;
-  let firstByteMs = null;
-  let totalMs = null;
-  let statusCode = null;
-  let responseText = "";
-  let usage = null;
-  let rawError = "";
-  let normalizedError = "";
-  let streamValidation = null;
-
-  try {
-    const apiKey = await readProfileApiKey(profile);
-    if (!apiKey) {
-      rawError = "API Key 未配置或无法从密钥存储读取。";
-      normalizedError = "auth_failed";
-      totalMs = 0;
-      return await finalizeTestRecord({
-        options,
-        profile,
-        requestId,
-        startedAt,
-        firstByteMs,
-        totalMs,
-        statusCode,
-        responseText,
-        usage,
-        rawError,
-        normalizedError,
-        streamValidation,
-        successOverride: false,
-      });
-    }
-
-    const request = buildProtocolStreamRequest({ ...profile, apiKey }, prompt);
-    const started = performance.now();
-    await assertPublicTarget(request.url);
-    const response = await fetch(request.url, {
-      method: "POST",
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal: controller.signal,
-      redirect: "error",
-    });
-    firstByteMs = Math.round(performance.now() - started);
-    statusCode = response.status;
-    const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
-    totalMs = Math.round(performance.now() - started);
-    // 真 TTFT：首个流式分片到达的时刻（≈首 token 开始），而非响应头到达(firstByte)。
-    // 仅流式可测；非流式 JSON 整体返回，无 token 级时序，故保持 null。
-    if (rawResult.firstChunkAt != null) {
-      firstTokenMs = Math.max(0, Math.round(rawResult.firstChunkAt - started));
-    }
-    if (rawResult.truncated) {
-      rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
-      normalizedError = "response_too_large";
-      return await finalizeTestRecord({
-        options,
-        profile,
-        requestId,
-        startedAt,
-        firstByteMs,
-        firstTokenMs,
-        totalMs,
-        statusCode,
-        responseText,
-        usage,
-        rawError,
-        normalizedError,
-        streamValidation,
-        successOverride: false,
-      });
-    }
-
-    const raw = rawResult.text;
-    if (!response.ok) {
-      rawError = summarizeText(raw);
-      normalizedError = normalizeHttpError(response.status, raw);
-    } else {
-      streamValidation = summarizeStreamStructure(profile.protocol, raw);
-      responseText = `stream_events:${streamValidation.eventCount}; issues:${streamValidation.issues.join(",") || "none"}`;
-      if (!streamValidation.passed) {
-        rawError = streamValidation.issues.join(", ") || summarizeText(raw);
-        normalizedError = streamValidation.issues.includes("content_block_not_found")
+// 流式结构探测：校验 SSE 事件结构（captureFirstToken 测真 TTFT）。成功 = 2xx 且结构校验通过。
+export async function executeStreamStructureTestRequest(profile, prompt, options = {}) {
+  return runUpstreamProbe(profile, options, {
+    captureFirstToken: true,
+    buildRequest: (p) => buildProtocolStreamRequest(p, prompt),
+    interpret: (r, raw) => {
+      r.streamValidation = summarizeStreamStructure(profile.protocol, raw);
+      r.responseText = `stream_events:${r.streamValidation.eventCount}; issues:${r.streamValidation.issues.join(",") || "none"}`;
+      if (!r.streamValidation.passed) {
+        r.rawError = r.streamValidation.issues.join(", ") || summarizeText(raw);
+        r.normalizedError = r.streamValidation.issues.includes("content_block_not_found")
           ? "content_block_not_found"
           : "stream_structure_invalid";
       }
-    }
-  } catch (error) {
-    totalMs = totalMs ?? timeoutMs;
-    rawError = error instanceof Error ? error.message : String(error);
-    normalizedError = /abort|timeout|timed out/i.test(rawError) ? "timeout" : "network_error";
-  } finally {
-    clearTimeout(timer);
-    unlinkAbort();
-  }
-
-  return finalizeTestRecord({
-    options,
-    profile,
-    requestId,
-    startedAt,
-    firstByteMs,
-    firstTokenMs,
-    totalMs,
-    statusCode,
-    responseText,
-    usage,
-    rawError,
-    normalizedError,
-    streamValidation,
-    successOverride: Boolean(statusCode && statusCode >= 200 && statusCode < 300 && streamValidation?.passed),
+    },
+    computeSuccess: (r) => Boolean(r.statusCode && r.statusCode >= 200 && r.statusCode < 300 && r.streamValidation?.passed),
   });
 }
 
@@ -1641,7 +1455,7 @@ export function stripHeavyRunResult(result) {
   };
 }
 
-// 持久化一条测试运行汇总：写 JSONL（兼容镜像）+ 双写 SQLite（best-effort，过渡期）。
+// 持久化一条测试运行汇总：JSONL 为可移植的事实来源，同时双写 SQLite 作查询索引（best-effort）。
 // 基线回归评估：取该渠道同类历史中位数当基线，与本次比对；明显退化则落 regression_alerts。
 // best-effort：失败返回 null，绝不影响测试主流程。
 async function assessRunRegression(summary) {
@@ -1743,7 +1557,7 @@ async function finalizeTestRecord({
     // avoid turning request logs into a data dump.
     delete logRecord.responseText;
     await appendJsonLine(REQUEST_LOG_FILE, logRecord);
-    // 双写 SQLite（过渡期）：逐请求全量历史，供统计严谨用。best-effort，
+    // 双写 SQLite：逐请求全量历史，供统计严谨用。best-effort，
     // node:sqlite 不可用或出错时静默跳过，JSONL 仍是事实来源。
     await recordRequest(logRecord);
   }

@@ -1,14 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyProfileTemplateToForm,
   buildStandardActionPlan,
   buildErrorAdviceText,
   buildStandardOperatorSummary,
   buildStandardNextStepAdvice,
   normalizeErrorKey,
   pickScenarioIdsForPack,
+  PROFILE_TEMPLATES,
   validateProfileConfig,
 } from "../src/operator-guidance.js";
+
+function mockProfileForm() {
+  const field = () => ({ value: "", placeholder: "" });
+  return { elements: { provider: field(), protocol: field(), maxTokens: field(), timeoutMs: field(), baseUrl: field(), defaultModel: field(), notes: field() } };
+}
+
+test("profile templates cover common model families with valid shape", () => {
+  const required = ["label", "provider", "protocol", "baseUrlPlaceholder", "modelPlaceholder", "maxTokens", "timeoutMs", "notes"];
+  for (const [key, template] of Object.entries(PROFILE_TEMPLATES)) {
+    for (const field of required) assert.ok(template[field] !== undefined, `${key} 缺字段 ${field}`);
+    assert.ok(["openai_compatible", "openai_chat", "claude_messages"].includes(template.protocol), `${key} 协议非法`);
+  }
+  // 用户点名要能配的常见模型家族都有预设
+  for (const key of ["gemini_openai_compatible", "kimi_openai_compatible", "doubao_openai_compatible", "glm_openai_compatible", "qwen_openai_compatible", "grok_openai_compatible"]) {
+    assert.ok(PROFILE_TEMPLATES[key], `缺预设 ${key}`);
+  }
+  // 选预设能把协议/厂商自动填进表单
+  const form = mockProfileForm();
+  const applied = applyProfileTemplateToForm(form, "qwen_openai_compatible");
+  assert.equal(applied.provider, "Alibaba");
+  assert.equal(form.elements.protocol.value, "openai_compatible");
+  assert.equal(form.elements.notes.value, applied.notes);
+});
 
 test("operator guidance maps common API errors to user-facing advice", () => {
   assert.equal(normalizeErrorKey("API Error: Content block not found"), "content_block_not_found");

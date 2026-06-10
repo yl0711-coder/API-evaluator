@@ -10,8 +10,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: evaluator:latest
-    container_name: evaluator
+    image: api-evaluator:latest
+    container_name: api-evaluator
     restart: unless-stopped
     # 不映射宿主端口：只经反向代理在 docker 网络内访问，缩小暴露面
     expose:

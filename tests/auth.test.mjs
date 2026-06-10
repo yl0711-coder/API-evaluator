@@ -157,3 +157,17 @@ test("authenticate dispatches to local by default, newapi when backend set", asy
   assert.equal(napi.ok, true);
   assert.equal(napi.user.username, "root");
 });
+
+test("clientIp ignores forged X-Forwarded-For unless EVALUATOR_TRUST_PROXY=true", () => {
+  const req = { headers: { "x-forwarded-for": "9.9.9.9, 8.8.8.8" }, socket: { remoteAddress: "10.0.0.5" } };
+  // 默认安全档：无视可伪造的 XFF，认 socket 真实地址 → 攻击者换假 IP 也绕不过限流
+  delete process.env.EVALUATOR_TRUST_PROXY;
+  assert.equal(auth.clientIp(req), "10.0.0.5");
+  // 显式声明在可信反代后：才取 XFF 第一段作真实客户端
+  process.env.EVALUATOR_TRUST_PROXY = "true";
+  try {
+    assert.equal(auth.clientIp(req), "9.9.9.9");
+  } finally {
+    delete process.env.EVALUATOR_TRUST_PROXY;
+  }
+});
