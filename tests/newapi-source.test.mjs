@@ -63,3 +63,25 @@ test("api 模式缺 token → 报错", async () => {
     delete process.env.EVALUATOR_NEWAPI_BASE_URL;
   }
 });
+
+test("db 模式缺 DSN → 报错", async () => {
+  process.env.EVALUATOR_IMPORT_SOURCE = "db";
+  delete process.env.EVALUATOR_NEWAPI_DB_DSN;
+  try {
+    await assert.rejects(() => fetchNewapiChannels(), /NEWAPI_DB_DSN/);
+  } finally {
+    delete process.env.EVALUATOR_IMPORT_SOURCE;
+  }
+});
+
+test("db 模式 mysql2 未安装 → 给出可操作的安装提示", async () => {
+  // 核心依赖不含 mysql2；db 模式应懒加载失败并提示安装，而不是崩。
+  process.env.EVALUATOR_IMPORT_SOURCE = "db";
+  process.env.EVALUATOR_NEWAPI_DB_DSN = "ro:pw@tcp(127.0.0.1:3306)/newapi";
+  try {
+    await assert.rejects(() => fetchNewapiChannels(), /mysql2/);
+  } finally {
+    delete process.env.EVALUATOR_IMPORT_SOURCE;
+    delete process.env.EVALUATOR_NEWAPI_DB_DSN;
+  }
+});

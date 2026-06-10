@@ -1096,8 +1096,26 @@ function assertNotDemo(actionLabel = "这个操作") {
   return false;
 }
 
+// 总览用的"可运行测试目标"：模型目标(渠道+模型)还原 + 未迁移的孤儿老 profile。与运行下拉同源。
+function runnableTargets() {
+  const byChannel = new Map((state.channels || []).map((c) => [c.id, c]));
+  const channelIds = new Set((state.channels || []).map((c) => c.id));
+  const out = [];
+  for (const t of state.modelTargets || []) {
+    const ch = byChannel.get(t.channelId);
+    if (!ch) continue;
+    out.push({ id: t.id, name: `${ch.name} / ${t.model}`, defaultModel: t.model });
+  }
+  for (const p of state.profiles || []) {
+    if (p.role !== "target" && p.role !== "baseline") continue;
+    if (channelIds.has(p.id)) continue;
+    out.push({ id: p.id, name: p.name, defaultModel: p.defaultModel });
+  }
+  return out;
+}
+
 function renderDashboard() {
-  const hasProfiles = state.profiles.length > 0;
+  const hasProfiles = runnableTargets().length > 0;
   dashboardEmpty.classList.toggle("hidden", hasProfiles);
   dashboardPopulated.classList.toggle("hidden", !hasProfiles);
   renderWorkflowGuide();
@@ -1143,7 +1161,7 @@ function dashRelTime(iso) {
 }
 
 function renderDashboardStatus() {
-  const targets = state.profiles.filter((p) => p.role === "target");
+  const targets = runnableTargets();
   const runs = state.testRuns || []; // newest-first
 
   // 渠道健康：每个被测渠道按最近一次有结论的运行聚合；无运行 → 未测
@@ -1163,7 +1181,7 @@ function renderDashboardStatus() {
     else if (v.cls === "warn") warn += 1;
     else bad += 1;
   }
-  statChannels.innerHTML = `${targets.length} <em>个渠道</em>`;
+  statChannels.innerHTML = `${targets.length} <em>个测试目标</em>`;
   // 健康占比条：按 正常/观察/异常/未测 的数量做 flex 比例
   statChannelsBars.innerHTML = targets.length === 0
     ? `<i style="flex:1;background:var(--line)"></i>`

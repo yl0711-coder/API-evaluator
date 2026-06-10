@@ -605,6 +605,43 @@ async function handleApi(req, res) {
     sendJson(res, 200, { ok: true, mode: importSourceMode(), ...plan.summary });
     return;
   }
+  if (req.method === "POST" && /^\/api\/channels\/.+\/sync-models$/.test(url.pathname)) {
+    const id = decodeURIComponent(url.pathname.replace("/api/channels/", "").replace("/sync-models", ""));
+    const channels = await loadChannels();
+    const channel = channels.find((item) => item.id === id);
+    if (!channel) {
+      sendJson(res, 404, { error: "channel_not_found", userMessage: "没有找到该渠道。" });
+      return;
+    }
+    if (!channel.newapiChannelId) {
+      sendJson(res, 400, { error: "not_newapi_channel", userMessage: "该渠道不是从 new-api 导入的，无法同步模型。手动渠道请在“模型管理”里直接加模型。" });
+      return;
+    }
+    let rows;
+    try {
+      rows = await fetchNewapiChannels();
+    } catch (error) {
+      sendJson(res, 400, { error: "import_source_error", userMessage: error.message });
+      return;
+    }
+    const row = rows.find((r) => Number(r.id) === Number(channel.newapiChannelId));
+    if (!row) {
+      sendJson(res, 404, { error: "newapi_channel_gone", userMessage: "new-api 里已找不到该渠道（可能已删除）。" });
+      return;
+    }
+    // 只同步这一个渠道：buildImportPlan 只喂这一行，upsert 它的渠道 + 模型目标，其余不动。
+    const existingTargets = await loadModelTargets();
+    const plan = buildImportPlan({ rows: [row], existingChannels: channels, existingTargets });
+    const indexById = new Map(plan.channels.map((item, i) => [item.id, i]));
+    for (const [channelId, key] of Object.entries(plan.keys)) {
+      const i = indexById.get(channelId);
+      if (i !== undefined) plan.channels[i] = await attachChannelKey(plan.channels[i], key);
+    }
+    await saveChannels(plan.channels);
+    await saveModelTargets(plan.targets);
+    sendJson(res, 200, { ok: true, newTargets: plan.summary.newTargets });
+    return;
+  }
   if (req.method === "DELETE" && url.pathname.startsWith("/api/channels/")) {
     const id = decodeURIComponent(url.pathname.replace("/api/channels/", ""));
     if (!id) {
