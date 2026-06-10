@@ -3,9 +3,18 @@ import test from "node:test";
 import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "../src/workflow-guide.js";
 
 test("workflow guide points operators to the next missing step", () => {
-  const emptyStatus = buildWorkflowStatus({ profiles: [], requests: [], testRuns: [] });
-  assert.equal(getNextWorkflowStep(emptyStatus).step, "profiles");
+  const emptyStatus = buildWorkflowStatus({ profiles: [], channels: [], modelTargets: [], requests: [], testRuns: [] });
+  assert.equal(getNextWorkflowStep(emptyStatus).step, "channels");
 
+  // 有渠道但还没配模型 -> 引导去配模型
+  const channelOnly = buildWorkflowStatus({ profiles: [], channels: [{ id: "c1" }], modelTargets: [], requests: [], testRuns: [] });
+  assert.equal(getNextWorkflowStep(channelOnly).step, "models");
+
+  // 渠道 + 模型目标齐 -> 去准入
+  const ready = buildWorkflowStatus({ profiles: [], channels: [{ id: "c1" }], modelTargets: [{ channelId: "c1", model: "m" }], requests: [], testRuns: [] });
+  assert.equal(getNextWorkflowStep(ready).step, "admission");
+
+  // 老的孤儿 profile（渠道+模型二合一）也算就绪 -> 去准入
   const quickStatus = buildWorkflowStatus({
     profiles: [{ role: "target" }],
     requests: [],

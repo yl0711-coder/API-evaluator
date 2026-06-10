@@ -3,13 +3,19 @@ import { escapeHtml } from "./client-utils.js";
 // Pure workflow helpers for the dashboard. They decide what the operator should
 // do next, while app.js only renders the returned step and wires navigation.
 export function buildWorkflowStatus(state) {
-  const targets = state.profiles.filter((profile) => profile.role === "target");
+  const channels = state.channels || [];
+  const modelTargets = state.modelTargets || [];
+  // 未被迁移成渠道的老 profile（孤儿）本身是"渠道+模型"二合一，算作两步都已就绪。
+  const legacyTargets = (state.profiles || []).filter((profile) => profile.role === "target" && !channels.some((c) => c.id === profile.id));
+  const hasChannels = channels.length > 0 || legacyTargets.length > 0;
+  const hasModels = modelTargets.length > 0 || legacyTargets.length > 0;
   const hasAdmission = state.testRuns.some((run) => run.type === "admission");
   const hasStandardLikeReport = state.testRuns.some((run) => run.type !== "admission");
   const hasReports = state.testRuns.length > 0;
 
   return {
-    profiles: targets.length > 0,
+    channels: hasChannels,
+    models: hasModels,
     admission: hasAdmission,
     standard: hasStandardLikeReport,
     reports: hasReports,
@@ -18,13 +24,22 @@ export function buildWorkflowStatus(state) {
 }
 
 export function getNextWorkflowStep(status) {
-  if (!status.profiles) {
+  if (!status.channels) {
     return {
-      step: "profiles",
-      page: "profiles",
-      title: "先新增一个被测 API 配置",
-      detail: "没有 API 配置时，其他测试都无法产生有效结果。先填写平台地址、Key、模型名和协议。",
-      button: "去配置 API",
+      step: "channels",
+      page: "channels",
+      title: "先配一个渠道",
+      detail: "渠道 = Base URL + Key + 协议（只超管能配）。配好渠道，才能在“模型管理”里选它来建测试模型。",
+      button: "去配渠道",
+    };
+  }
+  if (!status.models) {
+    return {
+      step: "models",
+      page: "models",
+      title: "再配一个测试模型",
+      detail: "在“模型管理”里选一个渠道 + 填一个模型名，就得到一个可以评测的目标。",
+      button: "去配模型",
     };
   }
   if (!status.standard) {

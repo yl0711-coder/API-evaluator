@@ -59,12 +59,13 @@
             <!-- 空状态：无被测配置时显示（app.js 切换）-->
             <div id="dashboard-empty" class="panel dash-empty hidden">
               <p class="eyebrow">欢迎使用</p>
-              <h2>三步，测通一个 API 渠道</h2>
-              <p>不用懂技术细节。配置一个渠道，工具会带着你跑完准入和标准评测，最后给你一份能直接看懂、能对外交付的结论。所有数据只保存在本机 <code>评测数据</code>。</p>
+              <h2>配渠道、配模型，测通一个上游渠道</h2>
+              <p>不用懂技术细节。先配渠道（填 Base URL + Key），再配测试模型（选渠道 + 填模型名），工具就带你跑完准入和标准评测，最后给一份能看懂、能对外交付的结论。所有数据只保存在本机 <code>评测数据</code>。</p>
               <div class="mini-steps">
-                <span class="ms"><b>1</b> 配置 API</span><span class="arrow">→</span>
-                <span class="ms"><b>2</b> 准入评测</span><span class="arrow">→</span>
-                <span class="ms"><b>3</b> 标准评测</span>
+                <span class="ms"><b>1</b> 配渠道</span><span class="arrow">→</span>
+                <span class="ms"><b>2</b> 配模型</span><span class="arrow">→</span>
+                <span class="ms"><b>3</b> 准入评测</span><span class="arrow">→</span>
+                <span class="ms"><b>4</b> 标准评测</span>
               </div>
               <button class="primary" type="button" data-go-page="channels" data-requires-admin>配置第一个渠道 →</button>
               <div class="links">先不配置？<button id="load-demo-data" class="linklike" type="button">查看演示数据</button> · <button class="linklike" type="button" data-go-page="manual">打开操作手册</button></div>
@@ -498,7 +499,7 @@
                   <button class="primary" id="save-channel" type="submit">保存渠道</button>
                 </div>
               </form>
-              <aside class="panel" id="channel-list"></aside>
+              <aside class="panel" id="channel-list"><p class="section-desc">加载中…</p></aside>
             </div>
           </div>
         </section>
@@ -524,7 +525,7 @@
                   <button class="primary" id="save-model-target" type="submit">添加模型</button>
                 </div>
               </form>
-              <aside class="panel" id="model-target-list"></aside>
+              <aside class="panel" id="model-target-list"><p class="section-desc">加载中…</p></aside>
             </div>
           </div>
         </section>
