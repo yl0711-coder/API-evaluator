@@ -10,6 +10,12 @@ OpenAI-compatible, or Claude Messages protocol (OpenAI, Anthropic, DeepSeek, or 
 > 一句话：一个自托管的「中转站 / OpenAI 兼容 API」模型评测平台。填入 `baseUrl + apiKey + 模型`
 > 即可跑连通、稳定性、场景与准入测试，给出成本预估和可对外交付的报告。与任何具体厂商无关。
 
+**Works standalone, or deeply with new-api.** Configure channels (`url + key`) and test models by
+hand and everything works. If your gateway is built on
+[new-api](https://github.com/QuantumNous/new-api), you can also one-click import all its channels
+and models (enabled/disabled status synced) so you don't re-enter what's already configured —
+see [new-api integration](#new-api-integration). new-api is optional, never required.
+
 ## Features
 
 - **Any compatible endpoint** — OpenAI Chat, OpenAI-compatible, and Claude Messages protocols.
@@ -25,12 +31,18 @@ OpenAI-compatible, or Claude Messages protocol (OpenAI, Anthropic, DeepSeek, or 
   spend ledger; cumulative spend is queryable via the `GET /api/spend` endpoint.
 - **Concurrency queue** — heavy tests are globally rate-limited (configurable slots); excess runs
   queue with position + ETA, protecting a co-located host.
-- **Channel dedup** — adding a channel whose URL + key + model all match an existing one is rejected.
+- **Channels & test models (two layers)** — a super-admin configures *channels* (`url + key +
+  protocol`, holds the keys); an admin then creates *test models* by picking a channel and typing a
+  model name (never sees the key). Run pages select a test model to evaluate.
+- **new-api integration (optional)** — one-click import channels + models from a
+  [new-api](https://github.com/QuantumNous/new-api) gateway, with enabled/disabled status synced.
+  Pluggable source: `api` (admin token, metadata only) or `db` (read-only DSN, full incl. keys).
+- **Channel dedup** — adding a channel whose URL + key match an existing one is rejected.
 - **Cost estimates** — per-run input/output token cost using prices you configure (advisory only,
   never blocks a test).
 - **Reports** — Markdown + HTML, kept in a report center, exportable for hand-off.
-- **Roles** — an admin role (configures models, holds the keys) and a regular role (only picks a
-  saved config + model to run; never sees the key).
+- **Roles** — a super-admin (role 100: configures channels, holds the keys) and an admin (role 10:
+  creates test models and runs them; never sees the key).
 - **Security built-in** — keys stored in an encrypted vault (never returned to the browser),
   HMAC-signed sessions, login throttling, and an egress guard that blocks requests to private /
   reserved IP ranges (SSRF protection).
@@ -106,6 +118,26 @@ the ~70–90 MB tokenizer and falls back to the cross-channel baseline).
 All configuration is via environment variables — see [`.env.evaluator.example`](.env.evaluator.example).
 Persisted data (model configs, encrypted key vault, reports, logs, SQLite db) lives under the data
 directory (`/data` in Docker; override with `EVALUATOR_DATA_DIR`).
+
+## new-api integration
+
+If your gateway is built on [new-api](https://github.com/QuantumNous/new-api), a super-admin can
+one-click import its channels and models (button on the **渠道管理 / Channels** page). Already
+configured channels need not be re-entered; only new ones are added by hand. Re-importing is
+idempotent (upsert by new-api channel id) and syncs enabled/disabled status.
+
+Set `EVALUATOR_IMPORT_SOURCE` to pick the source (it is off when unset):
+
+| Mode | What it imports | Needs | Note |
+|---|---|---|---|
+| `api` | url / models / status / protocol (no key) | `EVALUATOR_NEWAPI_BASE_URL` + `EVALUATOR_NEWAPI_IMPORT_TOKEN` (admin access token) | new-api protects the plaintext key behind 2FA, so keys can't be pulled via the API — fill them in afterwards. |
+| `db` | everything incl. keys (fully automatic) | `EVALUATOR_NEWAPI_DB_DSN` (read-only) + `mysql2` (`pnpm add mysql2`; not a core dep, lazy-loaded) | Reads the `channels` table directly. Grant the read-only account `SELECT` on `channels`. |
+
+Compatibility: verified against new-api **v1.0.0-rc.4**. The `db` mode reads only the long-stable
+core columns `id / type / name / base_url / models / status / key` and degrades gracefully, so it
+works across new-api versions that keep those columns. Channel `type` maps to a protocol
+(`14` → Claude Messages, otherwise OpenAI-compatible); a few native-protocol upstreams may need the
+protocol adjusted by hand after import.
 
 ## Development
 

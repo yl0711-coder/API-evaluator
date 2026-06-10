@@ -18,11 +18,12 @@
         <div class="nav-group">
           <span>推荐流程</span>
           <button class="nav-button active" type="button" data-page="dashboard">总览</button>
-          <button class="nav-button" type="button" data-page="profiles">1. API 配置</button>
-          <button class="nav-button" type="button" data-page="admission-test">2. 准入评测</button>
-          <button class="nav-button" type="button" data-page="standard-eval">3. 标准评测</button>
-          <button class="nav-button" type="button" data-page="reports">4. 报告中心</button>
-          <button class="nav-button" type="button" data-page="handoff">5. 测试交付</button>
+          <button class="nav-button" type="button" data-page="channels" data-requires-admin>1. 渠道管理</button>
+          <button class="nav-button" type="button" data-page="models">2. 模型管理</button>
+          <button class="nav-button" type="button" data-page="admission-test">3. 准入评测</button>
+          <button class="nav-button" type="button" data-page="standard-eval">4. 标准评测</button>
+          <button class="nav-button" type="button" data-page="reports">5. 报告中心</button>
+          <button class="nav-button" type="button" data-page="handoff">6. 测试交付</button>
         </div>
         <div class="nav-group">
           <span>高级测试</span>
@@ -65,7 +66,7 @@
                 <span class="ms"><b>2</b> 准入评测</span><span class="arrow">→</span>
                 <span class="ms"><b>3</b> 标准评测</span>
               </div>
-              <button class="primary" type="button" data-go-page="profiles">配置第一个 API →</button>
+              <button class="primary" type="button" data-go-page="channels" data-requires-admin>配置第一个渠道 →</button>
               <div class="links">先不配置？<button id="load-demo-data" class="linklike" type="button">查看演示数据</button> · <button class="linklike" type="button" data-go-page="manual">打开操作手册</button></div>
             </div>
 
@@ -461,6 +462,70 @@
             <h3>已配置渠道</h3>
             <div id="profile-list" class="table"></div>
           </div>
+          </div>
+        </section>
+
+        <section class="page" id="channels">
+          <div class="cfg">
+            <div class="cfg-topbar">
+              <div>
+                <h2><span class="step">渠道管理</span>配置上游渠道（超管）</h2>
+                <p class="section-desc">渠道 = 连接信息（Base URL + Key + 协议）。Key 只存本机、不进报告/导出、管理员看不到。一个渠道下可挂多个模型，去“模型管理”里选用。</p>
+              </div>
+              <div class="action-row">
+                <button id="import-from-newapi" class="secondary" type="button">从 new-api 导入</button>
+                <button id="reload-channels" class="secondary" type="button">刷新</button>
+              </div>
+            </div>
+            <div class="cfg-grid">
+              <form id="channel-form" class="panel form-grid">
+                <input type="hidden" name="id" />
+                <label>名称<input name="name" placeholder="例如 Kiro-Claude 渠道" required /></label>
+                <label class="wide">Base URL<input name="baseUrl" placeholder="https://api.example.com" required />
+                  <small class="field-hint">只填基础地址，不要带 /v1/chat/completions。</small></label>
+                <label>协议
+                  <select name="protocol">
+                    <option value="openai_compatible">OpenAI Compatible</option>
+                    <option value="openai_chat">OpenAI Chat Completions</option>
+                    <option value="claude_messages">Claude Messages</option>
+                  </select></label>
+                <label>供应商<input name="provider" placeholder="OpenAI / Anthropic / DeepSeek" /></label>
+                <label class="wide">模型清单<input name="models" placeholder="gpt-4o, gpt-4o-mini, o3（逗号分隔）" />
+                  <small class="field-hint">该渠道支持的模型，逗号分隔；在“模型管理”里选其一建测试目标。</small></label>
+                <label class="wide">API Key<input name="apiKey" type="password" placeholder="粘贴上游 Key" />
+                  <small class="field-hint">编辑时留空 = 保留原 Key。只存本机、不下发浏览器。</small></label>
+                <div class="wide action-row">
+                  <button class="primary" id="save-channel" type="submit">保存渠道</button>
+                </div>
+              </form>
+              <aside class="panel" id="channel-list"></aside>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="models">
+          <div class="cfg">
+            <div class="cfg-topbar">
+              <div>
+                <h2><span class="step">模型管理</span>配置要测的模型（管理员）</h2>
+                <p class="section-desc">选一个渠道 + 填一个模型名 = 一个测试目标。看不到也不需要 Key。运行测试时从这里选目标。</p>
+              </div>
+              <div class="action-row">
+                <button id="reload-model-targets" class="secondary" type="button">刷新</button>
+              </div>
+            </div>
+            <div class="cfg-grid">
+              <form id="model-target-form" class="panel form-grid">
+                <input type="hidden" name="id" />
+                <label class="wide">渠道<select name="channelId" id="model-target-channel" required></select></label>
+                <label>模型名<input name="model" placeholder="gpt-4o" required /></label>
+                <label>备注<input name="note" placeholder="可选" /></label>
+                <div class="wide action-row">
+                  <button class="primary" id="save-model-target" type="submit">添加模型</button>
+                </div>
+              </form>
+              <aside class="panel" id="model-target-list"></aside>
+            </div>
           </div>
         </section>
 

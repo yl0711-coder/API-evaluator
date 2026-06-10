@@ -9,7 +9,7 @@ import {
 } from "./ai-report-analysis.mjs";
 import { TEST_SCENARIOS } from "./scenarios/index.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
-import { loadProfiles } from "./profile-store.mjs";
+import { loadRunnableProfiles } from "./run-targets.mjs";
 import { evaluateScenarioOutput } from "./scenario-evaluator.mjs";
 import { readProfileApiKey } from "./secret-store.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
@@ -81,7 +81,7 @@ async function attachRunArtifacts(runId, summary, artifacts = {}) {
 }
 
 export async function runQuickTest(profileId, prompt) {
-  const profiles = await loadProfiles();
+  const profiles = await loadRunnableProfiles();
   const profile = profiles.find((item) => item.id === profileId);
   if (!profile) {
     return {
@@ -103,7 +103,7 @@ export async function runQuickTest(profileId, prompt) {
 const QUICK_VERIFY_MAX_OUTPUT = 96;
 
 export async function runQuickVerify(body, taskContext = {}) {
-  const profiles = await loadProfiles();
+  const profiles = await loadRunnableProfiles();
   const profile = profiles.find((item) => item.id === body.profileId);
   if (!profile) {
     throw new Error("没有找到被测 API 配置。");
@@ -273,7 +273,7 @@ function normalizePredicted(predicted) {
 }
 
 export async function runAdmissionTest(body, taskContext = {}) {
-  const profiles = await loadProfiles();
+  const profiles = await loadRunnableProfiles();
   const profile = profiles.find((item) => item.id === body.profileId);
   if (!profile) {
     throw new Error("没有找到被测 API 配置。");
@@ -359,7 +359,7 @@ export async function runAdmissionTest(body, taskContext = {}) {
 }
 
 export async function runBatchAdmissionTest(body, taskContext = {}) {
-  const profiles = await loadProfiles();
+  const profiles = await loadRunnableProfiles();
   const profileIds = normalizeProfileIds(body.profileIds);
   if (profileIds.length === 0) {
     throw new Error("请至少选择一个被测 API。");
@@ -451,7 +451,7 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
 }
 
 export async function runStabilityTest(body, taskContext = {}) {
-  const profiles = await loadProfiles();
+  const profiles = await loadRunnableProfiles();
   const profile = profiles.find((item) => item.id === body.profileId);
   if (!profile) {
     throw new Error("没有找到被测 API 配置。");
@@ -944,7 +944,7 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
 }
 
 export async function runBatchStabilityTest(body, taskContext = {}) {
-  const profiles = await loadProfiles();
+  const profiles = await loadRunnableProfiles();
   const profileIds = normalizeProfileIds(body.profileIds);
   if (profileIds.length === 0) {
     throw new Error("请至少选择一个被测 API。");
@@ -1044,7 +1044,7 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
 }
 
 export async function runScenarioTest(body, taskContext = {}) {
-  const profiles = await loadProfiles();
+  const profiles = await loadRunnableProfiles();
   const profileIds = normalizeProfileIds(body.profileIds);
   const scenarioIds = normalizeScenarioIds(body.scenarioIds);
   const selectedProfiles = profiles.filter((profile) => profileIds.includes(profile.id));
@@ -1214,7 +1214,7 @@ async function runScenarioProfile({ runId, profile, scenarios, repeats, requestC
 const JUDGE_AUDIT_MAX_CALLS = Number(process.env.EVALUATOR_JUDGE_MAX_CALLS || 50);
 async function maybeRunInlineJudgeAudit({ profile, items, runId, taskContext }) {
   if (!isLiveJudgeEnabled() || !items || items.length === 0) return null;
-  const profiles = await loadProfiles();
+  const profiles = await loadRunnableProfiles();
   const judgeProfiles = profiles.filter((p) => p.role === "judge");
   if (judgeProfiles.length === 0) {
     return {

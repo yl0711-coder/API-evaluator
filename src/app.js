@@ -35,12 +35,13 @@ import { requireElement, requireElements } from "./dom-utils.js";
 import { createKeyModal } from "./key-modal.js";
 import { renderPageHelp as renderPageHelpPanel } from "./page-help.js";
 import { renderProfileConfigCheck as renderProfileConfigCheckPanel } from "./profile-config-check.js";
-import { renderMissingKeyPanel, renderProfileList, renderProfileSelectOptions } from "./profile-view.js";
+import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions } from "./profile-view.js";
 import {
   applyPromptPresetToForm,
   renderPromptPresetOptions,
 } from "./prompt-presets.js";
 import { createProfileController } from "./profile-controller.js";
+import { createChannelAdmin } from "./channel-admin.js";
 import { createQuickTestController } from "./quick-test-controller.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
@@ -63,6 +64,8 @@ installClientErrorReporter();
 
 const state = {
   profiles: [],
+  channels: [],
+  modelTargets: [],
   requests: [],
   testRuns: [],
   taskEvents: [],
@@ -87,6 +90,21 @@ const profileForm = requireElement("#profile-form");
 const profileList = requireElement("#profile-list");
 const profileTemplate = requireElement("#profile-template");
 const profileCheckResult = requireElement("#profile-check-result");
+const channelForm = requireElement("#channel-form");
+const channelList = requireElement("#channel-list");
+const modelTargetForm = requireElement("#model-target-form");
+const modelTargetList = requireElement("#model-target-list");
+const modelTargetChannelSelect = requireElement("#model-target-channel");
+const channelAdmin = createChannelAdmin({
+  state,
+  els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect },
+  onChange: () => renderProfileOptions(),
+});
+channelForm.addEventListener("submit", channelAdmin.saveChannel);
+modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
+requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
+requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
+requireElement("#reload-model-targets").addEventListener("click", () => channelAdmin.loadModelTargets());
 const quickTestForm = requireElement("#quick-test-form");
 const quickProfileSelect = requireElement("#quick-profile-select");
 const quickTestResult = requireElement("#quick-test-result");
@@ -884,7 +902,7 @@ applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
 try {
-  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents()]);
+  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
   renderPageHelp("dashboard");
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
@@ -1336,7 +1354,9 @@ async function updateProfileKey(profileId) {
 }
 
 function renderProfileOptions() {
-  renderProfileSelectOptions({
+  renderRunTargetSelectOptions({
+    modelTargets: state.modelTargets,
+    channels: state.channels,
     profiles: state.profiles,
     selects: [
       standardProfileSelect,

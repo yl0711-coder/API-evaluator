@@ -6,10 +6,12 @@ import { canWriteConfig, isRoleAllowed } from "./auth.mjs";
 // 免登录白名单（其余 /api/* 均需有效会话）。
 export const PUBLIC_API_PATHS = new Set(["/api/health", "/api/client-errors"]);
 
-// 哪些请求需要超管：support-bundle，以及 /api/profiles 的写操作（非 GET）。
+// 哪些请求需要超管(role 100)：support-bundle，以及 /api/profiles、/api/channels 的写操作（非 GET）。
+// 渠道(channels)持 key，只超管能写；模型目标(model-targets)不持 key，管理员(role 10)即可写，不在此列。
 export function requiresAdmin(method, pathname) {
   if (pathname === "/api/support-bundle") return true;
   if (pathname.startsWith("/api/profiles")) return method !== "GET";
+  if (pathname.startsWith("/api/channels")) return method !== "GET";
   return false;
 }
 

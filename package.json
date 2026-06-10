@@ -1,6 +1,6 @@
 {
   "name": "api-evaluator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "description": "Self-hosted evaluation platform for any OpenAI-compatible / Claude-compatible API gateway or relay: connectivity, stability, scenario and admission tests with cost estimates and exportable reports.",
   "license": "MIT",

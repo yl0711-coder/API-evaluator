@@ -97,6 +97,27 @@ CREATE TABLE IF NOT EXISTS model_configs (
   raw_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS channels (
+  id TEXT PRIMARY KEY,
+  name TEXT,
+  base_url TEXT,
+  status TEXT,
+  source TEXT,
+  newapi_channel_id INTEGER,
+  created_at TEXT,
+  updated_at TEXT,
+  raw_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS model_targets (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT,
+  model TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  raw_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS reports (
   report_id TEXT PRIMARY KEY,
   run_by TEXT,
@@ -506,6 +527,110 @@ export async function saveModelConfigs(profiles, { path } = {}) {
     }
   } catch (error) {
     noteDbError("saveModelConfigs", error);
+    return false;
+  }
+}
+
+// v0.3.0 渠道 / 模型目标存储（raw_json 为事实源，列只为查询/排序）。读写模式同 model_configs。
+export async function loadChannels({ path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return null;
+    const rows = db.prepare("SELECT raw_json FROM channels ORDER BY created_at ASC, id ASC").all();
+    return rows.map((row) => safeParse(row.raw_json)).filter(Boolean);
+  } catch (error) {
+    noteDbError("loadChannels", error);
+    return null;
+  }
+}
+
+export async function saveChannels(channels, { path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return false;
+    const list = Array.isArray(channels) ? channels : [];
+    const insert = db.prepare(`
+      INSERT INTO channels (id, name, base_url, status, source, newapi_channel_id, created_at, updated_at, raw_json)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `);
+    db.exec("BEGIN");
+    try {
+      db.exec("DELETE FROM channels");
+      for (const channel of list) {
+        insert.run(
+          String(channel.id),
+          String(channel.name || ""),
+          channel.baseUrl ?? null,
+          channel.status ?? null,
+          channel.source ?? null,
+          channel.newapiChannelId ?? null,
+          channel.createdAt ?? null,
+          channel.updatedAt ?? null,
+          JSON.stringify(channel),
+        );
+      }
+      db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // best-effort
+      }
+      throw error;
+    }
+  } catch (error) {
+    noteDbError("saveChannels", error);
+    return false;
+  }
+}
+
+export async function loadModelTargets({ path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return null;
+    const rows = db.prepare("SELECT raw_json FROM model_targets ORDER BY created_at ASC, id ASC").all();
+    return rows.map((row) => safeParse(row.raw_json)).filter(Boolean);
+  } catch (error) {
+    noteDbError("loadModelTargets", error);
+    return null;
+  }
+}
+
+export async function saveModelTargets(targets, { path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return false;
+    const list = Array.isArray(targets) ? targets : [];
+    const insert = db.prepare(`
+      INSERT INTO model_targets (id, channel_id, model, created_at, updated_at, raw_json)
+      VALUES (?,?,?,?,?,?)
+    `);
+    db.exec("BEGIN");
+    try {
+      db.exec("DELETE FROM model_targets");
+      for (const target of list) {
+        insert.run(
+          String(target.id),
+          String(target.channelId || ""),
+          String(target.model || ""),
+          target.createdAt ?? null,
+          target.updatedAt ?? null,
+          JSON.stringify(target),
+        );
+      }
+      db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // best-effort
+      }
+      throw error;
+    }
+  } catch (error) {
+    noteDbError("saveModelTargets", error);
     return false;
   }
 }

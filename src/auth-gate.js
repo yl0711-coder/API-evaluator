@@ -150,9 +150,9 @@ export function applyRoleVisibility(user) {
   document.querySelectorAll("[data-requires-admin]").forEach((el) => {
     el.style.display = "none";
   });
-  // 若已落在配置页，切回总览
+  // 若已落在仅超管可见的配置页（旧 API 配置 / 渠道管理），切回总览
   const active = document.querySelector(".page.active");
-  if (active && active.id === "profiles") {
+  if (active && (active.id === "profiles" || active.id === "channels")) {
     document.querySelector('.nav-button[data-page="dashboard"]')?.click();
   }
 }

@@ -69,6 +69,20 @@ import {
   loginThrottleReset,
 } from "./server/auth.mjs";
 import { evaluateApiAccess } from "./server/api-access.mjs";
+import {
+  attachChannelKey,
+  deleteChannelApiKey,
+  findDuplicateChannel,
+  loadChannels,
+  maskChannel,
+  migrateProfilesToChannelsIfEmpty,
+  saveChannels,
+} from "./server/channel-store.mjs";
+import { loadModelTargets, saveModelTargets } from "./server/model-target-store.mjs";
+import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./server/channel-model.mjs";
+import { loadRunnableProfiles } from "./server/run-targets.mjs";
+import { buildImportPlan } from "./server/newapi-import.mjs";
+import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
 import { withRunBy } from "./server/run-context.mjs";
 import { APP_VERSION } from "./server/version.mjs";
 
@@ -133,6 +147,12 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, HOST, () => {
   console.log(`模型评测平台: http://${HOST}:${PORT}`);
+  // 一次性迁移：老 profile → 渠道 + 模型目标（仅当渠道为空且有老配置时；best-effort，不阻塞启动）。
+  migrateProfilesToChannelsIfEmpty()
+    .then((r) => {
+      if (r?.migrated) console.log(`已迁移 ${r.migrated} 个渠道 / ${r.targets} 个模型目标。`);
+    })
+    .catch(() => {});
   const backend = (process.env.EVALUATOR_AUTH_BACKEND || "local").toLowerCase();
   if (backend !== "newapi" && backend !== "new-api" && !hasConfiguredLocalUsers()) {
     console.warn(
@@ -277,7 +297,7 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/client-logs/replay-batch") {
     const body = await readJson(req);
     const profileId = requiredString(body.profileId, "被测 API");
-    const profiles = await loadProfiles();
+    const profiles = await loadRunnableProfiles();
     const profile = profiles.find((item) => item.id === profileId);
     if (!profile) {
       sendJson(res, 404, { error: "profile_not_found", message: "没有找到被测 API 配置。" });
@@ -381,7 +401,7 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/client-logs/replay") {
     const body = await readJson(req);
     const profileId = requiredString(body.profileId, "被测 API");
-    const profiles = await loadProfiles();
+    const profiles = await loadRunnableProfiles();
     const profile = profiles.find((item) => item.id === profileId);
     if (!profile) {
       sendJson(res, 404, { error: "profile_not_found", message: "没有找到被测 API 配置。" });
@@ -533,6 +553,122 @@ async function handleApi(req, res) {
     };
     await saveProfiles(profiles);
     sendJson(res, 200, maskProfile(profiles[index]));
+    return;
+  }
+
+  // —— v0.3.0 渠道管理（连接 url + key + 协议，超管维护、持 key）——
+  if (req.method === "GET" && url.pathname === "/api/channels") {
+    const channels = await loadChannels();
+    sendJson(res, 200, channels.map(maskChannel));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/channels") {
+    const body = await readJson(req);
+    const channels = await loadChannels();
+    const existing = channels.find((item) => item.id === body.id);
+    let channel = normalizeChannel(body, existing);
+    if (body.apiKey) {
+      channel = await attachChannelKey(channel, body.apiKey);
+    } else if (existing) {
+      channel = { ...channel, apiKeyRef: existing.apiKeyRef, keyStorage: existing.keyStorage, hasKey: existing.hasKey, keyHash: existing.keyHash };
+    }
+    const duplicate = await findDuplicateChannel(channels, channel);
+    if (duplicate && duplicate.id !== channel.id) {
+      sendJson(res, 409, { error: "duplicate_channel", userMessage: `已存在相同渠道（Base URL + Key 一致）：「${duplicate.name}」。` });
+      return;
+    }
+    const index = channels.findIndex((item) => item.id === channel.id);
+    if (index >= 0) channels[index] = channel;
+    else channels.push(channel);
+    await saveChannels(channels);
+    sendJson(res, 200, maskChannel(channel));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/channels/import") {
+    let rows;
+    try {
+      rows = await fetchNewapiChannels();
+    } catch (error) {
+      sendJson(res, 400, { error: "import_source_error", userMessage: error.message });
+      return;
+    }
+    const [existingChannels, existingTargets] = await Promise.all([loadChannels(), loadModelTargets()]);
+    const plan = buildImportPlan({ rows, existingChannels, existingTargets });
+    // 明文 key（仅 A2/DB 模式带）立刻存进加密库、从渠道对象剥离；A1/API 无 key，导入后需手动补。
+    const indexById = new Map(plan.channels.map((item, i) => [item.id, i]));
+    for (const [channelId, key] of Object.entries(plan.keys)) {
+      const i = indexById.get(channelId);
+      if (i !== undefined) plan.channels[i] = await attachChannelKey(plan.channels[i], key);
+    }
+    await saveChannels(plan.channels);
+    await saveModelTargets(plan.targets);
+    sendJson(res, 200, { ok: true, mode: importSourceMode(), ...plan.summary });
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/channels/")) {
+    const id = decodeURIComponent(url.pathname.replace("/api/channels/", ""));
+    if (!id) {
+      sendJson(res, 400, { error: "missing_id", userMessage: "缺少渠道 id。" });
+      return;
+    }
+    const channels = await loadChannels();
+    const channel = channels.find((item) => item.id === id);
+    if (channel) await deleteChannelApiKey(channel);
+    await saveChannels(channels.filter((item) => item.id !== id));
+    // 级联删除该渠道下的模型目标，避免孤儿。
+    const targets = await loadModelTargets();
+    await saveModelTargets(targets.filter((target) => target.channelId !== id));
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // —— v0.3.0 模型目标管理（选渠道 + 填模型，管理员维护、看不到 key）——
+  if (req.method === "GET" && url.pathname === "/api/model-targets") {
+    const [targets, channels] = await Promise.all([loadModelTargets(), loadChannels()]);
+    const byChannel = new Map(channels.map((item) => [item.id, item]));
+    sendJson(
+      res,
+      200,
+      targets.map((target) => {
+        const channel = byChannel.get(target.channelId);
+        return {
+          ...target,
+          channelName: channel?.name || "(渠道已删除)",
+          channelStatus: channel?.status || "missing",
+          protocol: channel?.protocol || null,
+        };
+      }),
+    );
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/model-targets") {
+    const body = await readJson(req);
+    const targets = await loadModelTargets();
+    const existing = targets.find((item) => item.id === body.id);
+    const target = normalizeModelTarget(body, existing);
+    const channels = await loadChannels();
+    if (!channels.some((item) => item.id === target.channelId)) {
+      sendJson(res, 400, { error: "channel_not_found", userMessage: "所选渠道不存在，请先在渠道管理里配置。" });
+      return;
+    }
+    const dupKey = modelTargetDedupKey(target);
+    const duplicate = targets.find((item) => item.id !== target.id && modelTargetDedupKey(item) === dupKey);
+    if (duplicate) {
+      sendJson(res, 409, { error: "duplicate_model_target", userMessage: "该渠道下已存在同名模型测试目标。" });
+      return;
+    }
+    const index = targets.findIndex((item) => item.id === target.id);
+    if (index >= 0) targets[index] = target;
+    else targets.push(target);
+    await saveModelTargets(targets);
+    sendJson(res, 200, target);
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/model-targets/")) {
+    const id = decodeURIComponent(url.pathname.replace("/api/model-targets/", ""));
+    const targets = await loadModelTargets();
+    await saveModelTargets(targets.filter((item) => item.id !== id));
+    sendJson(res, 200, { ok: true });
     return;
   }
 
