@@ -1,15 +1,16 @@
 name: docker-build
 
 # Build the Docker image and push it to GitHub Container Registry (GHCR).
-# - On push to the default branch and on version tags (v*), build + push.
+# - On push to main/dev and on version tags (v*), build + push.
+#   main -> :main, dev -> :dev (test image), tag -> :X.Y.Z (release image), plus :sha-<short>.
 # - On pull requests, build only (no push) as a sanity check.
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "dev"]
     tags: ["v*"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "dev"]
 
 env:
   IMAGE_NAME: ${{ github.repository }} # e.g. yl0711-coder/API-evaluator -> ghcr.io/yl0711-coder/api-evaluator
