@@ -1,14 +1,15 @@
 import { escapeHtml } from "./client-utils.js";
+import { resolveRunnableTargets } from "./runnable-targets.js";
 
 // Pure workflow helpers for the dashboard. They decide what the operator should
 // do next, while app.js only renders the returned step and wires navigation.
 export function buildWorkflowStatus(state) {
   const channels = state.channels || [];
-  const modelTargets = state.modelTargets || [];
-  // 未被迁移成渠道的老 profile（孤儿）本身是"渠道+模型"二合一，算作两步都已就绪。
-  const legacyTargets = (state.profiles || []).filter((profile) => profile.role === "target" && !channels.some((c) => c.id === profile.id));
-  const hasChannels = channels.length > 0 || legacyTargets.length > 0;
-  const hasModels = modelTargets.length > 0 || legacyTargets.length > 0;
+  // 可运行目标统一走 resolveRunnableTargets（单一事实源）。source==="legacy" 的孤儿老 profile
+  // 本身是"渠道+模型"二合一，算作两步都已就绪。
+  const runnable = resolveRunnableTargets(state);
+  const hasChannels = channels.length > 0 || runnable.some((target) => target.source === "legacy");
+  const hasModels = runnable.length > 0;
   const hasAdmission = state.testRuns.some((run) => run.type === "admission");
   const hasStandardLikeReport = state.testRuns.some((run) => run.type !== "admission");
   const hasReports = state.testRuns.length > 0;

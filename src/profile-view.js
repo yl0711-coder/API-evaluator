@@ -1,4 +1,5 @@
-import { escapeHtml } from "./client-utils.js";
+import { escapeHtml, protocolLabel } from "./client-utils.js";
+import { resolveRunnableTargets } from "./runnable-targets.js";
 
 export function renderProfileList({ profiles, list, verdicts = {}, onFocusForm, onDeleteProfile, onUpdateKey, onEditProfile }) {
   if (profiles.length === 0) {
@@ -105,20 +106,14 @@ export function renderMissingKeyPanel({ profiles, container, onFillKey }) {
 // v0.3.0 运行下拉：列“模型目标”（渠道名 / 模型，value=目标 id，运行链路已支持）。
 // 过渡期兼容：未被迁移成渠道的旧 profile（没有同 id 渠道）也一并列出，标注“旧配置”。
 export function renderRunTargetSelectOptions({ modelTargets = [], channels = [], profiles = [], selects }) {
-  const byChannel = new Map(channels.map((c) => [c.id, c]));
-  const channelIds = new Set(channels.map((c) => c.id));
-  const options = [];
-  for (const target of modelTargets) {
-    const channel = byChannel.get(target.channelId);
-    if (!channel) continue; // 渠道缺失不可运行
-    const disabled = channel.status === "disabled" ? "（已禁用）" : "";
-    options.push(`<option value="${target.id}">${escapeHtml(channel.name)} / ${escapeHtml(target.model)}${disabled}</option>`);
-  }
-  for (const profile of profiles) {
-    if (profile.role !== "target" && profile.role !== "baseline") continue;
-    if (channelIds.has(profile.id)) continue; // 已被渠道/模型目标覆盖
-    options.push(`<option value="${profile.id}">${escapeHtml(profile.name)} / ${escapeHtml(profile.defaultModel)}（旧配置）</option>`);
-  }
+  const targets = resolveRunnableTargets({ channels, modelTargets, profiles });
+  const options = targets.map((target) => {
+    if (target.source === "legacy") {
+      return `<option value="${target.id}">${escapeHtml(target.name)} / ${escapeHtml(target.model || "")}（旧配置）</option>`;
+    }
+    const disabled = target.channelStatus === "disabled" ? "（已禁用）" : "";
+    return `<option value="${target.id}">${escapeHtml(target.name)}${disabled}</option>`;
+  });
   const html = options.length ? options.join("") : `<option value="">请先在“模型管理”添加测试模型</option>`;
   selects.forEach((select) => {
     select.innerHTML = html;
@@ -154,8 +149,3 @@ function roleClass(role) {
   return "target";
 }
 
-function protocolLabel(protocol) {
-  if (protocol === "claude_messages") return "Claude Messages";
-  if (protocol === "openai_chat") return "OpenAI Chat";
-  return "OpenAI 兼容";
-}

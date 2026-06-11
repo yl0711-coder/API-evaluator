@@ -36,6 +36,7 @@ import { createKeyModal } from "./key-modal.js";
 import { renderPageHelp as renderPageHelpPanel } from "./page-help.js";
 import { renderProfileConfigCheck as renderProfileConfigCheckPanel } from "./profile-config-check.js";
 import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions } from "./profile-view.js";
+import { resolveRunnableTargets } from "./runnable-targets.js";
 import {
   applyPromptPresetToForm,
   renderPromptPresetOptions,
@@ -974,14 +975,16 @@ function loadManual() {
   const guide = [
     "## 使用说明",
     "",
-    "本平台用于评测接入的上游渠道模型，推荐流程：",
+    "本平台用于评测接入的上游渠道模型。配置分两层、两种角色：",
     "",
-    "1. **API 配置**：填渠道的 Base URL、Key、协议、模型（Key 加密保存，不回显）。",
-    "2. **一键快检**（快速测试页）：少量探针快速看渠道真伪、token 是否虚报、本次真实消耗。",
-    "3. **准入评测**：给渠道打 A–F 分级，判断是否值得进一步测试。",
-    "4. **稳定性测试**：多轮 + 统计置信区间，评估可用性；多渠道可批量横向对比。",
-    "5. **稳定性趋势**：同一渠道历次测试的成功率曲线 + 掉级回归告警。",
-    "6. **报告中心 / 测试交付**：查看与导出报告。",
+    "1. **渠道管理（超管）**：配连接信息 Base URL + Key + 协议。Key 加密保存、不回显、管理员看不到。",
+    "   站点是 new-api 搭的，可「从 new-api 导入」一键同步渠道（启用/禁用状态一并带过来）。",
+    "2. **模型管理（管理员）**：选一个渠道 + 填一个模型名 = 一个测试目标。看不到 Key。运行测试时从这些目标里选。",
+    "3. **一键快检**（快速测试页）：少量探针快速看渠道真伪、token 是否虚报、本次真实消耗。",
+    "4. **准入评测**：给目标打 A–F 分级，判断是否值得进一步测试。",
+    "5. **标准评测 / 稳定性测试**：多轮 + 统计置信区间评估可用性；多渠道可批量横向对比。",
+    "6. **稳定性趋势**：同一目标历次测试的成功率曲线 + 掉级回归告警。",
+    "7. **报告中心 / 测试交付**：查看与导出报告。",
     "",
     "每个页面右上角都有「怎么用」帮助；更完整的部署与配置说明见项目 README。",
   ].join("\n");
@@ -1096,22 +1099,9 @@ function assertNotDemo(actionLabel = "这个操作") {
   return false;
 }
 
-// 总览用的"可运行测试目标"：模型目标(渠道+模型)还原 + 未迁移的孤儿老 profile。与运行下拉同源。
+// 总览用的"可运行测试目标"：统一走 resolveRunnableTargets（单一事实源）。
 function runnableTargets() {
-  const byChannel = new Map((state.channels || []).map((c) => [c.id, c]));
-  const channelIds = new Set((state.channels || []).map((c) => c.id));
-  const out = [];
-  for (const t of state.modelTargets || []) {
-    const ch = byChannel.get(t.channelId);
-    if (!ch) continue;
-    out.push({ id: t.id, name: `${ch.name} / ${t.model}`, defaultModel: t.model });
-  }
-  for (const p of state.profiles || []) {
-    if (p.role !== "target" && p.role !== "baseline") continue;
-    if (channelIds.has(p.id)) continue;
-    out.push({ id: p.id, name: p.name, defaultModel: p.defaultModel });
-  }
-  return out;
+  return resolveRunnableTargets(state);
 }
 
 function renderDashboard() {
@@ -1215,7 +1205,7 @@ function renderDashboardStatus() {
     ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>还没有报告</span>`
     : `<span class="chip good"><i></i>推荐 ${pass}</span><span class="chip warn"><i></i>观察 ${watchN}</span><span class="chip bad"><i></i>不推荐 ${fail}</span>`;
 
-  // 待办：疑似计费（PALACE tokenAuditFindings 含 high/medium）+ 待复测（最近为观察的渠道）
+  // 待办：疑似计费（tokenAuditFindings 含 high/medium）+ 待复测（最近为观察的渠道）
   let billing = 0;
   for (const run of runs) {
     const findings = run.tokenAuditFindings || [];

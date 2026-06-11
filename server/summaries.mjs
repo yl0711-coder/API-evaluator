@@ -26,7 +26,7 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
   const usageTotals = aggregateUsage(records);
   const { inputTokens, outputTokens } = usageTotals;
   const economics = estimateProfileRunEconomics(profile, { inputTokens, outputTokens });
-  // PALACE 计费灌水审计（整轮聚合，复用 prompt/输出/usage，不发新请求）
+  // 计费灌水审计（整轮聚合，复用 prompt/输出/usage，不发新请求）
   const tokenAudit = auditRunTokenUsage(
     records.map((item) => ({
       inputText: prompt,
@@ -89,7 +89,7 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
   const usageTotals = aggregateUsage(records);
   const { inputTokens, outputTokens } = usageTotals;
   const economics = estimateProfileRunEconomics(profile, { inputTokens, outputTokens });
-  // PALACE 审计：场景测试每条 prompt 不同，做输出侧审计（输出计费更贵，是主要灌水向量）
+  // 计费审计：场景测试每条 prompt 不同，做输出侧审计（输出计费更贵，是主要灌水向量）
   const tokenAudit = auditRunTokenUsage(
     records.map((record) => ({
       outputText: record.responseText || "",

@@ -1,6 +1,6 @@
 // server/token-auditor.mjs
 //
-// PALACE 风格 token 灌水审计。两条上游欺诈防线之一（计费灌水）。
+// token 灌水审计（本地估算对照）。两条上游欺诈防线之一（计费灌水）。
 //
 // 思路：从输入/输出文本用本地估算得到"应有 token 数"，对照上游 usage 报告的
 //   token 数。比值显著偏高 → 疑似多计/灌水（尤其输出 token，计费更贵）；显著偏低
@@ -8,7 +8,7 @@
 //
 // 诚实边界（红线）：
 //   - 本地估算是**近似**（tokenizer 家族不同 chars/token 差异大），单请求噪声大，
-//     容差放宽，只抓离谱比值；聚合整轮后噪声平均，容差才收紧——聚合才是 PALACE 的
+//     容差放宽，只抓离谱比值；聚合整轮后噪声平均，容差才收紧——聚合才是这套审计的
 //     真信号（系统性灌水），单请求只作参考。
 //   - 结论一律"疑似 / 需上游解释"，绝不写"确定灌水"（软件黑盒 + 商业诋毁法律边界）。
 //   - 与 model-fingerprint 的 buildTokenAudit（usage 覆盖率/零输出）互补，不重复。
@@ -83,7 +83,7 @@ export function auditTokenUsage({ inputText = "", outputText = "", usage = {} } 
 
   return {
     version: TOKEN_AUDIT_VERSION,
-    method: "PALACE 风格估算对照（单请求，粗筛；需上游解释，非铁证）",
+    method: "本地估算对照（单请求，粗筛；需上游解释，非铁证）",
     estimatedInput,
     estimatedOutput,
     reportedInput,
@@ -96,7 +96,7 @@ export function auditTokenUsage({ inputText = "", outputText = "", usage = {} } 
   };
 }
 
-// 整轮聚合审计（PALACE 真信号）：把多条样本的估算与报告分别求和再比，系统性灌水
+// 整轮聚合审计（聚合真信号）：把多条样本的估算与报告分别求和再比，系统性灌水
 // 才会在聚合比值上稳定显现。samples 每项可给 {inputText,outputText,usage} 或预估值。
 export function auditRunTokenUsage(samples) {
   let estIn = 0;
@@ -127,7 +127,7 @@ export function auditRunTokenUsage(samples) {
   }
 
   if (n === 0) {
-    return { n: 0, verdict: "样本不足", suspicious: false, flags: [], confidence: "low", method: "PALACE 聚合对照" };
+    return { n: 0, verdict: "样本不足", suspicious: false, flags: [], confidence: "low", method: "整轮聚合对照" };
   }
 
   const outputRatio = estOut > 0 ? repOut / estOut : null;
@@ -179,7 +179,7 @@ export function auditRunTokenUsage(samples) {
     verdict: suspicious ? "疑似计费异常，需上游解释" : "估算与报告差异在合理范围（粗筛）",
     confidence,
     recommendation,
-    method: "PALACE 聚合对照（整轮，需上游解释，非铁证）",
+    method: "整轮聚合对照（整轮，需上游解释，非铁证）",
   };
 }
 

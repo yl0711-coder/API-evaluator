@@ -34,7 +34,7 @@ export function buildMethodologyNotes() {
     "- 延迟为重尾分布，报告 P50/P95/P99，不以平均值代表稳定性。",
     "- 多渠道对比做显著性判定：置信区间重叠或不显著时不下“A 优于 B”。",
     "- 身份/纯度：tokenizer 计数粗筛 + 行为指纹 +（高价档）RUT 排序均匀性检验，结论为概率判断。",
-    "- 计费：PALACE 风格估算对照（本地估算 vs 上游 usage），异常仅作“疑似”信号。",
+    "- 计费：本地估算对照（本地估算 vs 上游 usage），异常仅作“疑似”信号。",
     "- 质量分若由 LLM 裁判产生，多裁判一致性（Krippendorff α）低于 0.8 标注“需人工复核”。",
     "",
   ];
@@ -48,7 +48,7 @@ export function buildBibliography() {
     "- McNemar / Wilcoxon signed-rank / paired-t 显著性检验。",
     "- Google SRE 四黄金信号与 SLI/SLO（稳定性与延迟分位数）。",
     "- 模型替换检测：RUT 排序均匀性检验、FDLLM 家族指纹（Model Substitution Detection）。",
-    "- 计费审计：PALACE / CoIn token 真实性方法学。",
+    "- 计费审计：本地估算对照 / CoIn token 真实性方法学。",
     "- LLM-as-Judge：MT-Bench / G-Eval；Krippendorff α、Gwet AC 一致性系数。",
     "- 协议兼容：Anthropic Messages / OpenAI 规范、WHATWG SSE Living Standard。",
     "",

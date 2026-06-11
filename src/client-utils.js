@@ -152,3 +152,11 @@ export function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+// 协议代码 -> 中文展示名。渠道/模型/profile 各处共用，避免多份分支漂移。
+export function protocolLabel(protocol) {
+  if (protocol === "claude_messages") return "Claude Messages";
+  if (protocol === "openai_chat") return "OpenAI Chat";
+  if (protocol === "openai_compatible") return "OpenAI 兼容";
+  return protocol || "-";
+}

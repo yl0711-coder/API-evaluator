@@ -22,15 +22,22 @@ async function fetchViaApi() {
   const base = String(envCompat("NEWAPI_BASE_URL") || "").replace(/\/+$/, "");
   const token = envCompat("NEWAPI_IMPORT_TOKEN");
   if (!base || !token) throw new Error("api 模式需要 EVALUATOR_NEWAPI_BASE_URL + EVALUATOR_NEWAPI_IMPORT_TOKEN（new-api 管理员 access token）。");
+  const PAGE_SIZE = 100;
+  const PAGE_CAP = 50; // 最多 5000 个渠道；超出则只导前 5000 并告警，避免无界翻页
   const rows = [];
-  for (let page = 0; page < 50; page += 1) {
-    const res = await fetch(`${base}/api/channel/?p=${page}&page_size=100`, { headers: { Authorization: token } });
+  let truncated = false;
+  for (let page = 0; page < PAGE_CAP; page += 1) {
+    const res = await fetch(`${base}/api/channel/?p=${page}&page_size=${PAGE_SIZE}`, { headers: { Authorization: token } });
     if (!res.ok) throw new Error(`new-api 渠道接口返回 ${res.status}（确认 token 有管理员权限）。`);
     const body = await res.json().catch(() => null);
     const items = Array.isArray(body?.data) ? body.data : Array.isArray(body?.data?.items) ? body.data.items : [];
     if (!items.length) break;
     rows.push(...items);
-    if (items.length < 100) break;
+    if (items.length < PAGE_SIZE) break;
+    if (page === PAGE_CAP - 1) truncated = true; // 跑满上限且最后一页仍是满的 -> 可能没导全
+  }
+  if (truncated) {
+    console.warn(`[newapi-import] 渠道分页命中 ${PAGE_CAP * PAGE_SIZE} 条上限，可能未导全；大站请用 db 模式或分批处理。`);
   }
   return rows;
 }
