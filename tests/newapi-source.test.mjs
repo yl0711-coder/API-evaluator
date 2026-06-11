@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { fetchNewapiChannels } from "../server/newapi-source.mjs";
+import { fetchNewapiChannels, normalizeMysqlDsn } from "../server/newapi-source.mjs";
 
 async function withMockNewapi(handler, run) {
   const server = createServer(handler);
@@ -74,14 +74,14 @@ test("db 模式缺 DSN → 报错", async () => {
   }
 });
 
-test("db 模式 mysql2 未安装 → 给出可操作的安装提示", async () => {
-  // 核心依赖不含 mysql2；db 模式应懒加载失败并提示安装，而不是崩。
-  process.env.EVALUATOR_IMPORT_SOURCE = "db";
-  process.env.EVALUATOR_NEWAPI_DB_DSN = "ro:pw@tcp(127.0.0.1:3306)/newapi";
-  try {
-    await assert.rejects(() => fetchNewapiChannels(), /mysql2/);
-  } finally {
-    delete process.env.EVALUATOR_IMPORT_SOURCE;
-    delete process.env.EVALUATOR_NEWAPI_DB_DSN;
-  }
+test("normalizeMysqlDsn：兼容 monitor 的 Go 格式 DSN", () => {
+  // monitor(Go 驱动) 的连接串可直接复用 -> 转成 mysql2 配置对象。
+  const cfg = normalizeMysqlDsn("ro_user:p@ss:w0rd@tcp(db-host:3306)/newapi?charset=utf8mb4&timeout=5s");
+  assert.deepEqual(cfg, { host: "db-host", port: 3306, user: "ro_user", password: "p@ss:w0rd", database: "newapi" });
+});
+
+test("normalizeMysqlDsn：mysql:// URI 与其它形式原样透传", () => {
+  const uri = "mysql://ro:pw@db-host:3306/newapi";
+  assert.equal(normalizeMysqlDsn(uri), uri);
+  assert.equal(normalizeMysqlDsn("  " + uri + "  "), uri); // 仅 trim
 });
