@@ -37,6 +37,7 @@ import { renderPageHelp as renderPageHelpPanel } from "./page-help.js";
 import { renderProfileConfigCheck as renderProfileConfigCheckPanel } from "./profile-config-check.js";
 import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
+import { createCascadeTargetPicker } from "./target-picker.js";
 import {
   applyPromptPresetToForm,
   renderPromptPresetOptions,
@@ -168,6 +169,21 @@ const clientReplaySubmit = requireElement("#client-replay-submit");
 const clientReplayResult = requireElement("#client-replay-result");
 const clientReplayExtract = requireElement("#client-replay-extract");
 const clientReplayBatch = requireElement("#client-replay-batch");
+
+// 单选「被测 API」级联选择器(渠道 → 模型),6 个运行页各一个。
+// 模型下拉沿用原 *-profile-select(仍 name="profileId"),所以表单提交与后端不变。
+const admissionCascade = createCascadeTargetPicker(requireElement("#admission-channel-select"), admissionProfileSelect);
+const standardCascade = createCascadeTargetPicker(requireElement("#standard-channel-select"), standardProfileSelect);
+const quickCascade = createCascadeTargetPicker(requireElement("#quick-channel-select"), quickProfileSelect);
+const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
+const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
+const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-select"), trendProfileSelect);
+
+// 程序化跳转回填代理:控制器里 `xxxProfileSelect.value = id` 时,写入走级联(同步渠道+模型下拉),
+// 读取仍取模型选中值。传给会做跳转回填的控制器(profile / standard-eval)。
+const quickProfileTarget = { get value() { return quickProfileSelect.value; }, set value(v) { quickCascade.setValue(v); } };
+const stabilityProfileTarget = { get value() { return stabilityProfileSelect.value; }, set value(v) { stabilityCascade.setValue(v); } };
+
 const taskEventList = requireElement("#task-event-list");
 const stabilityTemplate = requireElement("#stability-template");
 const batchTemplate = requireElement("#batch-template");
@@ -231,12 +247,12 @@ const quickFailurePanel = createQuickFailurePanel({
   retryQuickTest: () => quickTestForm.requestSubmit(),
   openProfiles: () => showPage("profiles"),
   openStandardEval: (profileId) => {
-    if (profileId) standardProfileSelect.value = profileId;
+    if (profileId) standardCascade.setValue(profileId);
     showPage("standard-eval");
   },
   openReports: () => showPage("reports"),
   openStabilitySmoke: (profileId) => {
-    if (profileId) stabilityProfileSelect.value = profileId;
+    if (profileId) stabilityCascade.setValue(profileId);
     stabilityTemplate.value = "smoke";
     applyStabilityTemplate();
     showPage("stability-test");
@@ -250,7 +266,7 @@ const profileController = createProfileController({
   renderProfileConfigCheck,
   loadProfiles,
   loadRequests,
-  quickProfileSelect,
+  quickProfileSelect: quickProfileTarget,
   quickTestResult,
   quickFailurePanel,
   showPage,
@@ -503,8 +519,8 @@ createStandardEvalController({
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),
   refreshResults: () => loadResultsBundle(),
   showPage,
-  quickProfileSelect,
-  stabilityProfileSelect,
+  quickProfileSelect: quickProfileTarget,
+  stabilityProfileSelect: stabilityProfileTarget,
   stabilityTemplate,
   applyStabilityTemplate,
   scenarioTemplate,
@@ -1362,18 +1378,19 @@ async function updateProfileKey(profileId) {
 }
 
 function renderProfileOptions() {
+  const data = { modelTargets: state.modelTargets, channels: state.channels, profiles: state.profiles };
+  // 单选运行页:级联(渠道 → 模型)
+  admissionCascade.refresh(data);
+  standardCascade.refresh(data);
+  quickCascade.refresh(data);
+  quickVerifyCascade.refresh(data);
+  stabilityCascade.refresh(data);
+  trendCascade.refresh(data);
+  // 批量多选 + 客户端回放:暂沿用平铺列表(批量两维度在第二期改造)
   renderRunTargetSelectOptions({
-    modelTargets: state.modelTargets,
-    channels: state.channels,
-    profiles: state.profiles,
+    ...data,
     selects: [
-      standardProfileSelect,
-      admissionProfileSelect,
       admissionBatchProfileSelect,
-      quickProfileSelect,
-      quickVerifyProfileSelect,
-      trendProfileSelect,
-      stabilityProfileSelect,
       batchProfileSelect,
       scenarioProfileSelect,
       clientReplayProfileSelect,

@@ -145,8 +145,12 @@
 
           <form id="admission-test-form" class="panel form-grid">
             <label>
-              被测 API
-              <select name="profileId" id="admission-profile-select"></select>
+              被测渠道
+              <select id="admission-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="admission-profile-select" disabled></select>
             </label>
             <label>
               测试包
@@ -240,8 +244,12 @@
 
           <form id="standard-eval-form" class="panel form-grid">
             <label>
-              被测 API
-              <select name="profileId" id="standard-profile-select"></select>
+              被测渠道
+              <select id="standard-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="standard-profile-select" disabled></select>
             </label>
             <label>
               稳定性轮数
@@ -542,8 +550,12 @@
             <h3>⚡ 一键快检 · 真伪 / token 虚报 / 真实消耗</h3>
             <p class="section-desc">少量探针、输出封顶，成本可控。一次性给出渠道真伪、token 是否虚报、以及本次真实消耗。</p>
             <label>
-              被测 API
-              <select id="quickverify-profile-select"></select>
+              被测渠道
+              <select id="quickverify-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select id="quickverify-profile-select" disabled></select>
             </label>
             <button class="primary" type="button" id="quickverify-submit">开始快检</button>
             <pre id="quickverify-result" class="result-box">等待快检。</pre>
@@ -567,8 +579,12 @@
 
           <form id="quick-test-form" class="panel">
             <label>
-              被测 API
-              <select name="profileId" id="quick-profile-select"></select>
+              被测渠道
+              <select id="quick-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="quick-profile-select" disabled></select>
             </label>
             <label>
               测试文案场景
@@ -630,8 +646,12 @@
               </select>
             </label>
             <label>
-              被测 API
-              <select name="profileId" id="stability-profile-select"></select>
+              被测渠道
+              <select id="stability-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="stability-profile-select" disabled></select>
             </label>
             <label>
               测试轮数
@@ -888,8 +908,12 @@
 
           <div class="panel">
             <label>
-              选择测试目标
-              <select id="trend-profile-select"></select>
+              被测渠道
+              <select id="trend-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select id="trend-profile-select" disabled></select>
             </label>
             <div id="trend-regression" class="next-step-panel hidden"></div>
             <h3>成功率趋势</h3>
