@@ -38,6 +38,7 @@ import { renderProfileConfigCheck as renderProfileConfigCheckPanel } from "./pro
 import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
+import { createBatchTargetPicker } from "./batch-target-picker.js";
 import {
   applyPromptPresetToForm,
   renderPromptPresetOptions,
@@ -183,6 +184,12 @@ const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-se
 // 读取仍取模型选中值。传给会做跳转回填的控制器(profile / standard-eval)。
 const quickProfileTarget = { get value() { return quickProfileSelect.value; }, set value(v) { quickCascade.setValue(v); } };
 const stabilityProfileTarget = { get value() { return stabilityProfileSelect.value; }, set value(v) { stabilityCascade.setValue(v); } };
+
+// 批量两维度选择器(渠道体检 A / 渠道选优 B),3 个批量页各一个。选中项同步到隐藏的
+// *-profile-select(name=profileIds),所以 updateEstimates / 提交 / 监听器 读法不变。
+const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-batch-picker"), { hiddenSelect: admissionBatchProfileSelect });
+const batchPicker = createBatchTargetPicker(requireElement("#batch-picker"), { hiddenSelect: batchProfileSelect });
+const scenarioPicker = createBatchTargetPicker(requireElement("#scenario-picker"), { hiddenSelect: scenarioProfileSelect });
 
 const taskEventList = requireElement("#task-event-list");
 const stabilityTemplate = requireElement("#stability-template");
@@ -1393,16 +1400,12 @@ function renderProfileOptions() {
   quickVerifyCascade.refresh(data);
   stabilityCascade.refresh(data);
   trendCascade.refresh(data);
-  // 批量多选 + 客户端回放:暂沿用平铺列表(批量两维度在第二期改造)
-  renderRunTargetSelectOptions({
-    ...data,
-    selects: [
-      admissionBatchProfileSelect,
-      batchProfileSelect,
-      scenarioProfileSelect,
-      clientReplayProfileSelect,
-    ],
-  });
+  // 批量页:两维度选择器(渠道体检 / 渠道选优)
+  admissionBatchPicker.refresh(data);
+  batchPicker.refresh(data);
+  scenarioPicker.refresh(data);
+  // 客户端回放:仍沿用平铺单选列表
+  renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] });
 }
 
 function renderScenarioOptions() {

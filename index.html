@@ -173,11 +173,8 @@
             <summary>批量准入对比</summary>
             <p class="field-hint">用于一次性对比多个候选渠道。它会按同一测试包逐个执行准入评测，适合接入前筛选 2-5 个同模型渠道。</p>
             <form id="admission-batch-form" class="form-grid">
-              <label>
-                被测 API
-                <select name="profileIds" id="admission-batch-profile-select" multiple size="6"></select>
-                <small class="field-hint">按住 Command/Ctrl 可多选。建议先选少量候选，避免一次消耗过多额度。</small>
-              </label>
+              <div class="wide" id="admission-batch-picker"></div>
+              <select name="profileIds" id="admission-batch-profile-select" multiple hidden></select>
               <label>
                 测试包
                 <select name="packageLevel">
@@ -734,10 +731,8 @@
                   <option value="batch-candidate">批量候选复测：每个 API 30 轮</option>
                 </select>
               </label>
-              <label class="wide">
-                选择多个被测 API
-                <select name="profileIds" id="batch-profile-select" multiple size="6"></select>
-              </label>
+              <div class="wide" id="batch-picker"></div>
+              <select name="profileIds" id="batch-profile-select" multiple hidden></select>
               <label>
                 每个 API 测试轮数
                 <select name="rounds">
@@ -835,10 +830,8 @@
               </select>
               <small id="scenario-template-hint" class="field-hint">基础能力全量包适合稳定性已经通过后的能力评估，不会默认包含内容安全探测。</small>
             </label>
-            <label class="wide">
-              选择被测 API（可多选）
-              <select name="profileIds" id="scenario-profile-select" multiple size="6"></select>
-            </label>
+            <div class="wide" id="scenario-picker"></div>
+            <select name="profileIds" id="scenario-profile-select" multiple hidden></select>
             <label class="wide">
               选择测试场景（可多选）
               <select name="scenarioIds" id="scenario-case-select" multiple size="8"></select>
