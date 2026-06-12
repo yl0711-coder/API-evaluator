@@ -29,8 +29,10 @@ export function createStandardEvalController({
   scenarioProfileSelect,
   updateEstimates,
 }) {
+  let running = false;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (running) return; // 防双击/确认框 await 期间重复提交（最贵流程，重复=重复扣额度）
     const payload = Object.fromEntries(new FormData(form).entries());
     const scenarioIds = pickStandardScenarioIds(state.scenarios);
     state.latestStandardProfileId = payload.profileId || "";
@@ -38,7 +40,9 @@ export function createStandardEvalController({
       toast("请先选择一个被测 API。", true);
       return;
     }
+    running = true;
     if (!(await confirmRun("标准评测", estimateCost(payload, scenarioIds.length)))) {
+      running = false;
       return;
     }
 
@@ -120,6 +124,7 @@ export function createStandardEvalController({
         setStandardStep(progressElement, runningStep.dataset.standardStep, "failed", error.message);
       }
     } finally {
+      running = false;
       submitButton.disabled = false;
       submitButton.textContent = "开始标准评测";
     }

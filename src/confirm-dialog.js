@@ -29,6 +29,12 @@ export function createConfirmDialog({
   });
 
   return function confirmAction(options) {
+    // 若上一个确认框还没决议就又弹新的：先把上一个按“取消”决议掉。
+    // 否则上一个 Promise 永久挂起 → 调用方的 finally 不执行 → 按钮/并发 slot 永久锁死。
+    if (resolveCurrent) {
+      resolveCurrent(false);
+      resolveCurrent = null;
+    }
     titleElement.textContent = options.title || "请确认";
     messageElement.innerHTML = renderConfirmMessage(options);
     confirmButton.textContent = options.confirmLabel || "确认";
