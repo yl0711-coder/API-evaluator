@@ -261,12 +261,7 @@ function runStandardNextAction({
   if (action === "scenario-basic") {
     scenarioTemplate.value = "scenario-basic";
     applyScenarioTemplate();
-    if (profileId) {
-      Array.from(scenarioProfileSelect.options).forEach((option) => {
-        option.selected = option.value === profileId;
-      });
-      updateEstimates();
-    }
+    // 场景测试已改为两维度批量选择器,无法稳定预选单个目标;跳过去后由用户在该页选目标。
     showPage("scenario-test");
     return;
   }

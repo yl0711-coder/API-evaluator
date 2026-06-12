@@ -1135,14 +1135,14 @@ export async function runScenarioTest(body, taskContext = {}) {
   };
 }
 
+export const MAX_BATCH_PROFILES = 20; // 批量目标数硬上限:防一次选过多目标 × 轮数 × 并发把小机器(2C/2G)压垮
+
 export function normalizeProfileIds(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item || "").trim()).filter(Boolean);
-  }
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const raw = Array.isArray(value)
+    ? value.map((item) => String(item || "").trim())
+    : String(value || "").split(",").map((item) => item.trim());
+  // 去重 + 封顶(去重避免同目标重复跑;封顶是资源兜底,前端另给软提示)
+  return [...new Set(raw.filter(Boolean))].slice(0, MAX_BATCH_PROFILES);
 }
 
 export function normalizeScenarioIds(value) {
