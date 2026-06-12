@@ -330,7 +330,7 @@
           </div>
 
           <div class="cfg-grid">
-          <form id="profile-form" class="panel form-grid">
+          <form id="profile-form" class="panel form-grid" autocomplete="off">
             <input type="hidden" name="id" />
             <div class="wide form-section-title">
               <p class="eyebrow">普通用户只填这里</p>
@@ -373,7 +373,7 @@
             </label>
             <label class="wide">
               API Key
-              <input name="apiKey" type="password" placeholder="粘贴平台提供的 API Key" />
+              <input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴平台提供的 API Key" />
               <small class="field-hint">Key 只保存在本机，不会出现在报告、日志或导出配置里。<b>编辑已有渠道时留空 = 保留原 Key。</b></small>
             </label>
 
@@ -479,10 +479,10 @@
               </div>
             </div>
             <div class="cfg-grid">
-              <form id="channel-form" class="panel form-grid">
+              <form id="channel-form" class="panel form-grid" autocomplete="off">
                 <input type="hidden" name="id" />
-                <label>名称<input name="name" placeholder="例如 Kiro-Claude 渠道" required /></label>
-                <label class="wide">Base URL<input name="baseUrl" placeholder="https://api.example.com" required />
+                <label>名称<input name="name" autocomplete="off" placeholder="例如 Kiro-Claude 渠道" required /></label>
+                <label class="wide">Base URL<input name="baseUrl" autocomplete="off" placeholder="https://api.example.com" required />
                   <small class="field-hint">只填基础地址，不要带 /v1/chat/completions。</small></label>
                 <label>协议
                   <select name="protocol">
@@ -490,10 +490,10 @@
                     <option value="openai_chat">OpenAI Chat Completions</option>
                     <option value="claude_messages">Claude Messages</option>
                   </select></label>
-                <label>供应商<input name="provider" placeholder="OpenAI / Anthropic / DeepSeek" /></label>
-                <label class="wide">模型清单<input name="models" placeholder="gpt-4o, gpt-4o-mini, o3（逗号分隔）" />
+                <label>供应商<input name="provider" autocomplete="off" placeholder="OpenAI / Anthropic / DeepSeek" /></label>
+                <label class="wide">模型清单<input name="models" autocomplete="off" placeholder="gpt-4o, gpt-4o-mini, o3（逗号分隔）" />
                   <small class="field-hint">该渠道支持的模型，逗号分隔；在“模型管理”里选其一建测试目标。</small></label>
-                <label class="wide">API Key<input name="apiKey" type="password" placeholder="粘贴上游 Key" />
+                <label class="wide">API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴上游 Key" />
                   <small class="field-hint">编辑时留空 = 保留原 Key。只存本机、不下发浏览器。</small></label>
                 <div class="wide action-row">
                   <button class="primary" id="save-channel" type="submit">保存渠道</button>
@@ -516,11 +516,11 @@
               </div>
             </div>
             <div class="cfg-grid">
-              <form id="model-target-form" class="panel form-grid">
+              <form id="model-target-form" class="panel form-grid" autocomplete="off">
                 <input type="hidden" name="id" />
                 <label class="wide">渠道<select name="channelId" id="model-target-channel" required></select></label>
-                <label>模型名<input name="model" placeholder="gpt-4o" required /></label>
-                <label>备注<input name="note" placeholder="可选" /></label>
+                <label>模型名<input name="model" autocomplete="off" placeholder="gpt-4o" required /></label>
+                <label>备注<input name="note" autocomplete="off" placeholder="可选" /></label>
                 <div class="wide action-row">
                   <button class="primary" id="save-model-target" type="submit">添加模型</button>
                 </div>

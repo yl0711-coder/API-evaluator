@@ -513,14 +513,18 @@ createStandardEvalController({
   updateEstimates,
 });
 
+let admissionRunning = false;
 admissionTestForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (admissionRunning) return; // 防双击/确认框 await 期间重复提交（重复=重复扣额度）
   const payload = Object.fromEntries(new FormData(admissionTestForm).entries());
   payload.modelName = findProfileModelName(payload.profileId);
   const estimate = estimateAdmissionCost(payload);
   payload.predicted = estimate; // 跑前预测随 payload 记录，供报告对比
+  admissionRunning = true;
   const confirmed = await confirmAction(confirmExecution("模型准入评测", estimate));
   if (!confirmed) {
+    admissionRunning = false;
     return;
   }
 
@@ -539,6 +543,7 @@ admissionTestForm.addEventListener("submit", async (event) => {
     admissionResult.innerHTML = `<p class="fail">准入评测失败：${escapeHtml(error.message)}</p>`;
     toast(error.message, true);
   } finally {
+    admissionRunning = false;
     admissionSubmit.disabled = false;
     admissionSubmit.textContent = "开始准入评测";
   }
@@ -723,6 +728,8 @@ async function importClientLogFile() {
   } catch (error) {
     clientLogResult.textContent = `读取日志文件失败：${error.message}`;
     toast("读取日志文件失败。", true);
+  } finally {
+    clientLogFile.value = ""; // 清空，使同一文件改动后可再次选择、重新触发 change 导入
   }
 }
 

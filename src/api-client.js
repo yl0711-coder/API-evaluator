@@ -52,6 +52,8 @@ export async function runRemoteTask(state, slot, type, payload, progressElement)
   state.activeTasks[slot] = task.id;
   renderTaskProgress(progressElement, task);
 
+  const MAX_POLL_MS = 45 * 60 * 1000; // 兜底：后端任务僵死(仍 running)时，前端不至于无限轮询
+  const startedAt = Date.now();
   while (true) {
     await sleep(900);
     const current = await api(`/api/tasks/${encodeURIComponent(task.id)}`);
@@ -70,6 +72,10 @@ export async function runRemoteTask(state, slot, type, payload, progressElement)
         errorId: current.errorId || "",
         technicalMessage: current.error || "",
       });
+    }
+    if (Date.now() - startedAt > MAX_POLL_MS) {
+      delete state.activeTasks[slot];
+      throw new Error("任务超过 45 分钟仍未结束，已停止等待。请检查后端任务状态或稍后重试。");
     }
   }
 }
