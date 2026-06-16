@@ -101,7 +101,7 @@ test("batch report declares a statistically distinguishable winner when CIs sepa
 });
 
 function makeInflatedSummary() {
-  // 输出 token 报得远超本地估算 → PALACE 应判疑似灌水
+  // 输出 token 报得远超本地估算 → 应判疑似灌水
   const records = makeRecords(10, 10, { responseText: "好。", outputTokens: 4000 });
   return buildStabilitySummary({
     runId: "run-inflated",
@@ -115,15 +115,15 @@ function makeInflatedSummary() {
   });
 }
 
-test("PALACE audit is wired into the stability summary and report", () => {
+test("token 计费审计已接入稳定性汇总与报告", () => {
   const summary = makeStabilitySummary("a", "甲", 8, 10);
   assert.ok(summary.tokenAudit, "summary 应带 tokenAudit");
   assert.ok(Array.isArray(summary.tokenAuditFindings));
   const report = formatStabilityReport(summary, makeRecords(8, 10));
-  assert.match(report, /计费审计（PALACE 粗筛）/);
+  assert.match(report, /计费审计（估算对照粗筛）/);
 });
 
-test("PALACE flags systematic output inflation and surfaces it as a review finding", () => {
+test("计费审计识别系统性输出灌水并作为复核项暴露", () => {
   const summary = makeInflatedSummary();
   assert.equal(summary.tokenAudit.suspicious, true);
   assert.ok(summary.tokenAuditFindings.length > 0);

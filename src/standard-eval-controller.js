@@ -29,8 +29,10 @@ export function createStandardEvalController({
   scenarioProfileSelect,
   updateEstimates,
 }) {
+  let running = false;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (running) return; // 防双击/确认框 await 期间重复提交（最贵流程，重复=重复扣额度）
     const payload = Object.fromEntries(new FormData(form).entries());
     const scenarioIds = pickStandardScenarioIds(state.scenarios);
     state.latestStandardProfileId = payload.profileId || "";
@@ -38,7 +40,9 @@ export function createStandardEvalController({
       toast("请先选择一个被测 API。", true);
       return;
     }
+    running = true;
     if (!(await confirmRun("标准评测", estimateCost(payload, scenarioIds.length)))) {
+      running = false;
       return;
     }
 
@@ -120,6 +124,7 @@ export function createStandardEvalController({
         setStandardStep(progressElement, runningStep.dataset.standardStep, "failed", error.message);
       }
     } finally {
+      running = false;
       submitButton.disabled = false;
       submitButton.textContent = "开始标准评测";
     }
@@ -256,12 +261,7 @@ function runStandardNextAction({
   if (action === "scenario-basic") {
     scenarioTemplate.value = "scenario-basic";
     applyScenarioTemplate();
-    if (profileId) {
-      Array.from(scenarioProfileSelect.options).forEach((option) => {
-        option.selected = option.value === profileId;
-      });
-      updateEstimates();
-    }
+    // 场景测试已改为两维度批量选择器,无法稳定预选单个目标;跳过去后由用户在该页选目标。
     showPage("scenario-test");
     return;
   }

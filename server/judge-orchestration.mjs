@@ -2,7 +2,7 @@
 //
 // LLM-as-Judge 编排层。
 //
-// 把 Step5b 的裁判原语（同家族规避 / 聚合 / Krippendorff α 一致性）组装成可运行流程。
+// 把裁判原语（同家族规避 / 聚合 / Krippendorff α 一致性）组装成可运行流程。
 // **裁判调用用依赖注入的 callJudge 函数**：测试用 mock，零真实请求、零额度消耗。
 // 等用户授权裁判渠道 + 额度后，把真实 callJudge（接 test-runner 请求机）传进来即可激活。
 //

@@ -2,6 +2,7 @@
 // 通用纯函数工具：JSON 安全解析、文本脱敏与摘要、JSONL 追加写与尾部读取（带大小封顶）、
 // 数值/百分比统计与格式化等，供各模块复用。
 import { appendFile, open, readFile, stat, writeFile } from "node:fs/promises";
+import { HttpRequestError } from "./http-request.mjs";
 
 export const DEFAULT_JSONL_MAX_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_JSONL_TAIL_BYTES = 4 * 1024 * 1024;
@@ -151,7 +152,9 @@ export function formatPercent(value) {
 export function requiredString(value, label) {
   const text = String(value || "").trim();
   if (!text) {
-    throw new Error(`${label} 不能为空。`);
+    // 校验失败属客户端错误：抛 HttpRequestError 让顶层兜成 400 + userMessage，
+    // 而不是被当成普通异常兜成 500（吞掉“XX 不能为空”的可读提示）。
+    throw new HttpRequestError(400, "validation_error", `${label} 不能为空。`);
   }
   return text;
 }

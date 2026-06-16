@@ -95,3 +95,25 @@ test("未登录访问受保护端点 -> 401", async () => {
   assert.ok(ready);
   assert.equal((await call("GET", "/api/channels", "")).status, 401);
 });
+
+test("缺必填字段 -> 400 validation_error（不是被兜成 500）", async () => {
+  assert.ok(ready);
+  const admin = await login("admin", "adminpw");
+  const noName = await call("POST", "/api/channels", admin, { baseUrl: "https://x.test", protocol: "openai_chat", apiKey: "k" });
+  assert.equal(noName.status, 400);
+  assert.equal((await noName.json()).error, "validation_error");
+  const noChannel = await call("POST", "/api/model-targets", admin, { model: "m" });
+  assert.equal(noChannel.status, 400);
+});
+
+test("sync-models：手动渠道 -> 400 not_newapi_channel；不存在的渠道 -> 404", async () => {
+  assert.ok(ready);
+  const admin = await login("admin", "adminpw");
+  const created = await call("POST", "/api/channels", admin, { name: "手动SM", baseUrl: "https://sm.test", protocol: "openai_chat", apiKey: "k" });
+  const channel = await created.json();
+  const manual = await call("POST", `/api/channels/${channel.id}/sync-models`, admin, {});
+  assert.equal(manual.status, 400);
+  assert.equal((await manual.json()).error, "not_newapi_channel");
+  const gone = await call("POST", "/api/channels/does-not-exist/sync-models", admin, {});
+  assert.equal(gone.status, 404);
+});

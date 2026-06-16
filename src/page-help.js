@@ -3,11 +3,15 @@ import { escapeHtml } from "./client-utils.js";
 const PAGE_HELP = {
   dashboard: {
     title: "总览页怎么用",
-    steps: ["可以先填写本次测试信息，也可以直接配置 API。", "如果还没配置 API，点“开始配置 API”。", "想先熟悉工具，可以点“查看演示数据”。"],
+    steps: ["按“当前进度”一步步走：先配渠道、再配模型，然后准入、标准评测。", "还没配置时点“配置第一个渠道”（仅超管可配渠道）。", "想先熟悉工具，可以点“查看演示数据”。"],
   },
-  profiles: {
-    title: "API 配置怎么填",
-    steps: ["不确定协议时，先选“AI 中转站 / OpenAI 兼容”。", "Key 导入后不会自动带入，需要重新补。", "保存后优先点“保存并测试配置”。"],
+  channels: {
+    title: "渠道管理怎么填（超管）",
+    steps: ["渠道 = 连接信息：Base URL + Key + 协议。Key 加密保存、不回显、管理员看不到。", "不确定协议时先选“OpenAI Compatible”。Base URL 只填基础地址，不要带 /v1/chat/completions。", "站点是 new-api 搭的，可点“从 new-api 导入”一键同步渠道；之后去“模型管理”给渠道挂模型。"],
+  },
+  models: {
+    title: "模型管理怎么用",
+    steps: ["选一个渠道 + 填一个模型名 = 一个测试目标。看不到也不需要 Key。", "一个渠道可建多个模型目标。运行各类测试时从这些目标里选。", "渠道是 new-api 导入的，可在“渠道管理”里点该渠道的“同步模型”刷新它的模型。"],
   },
   "standard-eval": {
     title: "标准评测怎么用",

@@ -74,7 +74,7 @@ test("bibliography lists methodology sources", () => {
   const text = buildBibliography().join("\n");
   assert.match(text, /Wilson/);
   assert.match(text, /RUT/);
-  assert.match(text, /PALACE/);
+  assert.match(text, /本地估算对照/);
   assert.match(text, /Krippendorff/);
 });
 

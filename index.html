@@ -145,8 +145,12 @@
 
           <form id="admission-test-form" class="panel form-grid">
             <label>
-              被测 API
-              <select name="profileId" id="admission-profile-select"></select>
+              被测渠道
+              <select id="admission-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="admission-profile-select" disabled></select>
             </label>
             <label>
               测试包
@@ -169,11 +173,8 @@
             <summary>批量准入对比</summary>
             <p class="field-hint">用于一次性对比多个候选渠道。它会按同一测试包逐个执行准入评测，适合接入前筛选 2-5 个同模型渠道。</p>
             <form id="admission-batch-form" class="form-grid">
-              <label>
-                被测 API
-                <select name="profileIds" id="admission-batch-profile-select" multiple size="6"></select>
-                <small class="field-hint">按住 Command/Ctrl 可多选。建议先选少量候选，避免一次消耗过多额度。</small>
-              </label>
+              <div class="wide" id="admission-batch-picker"></div>
+              <select name="profileIds" id="admission-batch-profile-select" multiple hidden></select>
               <label>
                 测试包
                 <select name="packageLevel">
@@ -240,8 +241,12 @@
 
           <form id="standard-eval-form" class="panel form-grid">
             <label>
-              被测 API
-              <select name="profileId" id="standard-profile-select"></select>
+              被测渠道
+              <select id="standard-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="standard-profile-select" disabled></select>
             </label>
             <label>
               稳定性轮数
@@ -330,7 +335,7 @@
           </div>
 
           <div class="cfg-grid">
-          <form id="profile-form" class="panel form-grid">
+          <form id="profile-form" class="panel form-grid" autocomplete="off">
             <input type="hidden" name="id" />
             <div class="wide form-section-title">
               <p class="eyebrow">普通用户只填这里</p>
@@ -373,7 +378,7 @@
             </label>
             <label class="wide">
               API Key
-              <input name="apiKey" type="password" placeholder="粘贴平台提供的 API Key" />
+              <input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴平台提供的 API Key" />
               <small class="field-hint">Key 只保存在本机，不会出现在报告、日志或导出配置里。<b>编辑已有渠道时留空 = 保留原 Key。</b></small>
             </label>
 
@@ -479,10 +484,10 @@
               </div>
             </div>
             <div class="cfg-grid">
-              <form id="channel-form" class="panel form-grid">
+              <form id="channel-form" class="panel form-grid" autocomplete="off">
                 <input type="hidden" name="id" />
-                <label>名称<input name="name" placeholder="例如 Kiro-Claude 渠道" required /></label>
-                <label class="wide">Base URL<input name="baseUrl" placeholder="https://api.example.com" required />
+                <label>名称<input name="name" autocomplete="off" placeholder="例如 Kiro-Claude 渠道" required /></label>
+                <label class="wide">Base URL<input name="baseUrl" autocomplete="off" placeholder="https://api.example.com" required />
                   <small class="field-hint">只填基础地址，不要带 /v1/chat/completions。</small></label>
                 <label>协议
                   <select name="protocol">
@@ -490,10 +495,10 @@
                     <option value="openai_chat">OpenAI Chat Completions</option>
                     <option value="claude_messages">Claude Messages</option>
                   </select></label>
-                <label>供应商<input name="provider" placeholder="OpenAI / Anthropic / DeepSeek" /></label>
-                <label class="wide">模型清单<input name="models" placeholder="gpt-4o, gpt-4o-mini, o3（逗号分隔）" />
+                <label>供应商<input name="provider" autocomplete="off" placeholder="OpenAI / Anthropic / DeepSeek" /></label>
+                <label class="wide">模型清单<input name="models" autocomplete="off" placeholder="gpt-4o, gpt-4o-mini, o3（逗号分隔）" />
                   <small class="field-hint">该渠道支持的模型，逗号分隔；在“模型管理”里选其一建测试目标。</small></label>
-                <label class="wide">API Key<input name="apiKey" type="password" placeholder="粘贴上游 Key" />
+                <label class="wide">API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴上游 Key" />
                   <small class="field-hint">编辑时留空 = 保留原 Key。只存本机、不下发浏览器。</small></label>
                 <div class="wide action-row">
                   <button class="primary" id="save-channel" type="submit">保存渠道</button>
@@ -516,11 +521,11 @@
               </div>
             </div>
             <div class="cfg-grid">
-              <form id="model-target-form" class="panel form-grid">
+              <form id="model-target-form" class="panel form-grid" autocomplete="off">
                 <input type="hidden" name="id" />
                 <label class="wide">渠道<select name="channelId" id="model-target-channel" required></select></label>
-                <label>模型名<input name="model" placeholder="gpt-4o" required /></label>
-                <label>备注<input name="note" placeholder="可选" /></label>
+                <label>模型名<input name="model" autocomplete="off" placeholder="gpt-4o" required /></label>
+                <label>备注<input name="note" autocomplete="off" placeholder="可选" /></label>
                 <div class="wide action-row">
                   <button class="primary" id="save-model-target" type="submit">添加模型</button>
                 </div>
@@ -542,8 +547,12 @@
             <h3>⚡ 一键快检 · 真伪 / token 虚报 / 真实消耗</h3>
             <p class="section-desc">少量探针、输出封顶，成本可控。一次性给出渠道真伪、token 是否虚报、以及本次真实消耗。</p>
             <label>
-              被测 API
-              <select id="quickverify-profile-select"></select>
+              被测渠道
+              <select id="quickverify-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select id="quickverify-profile-select" disabled></select>
             </label>
             <button class="primary" type="button" id="quickverify-submit">开始快检</button>
             <pre id="quickverify-result" class="result-box">等待快检。</pre>
@@ -567,8 +576,12 @@
 
           <form id="quick-test-form" class="panel">
             <label>
-              被测 API
-              <select name="profileId" id="quick-profile-select"></select>
+              被测渠道
+              <select id="quick-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="quick-profile-select" disabled></select>
             </label>
             <label>
               测试文案场景
@@ -630,8 +643,12 @@
               </select>
             </label>
             <label>
-              被测 API
-              <select name="profileId" id="stability-profile-select"></select>
+              被测渠道
+              <select id="stability-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="stability-profile-select" disabled></select>
             </label>
             <label>
               测试轮数
@@ -714,10 +731,8 @@
                   <option value="batch-candidate">批量候选复测：每个 API 30 轮</option>
                 </select>
               </label>
-              <label class="wide">
-                选择多个被测 API
-                <select name="profileIds" id="batch-profile-select" multiple size="6"></select>
-              </label>
+              <div class="wide" id="batch-picker"></div>
+              <select name="profileIds" id="batch-profile-select" multiple hidden></select>
               <label>
                 每个 API 测试轮数
                 <select name="rounds">
@@ -815,10 +830,8 @@
               </select>
               <small id="scenario-template-hint" class="field-hint">基础能力全量包适合稳定性已经通过后的能力评估，不会默认包含内容安全探测。</small>
             </label>
-            <label class="wide">
-              选择被测 API（可多选）
-              <select name="profileIds" id="scenario-profile-select" multiple size="6"></select>
-            </label>
+            <div class="wide" id="scenario-picker"></div>
+            <select name="profileIds" id="scenario-profile-select" multiple hidden></select>
             <label class="wide">
               选择测试场景（可多选）
               <select name="scenarioIds" id="scenario-case-select" multiple size="8"></select>
@@ -888,8 +901,12 @@
 
           <div class="panel">
             <label>
-              选择测试目标
-              <select id="trend-profile-select"></select>
+              被测渠道
+              <select id="trend-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select id="trend-profile-select" disabled></select>
             </label>
             <div id="trend-regression" class="next-step-panel hidden"></div>
             <h3>成功率趋势</h3>

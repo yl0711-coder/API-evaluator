@@ -1699,6 +1699,34 @@ button.danger {
 /* 输入：收紧圆角 + 聚焦琥珀辉光 */
 input, select, textarea { border-radius: 10px; background: var(--panel-strong); padding: 11px 13px; transition: border-color .15s, box-shadow .15s; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(246, 181, 107, 0.14); }
+select:disabled { opacity: .55; cursor: not-allowed; color: var(--muted); }
+
+/* 批量两维度选择器(渠道体检 / 渠道选优),样式全部 scope 在 .batch-picker 下 */
+.batch-picker .seg { display: inline-flex; gap: 6px; background: var(--panel-strong); border: 1px solid var(--line); border-radius: 12px; padding: 5px; margin-bottom: 14px; }
+.batch-picker .seg button { border: 1px solid transparent; background: none; color: var(--muted); font: inherit; cursor: pointer; padding: 8px 14px; border-radius: 8px; font-weight: 600; }
+.batch-picker .seg button.on { background: rgba(246, 181, 107, 0.12); color: var(--accent); border-color: rgba(246, 181, 107, 0.4); }
+.batch-picker .bp-anchor-label { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 7px; }
+.batch-picker .bp-anchor { width: 100%; }
+.batch-picker .bp-listhead { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; }
+.batch-picker .bp-list-title { font-size: 13px; color: var(--text-2); }
+.batch-picker .bp-acts button { background: none; border: 1px solid var(--line); color: var(--text-2); border-radius: 8px; padding: 5px 11px; font: inherit; cursor: pointer; margin-left: 8px; }
+.batch-picker .list { border: 1px solid var(--line); border-radius: 12px; max-height: 240px; overflow: auto; }
+.batch-picker .opt { display: flex; align-items: center; gap: 11px; padding: 9px 13px; border-bottom: 1px solid var(--line); cursor: pointer; border-left: 3px solid transparent; margin: 0; }
+.batch-picker .opt:last-child { border-bottom: none; }
+.batch-picker .opt:hover { background: rgba(246, 181, 107, 0.06); }
+.batch-picker .opt.checked { border-left-color: var(--accent); }
+.batch-picker .opt input { width: 16px; height: 16px; accent-color: var(--accent); }
+.batch-picker .opt .name { flex: 1; }
+.batch-picker .pill { font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.batch-picker .pill.good { color: var(--good); border-color: rgba(95, 227, 176, 0.4); }
+.batch-picker .pill.bad { color: var(--bad); border-color: rgba(255, 122, 138, 0.4); }
+.batch-picker .bp-echo { margin-top: 14px; font-size: 13px; color: var(--text-2); }
+.batch-picker .bp-echo b { color: var(--accent); }
+.batch-picker .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; min-height: 28px; }
+.batch-picker .chip { display: inline-flex; align-items: center; gap: 8px; background: var(--panel-strong); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; font-size: 13px; }
+.batch-picker .chip .x { color: var(--muted); cursor: pointer; }
+.batch-picker .chip .x:hover { color: var(--bad); }
+.batch-picker .empty-chips { color: var(--muted); font-size: 13px; }
 /* 按钮：收紧圆角 + 主按钮渐变与悬浮抬升 */
 button.primary, button.secondary { border-radius: 10px; padding: 12px 18px; transition: transform .12s, box-shadow .12s, border-color .15s, color .15s; }
 button.primary { background: linear-gradient(145deg, var(--accent), #e89b4d); box-shadow: 0 8px 22px rgba(246, 181, 107, 0.26); }

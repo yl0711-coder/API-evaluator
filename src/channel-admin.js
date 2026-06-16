@@ -1,5 +1,5 @@
 import { api } from "./api-client.js";
-import { escapeHtml, toast } from "./client-utils.js";
+import { escapeHtml, protocolLabel, toast } from "./client-utils.js";
 
 // v0.3.0 两区管理：渠道（超管，含 key）+ 模型目标（管理员，选渠道+填模型，不见 key）。
 export function createChannelAdmin({ state, els, onChange }) {
@@ -42,7 +42,7 @@ export function createChannelAdmin({ state, els, onChange }) {
       <div class="chan-row">
         <div class="chan-who">
           <b>${escapeHtml(channel.name)}</b>
-          <small>${escapeHtml(protoLabel(channel.protocol))} · ${models} 个模型 · ${channel.hasKey ? "已存 Key" : "缺 Key"}${source}</small>
+          <small>${escapeHtml(protocolLabel(channel.protocol))} · ${models} 个模型 · ${channel.hasKey ? "已存 Key" : "缺 Key"}${source}</small>
         </div>
         ${status}
         <div class="row-actions">
@@ -55,7 +55,7 @@ export function createChannelAdmin({ state, els, onChange }) {
   function renderChannelOptions() {
     const list = (state.channels || []).filter((c) => c.status !== "disabled");
     els.modelTargetChannelSelect.innerHTML = list.length
-      ? list.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}（${escapeHtml(protoLabel(c.protocol))}）</option>`).join("")
+      ? list.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}（${escapeHtml(protocolLabel(c.protocol))}）</option>`).join("")
       : `<option value="">请先在“渠道管理”添加渠道</option>`;
   }
 
@@ -76,7 +76,7 @@ export function createChannelAdmin({ state, els, onChange }) {
       <div class="chan-row">
         <div class="chan-who">
           <b>${escapeHtml(target.model)}</b>
-          <small>${escapeHtml(target.channelName || "-")} · ${escapeHtml(protoLabel(target.protocol))}${target.note ? " · " + escapeHtml(target.note) : ""}</small>
+          <small>${escapeHtml(target.channelName || "-")} · ${escapeHtml(protocolLabel(target.protocol))}${target.note ? " · " + escapeHtml(target.note) : ""}</small>
         </div>
         ${badge}
         <div class="row-actions"><button class="secondary" data-del-target="${target.id}">删除</button></div>
@@ -155,9 +155,3 @@ export function createChannelAdmin({ state, els, onChange }) {
   return { loadChannels, loadModelTargets, saveChannel, saveModelTarget, importFromNewapi };
 }
 
-function protoLabel(protocol) {
-  if (protocol === "claude_messages") return "Claude Messages";
-  if (protocol === "openai_chat") return "OpenAI Chat";
-  if (protocol === "openai_compatible") return "OpenAI 兼容";
-  return protocol || "-";
-}
