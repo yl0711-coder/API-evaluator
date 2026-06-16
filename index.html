@@ -714,14 +714,9 @@
             </details>
           </div>
 
-          <div class="panel">
-            <div class="section-header compact">
-              <div>
-                <p class="eyebrow">批量并发评测</p>
-                <h3>批量并发测试</h3>
-                <p class="section-desc">用于多个模型或渠道横向对比。建议先选 2-3 个 API 小轮数筛查。</p>
-              </div>
-            </div>
+          <details class="helper-details">
+            <summary>批量并发测试</summary>
+            <p class="field-hint">用于多个模型或渠道横向对比。建议先选 2-3 个 API 小轮数筛查。</p>
             <form id="batch-test-form" class="form-grid">
               <label class="wide">
                 测试模板
@@ -785,7 +780,7 @@
               <summary>查看批量测试详情</summary>
               <pre id="batch-test-result" class="result-box report-box">适合同时对比多个模型或渠道。建议先用 3 轮快速筛查，再跑 10 轮正式对比。</pre>
             </details>
-          </div>
+          </details>
         </section>
 
         <section class="page" id="scenario-test">
@@ -879,16 +874,10 @@
             </div>
           </div>
 
-          <div class="panel">
-            <div class="section-header compact">
-              <h3>场景测试摘要与文件路径</h3>
-              <button id="copy-scenario-report" class="secondary" type="button">复制摘要和路径</button>
-            </div>
-            <details class="technical-details">
-              <summary>查看场景测试摘要和报告位置</summary>
-              <pre id="scenario-test-result" class="result-box report-box">等待测试。</pre>
-            </details>
-          </div>
+          <details class="helper-details">
+            <summary>查看场景测试摘要和报告位置</summary>
+            <pre id="scenario-test-result" class="result-box report-box">等待测试。</pre>
+          </details>
         </section>
 
         <section class="page" id="trend">
@@ -922,23 +911,11 @@
           <div class="section-header">
             <div>
               <h2><span class="step">第 5 步 · 报告中心</span>所有结论、排行与日志</h2>
-              <p class="section-desc">先看极简结论，再看结论卡片、排行榜和记录。给负责人汇报时优先用交付模板。</p>
+              <p class="section-desc">先看报告结论卡片，再看排行榜和记录。给负责人汇报时优先用交付模板。</p>
             </div>
             <div class="action-row">
               <button id="export-support-bundle" class="secondary" type="button">导出问题包</button>
               <button id="reload-requests" class="secondary" type="button">刷新</button>
-            </div>
-          </div>
-          <div class="panel">
-            <div class="section-header compact">
-              <div>
-                <p class="eyebrow">先看这里</p>
-                <h3>极简结论</h3>
-              </div>
-              <button class="secondary" type="button" data-go-page="handoff">复制交付内容</button>
-            </div>
-            <div id="plain-conclusion" class="plain-conclusion">
-              <p class="muted">完成测试后这里会显示推荐、观察或不推荐。</p>
             </div>
           </div>
           <div class="panel">
@@ -975,10 +952,10 @@
               <p class="muted">同一模型有多个候选或可信基线时，这里会显示对比矩阵。</p>
             </div>
           </div>
-          <div class="panel">
-            <h3>最近测试报告</h3>
+          <details class="panel collapsible-panel">
+            <summary>最近测试报告</summary>
             <div id="test-run-list" class="table"></div>
-          </div>
+          </details>
           <details class="panel collapsible-panel">
             <summary>真实客户端日志分析</summary>
             <p class="muted">把 Claude Code、Codex、Gemini CLI 等本地代理日志粘贴进来，生成脱敏分析报告。适合复盘 524、504、client_gone、Content block not found 等真实使用问题。</p>

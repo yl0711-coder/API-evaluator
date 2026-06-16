@@ -1,9 +1,39 @@
 // 报告文件落盘：把 Markdown + 渲染后的 HTML 写到报告目录，并登记报告中心元数据。
+import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { recordReport } from "./db.mjs";
 import { REPORTS_DIR } from "./paths.mjs";
 import { renderReportHtml } from "./report-html.mjs";
+
+// EVALUATOR_OPEN_REPORT=1/true/on/yes 时，报告生成后自动在本机默认浏览器打开。默认关闭。
+export function isOpenReportEnabled(value) {
+  const v = String(value ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "on" || v === "yes";
+}
+
+// 在本机默认浏览器打开一份报告 HTML。
+// best-effort：无桌面环境 / 命令缺失 / 任何异常一律静默忽略，绝不阻塞或影响任务完成。
+export function openReportInBrowser(htmlPath, { enabled = isOpenReportEnabled(process.env.EVALUATOR_OPEN_REPORT) } = {}) {
+  if (!enabled || !htmlPath) return false;
+  try {
+    const platform = process.platform;
+    // Windows：用 explorer.exe 的完整路径，避免 spawn 按裸名字解析 PATH 报 ENOENT。
+    // explorer.exe 收到一个文件参数时，会用其默认关联程序（.html → 默认浏览器）打开。
+    const command =
+      platform === "win32"
+        ? join(process.env.SystemRoot || "C:\\Windows", "explorer.exe")
+        : platform === "darwin"
+          ? "open"
+          : "xdg-open";
+    const child = spawn(command, [htmlPath], { detached: true, stdio: "ignore" });
+    child.on("error", () => {}); // 找不到命令 / 无图形界面 → 静默
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function saveReportFiles(baseName, markdown, title) {
   await mkdir(REPORTS_DIR, { recursive: true });

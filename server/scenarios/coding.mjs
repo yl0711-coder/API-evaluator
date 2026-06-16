@@ -5,7 +5,7 @@ export const CODING_SCENARIOS = [
     category: "coding",
     difficulty: "complex",
     prompt: [
-      "你是一名资深后端工程师。请分析下面的 Node.js 代码为什么偶发超时，并给出修复方案和测试方案。",
+      "你是一名负责高并发 API 网关的资深后端工程师。下面这段 Node.js 代码在生产环境偶发请求超时，请定位根因并给出可直接上线的修复方案。",
       "",
       "```js",
       "async function callUpstream(url, payload) {",
@@ -20,7 +20,7 @@ export const CODING_SCENARIOS = [
       "}",
       "```",
       "",
-      "要求：分成 问题原因、修复代码、测试用例、上线风险 四部分。",
+      "要求：分成「问题原因、修复代码、测试用例、上线风险」四部分；问题原因要指出具体是哪一行、哪个机制（如超时与 AbortController / clearTimeout 的关系）导致；修复代码给出可整段替换的完整函数。",
     ].join("\n"),
     minChars: 500,
     requiredAny: ["问题原因", "修复", "测试", "风险", "AbortController", "clearTimeout"],

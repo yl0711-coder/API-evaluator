@@ -322,6 +322,7 @@ code {
 }
 
 .helper-details .guide-grid,
+.helper-details .result-box,
 .technical-details .result-box {
   margin: 14px 16px 16px;
 }
@@ -843,6 +844,21 @@ button.quiet-action {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.insight-request-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.insight-request-status.pass {
+  color: #62dba7;
+}
+
+.insight-request-status.fail {
+  color: #f06d7d;
 }
 
 .insight-card {

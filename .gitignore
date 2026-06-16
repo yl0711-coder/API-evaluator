@@ -27,3 +27,11 @@ app-data/
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code local config (keep shareable skills under .claude/skills/)
+.claude/settings.local.json
+
+# Local-only reference material & personal notes (not project source)
+*.pdf
+*.docx
+注意事项.txt

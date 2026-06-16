@@ -207,7 +207,6 @@ const stabilityProgress = requireElement("#stability-progress");
 const batchProgress = requireElement("#batch-progress");
 const scenarioProgress = requireElement("#scenario-progress");
 const reportInsights = requireElement("#report-insights");
-const plainConclusion = requireElement("#plain-conclusion");
 const rankingList = requireElement("#ranking-list");
 const modelComparisonList = requireElement("#model-comparison-list");
 const handoffSummary = requireElement("#handoff-summary");
@@ -302,7 +301,6 @@ requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
 });
 requireElement("#copy-stability-report").addEventListener("click", () => copyReportText("stability"));
-requireElement("#copy-scenario-report").addEventListener("click", () => copyReportText("scenario"));
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
 requireElement("#reload-manual").addEventListener("click", loadManual);
@@ -1450,7 +1448,6 @@ function renderTaskEvents() {
 function renderDeliveryViews() {
   renderDeliveryPanels({
     state,
-    plainConclusion,
     projectInfoSummary,
     reportInsights,
     rankingList,

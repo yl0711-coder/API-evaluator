@@ -3,6 +3,7 @@
 // 不关心具体测试怎么跑（runner 由调用方注入），便于独立测试任务状态机。
 import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
+import { openReportInBrowser } from "./report-files.mjs";
 
 // Owns remote task lifecycle only. It does not know how a stability or scenario
 // test works; callers inject runners so task state can be tested independently.
@@ -158,7 +159,10 @@ export function createTaskManager({
         task.completedUnits = task.totalUnits || task.completedUnits;
         task.message = "任务已完成。";
         task.result = publicResult;
-        await appendTaskEvent(taskEventsFile, task, "completed", { result: summarizeTaskResult(publicResult) });
+        const resultSummary = summarizeTaskResult(publicResult);
+        // 任务级单点：一个任务只打开它的主报告（批量任务=只开总报告，不会一渠道一个标签页）。
+        openReportInBrowser(resultSummary.reportHtmlPath);
+        await appendTaskEvent(taskEventsFile, task, "completed", { result: resultSummary });
       }
     } catch (error) {
       if (task.cancelRequested || error?.name === "TaskCancelledError") {

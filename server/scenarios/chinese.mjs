@@ -17,7 +17,7 @@ export const CHINESE_SCENARIOS = [
     category: "chinese",
     difficulty: "normal",
     prompt: [
-      "请用中文回答：简述“安史之乱”发生在哪个朝代、大致哪个世纪，以及它对该王朝的主要影响。",
+      "你是一名中国历史老师。请用中文向学生简述“安史之乱”：它发生在哪个朝代、大致哪个世纪，以及对该王朝的主要影响。",
       "要求：史实准确，条理清楚，不要编造。",
     ].join("\n"),
     minChars: 80,
@@ -29,7 +29,7 @@ export const CHINESE_SCENARIOS = [
     category: "chinese",
     difficulty: "complex",
     prompt: [
-      "请用中文分步解答下面的应用题，给出每一步推理和最终答案：",
+      "你是一名数学老师。请用中文分步解答下面的应用题，写出每一步推理，并在最后单独给出最终答案：",
       "一项工程，甲单独做需要 12 天，乙单独做需要 18 天。两人合作 4 天后，乙因故离开，",
       "剩下的工作由甲单独完成。问甲还需要多少天才能完成？",
     ].join("\n"),
@@ -43,7 +43,7 @@ export const CHINESE_SCENARIOS = [
     category: "chinese",
     difficulty: "normal",
     prompt: [
-      "请用中文写一则不超过 150 字的正式通知：",
+      "你是公司的行政专员。请用中文写一则不超过 150 字的正式通知：",
       "公司本周五下午两点举行全员安全演练，地点在一楼大厅，要求携带工牌、准时参加。",
       "语气正式、条理清楚，不要夸张。",
     ].join("\n"),
@@ -77,7 +77,7 @@ export const CHINESE_SCENARIOS = [
     category: "chinese",
     difficulty: "normal",
     prompt: [
-      "请用中文解释成语“画蛇添足”的含义，并给出一个现代生活或工作中的使用例句。",
+      "你是一名语文老师。请用中文解释成语“画蛇添足”的含义，并给出一个现代生活或工作中的使用例句。",
       "要求：解释准确，例句自然。",
     ].join("\n"),
     minChars: 60,
@@ -89,8 +89,8 @@ export const CHINESE_SCENARIOS = [
     category: "chinese",
     difficulty: "normal",
     prompt: [
-      "请只输出 JSON，不要输出 Markdown。",
-      "对一个“中文 AI 客服渠道”做简评，JSON 字段必须包含：",
+      "你是一名中文 AI 客服渠道的评审员。请对该渠道做简评，只输出 JSON，不要输出 Markdown。",
+      "JSON 字段必须包含：",
       "模型表现（中文字符串）、主要风险（字符串数组，至少 2 项）、是否推荐（布尔）、理由（中文字符串）。",
     ].join("\n"),
     minChars: 80,

@@ -51,6 +51,7 @@ import {
   runScenarioTest,
   runStabilityTest,
 } from "./server/test-runner.mjs";
+import { openReportInBrowser } from "./server/report-files.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, requiredString, safeJson, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -720,6 +721,7 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/tests/quick-verify") {
     const body = await readJson(req);
     const result = await runQuickVerify(body);
+    openReportInBrowser(result.reportHtmlPath);
     sendJson(res, 200, result);
     return;
   }
@@ -727,6 +729,7 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/tests/admission") {
     const body = await readJson(req);
     const result = await runAdmissionTest(body);
+    openReportInBrowser(result.reportHtmlPath);
     sendJson(res, 200, result);
     return;
   }

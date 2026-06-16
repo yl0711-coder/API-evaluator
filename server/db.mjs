@@ -832,14 +832,22 @@ function safeParse(raw) {
   }
 }
 
-// test_runs.raw_json 只需汇总级字段；场景/批量 summary 里嵌的 records/results/cases/
-// reportMarkdown 可达数 MB，逐请求明细已在 test_requests 表，这里剥掉只留计数，
-// 避免单行膨胀拖慢 queryRecentTestRuns（一次 parse 20 行）。
+// test_runs.raw_json 只需汇总级字段；reportMarkdown / 顶层 records / cases 可达数 MB，
+// 逐请求明细已在 test_requests 表，这里剥掉只留计数，避免单行膨胀拖慢 queryRecentTestRuns。
+// results（场景/批量的每渠道汇总）要保留：报告中心卡片/排行榜靠它取 successRate、
+// avgQualityScore 等——但剥掉每个 result 内部的逐请求 records（大头），只留汇总级字段。
 function slimSummaryForStorage(summary) {
   if (!summary || typeof summary !== "object") return summary;
   const { reportMarkdown, records, results, cases, ...rest } = summary;
   if (Array.isArray(records)) rest.recordCount = records.length;
-  if (Array.isArray(results)) rest.resultCount = results.length;
   if (Array.isArray(cases)) rest.caseCount = rest.caseCount ?? cases.length;
+  if (Array.isArray(results)) {
+    rest.resultCount = results.length;
+    rest.results = results.map((item) => {
+      if (!item || typeof item !== "object") return item;
+      const { records: _itemRecords, ...keep } = item;
+      return keep;
+    });
+  }
   return rest;
 }
