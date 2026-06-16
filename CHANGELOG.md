@@ -6,9 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-16
+
+### Added
+- Two-dimension batch target picker for channel health-check (渠道体检) and channel
+  optimization (渠道选优) run pages.
+- Cascade channel → model picker on single-target run pages.
+- new-api DB (A2) import now bundles `mysql2` and accepts Go-style DSNs.
+
 ### Fixed
 - Channel / model-target / profile validation failures now return HTTP 400 with a
   user-facing message instead of being swallowed as a 500.
+- Stopped credential autofill, double-submit, and dialog / polling hangs in the UI.
 
 ### Changed
 - Removed internal codenames from code comments and report output (neutral wording).
