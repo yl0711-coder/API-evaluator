@@ -539,23 +539,8 @@
           <div class="section-header">
             <div>
               <h2><span class="step">高级 · 快速连通</span>快速连通测试</h2>
-              <p class="section-desc">成本最低的一步。只确认 URL、Key、模型名和协议是否能正常请求。</p>
+              <p class="section-desc">少量探针、输出封顶，成本可控。一次性给出渠道真伪、token 是否虚报、以及本次真实消耗。</p>
             </div>
-          </div>
-
-          <div class="panel" id="quickverify-panel">
-            <h3>⚡ 一键快检 · 真伪 / token 虚报 / 真实消耗</h3>
-            <p class="section-desc">少量探针、输出封顶，成本可控。一次性给出渠道真伪、token 是否虚报、以及本次真实消耗。</p>
-            <label>
-              被测渠道
-              <select id="quickverify-channel-select"></select>
-            </label>
-            <label>
-              被测模型
-              <select id="quickverify-profile-select" disabled></select>
-            </label>
-            <button class="primary" type="button" id="quickverify-submit">开始快检</button>
-            <pre id="quickverify-result" class="result-box">等待快检。</pre>
           </div>
 
           <details class="helper-details">
@@ -574,31 +559,17 @@
             </div>
           </details>
 
-          <form id="quick-test-form" class="panel">
+          <div class="panel" id="quickverify-panel">
             <label>
               被测渠道
-              <select id="quick-channel-select"></select>
+              <select id="quickverify-channel-select"></select>
             </label>
             <label>
               被测模型
-              <select name="profileId" id="quick-profile-select" disabled></select>
+              <select id="quickverify-profile-select" disabled></select>
             </label>
-            <label>
-              测试文案场景
-              <select id="quick-prompt-preset"></select>
-              <small id="quick-prompt-hint" class="field-hint">新增或修改 API 后，优先选择低成本连通测试；需要检查格式时再选 JSON。</small>
-            </label>
-            <label>
-              当前测试文案（选择“自定义”后可编辑）
-              <textarea name="prompt"></textarea>
-              <small class="field-hint">默认由上方场景自动生成，普通用户不需要自己写。</small>
-            </label>
-            <button class="primary" type="submit">开始测试</button>
-          </form>
-
-          <div class="panel">
-            <h3>测试结果</h3>
-            <pre id="quick-test-result" class="result-box">等待测试。</pre>
+            <button class="primary wide" type="button" id="quickverify-submit">开始快检</button>
+            <pre id="quickverify-result" class="result-box">等待快检。</pre>
             <div id="quick-failure-actions" class="next-step-panel hidden"></div>
           </div>
         </section>
@@ -703,16 +674,10 @@
             </div>
           </div>
 
-          <div class="panel">
-            <div class="section-header compact">
-              <h3>报告摘要与文件路径</h3>
-              <button id="copy-stability-report" class="secondary" type="button">复制摘要和路径</button>
-            </div>
-            <details class="technical-details">
-              <summary>查看测试摘要和报告位置</summary>
-              <pre id="stability-report" class="result-box report-box">测试完成后会在这里显示摘要和本地报告文件路径。</pre>
-            </details>
-          </div>
+          <details class="helper-details">
+            <summary>查看测试摘要和报告位置</summary>
+            <pre id="stability-report" class="result-box report-box">测试完成后会在这里显示摘要和本地报告文件路径。</pre>
+          </details>
 
           <details class="helper-details">
             <summary>批量并发测试</summary>
@@ -827,10 +792,8 @@
             </label>
             <div class="wide" id="scenario-picker"></div>
             <select name="profileIds" id="scenario-profile-select" multiple hidden></select>
-            <label class="wide">
-              选择测试场景（可多选）
-              <select name="scenarioIds" id="scenario-case-select" multiple size="8"></select>
-            </label>
+            <div class="wide" id="scenario-case-picker"></div>
+            <select name="scenarioIds" id="scenario-case-select" multiple hidden></select>
             <label>
               每个场景重复次数
               <select name="repeats">

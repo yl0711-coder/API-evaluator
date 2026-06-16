@@ -1958,7 +1958,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 /* 页头与首块内容留白 */
 #quick-test .section-header, #stability-test .section-header, #scenario-test .section-header { margin-bottom: 22px; }
 /* 单列表单（如快速连通）：label 之间撑开，按钮回归自然宽度靠左 */
-#quick-test form.panel:not(.form-grid), #stability-test form.panel:not(.form-grid), #scenario-test form.panel:not(.form-grid) { display: grid; gap: 20px; }
+#quick-test form.panel:not(.form-grid), #stability-test form.panel:not(.form-grid), #scenario-test form.panel:not(.form-grid), #quickverify-panel { display: grid; gap: 20px; }
 #quick-test form .primary:not(.wide), #stability-test form .primary:not(.wide), #scenario-test form .primary:not(.wide) { justify-self: start; margin-top: 2px; }
 /* 栅格表单：行/列间距加大 */
 #quick-test .form-grid, #stability-test .form-grid, #scenario-test .form-grid { gap: 20px 24px; }
@@ -1973,3 +1973,5 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 #quick-test .primary.wide, #stability-test .primary.wide, #scenario-test .primary.wide { margin-top: 6px; }
 /* 结果框更高、内边距更舒展 */
 #quick-test .result-box, #stability-test .result-box, #scenario-test .result-box { padding: 16px 18px; }
+/* 一键快检结果框并入控件面板，占位时不需 160px 高，收紧后面板底边贴近内容（与稳定/场景提交面板一致） */
+#quickverify-result { min-height: 88px; }

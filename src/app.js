@@ -39,13 +39,13 @@ import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions 
 import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createBatchTargetPicker } from "./batch-target-picker.js";
+import { createScenarioCasePicker } from "./scenario-case-picker.js";
 import {
   applyPromptPresetToForm,
   renderPromptPresetOptions,
 } from "./prompt-presets.js";
 import { createProfileController } from "./profile-controller.js";
 import { createChannelAdmin } from "./channel-admin.js";
-import { createQuickTestController } from "./quick-test-controller.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
 import { renderStabilitySummary as renderStabilitySummaryPanel } from "./stability-view.js";
@@ -108,9 +108,6 @@ modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
 requireElement("#reload-model-targets").addEventListener("click", () => channelAdmin.loadModelTargets());
-const quickTestForm = requireElement("#quick-test-form");
-const quickProfileSelect = requireElement("#quick-profile-select");
-const quickTestResult = requireElement("#quick-test-result");
 const quickVerifyProfileSelect = requireElement("#quickverify-profile-select");
 const quickVerifySubmit = requireElement("#quickverify-submit");
 const quickVerifyResult = requireElement("#quickverify-result");
@@ -119,8 +116,6 @@ const trendChart = requireElement("#trend-chart");
 const trendRegression = requireElement("#trend-regression");
 const trendTable = requireElement("#trend-table");
 const trendAlerts = requireElement("#trend-alerts");
-const quickPromptPreset = requireElement("#quick-prompt-preset");
-const quickPromptHint = requireElement("#quick-prompt-hint");
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
@@ -175,14 +170,13 @@ const clientReplayBatch = requireElement("#client-replay-batch");
 // 模型下拉沿用原 *-profile-select(仍 name="profileId"),所以表单提交与后端不变。
 const admissionCascade = createCascadeTargetPicker(requireElement("#admission-channel-select"), admissionProfileSelect);
 const standardCascade = createCascadeTargetPicker(requireElement("#standard-channel-select"), standardProfileSelect);
-const quickCascade = createCascadeTargetPicker(requireElement("#quick-channel-select"), quickProfileSelect);
 const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
 const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
 const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-select"), trendProfileSelect);
 
 // 程序化跳转回填代理:控制器里 `xxxProfileSelect.value = id` 时,写入走级联(同步渠道+模型下拉),
 // 读取仍取模型选中值。传给会做跳转回填的控制器(profile / standard-eval)。
-const quickProfileTarget = { get value() { return quickProfileSelect.value; }, set value(v) { quickCascade.setValue(v); } };
+const quickVerifyProfileTarget = { get value() { return quickVerifyProfileSelect.value; }, set value(v) { quickVerifyCascade.setValue(v); } };
 const stabilityProfileTarget = { get value() { return stabilityProfileSelect.value; }, set value(v) { stabilityCascade.setValue(v); } };
 
 // 批量两维度选择器(渠道体检 A / 渠道选优 B),3 个批量页各一个。选中项同步到隐藏的
@@ -190,6 +184,8 @@ const stabilityProfileTarget = { get value() { return stabilityProfileSelect.val
 const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-batch-picker"), { hiddenSelect: admissionBatchProfileSelect });
 const batchPicker = createBatchTargetPicker(requireElement("#batch-picker"), { hiddenSelect: batchProfileSelect });
 const scenarioPicker = createBatchTargetPicker(requireElement("#scenario-picker"), { hiddenSelect: scenarioProfileSelect });
+// 「选择测试场景」复用 .batch-picker 勾选样式,真值写回隐藏的 scenarioCaseSelect。
+const scenarioCasePicker = createScenarioCasePicker(requireElement("#scenario-case-picker"), scenarioCaseSelect);
 
 const taskEventList = requireElement("#task-event-list");
 const stabilityTemplate = requireElement("#stability-template");
@@ -248,9 +244,9 @@ const keyPrompt = createKeyModal({
 });
 const quickFailurePanel = createQuickFailurePanel({
   container: quickFailureActions,
-  getDefaultProfileId: () => quickProfileSelect.value,
+  getDefaultProfileId: () => quickVerifyProfileSelect.value,
   updateProfileKey,
-  retryQuickTest: () => quickTestForm.requestSubmit(),
+  retryQuickTest: () => quickVerifySubmit.click(),
   openProfiles: () => showPage("profiles"),
   openStandardEval: (profileId) => {
     if (profileId) standardCascade.setValue(profileId);
@@ -272,8 +268,8 @@ const profileController = createProfileController({
   renderProfileConfigCheck,
   loadProfiles,
   loadRequests,
-  quickProfileSelect: quickProfileTarget,
-  quickTestResult,
+  quickProfileSelect: quickVerifyProfileTarget,
+  quickTestResult: quickVerifyResult,
   quickFailurePanel,
   showPage,
   confirmAction,
@@ -300,7 +296,6 @@ requireElement("#reload-profiles").addEventListener("click", loadProfiles);
 requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
 });
-requireElement("#copy-stability-report").addEventListener("click", () => copyReportText("stability"));
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
 requireElement("#reload-manual").addEventListener("click", loadManual);
@@ -319,7 +314,6 @@ requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRe
 requireElement("#cancel-standard-task").addEventListener("click", () => cancelRemoteTask(state, "standard"));
 stabilityTemplate.addEventListener("change", applyStabilityTemplate);
 batchTemplate.addEventListener("change", applyBatchTemplate);
-quickPromptPreset.addEventListener("change", applyQuickPromptPreset);
 standardPromptPreset.addEventListener("change", applyStandardPromptPreset);
 stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
@@ -380,13 +374,6 @@ async function saveProfileOnly() {
     toast(error.message, true);
   }
 }
-
-createQuickTestController({
-  form: quickTestForm,
-  resultElement: quickTestResult,
-  quickFailurePanel,
-  afterRequest: loadRequests,
-});
 
 function formatQuickVerify(result) {
   const verdict = result.verdict || {};
@@ -497,6 +484,7 @@ quickVerifySubmit.addEventListener("click", async () => {
   }
   quickVerifySubmit.disabled = true;
   quickVerifyResult.textContent = "快检中，请稍候...";
+  quickFailurePanel.clear();
   try {
     const result = await api("/api/tests/quick-verify", {
       method: "POST",
@@ -506,6 +494,7 @@ quickVerifySubmit.addEventListener("click", async () => {
     await loadRequests();
   } catch (error) {
     quickVerifyResult.textContent = `快检失败：${error.message}`;
+    quickFailurePanel.render(error, profileId);
   } finally {
     quickVerifySubmit.disabled = false;
   }
@@ -524,7 +513,7 @@ createStandardEvalController({
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),
   refreshResults: () => loadResultsBundle(),
   showPage,
-  quickProfileSelect: quickProfileTarget,
+  quickProfileSelect: quickVerifyProfileTarget,
   stabilityProfileSelect: stabilityProfileTarget,
   stabilityTemplate,
   applyStabilityTemplate,
@@ -1394,7 +1383,6 @@ function renderProfileOptions() {
   // 单选运行页:级联(渠道 → 模型)
   admissionCascade.refresh(data);
   standardCascade.refresh(data);
-  quickCascade.refresh(data);
   quickVerifyCascade.refresh(data);
   stabilityCascade.refresh(data);
   trendCascade.refresh(data);
@@ -1410,15 +1398,17 @@ function renderScenarioOptions() {
   syncScenarioTemplateAvailability();
   if (state.scenarios.length === 0) {
     scenarioCaseSelect.innerHTML = `<option value="">暂无测试场景</option>`;
+    scenarioCasePicker.refresh();
     return;
   }
 
   scenarioCaseSelect.innerHTML = state.scenarios
     .map(
       (scenario) =>
-        `<option value="${scenario.id}" selected>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
+        `<option value="${scenario.id}" data-name="${escapeHtml(scenario.name)}" data-difficulty="${escapeHtml(scenario.difficulty)}" selected>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
     )
     .join("");
+  scenarioCasePicker.refresh();
 }
 
 function syncScenarioTemplateAvailability() {
@@ -1514,15 +1504,6 @@ function applyBatchTemplate() {
   });
 }
 
-function applyQuickPromptPreset() {
-  applyPromptPresetToForm({
-    kind: "quick",
-    form: quickTestForm,
-    select: quickPromptPreset,
-    hint: quickPromptHint,
-  });
-}
-
 function applyStandardPromptPreset() {
   applyPromptPresetToForm({
     kind: "standard",
@@ -1562,6 +1543,7 @@ function applyScenarioTemplate() {
     hint: scenarioTemplateHint,
     updateEstimates,
   });
+  scenarioCasePicker.refresh();
 }
 
 function applyProfileTemplate() {
@@ -1581,11 +1563,9 @@ function hydrateProjectInfoForm() {
 }
 
 function hydratePromptPresetSelects() {
-  quickPromptPreset.innerHTML = renderPromptPresetOptions("quick", "connectivity");
   standardPromptPreset.innerHTML = renderPromptPresetOptions("standard", "default");
   stabilityPromptPreset.innerHTML = renderPromptPresetOptions("stability", "basic");
   batchPromptPreset.innerHTML = renderPromptPresetOptions("batch", "fair-basic");
-  applyQuickPromptPreset();
   applyStandardPromptPreset();
   applyStabilityPromptPreset();
   applyBatchPromptPreset();
