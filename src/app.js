@@ -49,6 +49,7 @@ import { createChannelAdmin } from "./channel-admin.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
 import { renderStabilitySummary as renderStabilitySummaryPanel } from "./stability-view.js";
+import { renderScenarioSummary as renderScenarioSummaryPanel } from "./scenario-view.js";
 import { updateEstimateLabels } from "./test-estimates.js";
 import { createTaskFormController, requireSelectedValues } from "./test-form-controller.js";
 import {
@@ -151,6 +152,7 @@ const scenarioTestForm = requireElement("#scenario-test-form");
 const scenarioProfileSelect = requireElement("#scenario-profile-select");
 const scenarioCaseSelect = requireElement("#scenario-case-select");
 const scenarioSubmit = requireElement("#scenario-submit");
+const scenarioSummary = requireElement("#scenario-summary");
 const scenarioTestResult = requireElement("#scenario-test-result");
 const testRunList = requireElement("#test-run-list");
 const clientLogForm = requireElement("#client-log-form");
@@ -644,7 +646,7 @@ createTaskFormController({
 createTaskFormController({
   form: scenarioTestForm,
   submitButton: scenarioSubmit,
-  resultElement: scenarioTestResult,
+  resultElement: scenarioSummary,
   progressElement: scenarioProgress,
   state,
   slot: "scenario",
@@ -658,12 +660,14 @@ createTaskFormController({
     return scenarioIds ? { ...payload, profileIds, scenarioIds } : null;
   },
   beforeStart: (payload) => {
-    scenarioTestResult.textContent = `正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。`;
+    scenarioSummary.innerHTML = `<p class="muted">正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。</p>`;
+    scenarioTestResult.textContent = "测试完成后会在这里显示摘要和本地报告文件路径。";
     state.latestReportCopies.scenario = "";
   },
   onSuccess: async (result) => {
     const copyableSummary = getCopyableReportText(result, formatScenarioResult(result));
     state.latestReportCopies.scenario = copyableSummary;
+    renderScenarioSummary(result);
     scenarioTestResult.textContent = copyableSummary;
     await loadResultsBundle();
     toast("场景测试完成。");
@@ -1449,6 +1453,10 @@ function renderDeliveryViews() {
 
 function renderStabilitySummary(result) {
   renderStabilitySummaryPanel(stabilitySummary, result);
+}
+
+function renderScenarioSummary(result) {
+  renderScenarioSummaryPanel(scenarioSummary, result);
 }
 
 function renderProfileConfigCheck(validation = null) {

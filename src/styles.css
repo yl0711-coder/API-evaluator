@@ -607,6 +607,13 @@ code {
   gap: 14px;
 }
 
+/* 批量准入对比：右侧「同时测试 API 数」带 field-hint，列更高；默认 align-items: stretch
+   会把左侧「测试包」一列连同其下拉一起拉高。改为顶端对齐，使「测试包」下拉与右侧
+   输入框同高并对齐。 */
+#admission-batch-form {
+  align-items: start;
+}
+
 .form-section-title h3 {
   margin: 4px 0 0;
   font-size: 22px;
@@ -1352,6 +1359,26 @@ button.danger {
 
 .wide-summary {
   grid-column: 1 / -1;
+}
+
+/* 场景测试「汇总结论」逐 API 卡：指标横排，结论标题比单目标卡略小以容纳多行 */
+.scenario-summary-card .scenario-summary-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin: 8px 0 4px;
+}
+.scenario-summary-card .scenario-summary-metrics span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.scenario-summary-card .scenario-summary-metrics b {
+  font-size: 19px;
+  font-weight: 700;
+}
+.scenario-summary-card strong {
+  font-size: 17px;
 }
 
 .result-box {

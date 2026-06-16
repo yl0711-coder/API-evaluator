@@ -190,6 +190,17 @@ export function buildScenarioSummary({
     maxParallelProfiles,
     requestConcurrency,
     scenarios: selectedScenarios.map(maskScenario),
+    // 逐 API 精简摘要：供前端「汇总结论」卡使用。任务通道会剥离重字段 results/records，
+    // 这里单列一份轻量副本（仅卡片所需字段）确保前端拿得到。
+    profileDigest: profileResults.map((p) => ({
+      profileId: p.profileId,
+      profileName: p.profileName,
+      model: p.model,
+      successRateText: p.successRateText,
+      avgQualityScore: p.avgQualityScore,
+      p95TotalMs: p.p95TotalMs,
+      recommendation: p.recommendation,
+    })),
     results: profileResults,
   };
 }
