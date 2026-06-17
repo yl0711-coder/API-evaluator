@@ -31,7 +31,8 @@
     "start": "node server.mjs",
     "build": "vite build",
     "check": "node --check server.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "fingerprint:baseline": "node --env-file=.env.evaluator scripts/claude-token-baseline.mjs"
   },
   "engines": {
     "node": ">=22.5.0"
