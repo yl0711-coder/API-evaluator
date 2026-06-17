@@ -1,0 +1,173 @@
+{
+  "schema": "claude-tier-reference/v1",
+  "_generated": "本文件由 scripts/claude-tier-calibrate.mjs 生成，请勿手工编辑；改题或换源后重跑覆盖。",
+  "_disclaimer": "通过率来自可信端点，是档位的相对参考基线，非模型身份认证。线上分类用每题每档通过率做似然比，判定『声称档 vs 行为最像档』，结论为概率性『疑似降级/需上游解释』，量化/蒸馏高仿与探针规避属盲区。",
+  "probeVersion": "2026.06.17",
+  "battery": "both",
+  "repeats": 8,
+  "seed": 20260617,
+  "sourceOfficial": false,
+  "runtime": {
+    "maxTokens": 512,
+    "temperature": null,
+    "defaults": {
+      "temperature": 0,
+      "maxTokens": 256
+    }
+  },
+  "tiers": {
+    "opus": "claude-opus-4-8",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5"
+  },
+  "calibratedTiers": [
+    "opus",
+    "sonnet",
+    "haiku"
+  ],
+  "anchorHealth": {
+    "availableTiers": [
+      "opus",
+      "sonnet",
+      "haiku"
+    ],
+    "monotonicRate": 0.75,
+    "avgSeparation": 0.375,
+    "healthy": true,
+    "note": "档位阶梯正常（单调且拉得开），参考源确在区分各档；但仍非官方 ground-truth，线上分类应降一档置信。"
+  },
+  "references": {
+    "cs_json@L1": {
+      "opus": 1,
+      "sonnet": 1,
+      "haiku": 0.625,
+      "attempts": {
+        "opus": 8,
+        "sonnet": 8,
+        "haiku": 8
+      }
+    },
+    "chain_arith@L2": {
+      "opus": 1,
+      "sonnet": 1,
+      "haiku": 0.625,
+      "attempts": {
+        "opus": 8,
+        "sonnet": 8,
+        "haiku": 8
+      }
+    },
+    "code_trace@L2": {
+      "opus": 0.875,
+      "sonnet": 0.625,
+      "haiku": 0,
+      "attempts": {
+        "opus": 8,
+        "sonnet": 8,
+        "haiku": 8
+      }
+    },
+    "gen_constraints@L1": {
+      "opus": 0.875,
+      "sonnet": 1,
+      "haiku": 1,
+      "attempts": {
+        "opus": 8,
+        "sonnet": 8,
+        "haiku": 8
+      }
+    },
+    "cs_json@L3": {
+      "opus": 0.75,
+      "sonnet": 0.875,
+      "haiku": 0.25,
+      "attempts": {
+        "opus": 8,
+        "sonnet": 8,
+        "haiku": 8
+      }
+    },
+    "chain_arith@L3": {
+      "opus": 1,
+      "sonnet": 1,
+      "haiku": 0.5,
+      "attempts": {
+        "opus": 8,
+        "sonnet": 8,
+        "haiku": 8
+      }
+    },
+    "code_trace@L3": {
+      "opus": 0.125,
+      "sonnet": 0,
+      "haiku": 0,
+      "attempts": {
+        "opus": 8,
+        "sonnet": 8,
+        "haiku": 8
+      }
+    },
+    "gen_constraints@L3": {
+      "opus": 1,
+      "sonnet": 0.875,
+      "haiku": 0.625,
+      "attempts": {
+        "opus": 8,
+        "sonnet": 8,
+        "haiku": 8
+      }
+    }
+  },
+  "discrimination": [
+    {
+      "item": "cs_json@L1",
+      "opusVsSonnet": 0,
+      "sonnetVsHaiku": 0.375,
+      "keep": true
+    },
+    {
+      "item": "chain_arith@L2",
+      "opusVsSonnet": 0,
+      "sonnetVsHaiku": 0.375,
+      "keep": true
+    },
+    {
+      "item": "code_trace@L2",
+      "opusVsSonnet": 0.25,
+      "sonnetVsHaiku": 0.625,
+      "keep": true
+    },
+    {
+      "item": "gen_constraints@L1",
+      "opusVsSonnet": 0.125,
+      "sonnetVsHaiku": 0,
+      "keep": false
+    },
+    {
+      "item": "cs_json@L3",
+      "opusVsSonnet": 0.125,
+      "sonnetVsHaiku": 0.625,
+      "keep": true
+    },
+    {
+      "item": "chain_arith@L3",
+      "opusVsSonnet": 0,
+      "sonnetVsHaiku": 0.5,
+      "keep": true
+    },
+    {
+      "item": "code_trace@L3",
+      "opusVsSonnet": 0.125,
+      "sonnetVsHaiku": 0,
+      "keep": false
+    },
+    {
+      "item": "gen_constraints@L3",
+      "opusVsSonnet": 0.125,
+      "sonnetVsHaiku": 0.25,
+      "keep": false
+    }
+  ],
+  "errors": [],
+  "createdAt": "2026-06-17T07:51:27.837Z"
+}

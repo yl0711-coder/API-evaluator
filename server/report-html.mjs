@@ -63,17 +63,28 @@ function renderMarkdownForReport(markdown) {
   return html.join("\n");
 }
 
+// GFM 分隔行：去掉首尾管道后，每个单元格只由 - : 和空白组成（如 ---、:---:、 --- ）。
+function isTableSeparator(line) {
+  const body = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return body.length > 0 && /^[\s:|-]+$/.test(body) && body.includes("-");
+}
+
+// 按「未转义的管道」切分单元格，再把 \| 还原成字面量 |。
+// 报告里的说明/摘要/证据列经 escapeMarkdownTable 把内容中的 | 转义成 \|，
+// 若直接 split("|") 会把一个单元格拆成多列，导致整张表错位。
+function splitTableCells(line) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.replace(/\\\|/g, "|").trim());
+}
+
 function renderReportTable(lines) {
   const rows = lines
-    .filter((line) => !/^\|\s*-+/.test(line))
-    .map((line) =>
-      line
-        .trim()
-        .replace(/^\|/, "")
-        .replace(/\|$/, "")
-        .split("|")
-        .map((cell) => formatReportInline(cell.trim())),
-    );
+    .filter((line) => !isTableSeparator(line))
+    .map((line) => splitTableCells(line).map((cell) => formatReportInline(cell)));
   if (!rows.length) return "";
   const [head, ...body] = rows;
   return [

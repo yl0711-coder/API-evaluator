@@ -91,8 +91,8 @@ export function renderAdmissionResult(result) {
         </article>
         <article class="summary-card">
           <span>分词器指纹</span>
-          <strong class="${tokenizerFpClass(result.tokenizerFingerprint)}">${escapeHtml(tokenizerFpText(result.tokenizerFingerprint))}</strong>
-          <small>${escapeHtml(tokenizerFpDetail(result.tokenizerFingerprint))}</small>
+          <strong class="${tokenizerFpClass(result)}">${escapeHtml(tokenizerFpText(result))}</strong>
+          <small>${escapeHtml(tokenizerFpDetail(result))}</small>
         </article>
       </div>
 
@@ -155,6 +155,8 @@ function identityDetail(identityCheck) {
 
 function purityClass(purityAssessment) {
   if (!purityAssessment) return "warn";
+  // 疑似档位降级 / 模型不匹配：风险结论，直接判红，不被其它项撑高的分数洗白成绿。
+  if (["suspected_tier_downgrade", "suspected_model_mismatch"].includes(purityAssessment.classification)) return "fail";
   if (purityAssessment.score >= 85) return "ok";
   if (purityAssessment.score >= 65) return "warn";
   return "fail";
@@ -162,7 +164,10 @@ function purityClass(purityAssessment) {
 
 function purityDetail(purityAssessment) {
   if (!purityAssessment) return "未生成模型纯度初判。";
-  return `纯度分 ${purityAssessment.score}/100，置信度 ${purityAssessment.confidence}。`;
+  const base = `纯度分 ${purityAssessment.score}/100，置信度 ${purityAssessment.confidence}。`;
+  // 降级时把判词（像哪档/后验）带到卡片小字，扫一眼即可见，不必展开技术报告。
+  const downgrade = (purityAssessment.riskFlags || []).find((flag) => flag.code === "tier_downgrade");
+  return downgrade ? `${base} ${downgrade.detail}` : base;
 }
 
 function fingerprintClass(fingerprintSummary) {
@@ -177,25 +182,39 @@ function fingerprintText(fingerprintSummary) {
   return `${fingerprintSummary.passedCount}/${fingerprintSummary.totalCount} 通过`;
 }
 
-function tokenizerFpClass(fp) {
-  if (!fp || !fp.applicable) return "warn";
-  if (fp.status === "consistent") return "ok";
-  if (fp.status === "mismatch") return "fail";
-  return "warn";
+// 分词器指纹卡的家族自适应视图：
+//   Claude 家族 → result.tokenizerFingerprint（本地基线线性拟合）；
+//   OpenAI 家族 → result.absoluteTokenAudit（官方离线精确分词线性拟合，token-auditor.mjs）；
+//   其它 / 不可用 → 不适用。
+function tokenizerFpView(result) {
+  const fp = result?.tokenizerFingerprint; // Claude：基线拟合
+  if (fp) {
+    if (!fp.applicable) return { cls: "warn", text: "不适用", detail: fp.reason || "未核验。" };
+    if (fp.status === "consistent") return { cls: "ok", text: "一致", detail: `按 ${fp.baselineModel} 基线，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（n=${fp.n ?? 0}）。` };
+    if (fp.status === "mismatch") return { cls: "fail", text: "疑似冒牌", detail: `与 ${fp.baselineModel} 分词不一致，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}。` };
+    return { cls: "warn", text: "需复核", detail: `按 ${fp.baselineModel} 基线，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（n=${fp.n ?? 0}）。` };
+  }
+  const abs = result?.absoluteTokenAudit; // OpenAI：官方离线精确分词
+  if (abs && abs.applicable) {
+    const familyMismatch = (abs.flags || []).some((f) => f.code === "tokenizer_family_mismatch");
+    if (familyMismatch) return { cls: "fail", text: "疑似冒牌", detail: `与官方 ${abs.encoding} 精确分词不成线性（R²=${abs.r2 ?? "-"}），疑似底层非该家族。` };
+    if (abs.status === "consistent") return { cls: "ok", text: "一致", detail: `按官方 ${abs.encoding} 精确分词，slope=${abs.slope ?? "-"} / R²=${abs.r2 ?? "-"}。` };
+    return { cls: "warn", text: "需复核", detail: `按官方 ${abs.encoding} 精确分词，计费倍率 slope=${abs.slope ?? "-"} / R²=${abs.r2 ?? "-"}。` };
+  }
+  if (abs && !abs.applicable) return { cls: "warn", text: "不适用", detail: abs.note || "无可用离线分词器（仅 OpenAI 系支持绝对判定）。" };
+  return { cls: "warn", text: "不适用", detail: "仅对声称 Claude / OpenAI 家族的模型做分词核验。" };
 }
 
-function tokenizerFpText(fp) {
-  if (!fp) return "不适用";
-  if (!fp.applicable) return "不适用";
-  if (fp.status === "consistent") return "一致";
-  if (fp.status === "mismatch") return "疑似冒牌";
-  return "需复核";
+function tokenizerFpClass(result) {
+  return tokenizerFpView(result).cls;
 }
 
-function tokenizerFpDetail(fp) {
-  if (!fp) return "仅对声称 Claude 的模型做分词核验。";
-  if (!fp.applicable) return fp.reason || "未核验。";
-  return `按 ${fp.baselineModel} 基线，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（n=${fp.n ?? 0}）。`;
+function tokenizerFpText(result) {
+  return tokenizerFpView(result).text;
+}
+
+function tokenizerFpDetail(result) {
+  return tokenizerFpView(result).detail;
 }
 
 function buildTechnicalFallback(result, errorEntries) {

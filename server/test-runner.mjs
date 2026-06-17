@@ -27,6 +27,7 @@ import {
   buildProtocolRequest,
   buildProtocolStreamRequest,
   buildProtocolToolRequest,
+  extractFinishReason,
   extractOutputText,
   extractToolCall,
   extractUsage,
@@ -50,6 +51,7 @@ import {
 } from "./reporting.mjs";
 import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary } from "./summaries.mjs";
 import { buildFingerprintSnapshot, trackModelFingerprint } from "./fingerprint-tracking.mjs";
+import { buildTierProbeCases, classifyTierFromRecords, evaluateTierCase, loadTierContext } from "./tier-admission.mjs";
 import { buildTrendSeries, detectRegression, toTrendPoint } from "./regression.mjs";
 import { queryProfileRunSummaries, recordRegressionAlert, recordRequest, recordSpend, recordTestRun } from "./db.mjs";
 import { isLiveJudgeEnabled, runLiveJudgeAudit } from "./live-adapters.mjs";
@@ -287,6 +289,9 @@ export async function runAdmissionTest(body, taskContext = {}) {
   const runId = `admission-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
   const startedAt = new Date();
   const cases = buildAdmissionCases(packageLevel, profile.defaultModel);
+  // 档位降级判别：仅 standard/deep + Claude + 有匹配档位参考时，追加"多跑几次的判别题"。
+  const tierContext = packageLevel === "standard" || packageLevel === "deep" ? loadTierContext(profile.defaultModel) : null;
+  if (tierContext) cases.push(...buildTierProbeCases(tierContext.reference));
   const records = [];
 
   for (const testCase of cases) {
@@ -308,6 +313,7 @@ export async function runAdmissionTest(body, taskContext = {}) {
     packageLevel,
     startedAt,
     endedAt,
+    tierContext,
   });
   summary = await attachRunArtifacts(runId, summary, { records });
   summary.predictedConsumption = normalizePredicted(body.predicted);
@@ -652,6 +658,9 @@ function evaluateAdmissionCase(testCase, record) {
   if (testCase.id.startsWith("fingerprint_")) {
     return evaluateFingerprintProbe(testCase, record.responseText || record.responseSummary);
   }
+  if (testCase.id.startsWith("tier_")) {
+    return evaluateTierCase(testCase, record.responseText || record.responseSummary);
+  }
 
   return {
     passed: true,
@@ -717,7 +726,7 @@ function identityIssueText(identityCheck) {
   return `模型没有明确自述家族，标称 ${identityCheck.expectedFamily}，需结合后续测试判断。`;
 }
 
-function buildAdmissionSummary({ runId, profile, records, packageLevel, startedAt, endedAt }) {
+function buildAdmissionSummary({ runId, profile, records, packageLevel, startedAt, endedAt, tierContext = null }) {
   const requestCount = records.length;
   const successCount = records.filter((record) => record.success).length;
   const passedCount = records.filter((record) => record.admission?.passed).length;
@@ -746,6 +755,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
   const tokenAudit = buildTokenAudit(records);
   const billingAudit = auditBillingDimensions(records, { model: profile.defaultModel });
   const fingerprintSummary = buildFingerprintProbeSummary(records);
+  const tierDiscrimination = classifyTierFromRecords(records, tierContext);
   const economics = estimateProfileRunEconomics(profile, { inputTokens, outputTokens });
   const purityAssessment = buildPurityAssessment({
     modelName: profile.defaultModel,
@@ -759,6 +769,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     errorCounts,
     tokenAudit,
     fingerprintSummary,
+    tierDiscrimination,
   });
   const score = Math.max(
     0,
@@ -814,6 +825,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     identityPassed,
     identityCheck,
     purityAssessment,
+    tierDiscrimination,
     tokenAudit,
     billingAudit,
     actualConsumption: buildRunConsumption(profile, records),
@@ -1273,14 +1285,46 @@ export function linkExternalAbort(controller, signal) {
 // 上游探测的统一骨架：三类探测（普通生成 / 工具调用 / 流式结构）只在
 //   ① buildRequest 构造请求 ② interpret 解释成功响应 ③ computeSuccess 成功判定 三处不同；
 // 其余（超时 / 外部中止 / 截断保护 / 计时 / auth-fail / finalize 落库）完全一致。
+// 瞬时失败退避重试参数：限流型中转最常见的就是 429，单次不重试会整轮判 F。
+const RETRY_MAX_ATTEMPTS = 3; // 含首次：最多 1 + 2 次重试
+const RETRY_BASE_DELAY_MS = 600; // 指数退避基数
+const RETRY_MAX_DELAY_MS = 20000; // 单次退避上限（同时钳制 Retry-After，避免被上游要求长睡）
+
+// Retry-After（秒数或 HTTP 日期）→ 毫秒。无法解析 → null。
+function parseRetryAfter(value) {
+  if (!value) return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return Math.max(0, Math.round(secs * 1000));
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
+}
+
+// 退避睡眠，可被外部取消打断。返回 true=被取消，false=正常睡完。
+function sleepUnlessAborted(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(true);
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, ms);
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
+}
+
 // API key 仅请求时读取，绝不进日志/报告（finalizeTestRecord 只写脱敏元数据）。
+// 429 / 5xx / 瞬时网络错误会指数退避重试；超时与用户取消止损不重试。
 async function runUpstreamProbe(profile, options, { buildRequest, interpret, computeSuccess, captureFirstToken = false }) {
   const requestId = crypto.randomUUID();
   const startedAt = new Date();
   const timeoutMs = Number(profile.timeoutMs || 60000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
 
   // 贯穿各 finalize 分支的可变结果（含变体特有字段 toolCall / streamValidation / firstTokenMs）。
   const r = {
@@ -1290,11 +1334,13 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
     statusCode: null,
     responseText: "",
     usage: null,
+    finishReason: null,
     rawError: "",
     normalizedError: "",
     toolCall: null,
     streamValidation: null,
   };
+  let attempts = 0; // 实际发出的请求次数（含重试），写进记录便于诊断
   const finalize = () =>
     finalizeTestRecord({
       options,
@@ -1307,61 +1353,106 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       statusCode: r.statusCode,
       responseText: r.responseText,
       usage: r.usage,
+      finishReason: r.finishReason,
       rawError: r.rawError,
       normalizedError: r.normalizedError,
       toolCall: r.toolCall,
       streamValidation: r.streamValidation,
+      attempts,
       successOverride: computeSuccess(r),
     });
 
+  const apiKey = await readProfileApiKey(profile);
+  if (!apiKey) {
+    r.rawError = "API Key 未配置或无法从密钥存储读取。";
+    r.normalizedError = "auth_failed";
+    r.totalMs = 0;
+    return finalize();
+  }
+  let request;
   try {
-    const apiKey = await readProfileApiKey(profile);
-    if (!apiKey) {
-      r.rawError = "API Key 未配置或无法从密钥存储读取。";
-      r.normalizedError = "auth_failed";
-      r.totalMs = 0;
-      return await finalize();
-    }
-
-    const request = buildRequest({ ...profile, apiKey });
-    const started = performance.now();
-    await assertPublicTarget(request.url);
-    const response = await fetch(request.url, {
-      method: "POST",
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal: controller.signal,
-      redirect: "error",
-    });
-    r.firstByteMs = Math.round(performance.now() - started);
-    r.statusCode = response.status;
-    const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
-    r.totalMs = Math.round(performance.now() - started);
-    // 真 TTFT：首个流式分片到达时刻（≈首 token）。仅流式可测；非流式 JSON 整体返回、
-    // 无 token 级时序，故 captureFirstToken=false 时保持 null。
-    if (captureFirstToken && rawResult.firstChunkAt != null) {
-      r.firstTokenMs = Math.max(0, Math.round(rawResult.firstChunkAt - started));
-    }
-    if (rawResult.truncated) {
-      r.rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
-      r.normalizedError = "response_too_large";
-      return await finalize();
-    }
-
-    const raw = rawResult.text;
-    if (!response.ok) {
-      r.rawError = summarizeText(raw);
-      r.normalizedError = normalizeHttpError(response.status, raw);
-    } else {
-      interpret(r, raw);
-    }
+    request = buildRequest({ ...profile, apiKey });
+    await assertPublicTarget(request.url); // egress 阻断等确定性失败：不重试
   } catch (error) {
-    r.totalMs = r.totalMs ?? timeoutMs;
+    r.totalMs = 0;
     r.rawError = error instanceof Error ? error.message : String(error);
-    r.normalizedError = /abort|timeout|timed out/i.test(r.rawError) ? "timeout" : "network_error";
-  } finally {
-    clearTimeout(timer);
-    unlinkAbort();
+    r.normalizedError = "network_error";
+    return finalize();
+  }
+
+  for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
+    attempts = attempt;
+    // 每次尝试独立的超时控制器；外部取消（options.abortSignal）贯穿所有尝试。
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
+    // 重置本次尝试的瞬时字段，避免上次失败残留泄漏到下一次。
+    r.firstByteMs = null;
+    r.firstTokenMs = null;
+    r.statusCode = null;
+    r.responseText = "";
+    r.usage = null;
+    r.finishReason = null;
+    r.rawError = "";
+    r.normalizedError = "";
+    r.toolCall = null;
+    r.streamValidation = null;
+    let retryable = false;
+    let retryAfterMs = null;
+    try {
+      const started = performance.now();
+      const response = await fetch(request.url, {
+        method: "POST",
+        headers: request.headers,
+        body: JSON.stringify(request.body),
+        signal: controller.signal,
+        redirect: "error",
+      });
+      r.firstByteMs = Math.round(performance.now() - started);
+      r.statusCode = response.status;
+      const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
+      r.totalMs = Math.round(performance.now() - started);
+      // 真 TTFT：首个流式分片到达时刻（≈首 token）。仅流式可测；非流式 JSON 整体返回、
+      // 无 token 级时序，故 captureFirstToken=false 时保持 null。
+      if (captureFirstToken && rawResult.firstChunkAt != null) {
+        r.firstTokenMs = Math.max(0, Math.round(rawResult.firstChunkAt - started));
+      }
+      if (rawResult.truncated) {
+        r.rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
+        r.normalizedError = "response_too_large";
+        break; // finally 会清理；不重试
+      }
+      const raw = rawResult.text;
+      if (!response.ok) {
+        r.rawError = summarizeText(raw);
+        r.normalizedError = normalizeHttpError(response.status, raw);
+        if (response.status === 429 || response.status >= 500) {
+          retryable = true; // 限流 / 上游 5xx：可重试
+          retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
+        }
+      } else {
+        interpret(r, raw);
+      }
+    } catch (error) {
+      r.totalMs = r.totalMs ?? timeoutMs;
+      r.rawError = error instanceof Error ? error.message : String(error);
+      if (/abort|timeout|timed out/i.test(r.rawError)) {
+        r.normalizedError = "timeout"; // 超时或用户取消：止损，不重试
+      } else {
+        r.normalizedError = "network_error";
+        retryable = true; // 瞬时网络错误：可重试
+      }
+    } finally {
+      clearTimeout(timer);
+      unlinkAbort();
+    }
+
+    if (!retryable || attempt >= RETRY_MAX_ATTEMPTS) break;
+    const backoffMs =
+      retryAfterMs != null
+        ? Math.min(retryAfterMs, RETRY_MAX_DELAY_MS)
+        : Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS);
+    if (await sleepUnlessAborted(backoffMs, options.abortSignal)) break; // 退避中被取消则立刻收手
   }
 
   return finalize();
@@ -1375,6 +1466,7 @@ export async function executeTestRequest(profile, prompt, options = {}) {
       const parsed = safeJson(raw);
       r.responseText = extractOutputText(profile.protocol, parsed);
       r.usage = extractUsage(parsed);
+      r.finishReason = extractFinishReason(profile.protocol, parsed);
       if (!r.responseText) {
         r.rawError = summarizeText(raw);
         r.normalizedError = normalizeEmptyResponse(raw);
@@ -1563,10 +1655,12 @@ async function finalizeTestRecord({
   statusCode,
   responseText,
   usage,
+  finishReason = null,
   rawError,
   normalizedError,
   toolCall = null,
   streamValidation = null,
+  attempts = 1,
   successOverride = undefined,
 }) {
   const record = {
@@ -1585,6 +1679,7 @@ async function finalizeTestRecord({
     totalMs,
     statusCode,
     success: successOverride ?? Boolean(statusCode && statusCode >= 200 && statusCode < 300 && responseText),
+    attempts,
     normalizedError,
     inputTokens: usage?.inputTokens ?? null,
     outputTokens: usage?.outputTokens ?? null,
@@ -1593,6 +1688,7 @@ async function finalizeTestRecord({
     reasoningTokens: usage?.reasoningTokens ?? null,
     tokenSource: usage ? "upstream" : "unknown",
     outputChars: responseText.length,
+    finishReason,
     responseSummary: summarizeText(responseText),
     responseText,
     toolCall,

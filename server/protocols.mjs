@@ -219,6 +219,18 @@ export function extractOutputText(protocol, parsed) {
   return String(parsed.choices?.[0]?.message?.content || "").trim();
 }
 
+// 截断信号：OpenAI choices[0].finish_reason==="length" / Claude stop_reason==="max_tokens"，
+// 表示输出被 max_tokens 截断（含推理模型把预算花在思考、最终答案没输出完）。返回原始 reason 或 null。
+export function extractFinishReason(protocol, parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+  if (protocol === "claude_messages") return parsed.stop_reason ?? null;
+  return parsed.choices?.[0]?.finish_reason ?? null;
+}
+
+export function isTruncatedFinish(reason) {
+  return reason === "length" || reason === "max_tokens";
+}
+
 export function extractToolCall(protocol, parsed) {
   if (!parsed || typeof parsed !== "object") {
     return null;
