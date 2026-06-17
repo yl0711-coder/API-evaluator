@@ -89,6 +89,11 @@ export function renderAdmissionResult(result) {
           <strong>${result.p95TotalMs ?? "-"} ms</strong>
           <small>平均耗时 ${result.avgTotalMs ?? "-"} ms。</small>
         </article>
+        <article class="summary-card">
+          <span>分词器指纹</span>
+          <strong class="${tokenizerFpClass(result.tokenizerFingerprint)}">${escapeHtml(tokenizerFpText(result.tokenizerFingerprint))}</strong>
+          <small>${escapeHtml(tokenizerFpDetail(result.tokenizerFingerprint))}</small>
+        </article>
       </div>
 
       <section class="admission-cases">
@@ -170,6 +175,27 @@ function fingerprintClass(fingerprintSummary) {
 function fingerprintText(fingerprintSummary) {
   if (!fingerprintSummary?.totalCount) return "未测试";
   return `${fingerprintSummary.passedCount}/${fingerprintSummary.totalCount} 通过`;
+}
+
+function tokenizerFpClass(fp) {
+  if (!fp || !fp.applicable) return "warn";
+  if (fp.status === "consistent") return "ok";
+  if (fp.status === "mismatch") return "fail";
+  return "warn";
+}
+
+function tokenizerFpText(fp) {
+  if (!fp) return "不适用";
+  if (!fp.applicable) return "不适用";
+  if (fp.status === "consistent") return "一致";
+  if (fp.status === "mismatch") return "疑似冒牌";
+  return "需复核";
+}
+
+function tokenizerFpDetail(fp) {
+  if (!fp) return "仅对声称 Claude 的模型做分词核验。";
+  if (!fp.applicable) return fp.reason || "未核验。";
+  return `按 ${fp.baselineModel} 基线，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（n=${fp.n ?? 0}）。`;
 }
 
 function buildTechnicalFallback(result, errorEntries) {

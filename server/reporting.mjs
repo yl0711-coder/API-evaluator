@@ -810,6 +810,7 @@ export function formatAdmissionReport(summary, records) {
     `- 模型纯度初判：${formatPurityAssessment(summary.purityAssessment)}`,
     `- 指纹探针：${formatFingerprintSummary(summary.fingerprintSummary)}`,
     `- Token 审计覆盖率：${summary.tokenAudit?.usageCoverageText || "未知"}`,
+    `- 分词器指纹核验：${formatTokenizerFingerprintLine(summary.tokenizerFingerprint)}`,
     "",
     "## 4. 分项结果",
     "",
@@ -841,7 +842,11 @@ export function formatAdmissionReport(summary, records) {
     "",
     formatBillingAudit(summary.billingAudit),
     "",
-    "## 10. 说明",
+    "## 10. 分词器指纹核验（Claude 身份）",
+    "",
+    formatTokenizerFingerprintSection(summary.tokenizerFingerprint),
+    "",
+    "## 11. 说明",
     "",
     "- 本报告用于接入前初筛，不等同于官方模型身份鉴定。",
     "- 准入等级由连通性、协议结构、工具调用、任务行为、耗时和 token 返回情况综合判断。",
@@ -853,6 +858,34 @@ export function formatAdmissionReport(summary, records) {
 function formatPurityAssessment(purityAssessment) {
   if (!purityAssessment) return "未评估";
   return `${purityAssessment.title}（${purityAssessment.score}/100，置信度 ${purityAssessment.confidence}）`;
+}
+
+const TOKENIZER_FP_STATUS_LABEL = {
+  consistent: "一致（符合该代 Claude 分词）",
+  mismatch: "⚠️ 疑似冒牌（分词比≠1）",
+  borderline: "偏差略大，建议复核",
+};
+
+function formatTokenizerFingerprintLine(fp) {
+  if (!fp) return "不适用（仅对声称 Claude 的模型核验）";
+  if (!fp.applicable) return `不适用（${fp.reason || "—"}）`;
+  return `${TOKENIZER_FP_STATUS_LABEL[fp.status] || fp.status}，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（基线 ${fp.baselineModel}，n=${fp.n}）`;
+}
+
+function formatTokenizerFingerprintSection(fp) {
+  if (!fp) {
+    return "- 不适用：仅对声称 Claude 家族的模型做分词核验。";
+  }
+  if (!fp.applicable) {
+    return `- 不适用：${fp.reason || "—"}`;
+  }
+  return [
+    `- 判定：${fp.verdict}`,
+    `- 对照基线：${fp.baselineModel}（${fp.baselineOfficial ? "官方端点" : "可信源（非官方分词，仅取线性关系）"}）`,
+    `- 拟合：slope=${fp.slope ?? "-"}，intercept=${fp.intercept ?? "-"}，R²=${fp.r2 ?? "-"}，样本 ${fp.n}，置信度 ${fp.confidence}`,
+    "- 方法：对固定探针的输入 token 数做线性拟合 reported≈slope·base+intercept；同一代分词器 slope≈1、R²≈1，",
+    "  模板固定开销只改 intercept。判据以 |slope−1| 为主、R² 为辅。只判“代/家族”，不区分同代具体型号。",
+  ].join("\n");
 }
 
 const DRIFT_LABELS = {

@@ -36,6 +36,8 @@ import {
 } from "./protocols.mjs";
 import { buildRunConsumption, estimateProfileRunEconomics } from "./costing.mjs";
 import { auditAbsoluteTokens, auditBillingDimensions } from "./token-auditor.mjs";
+import { auditTokenizerFingerprint, resolveBaselineModel } from "./tokenizer-fingerprint-audit.mjs";
+import { TOKENIZER_PROBES } from "./tokenizer-probes.mjs";
 import {
   countErrors,
   formatAdmissionReport,
@@ -332,6 +334,25 @@ export async function runAdmissionTest(body, taskContext = {}) {
     summary.absoluteTokenAudit = await auditAbsoluteTokens({ probes: probePoints, model: profile.defaultModel });
   } catch {
     // best-effort：绝对 token 审计失败不影响准入主流程
+  }
+  try {
+    // 分词器指纹核验：仅当声称 Claude 家族。有该代本地基线才发探针(避免无谓请求)。
+    if (inferModelFamily(profile.defaultModel) === "claude") {
+      if (resolveBaselineModel(profile.defaultModel)) {
+        const points = [];
+        for (const probe of TOKENIZER_PROBES) {
+          assertTaskNotCancelled(taskContext);
+          const probeRecord = await measureProbeInputTokens(profile, probe.text, { runId });
+          if (Number(probeRecord.inputTokens) > 0) points.push({ id: probe.id, reportedTokens: probeRecord.inputTokens });
+        }
+        summary.tokenizerFingerprint = auditTokenizerFingerprint({ model: profile.defaultModel, points });
+      } else {
+        // 声称 Claude 但本地没有该代基线 → 标 applicable:false（附原因），不发探针。
+        summary.tokenizerFingerprint = auditTokenizerFingerprint({ model: profile.defaultModel, points: [] });
+      }
+    }
+  } catch {
+    // best-effort：分词器指纹失败不影响准入主流程
   }
   summary.regression = await assessRunRegression(summary);
   const reportMarkdown = formatAdmissionReport(summary, records);
@@ -1360,6 +1381,34 @@ export async function executeTestRequest(profile, prompt, options = {}) {
       }
     },
     computeSuccess: () => undefined, // 走 finalize 默认：2xx + 有输出
+  });
+}
+
+// 分词器指纹探针：只为读取输入 token 数。max_tokens=1、不带 temperature（Opus 4.7+ 拒绝采样参数），
+// 把产出成本压到最小；不写请求日志，避免污染准入分项明细。
+function buildProbeTokenRequest(profile, text) {
+  const baseUrl = profile.baseUrl.replace(/\/+$/, "");
+  if (profile.protocol === "claude_messages") {
+    return {
+      url: `${baseUrl}/v1/messages`,
+      headers: { "content-type": "application/json", "x-api-key": profile.apiKey, "anthropic-version": profile.anthropicVersion || "2023-06-01" },
+      body: { model: profile.defaultModel, max_tokens: 1, messages: [{ role: "user", content: text }] },
+    };
+  }
+  return {
+    url: `${baseUrl}/v1/chat/completions`,
+    headers: { "content-type": "application/json", authorization: `Bearer ${profile.apiKey}` },
+    body: { model: profile.defaultModel, max_tokens: 1, stream: false, messages: [{ role: "user", content: text }] },
+  };
+}
+
+async function measureProbeInputTokens(profile, text, options = {}) {
+  return runUpstreamProbe(profile, { writeLog: false, ...options }, {
+    buildRequest: (p) => buildProbeTokenRequest(p, text),
+    interpret: (r, raw) => {
+      r.usage = extractUsage(safeJson(raw));
+    },
+    computeSuccess: (r) => Number(r.usage?.inputTokens) > 0,
   });
 }
 
