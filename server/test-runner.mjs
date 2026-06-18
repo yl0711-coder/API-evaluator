@@ -341,6 +341,7 @@ export async function runAdmissionTest(body, taskContext = {}) {
   } catch {
     // best-effort：绝对 token 审计失败不影响准入主流程
   }
+  const tokenizerProbeRecords = []; // 分词器探针虽 writeLog:false，但真实打到上游，需计入"实际上游消耗"口径
   try {
     // 分词器指纹核验：仅当声称 Claude 家族。有该代本地基线才发探针(避免无谓请求)。
     if (inferModelFamily(profile.defaultModel) === "claude") {
@@ -349,6 +350,7 @@ export async function runAdmissionTest(body, taskContext = {}) {
         for (const probe of TOKENIZER_PROBES) {
           assertTaskNotCancelled(taskContext);
           const probeRecord = await measureProbeInputTokens(profile, probe.text, { runId });
+          tokenizerProbeRecords.push(probeRecord);
           if (Number(probeRecord.inputTokens) > 0) points.push({ id: probe.id, reportedTokens: probeRecord.inputTokens });
         }
         summary.tokenizerFingerprint = auditTokenizerFingerprint({ model: profile.defaultModel, points });
@@ -360,6 +362,9 @@ export async function runAdmissionTest(body, taskContext = {}) {
   } catch {
     // best-effort：分词器指纹失败不影响准入主流程
   }
+  // 实际上游口径（仅报告体现，不进 UI 卡）：报告"请求数/合计 token"按逻辑用例计（重试合并、静默探针不计），
+  // 与中转后台对账会偏小。这里另算一份真实打到上游的口径——含每个用例的重试次数 + 14 个分词器探针。
+  summary.upstreamUsage = buildUpstreamUsage(records, tokenizerProbeRecords);
   summary.regression = await assessRunRegression(summary);
   const reportMarkdown = formatAdmissionReport(summary, records);
   const reportFiles = await saveReportFiles(runId, reportMarkdown, "模型准入评测报告");
@@ -582,13 +587,19 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
     abortSignal: taskContext?.task?.abortController?.signal,
   };
 
+  // 用例可声明自身输出上限（如档位判别题校准时限 256 token）。只下调、不上调：
+  //   取 min(渠道配置, 用例上限)，既复现校准运行参数，又不会把硬推理题放成超时重请求。
+  const effectiveProfile = testCase.maxTokens
+    ? { ...profile, maxTokens: Math.min(Number(profile.maxTokens) || 512, testCase.maxTokens) }
+    : profile;
+
   if (testCase.kind === "tool") {
-    return executeToolCallTestRequest(profile, baseOptions);
+    return executeToolCallTestRequest(effectiveProfile, baseOptions);
   }
   if (testCase.kind === "stream") {
-    return executeStreamStructureTestRequest(profile, testCase.prompt, baseOptions);
+    return executeStreamStructureTestRequest(effectiveProfile, testCase.prompt, baseOptions);
   }
-  return executeTestRequest(profile, testCase.prompt, baseOptions);
+  return executeTestRequest(effectiveProfile, testCase.prompt, baseOptions);
 }
 
 function evaluateAdmissionCase(testCase, record) {
@@ -724,6 +735,24 @@ function identityIssueText(identityCheck) {
     return `模型标称家族无法从模型名判断，自述为 ${identityCheck.reportedFamily}。`;
   }
   return `模型没有明确自述家族，标称 ${identityCheck.expectedFamily}，需结合后续测试判断。`;
+}
+
+// 实际上游/计费口径：把每个用例的真实请求次数（含重试，record.attempts）与静默分词器探针都算进去，
+// token 同理（含探针；重试的失败尝试不返回 usage，自然不计；流式无 usage，也不计——符合"不算流式"）。
+function buildUpstreamUsage(records, probeRecords = []) {
+  const attemptsOf = (r) => (Number(r?.attempts) > 0 ? Number(r.attempts) : 1);
+  const sumAttempts = (list) => list.reduce((sum, r) => sum + attemptsOf(r), 0);
+  const caseHits = sumAttempts(records);
+  const probeHits = sumAttempts(probeRecords);
+  const all = [...records, ...probeRecords];
+  return {
+    logicalRequestCount: records.length,
+    billedRequestCount: caseHits + probeHits,
+    probeRequestCount: probeHits,
+    retryCount: caseHits - records.length + (probeHits - probeRecords.length),
+    inputTokens: sumNullable(all.map((r) => r.inputTokens)),
+    outputTokens: sumNullable(all.map((r) => r.outputTokens)),
+  };
 }
 
 function buildAdmissionSummary({ runId, profile, records, packageLevel, startedAt, endedAt, tierContext = null }) {

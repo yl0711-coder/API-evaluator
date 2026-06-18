@@ -4,9 +4,9 @@ export const BASIC_SCENARIOS = [
     name: "连通性：基础响应",
     category: "connectivity",
     difficulty: "small",
-    prompt: "你是被接入评测的 API 助手。请用一句话回复，确认服务正常，并简单说明你是谁，方便测试人员判断这条渠道是否接通。",
+    prompt: "这是一次连通性自检。请只回复一句话，明确确认本渠道服务正常、已成功接通，必须在句中包含「服务正常」四个字，不要附加自我介绍或其他内容。",
     minChars: 12,
-    requiredAny: ["正常", "服务", "可以", "ready", "working"],
+    requiredAny: ["服务正常", "正常", "服务", "可以", "ready", "working"],
   },
   {
     id: "speed-short",

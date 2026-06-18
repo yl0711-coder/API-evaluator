@@ -9,7 +9,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { buildClaudeTierProbes, gradeTierProbe } from "./tier-probes-claude.mjs";
+import { buildClaudeTierProbes, gradeTierProbe, TIER_PROBE_RUNTIME } from "./tier-probes-claude.mjs";
 import { aggregateObserved, classifyChannelTier, loadTierReference, summarizeTierForPurity } from "./tier-discrimination.mjs";
 import { inferModelFamily } from "./model-fingerprint.mjs";
 import { isTruncatedFinish } from "./protocols.mjs";
@@ -65,6 +65,9 @@ export function buildTierProbeCases(reference, { repeats = ONLINE_REPEATS, seed 
     id: `tier_${p.id}`,
     name: `档位判别 ${p.itemId} L${p.level}`,
     prompt: p.prompt,
+    // 复现校准运行参数：输出封顶 256 token（与离线参考一致），避免硬推理题在线无限输出
+    //   撞穿超时 →（我们记 timeout / 中转记 502/504），并保证在线行为对齐参考分布。
+    maxTokens: TIER_PROBE_RUNTIME.maxTokens,
     tier: { itemId: p.itemId, level: p.level, expected: p.expected },
   }));
 }

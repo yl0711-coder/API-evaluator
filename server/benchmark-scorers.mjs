@@ -27,7 +27,7 @@ function valuesEqual(a, b) {
   } catch {
     return false;
   }
-}
+} // 这个函数用来比较a和b是不是相等
 
 // expected/actual：{ name, arguments: {k:v} }。结构化比对，非字符串匹配。
 export function scoreBfclToolCall(expected, actual) {

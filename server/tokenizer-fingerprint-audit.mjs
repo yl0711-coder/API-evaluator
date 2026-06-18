@@ -112,19 +112,27 @@ export function auditTokenizerFingerprint({ model, points } = {}) {
 
   // 判据:以 |slope−1| 为主信号(分词比率),R² 为辅(线性程度)。
   const slopeDev = Math.abs(slope - 1);
+  // 退化拟合:对长度各异的探针返回几乎相同的 reported(R² 无定义,或 slope≈0),
+  // 说明渠道未按输入长度真实分词 —— 是「常数应答/占位 usage」的指纹,不是有效拟合。
+  const degenerate = r2 == null || Math.abs(slope) < 0.01;
   let status;
   let verdict;
-  if (slopeDev <= 0.05 && r2 != null && r2 >= 0.995) {
+  if (degenerate) {
+    status = "mismatch";
+    verdict = `与「${entry.model}」核验未通过:渠道对 ${used.length} 个不同长度探针返回几乎相同的 input_tokens(slope≈0、R² 无定义),并非按输入真实分词,疑似伪造/占位 usage。`;
+  } else if (slopeDev <= 0.05 && r2 >= 0.995) {
     status = "consistent";
     verdict = `与「${entry.model}」分词高度线性一致(slope≈1, R²≈1),符合该代 Claude。`;
-  } else if (slopeDev >= 0.15 || (r2 != null && r2 < 0.95)) {
+  } else if (slopeDev >= 0.15 || r2 < 0.95) {
     status = "mismatch";
     verdict = `与「${entry.model}」分词不一致(slope=${round(slope)}, R²=${round(r2, 4)}),疑似非该代 Claude(挂羊头/换代)。`;
   } else {
     status = "borderline";
     verdict = `与「${entry.model}」基本线性但偏差略大(slope=${round(slope)}, R²=${round(r2, 4)}),建议复核或增加样本。`;
   }
-  const confidence = used.length >= 10 ? "high" : used.length >= 6 ? "medium" : "low";
+  // 置信度以样本数为基,但退化拟合无区分度 —— 样本再多也不构成有效证据,最高只给 low。
+  let confidence = used.length >= 10 ? "high" : used.length >= 6 ? "medium" : "low";
+  if (degenerate) confidence = "low";
 
   return {
     applicable: true,
@@ -139,6 +147,7 @@ export function auditTokenizerFingerprint({ model, points } = {}) {
     intercept: round(intercept, 1),
     r2: round(r2, 5),
     status,
+    degenerate,
     suspicious: status === "mismatch",
     confidence,
     verdict,

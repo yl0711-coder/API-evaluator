@@ -792,12 +792,14 @@ export function formatAdmissionReport(summary, records) {
     "",
     "## 3. 关键指标",
     "",
-    `- 请求数：${summary.requestCount}`,
+    `- 请求数：${summary.requestCount}（逻辑测试用例数）`,
+    `- 实际上游请求数（计费口径）：${formatBilledRequests(summary.upstreamUsage)}`,
     `- 成功率：${summary.successRateText} (${summary.successCount}/${summary.requestCount})`,
     `- 平均耗时：${summary.avgTotalMs ?? "-"} ms`,
     `- 慢请求参考 P95：${summary.p95TotalMs ?? "-"} ms`,
-    `- 输入 tokens 合计：${summary.inputTokens ?? "-"}`,
-    `- 输出 tokens 合计：${summary.outputTokens ?? "-"}`,
+    `- 输入 tokens 合计：${summary.inputTokens ?? "-"}（仅逻辑用例）`,
+    `- 输出 tokens 合计：${summary.outputTokens ?? "-"}（仅逻辑用例）`,
+    `- 本次上游真实消耗 token（含探针+重试，不含流式）：${formatUpstreamConsumption(summary.upstreamUsage)}`,
     `- **本次真实消耗**：${formatRunConsumption(summary.actualConsumption)}`,
     `- **基线回归**：${formatRegression(summary.regression)}`,
     `- 估算成本：${formatEstimatedCost(summary.estimatedCost)}（基于 API 配置里的上游成本单价）`,
@@ -869,7 +871,8 @@ const TOKENIZER_FP_STATUS_LABEL = {
 function formatTokenizerFingerprintLine(fp) {
   if (!fp) return "不适用（仅对声称 Claude 的模型核验）";
   if (!fp.applicable) return `不适用（${fp.reason || "—"}）`;
-  return `${TOKENIZER_FP_STATUS_LABEL[fp.status] || fp.status}，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（基线 ${fp.baselineModel}，n=${fp.n}）`;
+  const label = fp.degenerate ? "⚠️ 疑似伪造 usage（常数应答）" : TOKENIZER_FP_STATUS_LABEL[fp.status] || fp.status;
+  return `${label}，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（基线 ${fp.baselineModel}，n=${fp.n}）`;
 }
 
 function formatTokenizerFingerprintSection(fp) {
@@ -976,6 +979,21 @@ function formatRunConsumption(ac) {
   if (ac.cacheCreationTokens || ac.cacheReadTokens) parts.push(`缓存写 ${ac.cacheCreationTokens || 0}/读 ${ac.cacheReadTokens || 0}`);
   const cost = ac.estimatedCost != null ? `约 ${formatEstimatedCost(ac.estimatedCost)}（按配置单价）` : "未配单价，仅统计 token";
   return `${parts.join("，")}；${cost}`;
+}
+
+// 实际上游/计费口径（仅准入报告体现）：与"请求数/合计 token"的逻辑用例口径区分，便于和中转后台对账。
+function formatBilledRequests(usage) {
+  if (!usage) return "-";
+  const extra = [];
+  if (usage.retryCount) extra.push(`重试 ${usage.retryCount}`);
+  if (usage.probeRequestCount) extra.push(`指纹探针 ${usage.probeRequestCount}`);
+  const suffix = extra.length ? `（含 ${extra.join(" + ")}）` : "";
+  return `${usage.billedRequestCount}${suffix}`;
+}
+
+function formatUpstreamConsumption(usage) {
+  if (!usage) return "-";
+  return `输入 ${usage.inputTokens ?? "-"} / 输出 ${usage.outputTokens ?? "-"}`;
 }
 
 function formatAbsoluteTokenAudit(audit) {
