@@ -123,6 +123,7 @@ export function formatStabilityResult(result) {
     ...formatConsumptionLines(result),
     `Markdown 报告：${result.reportPath || "-"}`,
     `HTML 报告：${result.reportHtmlPath || "-"}`,
+    ...(result.aiAnalysisHtmlPath ? [`AI 分析报告（独立 HTML）：${result.aiAnalysisHtmlPath}`] : []),
     `JSON 原始结果：${result.rawJsonPath || "-"}`,
   ];
   return lines.join("\n");
@@ -137,6 +138,7 @@ export function formatScenarioResult(result) {
     `总耗时：${result.durationMs} ms`,
     ...formatConsumptionLines(result),
     `报告文件：${result.reportPath || "-"}`,
+    ...(result.aiAnalysisHtmlPath ? [`AI 分析报告（独立 HTML）：${result.aiAnalysisHtmlPath}`] : []),
     `JSON 原始结果：${result.rawJsonPath || "-"}`,
   ];
   return lines.join("\n");

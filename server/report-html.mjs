@@ -46,7 +46,10 @@ function renderMarkdownForReport(markdown) {
       html.push(`${escapeHtmlText(line)}\n`);
       continue;
     }
-    if (line.trim().startsWith("|")) {
+    // 表格行：以 | 开头是标准 GFM 表头/分隔行；表格已开启后，正文里用 join(" | ")
+    // 生成、没有首尾竖线的数据行也接纳（Markdown 渲染器同样宽松，否则 HTML 会把这些行
+    // 漏成 <p> 段落、表体为空）。须先有以 | 开头的表头，避免把含竖线的普通正文误判成表格。
+    if (line.trim().startsWith("|") || (table.length && isLooseTableRow(line))) {
       table.push(line);
       continue;
     }
@@ -61,6 +64,15 @@ function renderMarkdownForReport(markdown) {
   flushTable();
   if (inCode) html.push("</code></pre>");
   return html.join("\n");
+}
+
+// 宽松表体行：含未转义竖线、且不是标题/列表/引用等正文结构。仅在表格已开启时使用，
+// 用于接纳 join(" | ") 生成、缺首尾竖线的数据行。
+function isLooseTableRow(line) {
+  const body = line.trim();
+  if (!body) return false;
+  if (body.startsWith("#") || body.startsWith("- ") || body.startsWith(">")) return false;
+  return /(?<!\\)\|/.test(body);
 }
 
 // GFM 分隔行：去掉首尾管道后，每个单元格只由 - : 和空白组成（如 ---、:---:、 --- ）。
@@ -97,6 +109,9 @@ function renderReportTable(lines) {
 
 function formatReportInline(text) {
   return escapeHtmlText(text)
+    // 多反引号代码段（如模型把 JSON 包进 ```json ... ```）：先按成对的反引号串收口，
+    // 否则单反引号规则只吃掉中间一对，留下散落的 `` 看起来像渲染坏了。
+    .replace(/(`{2,})\s*([\s\S]*?)\s*\1/g, (_, _ticks, inner) => `<code>${inner}</code>`)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 }

@@ -55,6 +55,27 @@ export async function saveReportFiles(baseName, markdown, title) {
   return { markdownPath, htmlPath };
 }
 
+// AI 辅助分析单独落盘：只写一份独立 HTML（不产出 .md），并登记到报告中心。
+// markdown 为空（未启用 / 无内容）时直接跳过并返回 null。best-effort，绝不影响主报告。
+export async function saveAiAnalysisReport(baseName, markdown, title) {
+  if (!markdown) return null;
+  await mkdir(REPORTS_DIR, { recursive: true });
+  const safeBaseName = `${sanitizeReportBaseName(baseName)}-ai-analysis`;
+  const htmlPath = join(REPORTS_DIR, `${safeBaseName}.html`);
+  await writeFile(htmlPath, renderReportHtml(markdown, title), "utf8");
+  // 登记元数据：pathMd 留空（本报告只有 HTML），共享报告中心 + 留存清理同样适用。
+  await recordReport({
+    reportId: safeBaseName,
+    runId: String(baseName || ""),
+    type: "ai-analysis",
+    title: title || "",
+    pathMd: null,
+    pathHtml: htmlPath,
+    createdAt: new Date().toISOString(),
+  }).catch(() => {});
+  return { htmlPath };
+}
+
 function inferReportType(baseName) {
   const name = String(baseName || "");
   if (name.startsWith("scenario")) return "scenario";

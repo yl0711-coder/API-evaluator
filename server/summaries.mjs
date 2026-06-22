@@ -101,6 +101,9 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
     const okItems = items.filter((item) => item.success);
     const scores = items.map((item) => item.quality?.score).filter(isFiniteNumber);
     const times = okItems.map((item) => item.totalMs).filter(isFiniteNumber);
+    // 报告「模型样例回答」列用：优先取首条成功回答的摘要，全失败时退回首条记录的错误摘要。
+    // responseSummary 在落库时已 summarizeText（截断+脱敏），此处只是挑一条代表样例。
+    const sampleItem = okItems[0] || items[0] || null;
     return {
       scenarioId,
       scenarioName: items[0]?.scenarioName || scenarioId,
@@ -114,6 +117,7 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
       p95TotalMs: percentile(times, 0.95),
       avgQualityScore: Math.round(mean(scores) || 0),
       issues: [...new Set(items.flatMap((item) => item.quality?.issues || []))],
+      sampleResponse: sampleItem?.responseSummary || sampleItem?.rawError || "",
     };
   });
 

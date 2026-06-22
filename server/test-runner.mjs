@@ -42,11 +42,13 @@ import { TOKENIZER_PROBES } from "./tokenizer-probes.mjs";
 import {
   countErrors,
   formatAdmissionReport,
+  formatAiAnalysisDocument,
   formatBatchAdmissionReport,
   formatBatchReport,
   formatQuickVerifyReport,
   formatScenarioReport,
   formatStabilityReport,
+  saveAiAnalysisReport,
   saveReportFiles,
 } from "./reporting.mjs";
 import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary } from "./summaries.mjs";
@@ -985,11 +987,17 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
   });
   const reportMarkdown = formatStabilityReport(summary, records, { aiAnalysis });
   const reportFiles = await saveReportFiles(runId, reportMarkdown, "稳定性测试报告");
+  const aiAnalysisFiles = await saveAiAnalysisReport(
+    runId,
+    formatAiAnalysisDocument(aiAnalysis, { title: "稳定性测试 · AI 辅助分析" }),
+    "稳定性测试 · AI 辅助分析",
+  );
 
   await persistTestRun({
     ...summary,
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown: undefined,
@@ -999,6 +1007,7 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
     ...summary,
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown,
@@ -1084,12 +1093,18 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
   });
   const reportMarkdown = formatBatchReport(summary, { aiAnalysis });
   const reportFiles = await saveReportFiles(batchId, reportMarkdown, "批量稳定性测试总报告");
+  const aiAnalysisFiles = await saveAiAnalysisReport(
+    batchId,
+    formatAiAnalysisDocument(aiAnalysis, { title: "批量稳定性测试 · AI 辅助分析" }),
+    "批量稳定性测试 · AI 辅助分析",
+  );
 
   await persistTestRun({
     ...summary,
     type: "batch-stability",
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown: undefined,
@@ -1099,6 +1114,7 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
     ...summary,
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown,
@@ -1177,11 +1193,17 @@ export async function runScenarioTest(body, taskContext = {}) {
   });
   const reportMarkdown = formatScenarioReport(summary, { aiAnalysis });
   const reportFiles = await saveReportFiles(runId, reportMarkdown, "场景测试报告");
+  const aiAnalysisFiles = await saveAiAnalysisReport(
+    runId,
+    formatAiAnalysisDocument(aiAnalysis, { title: "场景测试 · AI 辅助分析" }),
+    "场景测试 · AI 辅助分析",
+  );
 
   await persistTestRun({
     ...summary,
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown: undefined,
@@ -1191,6 +1213,7 @@ export async function runScenarioTest(body, taskContext = {}) {
     ...summary,
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown,

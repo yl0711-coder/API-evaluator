@@ -162,6 +162,8 @@ export function createTaskManager({
         const resultSummary = summarizeTaskResult(publicResult);
         // 任务级单点：一个任务只打开它的主报告（批量任务=只开总报告，不会一渠道一个标签页）。
         openReportInBrowser(resultSummary.reportHtmlPath);
+        // AI 辅助分析独立成文，存在时一并打开（同受 EVALUATOR_OPEN_REPORT 开关控制）。
+        openReportInBrowser(resultSummary.aiAnalysisHtmlPath);
         await appendTaskEvent(taskEventsFile, task, "completed", { result: resultSummary });
       }
     } catch (error) {
@@ -352,6 +354,7 @@ export function summarizeTaskResult(result) {
       scenarioCount: result.scenarioCount,
       reportPath: result.reportPath,
       reportHtmlPath: result.reportHtmlPath,
+      aiAnalysisHtmlPath: result.aiAnalysisHtmlPath,
     };
   }
   if (result.batchId) {
@@ -361,6 +364,7 @@ export function summarizeTaskResult(result) {
       rounds: result.rounds,
       reportPath: result.reportPath,
       reportHtmlPath: result.reportHtmlPath,
+      aiAnalysisHtmlPath: result.aiAnalysisHtmlPath,
     };
   }
   return {
@@ -370,6 +374,7 @@ export function summarizeTaskResult(result) {
     p95TotalMs: result.p95TotalMs,
     reportPath: result.reportPath,
     reportHtmlPath: result.reportHtmlPath,
+    aiAnalysisHtmlPath: result.aiAnalysisHtmlPath,
   };
 }
 

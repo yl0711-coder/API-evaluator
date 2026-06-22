@@ -18,7 +18,7 @@ import {
   buildReviewSection,
   buildReportAppendix,
 } from "./report-authority.mjs";
-import { saveReportFiles, sanitizeReportBaseName } from "./report-files.mjs";
+import { saveAiAnalysisReport, saveReportFiles, sanitizeReportBaseName } from "./report-files.mjs";
 
 export {
   REPORT_TOOL_VERSION,
@@ -30,6 +30,7 @@ export {
   collectHighSensitivityFindings,
   buildReviewSection,
   buildReportAppendix,
+  saveAiAnalysisReport,
   saveReportFiles,
   sanitizeReportBaseName,
 };
@@ -281,7 +282,7 @@ export function formatSupplierEvidenceReport(evidence) {
 export function formatScenarioReport(summary, options = {}) {
   const safetySummary = buildSafetyReportSummary(summary);
   const scenarioInsights = buildScenarioInsights(summary);
-  const aiAnalysisSection = formatAiAnalysisSection(options.aiAnalysis);
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
   const plainRows = summary.results.map((result) => {
     const verdict = buildPlainVerdict(result.recommendation?.level, {
       successRateText: result.successRateText,
@@ -316,6 +317,7 @@ export function formatScenarioReport(summary, options = {}) {
         scenario.avgQualityScore,
         scenario.avgTotalMs || "-",
         scenario.p95TotalMs ?? "-",
+        escapeMarkdownTable(redactSensitiveText(scenario.sampleResponse || "-")),
         escapeMarkdownTable(scenario.issues.join("; ") || "-"),
         escapeMarkdownTable(review.verdict),
         escapeMarkdownTable(review.action),
@@ -413,8 +415,8 @@ export function formatScenarioReport(summary, options = {}) {
     "",
     safetySummary ? "## 7. 场景明细" : "## 6. 场景明细",
     "",
-    "| API | 场景 | 成功率 | 平均质量分 | 平均耗时 ms | 慢请求参考 P95 ms | 问题摘要 | 场景结论 | 处理建议 |",
-    "|---|---|---:|---:|---:|---:|---|---|---|",
+    "| API | 场景 | 成功率 | 平均质量分 | 平均耗时 ms | 慢请求参考 P95 ms | 模型样例回答 | 问题摘要 | 场景结论 | 处理建议 |",
+    "|---|---|---:|---:|---:|---:|---|---|---|---|",
     detailRows.join("\n"),
     "",
     safetySummary ? "## 8. 错误诊断与处理建议" : "## 7. 错误诊断与处理建议",
@@ -451,7 +453,7 @@ export function formatStabilityReport(summary, records, options = {}) {
     return `| ${index + 1} | ${status} | ${record.statusCode ?? "-"} | ${record.firstByteMs ?? "-"} | ${record.totalMs ?? "-"} | ${record.outputChars ?? 0} | ${record.inputTokens ?? "-"} | ${record.outputTokens ?? "-"} | ${escapeMarkdownTable(redactSensitiveText(record.responseSummary || record.rawError || "-"))} |`;
   });
   const stabilityInsights = buildStabilityInsights(summary);
-  const aiAnalysisSection = formatAiAnalysisSection(options.aiAnalysis);
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
 
   return [
     `# 稳定性测试报告`,
@@ -593,7 +595,7 @@ export function formatBatchReport(summary, options = {}) {
     );
   });
   const batchInsights = buildBatchInsights(summary, rankedResults);
-  const aiAnalysisSection = formatAiAnalysisSection(options.aiAnalysis);
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
 
   return [
     "# 批量稳定性测试总报告",
@@ -745,7 +747,8 @@ export function formatAdmissionReport(summary, records) {
       item.totalMs ?? "-",
       item.inputTokens ?? "-",
       item.outputTokens ?? "-",
-      escapeMarkdownTable(item.issue || item.summary || "-"),
+      escapeMarkdownTable(redactSensitiveText(item.summary || "-")),
+      escapeMarkdownTable(item.issue || "-"),
     ].join(" | "),
   );
   const errorLines = Object.entries(summary.errorCounts || {});
@@ -816,8 +819,8 @@ export function formatAdmissionReport(summary, records) {
     "",
     "## 4. 分项结果",
     "",
-    "| # | 测试项 | 结果 | HTTP 状态 | 总耗时 ms | 输入 tokens | 输出 tokens | 说明 |",
-    "|---|---|---|---:|---:|---:|---:|---|",
+    "| # | 测试项 | 结果 | HTTP 状态 | 总耗时 ms | 输入 tokens | 输出 tokens | 模型返回 | 说明 |",
+    "|---|---|---|---:|---:|---:|---:|---|---|",
     caseRows.join("\n"),
     "",
     "## 5. 错误分布",
@@ -1145,28 +1148,55 @@ function optionalReportSection(markdown) {
   return markdown ? [markdown, ""] : [];
 }
 
-function formatAiAnalysisSection(aiAnalysis) {
-  if (!aiAnalysis?.enabled) {
-    return "";
-  }
-  const usageText = [
+function formatAiUsageText(aiAnalysis) {
+  return [
     aiAnalysis.inputTokens === null || aiAnalysis.inputTokens === undefined ? "" : `输入 ${aiAnalysis.inputTokens} tokens`,
     aiAnalysis.outputTokens === null || aiAnalysis.outputTokens === undefined ? "" : `输出 ${aiAnalysis.outputTokens} tokens`,
   ].filter(Boolean).join("，") || "上游未返回 token 用量";
+}
 
+// 主报告里只保留一行指引：完整 AI 分析已拆成单独 HTML 文件，正文不再内联。
+function formatAiAnalysisPointer(aiAnalysis) {
+  if (!aiAnalysis?.enabled) {
+    return "";
+  }
   if (!aiAnalysis.success) {
     return [
       "## AI 辅助分析（可选）",
       "",
       "- 状态：已启用，但 AI 分析请求失败。",
       `- 错误：${aiAnalysis.error || "未知错误"}`,
-      `- 额外消耗：${usageText}`,
-      "- 说明：本地规则报告仍然有效；建议先根据上面的系统结论处理问题，不需要为了 AI 分析失败重复跑完整测试。",
+      "- 说明：本地规则报告仍然有效；无需为了 AI 分析失败重复跑完整测试。",
     ].join("\n");
   }
-
   return [
     "## AI 辅助分析（可选）",
+    "",
+    "- 状态：已启用。完整 AI 分析已生成为**单独的 HTML 文件**（见报告中心，文件名以 `-ai-analysis.html` 结尾）。",
+    `- 额外消耗：${formatAiUsageText(aiAnalysis)}`,
+    "- 说明：AI 分析由被测 API/模型基于脱敏摘要生成，仅作辅助解释；最终判断仍以本地规则结论、原始日志与人工复核为准。",
+  ].join("\n");
+}
+
+// AI 辅助分析独立文档：整段单独成一份 Markdown，再由 report-files 渲染成单独 HTML。
+// 未启用返回 ""，调用方据此决定是否落盘。
+export function formatAiAnalysisDocument(aiAnalysis, { title = "AI 辅助分析" } = {}) {
+  if (!aiAnalysis?.enabled) {
+    return "";
+  }
+  const usageText = formatAiUsageText(aiAnalysis);
+  if (!aiAnalysis.success) {
+    return [
+      `# ${title}`,
+      "",
+      "- 状态：已启用，但 AI 分析请求失败。",
+      `- 错误：${aiAnalysis.error || "未知错误"}`,
+      `- 额外消耗：${usageText}`,
+      "- 说明：本地规则报告仍然有效；建议先根据系统结论处理问题，不需要为了 AI 分析失败重复跑完整测试。",
+    ].join("\n");
+  }
+  return [
+    `# ${title}`,
     "",
     "- 状态：已启用。",
     `- 额外消耗：${usageText}`,
