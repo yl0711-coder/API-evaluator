@@ -1,5 +1,13 @@
 import { parseLooseJson } from "./utils.mjs";
-import { ifevalCheck, scoreBfclToolCall, scoreNeedleRetrieval } from "./benchmark-scorers.mjs";
+import { isTruncatedFinish } from "./protocols.mjs";
+import {
+  ifevalCheck,
+  scoreBfclToolCall,
+  scoreExactAnswer,
+  scoreNeedleRetrieval,
+  scoreSetMatch,
+  scoreStructuredMatch,
+} from "./benchmark-scorers.mjs";
 
 // 按场景声明的 benchmark scorer 判分（替代关键词启发式）。返回 null 则回退默认启发式。
 function scoreByBenchmark(scenario, record, text) {
@@ -22,10 +30,34 @@ function scoreByBenchmark(scenario, record, text) {
     const r = scoreBfclToolCall(scenario.expectedToolCall, record.toolCall);
     return { score: Math.round(r.score * 100), passed: r.match, issues: r.issues, scorer: "bfcl" };
   }
+  // LiveBench 客观判分：精确答案 / 结构化深比对 / 无序集合。
+  if (scenario.scorer === "exact") {
+    const r = scoreExactAnswer(text, scenario.expected, scenario.scorerOptions || {});
+    return { score: Math.round(r.score * 100), passed: r.passed, issues: r.issues, scorer: "exact" };
+  }
+  if (scenario.scorer === "structured") {
+    const r = scoreStructuredMatch(text, scenario.expected);
+    return { score: Math.round(r.score * 100), passed: r.passed, issues: r.issues, scorer: "structured" };
+  }
+  if (scenario.scorer === "set") {
+    const r = scoreSetMatch(text, scenario.expectedSet);
+    return { score: Math.round(r.score * 100), passed: r.passed, issues: r.issues, scorer: "set" };
+  }
   return null;
 }
 
 export function evaluateScenarioOutput(scenario, record) {
+  // 输出被截断（max_tokens / 响应字节上限）：答案不完整，无法公平判分。
+  // 标 truncated 并返回，由汇总层把它排除出能力分母 —— 否则会把"窗口/中转限制"误判成"模型答错"。
+  // 完整响应的 finish_reason 是 stop/end_turn，绝不会命中 length/max_tokens，故此判仅抓真截断。
+  if (isTruncatedFinish(record.finishReason) || record.normalizedError === "response_too_large") {
+    return {
+      score: 0,
+      passed: false,
+      truncated: true,
+      issues: ["输出被截断（max_tokens/响应上限），本题不计入能力分母；建议调大输出窗口或换更小的题"],
+    };
+  }
   const issues = [];
   if (!record.success) {
     return {

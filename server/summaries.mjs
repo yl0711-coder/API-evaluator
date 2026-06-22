@@ -82,7 +82,11 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
   const successRecords = records.filter((record) => record.success);
   const failedRecords = records.filter((record) => !record.success);
   const totalTimes = successRecords.map((record) => record.totalMs).filter(isFiniteNumber);
-  const qualityScores = records.map((record) => record.quality?.score).filter(isFiniteNumber);
+  // 能力分母排除被截断的题（输出不完整无法判分，否则把"窗口/中转限制"误判成"模型能力差"）。
+  const qualityScores = records
+    .filter((record) => !record.quality?.truncated)
+    .map((record) => record.quality?.score)
+    .filter(isFiniteNumber);
   const successRate = records.length > 0 ? successRecords.length / records.length : 0;
   const avgQualityScore = Math.round(mean(qualityScores) || 0);
   const errorCounts = countErrors(failedRecords);
@@ -99,11 +103,15 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
   const scenarioGroups = groupBy(records, (record) => record.scenarioId);
   const scenarios = Object.entries(scenarioGroups).map(([scenarioId, items]) => {
     const okItems = items.filter((item) => item.success);
-    const scores = items.map((item) => item.quality?.score).filter(isFiniteNumber);
+    // 质量分只统计未被截断的题（截断=输出不完整，无法判分，排除出能力分母）。
+    const scoredItems = items.filter((item) => !item.quality?.truncated);
+    const scores = scoredItems.map((item) => item.quality?.score).filter(isFiniteNumber);
     const times = okItems.map((item) => item.totalMs).filter(isFiniteNumber);
-    // 报告「模型样例回答」列用：优先取首条成功回答的摘要，全失败时退回首条记录的错误摘要。
+    const truncatedCount = items.length - scoredItems.length;
+    // 报告「模型样例回答」列用：优先取一条未截断的成功回答；全截断/全失败时退回首条并标注。
     // responseSummary 在落库时已 summarizeText（截断+脱敏），此处只是挑一条代表样例。
-    const sampleItem = okItems[0] || items[0] || null;
+    const sampleItem = okItems.find((item) => !item.quality?.truncated) || okItems[0] || items[0] || null;
+    const sampleText = sampleItem?.responseSummary || sampleItem?.rawError || "";
     return {
       scenarioId,
       scenarioName: items[0]?.scenarioName || scenarioId,
@@ -111,13 +119,14 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
       difficulty: items[0]?.difficulty || "",
       count: items.length,
       successCount: okItems.length,
+      truncatedCount,
       successRate: items.length ? okItems.length / items.length : 0,
       successRateText: formatPercent(items.length ? okItems.length / items.length : 0),
       avgTotalMs: Math.round(mean(times) || 0),
       p95TotalMs: percentile(times, 0.95),
       avgQualityScore: Math.round(mean(scores) || 0),
       issues: [...new Set(items.flatMap((item) => item.quality?.issues || []))],
-      sampleResponse: sampleItem?.responseSummary || sampleItem?.rawError || "",
+      sampleResponse: sampleItem?.quality?.truncated ? `（输出已截断）${sampleText}` : sampleText,
     };
   });
 

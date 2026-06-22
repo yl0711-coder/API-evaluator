@@ -10,6 +10,7 @@ import {
 import { TEST_SCENARIOS } from "./scenarios/index.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
 import { loadRunnableProfiles } from "./run-targets.mjs";
+import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
 import { evaluateScenarioOutput } from "./scenario-evaluator.mjs";
 import { readProfileApiKey } from "./secret-store.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
@@ -107,6 +108,10 @@ export async function runQuickTest(profileId, prompt) {
 // 轻量快检（quick-verify）：固定一小撮探针、输出封顶控成本，一次性给出
 // 【真伪 + token 虚报 + 真实消耗】速报。最大化复用准入引擎。
 const QUICK_VERIFY_MAX_OUTPUT = 96;
+
+// 场景测试统一输出窗口。答案纪律后缀已把 LiveBench 输出压到几百 token，更大的窗口在中转侧
+// 也未生效；统一 4096 既够任何场景输出又可预期。对场景测试覆盖渠道配置（只作用于场景路径）。
+const SCENARIO_MAX_OUTPUT_TOKENS = 4096;
 
 export async function runQuickVerify(body, taskContext = {}) {
   const profiles = await loadRunnableProfiles();
@@ -1153,6 +1158,43 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
   };
 }
 
+// 场景测验夺标阈值：逐场景质量分严格大于此值才授予该场景的能力标签。
+const TAG_AWARD_MIN_SCORE = 90;
+
+// 场景测验夺标：某模型在某场景 avgQualityScore > 90 → 授予该场景的能力标签（并集去重、只增不撤）。
+// profile.id === 模型目标 id，故按 result.profileId 直接回写模型目标。best-effort。
+async function awardScenarioTags(summary, selectedScenarios) {
+  const tagById = new Map(selectedScenarios.map((s) => [s.id, s.tag]).filter(([, t]) => t));
+  const earnedByProfile = new Map();
+  for (const r of summary.results || []) {
+    if (!r?.profileId) continue;
+    const earned = new Set();
+    for (const sc of r.scenarios || []) {
+      if (Number(sc.avgQualityScore) > TAG_AWARD_MIN_SCORE) {
+        const tag = tagById.get(sc.scenarioId);
+        if (tag) earned.add(tag);
+      }
+    }
+    if (earned.size) earnedByProfile.set(r.profileId, earned);
+  }
+  if (!earnedByProfile.size) return;
+  const targets = await loadModelTargets();
+  let changed = false;
+  for (const t of targets) {
+    const earned = earnedByProfile.get(t.id);
+    if (!earned) continue;
+    const cur = new Set(Array.isArray(t.tags) ? t.tags : []);
+    const before = cur.size;
+    earned.forEach((x) => cur.add(x));
+    if (cur.size !== before) {
+      t.tags = [...cur];
+      t.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) await saveModelTargets(targets);
+}
+
 export async function runScenarioTest(body, taskContext = {}) {
   const profiles = await loadRunnableProfiles();
   const profileIds = normalizeProfileIds(body.profileIds);
@@ -1214,6 +1256,12 @@ export async function runScenarioTest(body, taskContext = {}) {
   });
   summary = await attachRunArtifacts(runId, summary, { profileResults });
   summary.predictedConsumption = normalizePredicted(body.predicted);
+  // 场景测验夺标：>90 分给对应模型授予能力标签。best-effort，绝不影响出报告。
+  try {
+    await awardScenarioTags(summary, selectedScenarios);
+  } catch {
+    /* 夺标失败不影响场景测试主流程 */
+  }
   const aiAnalysisProfile = selectScenarioAnalysisProfile(profiles, summary, profileIds);
   const aiAnalysis = await maybeBuildAiAnalysis({
     enabled: body.useAiReportAnalysis,
@@ -1289,7 +1337,9 @@ async function runScenarioProfile({ runId, profile, scenarios, repeats, requestC
     const batch = jobs.slice(index, index + requestConcurrency);
     const batchRecords = await Promise.all(
       batch.map(async ({ scenario, repeat }) => {
-        const record = await executeTestRequest(profile, buildScenarioPrompt(scenario, repeat, repeats), {
+        // 所有场景测试统一用 4096 输出窗口（覆盖渠道配置与 scenario.maxTokens）。
+        const caseProfile = { ...profile, maxTokens: SCENARIO_MAX_OUTPUT_TOKENS };
+        const record = await executeTestRequest(caseProfile, buildScenarioPrompt(scenario, repeat, repeats), {
           runId,
           caseId: scenario.id,
           writeLog: true,
@@ -1757,6 +1807,9 @@ async function finalizeTestRecord({
     provider: profile.provider,
     model: profile.defaultModel,
     protocol: profile.protocol,
+    // 实际发出的输出窗口（场景题会把它抬到 scenario.maxTokens）。落进 requests.jsonl 便于
+    // 直接核对"发的是不是 8192"，不必靠输出长度反推。
+    requestMaxTokens: Number(profile.maxTokens) || null,
     startedAt: startedAt.toISOString(),
     firstByteMs,
     firstTokenMs,

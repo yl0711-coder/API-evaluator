@@ -7,9 +7,12 @@
 //   - NIAH / RULER：长上下文"针检索"——长文里埋事实，看模型能否取回。
 //   - IFEval：可验证的指令遵循约束（字数/条数/关键词/格式…程序化判定）。
 //   - HumanEval+：pass@k 无偏估计（Codex 论文）。
+//   - LiveBench：客观 ground-truth 判分（精确答案 / 结构化深比对 / 无序集合）。
 //
 // 边界：数据集接入 + HumanEval 的**模型代码执行**需要隔离沙箱（运行不可信代码），
 //   属 wiring，本模块不含执行，只提供 pass@k 估计与判分结构。
+
+import { parseLooseJson } from "./utils.mjs";
 
 const isNum = (v) => Number.isFinite(Number(v));
 
@@ -112,6 +115,13 @@ const IFEVAL_CHECKERS = {
   starts_with: (text, { phrase }) => text.trim().startsWith(String(phrase)),
   min_chars: (text, { count }) => [...text].length >= count,
   max_chars: (text, { count }) => [...text].length <= count,
+  regex_match: (text, { pattern, flags }) => {
+    try {
+      return new RegExp(pattern, flags || "").test(text);
+    } catch {
+      return false;
+    }
+  },
 };
 
 function wordCount(text) {
@@ -177,4 +187,180 @@ export function passAtK(n, c, k) {
     prod *= 1 - K / i;
   }
   return Math.round((1 - prod) * 1e6) / 1e6;
+}
+
+// ---------------------------------------------------------------------------
+// LiveBench：客观答案判分（精确匹配 / 结构化深比对 / 无序集合）
+// 题目自带 ground-truth，程序化判分、不用 LLM 裁判。判分器为纯函数、离线可测。
+// ---------------------------------------------------------------------------
+
+// 全角 → 半角（数字/字母/标点），并把全角空格归一，统一比较口径。
+function toHalfWidth(s) {
+  return String(s || "")
+    .replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/　/g, " ");
+}
+
+// 归一化：半角化、折叠空白、去首尾、小写、剥成对引号/括号与尾随标点。
+function normalizeAnswer(s) {
+  let t = toHalfWidth(s).replace(/\s+/g, " ").trim().toLowerCase();
+  t = t.replace(/^["'`“”‘’（(\[【]+/, "").replace(/["'`“”‘’）)\]】。.!！?？，,;；:：]+$/, "");
+  return t.trim();
+}
+
+// 从模型回答里抽取候选答案：<solution></solution> → 剥代码围栏 → \boxed{} → "答案/answer" 标记 → 末行。
+function extractAnswer(response) {
+  let text = String(response || "").trim();
+  // LiveBench 多任务（zebra/web_of_lies 等）要求把最终答案放进 <solution></solution>，优先取其中内容；
+  // 取最后一处，避免命中题面里的示例标签。
+  const sols = [...text.matchAll(/<solution>\s*([\s\S]*?)\s*<\/solution>/gi)];
+  if (sols.length) return sols[sols.length - 1][1].trim();
+  text = text.replace(/```[a-zA-Z0-9_-]*\n?/g, "").replace(/```/g, "").trim();
+  const boxed = text.match(/\\boxed\{([^}]*)\}/);
+  if (boxed) return boxed[1].trim();
+  const marker = text.match(/(?:最终答案|答案(?:是|为)?|the\s+answer\s+is|answer)\s*[:：=]?\s*(.+)$/im);
+  if (marker && marker[1].trim()) return marker[1].trim();
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : text;
+}
+
+// 去千分位/空格后解析数值，失败返回 null。
+function toNumber(v) {
+  const n = Number(String(v == null ? "" : v).replace(/[,\s ]/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+// 精确答案判分：抽取 + 归一化匹配。expected 可为字符串或「可接受答案」数组。
+// opts: { numeric:bool 强制数值比较, tolerance:number 数值容差(默认0), extract:bool 是否抽取(默认true) }
+export function scoreExactAnswer(response, expected, opts = {}) {
+  const { numeric = false, tolerance = 0, extract = true } = opts;
+  const accepted = (Array.isArray(expected) ? expected : [expected]).filter((x) => x != null && String(x).length);
+  if (!accepted.length) return { passed: false, score: 0, extracted: "", issues: ["未指定期望答案"] };
+  const candidate = extract ? extractAnswer(response) : String(response || "");
+  const candNorm = normalizeAnswer(candidate);
+  const candCompact = candNorm.replace(/\s+/g, ""); // 去全部空白，吸收 "1, 6" vs "1,6" 这类序列格式差
+  const candNum = toNumber(candidate);
+  for (const exp of accepted) {
+    const expNum = toNumber(exp);
+    const numericPair = candNum != null && expNum != null && (numeric || /^[\s\d.,+\-/*^()]+$/.test(String(exp)));
+    if (numericPair && Math.abs(candNum - expNum) <= tolerance) {
+      return { passed: true, score: 1, extracted: candidate, issues: [] };
+    }
+    const expNorm = normalizeAnswer(exp);
+    if (expNorm === candNorm || expNorm.replace(/\s+/g, "") === candCompact) {
+      return { passed: true, score: 1, extracted: candidate, issues: [] };
+    }
+  }
+  return { passed: false, score: 0, extracted: candidate, issues: [`答案不符（抽取：${candidate.slice(0, 60)}）`] };
+}
+
+// 把任意 JSON 值拍平成「路径 → 标量」映射，用于逐叶比对（对象键排序，保证稳定）。
+function flattenLeaves(val, prefix = "", out = new Map()) {
+  if (val === null || typeof val !== "object") {
+    out.set(prefix, val);
+    return out;
+  }
+  if (Array.isArray(val)) {
+    val.forEach((v, i) => flattenLeaves(v, `${prefix}[${i}]`, out));
+    return out;
+  }
+  for (const k of Object.keys(val).sort()) {
+    flattenLeaves(val[k], prefix ? `${prefix}.${k}` : k, out);
+  }
+  return out;
+}
+
+// 叶子相等：先严格相等，再数值容差，最后归一化字符串比较。
+function leafEqual(a, b) {
+  if (a === b) return true;
+  const na = toNumber(a);
+  const nb = toNumber(b);
+  if (na != null && nb != null) return na === nb;
+  return normalizeAnswer(a) === normalizeAnswer(b);
+}
+
+// 鲁棒结构化解析：严格 JSON → 宽松 JSON → JSONL（逐行一个对象，table 重排常见）。
+function parseStructured(text) {
+  const t = String(text == null ? "" : text).trim();
+  if (!t) return null;
+  try {
+    return JSON.parse(t);
+  } catch {
+    // 继续兜底
+  }
+  const loose = parseLooseJson(t);
+  if (loose != null) return loose;
+  const lines = t.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length > 1) {
+    const arr = [];
+    for (const ln of lines) {
+      try {
+        arr.push(JSON.parse(ln));
+      } catch {
+        return null;
+      }
+    }
+    return arr;
+  }
+  return null;
+}
+
+// 结构化深比对（data-analysis：表格重排/连接/列类型）。解析模型 JSON 输出与 expected
+// 逐叶比较，给部分得分；全叶命中且无多余字段才 passed。expected 可为 JS 值或 JSON/JSONL 字符串。
+export function scoreStructuredMatch(response, expected) {
+  let exp = expected;
+  if (typeof expected === "string") {
+    exp = parseStructured(expected);
+    if (exp == null) return { passed: false, score: 0, matched: 0, total: 0, issues: ["expected 不是合法 JSON"] };
+  }
+  const got = parseStructured(String(response || ""));
+  if (got == null) return { passed: false, score: 0, matched: 0, total: 0, issues: ["模型输出不是可解析 JSON"] };
+  const expLeaves = flattenLeaves(exp);
+  const gotLeaves = flattenLeaves(got);
+  let matched = 0;
+  const wrong = [];
+  for (const [key, ev] of expLeaves) {
+    if (gotLeaves.has(key) && leafEqual(ev, gotLeaves.get(key))) matched += 1;
+    else wrong.push(key);
+  }
+  const extra = [...gotLeaves.keys()].filter((k) => !expLeaves.has(k));
+  const total = expLeaves.size || 1;
+  const score = Math.round((matched / total) * 1000) / 1000;
+  const passed = matched === expLeaves.size && extra.length === 0;
+  const issues = [];
+  if (wrong.length) issues.push(`字段不符：${wrong.slice(0, 5).join(", ")}${wrong.length > 5 ? "…" : ""}`);
+  if (extra.length) issues.push(`多余字段：${extra.length}`);
+  return { passed, score, matched, total: expLeaves.size, issues };
+}
+
+// 把文本拆成成员集合：按换行/逗号/顿号/分号/竖线分隔，归一化去空。
+function tokenizeSet(text) {
+  return String(text || "")
+    .split(/[\n,，、;；|]+/)
+    .map((x) => normalizeAnswer(x))
+    .filter(Boolean);
+}
+
+// 无序集合匹配（如 Connections 分组）：期望成员是否都出现在模型输出里。
+// score=命中/期望，全中才 passed。expectedSet: 字符串数组（期望成员）。
+export function scoreSetMatch(response, expectedSet) {
+  const expected = (expectedSet || []).map((x) => normalizeAnswer(x)).filter(Boolean);
+  if (!expected.length) return { passed: false, score: 0, matched: 0, total: 0, issues: ["未指定期望集合"] };
+  const got = new Set(tokenizeSet(response));
+  const norm = normalizeAnswer(response);
+  let matched = 0;
+  const missing = [];
+  for (const m of expected) {
+    if (got.has(m) || norm.includes(m)) matched += 1;
+    else missing.push(m);
+  }
+  const total = expected.length;
+  const score = Math.round((matched / total) * 1000) / 1000;
+  return {
+    passed: matched === total,
+    score,
+    matched,
+    total,
+    issues: missing.length ? [`缺成员：${missing.slice(0, 5).join(", ")}`] : [],
+  };
 }

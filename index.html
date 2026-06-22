@@ -16,20 +16,25 @@
           </div>
         </div>
         <div class="nav-group">
-          <span>推荐流程</span>
           <button class="nav-button active" type="button" data-page="dashboard">总览</button>
-          <button class="nav-button" type="button" data-page="channels" data-requires-admin>1. 渠道管理</button>
-          <button class="nav-button" type="button" data-page="models">2. 模型管理</button>
-          <button class="nav-button" type="button" data-page="admission-test">3. 准入评测</button>
-          <button class="nav-button" type="button" data-page="standard-eval">4. 标准评测</button>
-          <button class="nav-button" type="button" data-page="reports">5. 报告中心</button>
-          <button class="nav-button" type="button" data-page="handoff">6. 测试交付</button>
+        </div>
+        <div class="nav-group">
+          <span>推荐流程</span>
+          <button class="nav-button" type="button" data-page="channels" data-requires-admin>1） 渠道管理</button>
+          <button class="nav-button" type="button" data-page="models">2） 模型管理</button>
+          <button class="nav-button" type="button" data-page="admission-test">3） 准入评测</button>
+          <button class="nav-button" type="button" data-page="standard-eval">4） 标准评测</button>
         </div>
         <div class="nav-group">
           <span>高级测试</span>
           <button class="nav-button" type="button" data-page="quick-test">快速测试</button>
-          <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
+          <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
+        </div>
+        <div class="nav-group">
+          <span>总结与交付</span>
+          <button class="nav-button" type="button" data-page="reports">报告中心</button>
+          <button class="nav-button" type="button" data-page="handoff">测试交付</button>
           <button class="nav-button" type="button" data-page="trend">稳定性趋势</button>
         </div>
         <div class="nav-group">
@@ -489,7 +494,7 @@
           <div class="cfg">
             <div class="cfg-topbar">
               <div>
-                <h2><span class="step">渠道管理</span>配置上游渠道（超管）</h2>
+                <h2><span class="step">第 1 步 · 渠道管理</span>配置上游渠道（超管）</h2>
                 <p class="section-desc">渠道 = 连接信息（Base URL + Key + 协议）。Key 只存本机、不进报告/导出、管理员看不到。一个渠道下可挂多个模型，去“模型管理”里选用。</p>
               </div>
               <div class="action-row">
@@ -497,7 +502,7 @@
                 <button id="reload-channels" class="secondary" type="button">刷新</button>
               </div>
             </div>
-            <div class="cfg-grid">
+            <div class="cfg-stack">
               <form id="channel-form" class="panel form-grid" autocomplete="off">
                 <input type="hidden" name="id" />
                 <label>名称<input name="name" autocomplete="off" placeholder="例如 Kiro-Claude 渠道" required /></label>
@@ -527,14 +532,14 @@
           <div class="cfg">
             <div class="cfg-topbar">
               <div>
-                <h2><span class="step">模型管理</span>配置要测的模型（管理员）</h2>
+                <h2><span class="step">第 2 步 · 模型管理</span>配置要测的模型（管理员）</h2>
                 <p class="section-desc">选一个渠道 + 填一个模型名 = 一个测试目标。看不到也不需要 Key。运行测试时从这里选目标。</p>
               </div>
               <div class="action-row">
                 <button id="reload-model-targets" class="secondary" type="button">刷新</button>
               </div>
             </div>
-            <div class="cfg-grid">
+            <div class="cfg-stack">
               <form id="model-target-form" class="panel form-grid" autocomplete="off">
                 <input type="hidden" name="id" />
                 <label class="wide">渠道<select name="channelId" id="model-target-channel" required></select></label>
@@ -802,6 +807,7 @@
                 <option value="scenario-safety">内容安全合规包：低风险风控探测</option>
                 <option value="scenario-basic" selected>基础能力全量包：不含内容安全场景</option>
                 <option value="scenario-deep">候选深度复测包：能力场景重复 2 次</option>
+                <option value="scenario-livebench">LiveBench 抗污染难题包：客观判分，主攻档位降级</option>
               </select>
               <small id="scenario-template-hint" class="field-hint">基础能力全量包适合稳定性已经通过后的能力评估，不会默认包含内容安全探测。</small>
             </label>

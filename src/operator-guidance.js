@@ -156,6 +156,15 @@ export const SCENARIO_PACKS = {
     requestConcurrency: "1",
     note: "适合准备推荐某个候选渠道前复测，成本更高。",
   },
+  "scenario-livebench": {
+    label: "LiveBench 抗污染难题包",
+    categories: ["livebench"],
+    limit: Infinity,
+    repeats: "1",
+    maxParallelProfiles: "1",
+    requestConcurrency: "1",
+    note: "LiveBench 客观难题（math/reasoning/data_analysis），主要服务档位降级判别：声称高档却在硬题崩。需后端开启 EVALUATOR_ENABLE_LIVEBENCH=1，硬题更耗额度、并发保守。",
+  },
 };
 
 const ERROR_ADVICES = {

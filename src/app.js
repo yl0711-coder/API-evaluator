@@ -1409,19 +1409,25 @@ function renderScenarioOptions() {
   scenarioCaseSelect.innerHTML = state.scenarios
     .map(
       (scenario) =>
-        `<option value="${scenario.id}" data-name="${escapeHtml(scenario.name)}" data-difficulty="${escapeHtml(scenario.difficulty)}" selected>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
+        `<option value="${scenario.id}" data-name="${escapeHtml(scenario.name)}" data-difficulty="${escapeHtml(scenario.difficulty)}" data-tag="${escapeHtml(scenario.tag || "")}" selected>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
     )
     .join("");
   scenarioCasePicker.refresh();
 }
 
 function syncScenarioTemplateAvailability() {
-  const hasSafetyScenarios = state.scenarios.some((scenario) => scenario.category === "safety");
-  const safetyOption = scenarioTemplate.querySelector('option[value="scenario-safety"]');
-  if (!safetyOption) return;
-  safetyOption.hidden = !hasSafetyScenarios;
-  safetyOption.disabled = !hasSafetyScenarios;
-  if (!hasSafetyScenarios && scenarioTemplate.value === "scenario-safety") {
+  syncTemplateOption("safety", "scenario-safety");
+  syncTemplateOption("livebench", "scenario-livebench");
+}
+
+// 某类场景未启用（后端 env 开关关）时，隐藏对应模板选项；当前已选则回落基础包。
+function syncTemplateOption(category, templateValue) {
+  const has = state.scenarios.some((scenario) => scenario.category === category);
+  const option = scenarioTemplate.querySelector(`option[value="${templateValue}"]`);
+  if (!option) return;
+  option.hidden = !has;
+  option.disabled = !has;
+  if (!has && scenarioTemplate.value === templateValue) {
     scenarioTemplate.value = "scenario-basic";
   }
 }
