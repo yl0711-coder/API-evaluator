@@ -170,7 +170,7 @@
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
                 使用 AI 分析报告结果
-                <small>会额外调用当前被测 API/模型生成分析结论，单独生成一份 HTML，额外消耗 token。不勾选时只使用本地规则判断。</small>
+                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），单独生成一份 HTML，额外消耗 token。不勾选时只使用本地规则判断。</small>
               </span>
             </label>
             <button id="admission-submit" class="primary wide" type="submit">开始准入评测</button>
@@ -288,7 +288,7 @@
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
                 使用 AI 分析报告结果
-                <small>会额外调用当前被测 API/模型生成分析结论，额外消耗 token。不勾选时只使用本地规则判断。</small>
+                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
               </span>
             </label>
             <button id="standard-eval-submit" class="primary wide" type="submit">开始标准评测</button>
@@ -671,7 +671,7 @@
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
                 使用 AI 分析报告结果
-                <small>会额外调用当前被测 API/模型生成分析结论，额外消耗 token。不勾选时只使用本地规则判断。</small>
+                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
               </span>
             </label>
             <button id="stability-submit" class="primary wide" type="submit">开始稳定性测试</button>
@@ -750,7 +750,7 @@
                 <input name="useAiReportAnalysis" type="checkbox" value="1" />
                 <span>
                   使用 AI 分析报告结果
-                  <small>会额外调用本批次表现最好的 API/模型生成分析结论，额外消耗 token。不勾选时只使用本地规则判断。</small>
+                  <small>会额外调用 AI 分析模型生成分析结论（默认用本批次表现最好的渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
                 </span>
               </label>
               <button id="batch-submit" class="primary wide" type="submit">开始批量测试</button>
@@ -842,7 +842,7 @@
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
                 使用 AI 分析报告结果
-                <small>会额外调用本轮表现较好的 API/模型生成分析结论，额外消耗 token。不勾选时只使用本地规则判断。</small>
+                <small>会额外调用 AI 分析模型生成分析结论（默认用本轮表现较好的渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
               </span>
             </label>
             <button id="scenario-submit" class="primary wide" type="submit">开始场景测试</button>

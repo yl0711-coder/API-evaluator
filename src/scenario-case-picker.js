@@ -18,11 +18,11 @@ export function createScenarioCasePicker(container, hiddenSelect) {
   const echo = container.querySelector(".bp-echo");
   const chips = container.querySelector(".bp-chips");
 
-  // 当前可选项,从隐藏 select 的 option 读出(value + data-name + data-difficulty + selected)。
+  // 当前可选项,从隐藏 select 的 option 读出(value + data-name + data-tag + data-difficulty + selected)。
   function rows() {
     return [...hiddenSelect.options]
       .filter((o) => o.value)
-      .map((o) => ({ id: o.value, name: o.dataset.name || o.textContent, difficulty: o.dataset.difficulty || "", selected: o.selected }));
+      .map((o) => ({ id: o.value, name: o.dataset.name || o.textContent, tag: o.dataset.tag || "", difficulty: o.dataset.difficulty || "", selected: o.selected }));
   }
 
   function setSelected(id, on) {
@@ -41,7 +41,7 @@ export function createScenarioCasePicker(container, hiddenSelect) {
       ? data
           .map(
             (r) =>
-              `<label class="opt${r.selected ? " checked" : ""}" data-id="${escapeHtml(r.id)}"><input type="checkbox" ${r.selected ? "checked" : ""}><span class="name">${escapeHtml(r.name)}</span>${r.difficulty ? `<span class="pill">${escapeHtml(r.difficulty)}</span>` : ""}</label>`,
+              `<label class="opt${r.selected ? " checked" : ""}" data-id="${escapeHtml(r.id)}"><input type="checkbox" ${r.selected ? "checked" : ""}><span class="name">${escapeHtml(r.name)}</span>${r.tag ? `<span class="pill tag">${escapeHtml(r.tag)}</span>` : ""}${r.difficulty ? `<span class="pill">${escapeHtml(r.difficulty)}</span>` : ""}</label>`,
           )
           .join("")
       : `<div class="opt"><span class="name" style="color:var(--muted)">暂无测试场景</span></div>`;

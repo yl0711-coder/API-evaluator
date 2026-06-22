@@ -679,6 +679,21 @@ async function handleApi(req, res) {
     );
     return;
   }
+  if (req.method === "POST" && /^\/api\/model-targets\/[^/]+\/remove-tag$/.test(url.pathname)) {
+    const id = decodeURIComponent(url.pathname.split("/")[3]);
+    const { tag } = await readJson(req);
+    const targets = await loadModelTargets();
+    const target = targets.find((item) => item.id === id);
+    if (!target) {
+      sendJson(res, 404, { error: "not_found", userMessage: "模型目标不存在。" });
+      return;
+    }
+    target.tags = (Array.isArray(target.tags) ? target.tags : []).filter((t) => t !== tag);
+    target.updatedAt = new Date().toISOString();
+    await saveModelTargets(targets);
+    sendJson(res, 200, { ok: true, tags: target.tags });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/model-targets") {
     const body = await readJson(req);
     const targets = await loadModelTargets();

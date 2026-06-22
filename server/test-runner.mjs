@@ -6,6 +6,7 @@ import {
   buildAiAnalysisResult,
   buildAiReportAnalysisPrompt,
   isAiReportAnalysisEnabled,
+  loadAiAnalysisProfile,
 } from "./ai-report-analysis.mjs";
 import { TEST_SCENARIOS } from "./scenarios/index.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
@@ -1872,7 +1873,9 @@ async function maybeBuildAiAnalysis({ enabled, reportType, profile, summary, run
     return { enabled: false };
   }
   assertTaskNotCancelled(taskContext);
-  if (!profile) {
+  // 优先用 .env.evaluator 指定的专用 AI 分析模型；未配置则回退到被测渠道（保持现状）。
+  const analysisProfile = loadAiAnalysisProfile() || profile;
+  if (!analysisProfile) {
     return {
       enabled: true,
       success: false,
@@ -1883,9 +1886,9 @@ async function maybeBuildAiAnalysis({ enabled, reportType, profile, summary, run
   const prompt = buildAiReportAnalysisPrompt({ reportType, summary });
   const record = await executeTestRequest(
     {
-      ...profile,
-      maxTokens: Math.max(Number(profile.maxTokens || 0), 1200),
-      timeoutMs: Math.max(Number(profile.timeoutMs || 0), 90000),
+      ...analysisProfile,
+      maxTokens: Math.max(Number(analysisProfile.maxTokens || 0), 1200),
+      timeoutMs: Math.max(Number(analysisProfile.timeoutMs || 0), 90000),
     },
     prompt,
     {

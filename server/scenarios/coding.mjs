@@ -20,9 +20,9 @@ export const CODING_SCENARIOS = [
       "}",
       "```",
       "",
-      "要求：分成「问题原因、修复代码、测试用例、上线风险」四部分；问题原因要指出具体是哪一行、哪个机制（如超时与 AbortController / clearTimeout 的关系）导致；修复代码给出可整段替换的完整函数。",
+      "要求：分成「问题原因、修复代码、上线风险」三部分；问题原因要指出具体是哪个机制（如超时与 AbortController / clearTimeout 的关系）导致；修复代码给出可整段替换的完整函数。回答尽可能简短。",
     ].join("\n"),
-    minChars: 500,
-    requiredAny: ["问题原因", "修复", "测试", "风险", "AbortController", "clearTimeout"],
+    minChars: 100,
+    requiredAny: ["问题原因", "修复", "风险", "AbortController", "clearTimeout"],
   },
 ];

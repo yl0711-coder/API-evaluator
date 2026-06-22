@@ -5,7 +5,7 @@ export const BASIC_SCENARIOS = [
     category: "connectivity",
     difficulty: "small",
     prompt: "这是一次连通性自检。请只回复一句话，明确确认本渠道服务正常、已成功接通，必须在句中包含「服务正常」四个字，不要附加自我介绍或其他内容。",
-    minChars: 12,
+    minChars: 5,
     requiredAny: ["服务正常", "正常", "服务", "可以", "ready", "working"],
   },
   {
@@ -44,7 +44,7 @@ export const BASIC_SCENARIOS = [
       "你是一名面向客户的运营专员。请给非技术客户写一段说明，解释为什么同一个 AI 模型在不同渠道下速度和稳定性会不一样。",
       "要求：口语化、清楚、不夸张，结合渠道、网络、服务等因素，不超过 250 字。",
     ].join("\n"),
-    minChars: 120,
+    minChars: 50,
     requiredAny: ["渠道", "速度", "稳定", "网络", "服务"],
   },
 ];

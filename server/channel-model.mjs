@@ -77,6 +77,8 @@ export function normalizeModelTarget(body, existing = null) {
     model: requiredString(body.model ?? existing?.model, "模型名"),
     note: String(body.note ?? existing?.note ?? "").trim(),
     source: body.source || existing?.source || "manual",
+    // 场景测验夺标得到的能力标签：编辑模型目标（POST 全量覆盖）时保留，别被清空。
+    tags: Array.isArray(body.tags) ? body.tags : (Array.isArray(existing?.tags) ? existing.tags : []),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };

@@ -61,10 +61,26 @@ export function createChannelAdmin({ state, els, onChange }) {
 
   function renderModelTargetList() {
     const list = state.modelTargets || [];
-    els.modelTargetList.innerHTML = list.length
-      ? list.map(modelTargetRow).join("")
-      : `<div class="empty-state"><strong>还没有测试模型</strong><p>选一个渠道 + 填模型名添加。</p></div>`;
+    if (!list.length) {
+      els.modelTargetList.innerHTML = `<div class="empty-state"><strong>还没有测试模型</strong><p>选一个渠道 + 填模型名添加。</p></div>`;
+      return;
+    }
+    // 按渠道分组：同一渠道的模型聚在一起，加渠道小标题（一个渠道可挂多个模型）。
+    const groups = new Map();
+    for (const target of list) {
+      const key = target.channelName || target.channelId || "未知渠道";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(target);
+    }
+    els.modelTargetList.innerHTML = [...groups.entries()]
+      .map(([channelName, targets]) => `
+        <div class="model-group">
+          <div class="model-group-head"><b>${escapeHtml(channelName)}</b><span>${targets.length} 个模型</span></div>
+          <div class="model-group-grid">${targets.map(modelTargetRow).join("")}</div>
+        </div>`)
+      .join("");
     els.modelTargetList.querySelectorAll("[data-del-target]").forEach((b) => b.addEventListener("click", () => deleteModelTarget(b.dataset.delTarget)));
+    els.modelTargetList.querySelectorAll("[data-del-tag]").forEach((b) => b.addEventListener("click", () => removeModelTargetTag(b.dataset.tagTarget, b.dataset.delTag)));
   }
   function modelTargetRow(target) {
     const badge = target.channelStatus === "disabled"
@@ -72,11 +88,23 @@ export function createChannelAdmin({ state, els, onChange }) {
       : target.channelStatus === "missing"
         ? `<span class="chan-pill bad">渠道缺失</span>`
         : `<span class="chan-pill good">可测</span>`;
+    // 场景测验夺标得到的能力标签，可点 × 手动移除。
+    const tags = Array.isArray(target.tags) ? target.tags : [];
+    const tagChips = tags.length
+      ? `<div class="model-tags">${tags
+          .map(
+            (t) =>
+              `<span class="model-tag">${escapeHtml(t)}<button type="button" class="model-tag-x" data-tag-target="${target.id}" data-del-tag="${escapeHtml(t)}" title="移除标签">×</button></span>`,
+          )
+          .join("")}</div>`
+      : "";
+    // 渠道名已在分组标题里，卡片小字只显示协议 + 备注。
     return `
       <div class="chan-row">
         <div class="chan-who">
           <b>${escapeHtml(target.model)}</b>
-          <small>${escapeHtml(target.channelName || "-")} · ${escapeHtml(protocolLabel(target.protocol))}${target.note ? " · " + escapeHtml(target.note) : ""}</small>
+          <small>${escapeHtml(protocolLabel(target.protocol))}${target.note ? " · " + escapeHtml(target.note) : ""}</small>
+          ${tagChips}
         </div>
         ${badge}
         <div class="row-actions"><button class="secondary" data-del-target="${target.id}">删除</button></div>
@@ -136,6 +164,15 @@ export function createChannelAdmin({ state, els, onChange }) {
       await api(`/api/model-targets/${encodeURIComponent(id)}`, { method: "DELETE" });
       await loadModelTargets();
       toast("已删除。");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+  async function removeModelTargetTag(id, tag) {
+    try {
+      await api(`/api/model-targets/${encodeURIComponent(id)}/remove-tag`, { method: "POST", body: JSON.stringify({ tag }) });
+      await loadModelTargets();
+      toast(`已移除标签：${tag}`);
     } catch (error) {
       toast(error.message, true);
     }

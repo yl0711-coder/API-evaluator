@@ -573,7 +573,7 @@ code {
 
 .panel-divider {
   border: 0;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
   margin: 22px 0;
 }
 
@@ -1763,6 +1763,8 @@ select:disabled { opacity: .55; cursor: not-allowed; color: var(--muted); }
 .batch-picker .pill { font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
 .batch-picker .pill.good { color: var(--good); border-color: rgba(95, 227, 176, 0.4); }
 .batch-picker .pill.bad { color: var(--bad); border-color: rgba(255, 122, 138, 0.4); }
+/* 场景能力标签：区别于灰色难度 pill，用强调色实心底，更醒目 */
+.batch-picker .pill.tag { color: var(--accent); border-color: rgba(246, 181, 107, 0.4); background: rgba(246, 181, 107, 0.12); font-weight: 600; }
 .batch-picker .bp-echo { margin-top: 14px; font-size: 13px; color: var(--text-2); }
 .batch-picker .bp-echo b { color: var(--accent); }
 .batch-picker .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; min-height: 28px; }
@@ -1838,6 +1840,58 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 .chan-pill.idle { color: var(--muted); background: var(--soft); }
 .cfg #profile-list .row-actions { display: flex; gap: 8px; }
 @media (max-width: 760px) { .cfg #profile-list .chan-row { grid-template-columns: auto 1fr; } }
+
+/* ===== 渠道管理 / 模型管理：上表单 + 下整宽卡片（替代被挤到 340px 右栏的旧两栏）===== */
+.cfg-stack { display: flex; flex-direction: column; gap: 18px; align-items: stretch; }
+
+/* 模型管理表单字段少 → 收成一行紧凑条 */
+.cfg-stack #model-target-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
+.cfg-stack #model-target-form > label { margin: 0; flex: 1 1 200px; }
+.cfg-stack #model-target-form .wide { grid-column: auto; flex: 1 1 200px; }
+/* 按钮自成一行、置于最后一项下方（与渠道表单一致），而非挤在右侧 */
+.cfg-stack #model-target-form > .action-row { flex: 1 0 100%; margin-top: 2px; }
+
+/* 渠道管理字段多 → 保留两列网格，仅限宽防宽屏摊太开 */
+.cfg-stack #channel-form { max-width: 840px; }
+
+/* 列表容器：渠道平铺卡片网格；模型按渠道分组（组内再网格）*/
+.cfg #channel-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.cfg #model-target-list { display: flex; flex-direction: column; gap: 18px; }
+.cfg #channel-list .empty-state { grid-column: 1 / -1; }
+
+.model-group { display: flex; flex-direction: column; gap: 10px; }
+.model-group + .model-group { margin-top: 6px; }
+.model-group-head { display: flex; align-items: baseline; gap: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.model-group-head b { font-size: 13.5px; font-weight: 650; color: var(--text); }
+.model-group-head span { font-size: 11.5px; color: var(--muted); }
+.model-group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+
+/* 场景测验夺标得到的能力标签 chip（可点 × 移除）*/
+.model-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.model-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--accent); border: 1px solid rgba(246, 181, 107, 0.4); background: rgba(246, 181, 107, 0.12); border-radius: 999px; padding: 2px 4px 2px 9px; }
+.model-tag-x { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
+.model-tag-x:hover { color: var(--bad); }
+
+/* 卡片：名称+元信息占顶行，状态徽标左下、操作右下 */
+.cfg #channel-list .chan-row,
+.cfg #model-target-list .chan-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(8, 17, 31, 0.4);
+}
+.cfg #channel-list .chan-row:hover,
+.cfg #model-target-list .chan-row:hover { border-color: rgba(246, 181, 107, 0.28); }
+.cfg #channel-list .chan-who,
+.cfg #model-target-list .chan-who { grid-column: 1 / -1; }
+.cfg #channel-list .chan-pill,
+.cfg #model-target-list .chan-pill { justify-self: start; }
+.cfg #channel-list .row-actions,
+.cfg #model-target-list .row-actions { justify-self: end; display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ===== 全局：内容限宽，所有页与已迁移页一致（防宽屏摊开）===== */
 .page > .section-header, .page > .panel, .page > .helper-details, .page > .technical-details, .page > details { max-width: 1180px; }

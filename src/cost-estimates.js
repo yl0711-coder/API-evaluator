@@ -148,7 +148,7 @@ function withAiAnalysisEstimate(payload, estimate, analysisRequests = 1) {
     lowTokens: estimate.lowTokens + extraLowTokens,
     highTokens: estimate.highTokens + extraHighTokens,
     risk: upgradeRisk(estimate.risk, extraHighTokens),
-    note: `${estimate.note} 已勾选 AI 分析，会额外调用 ${analysisRequests} 次当前 API/模型生成报告解读。`,
+    note: `${estimate.note} 已勾选 AI 分析，会额外调用 ${analysisRequests} 次 AI 分析模型（被测渠道或 .env.evaluator 指定）生成报告解读。`,
   };
 }
 
