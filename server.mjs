@@ -730,6 +730,7 @@ async function handleApi(req, res) {
     const body = await readJson(req);
     const result = await runAdmissionTest(body);
     openReportInBrowser(result.reportHtmlPath);
+    openReportInBrowser(result.aiAnalysisHtmlPath); // AI 辅助分析独立成文，存在时一并打开
     sendJson(res, 200, result);
     return;
   }

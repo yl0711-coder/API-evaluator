@@ -161,6 +161,13 @@
               </select>
               <small class="field-hint">新渠道首次建议选标准准入。快速准入用于低成本复核，深度准入会多做轻量长上下文。</small>
             </label>
+            <label class="wide checkbox-option">
+              <input name="useAiReportAnalysis" type="checkbox" value="1" />
+              <span>
+                使用 AI 分析报告结果
+                <small>会额外调用当前被测 API/模型生成分析结论，单独生成一份 HTML，额外消耗 token。不勾选时只使用本地规则判断。</small>
+              </span>
+            </label>
             <button id="admission-submit" class="primary wide" type="submit">开始准入评测</button>
           </form>
 
@@ -187,6 +194,13 @@
                 同时测试 API 数
                 <input type="number" name="maxParallelProfiles" value="1" min="1" max="3" />
                 <small class="field-hint">准入评测会真实消耗额度。默认 1 个一个跑，避免并发过高影响判断。</small>
+              </label>
+              <label class="wide checkbox-option">
+                <input name="useAiReportAnalysis" type="checkbox" value="1" />
+                <span>
+                  使用 AI 分析报告结果
+                  <small>批次只调用一次（选最优渠道）生成分析结论，单独生成一份 HTML，额外消耗 token。不勾选时只使用本地规则判断。</small>
+                </span>
               </label>
               <button id="admission-batch-submit" class="secondary wide" type="submit">开始批量准入对比</button>
             </form>
@@ -624,6 +638,7 @@
             <label>
               测试轮数
               <select name="rounds">
+                <option value="1">1 轮：快速功能测试</option>
                 <option value="3">3 轮：冒烟验证</option>
                 <option value="10" selected>10 轮：基础稳定性</option>
                 <option value="30">30 轮：较完整稳定性</option>

@@ -368,14 +368,28 @@ export async function runAdmissionTest(body, taskContext = {}) {
   // 与中转后台对账会偏小。这里另算一份真实打到上游的口径——含每个用例的重试次数 + 14 个分词器探针。
   summary.upstreamUsage = buildUpstreamUsage(records, tokenizerProbeRecords);
   summary.regression = await assessRunRegression(summary);
-  const reportMarkdown = formatAdmissionReport(summary, records);
+  const aiAnalysis = await maybeBuildAiAnalysis({
+    enabled: body.useAiReportAnalysis,
+    reportType: "admission",
+    profile,
+    summary,
+    runId,
+    taskContext,
+  });
+  const reportMarkdown = formatAdmissionReport(summary, records, { aiAnalysis });
   const reportFiles = await saveReportFiles(runId, reportMarkdown, "模型准入评测报告");
+  const aiAnalysisFiles = await saveAiAnalysisReport(
+    runId,
+    formatAiAnalysisDocument(aiAnalysis, { title: "模型准入评测 · AI 辅助分析" }),
+    "模型准入评测 · AI 辅助分析",
+  );
 
   await persistTestRun({
     ...summary,
     type: "admission",
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown: undefined,
@@ -386,6 +400,7 @@ export async function runAdmissionTest(body, taskContext = {}) {
     type: "admission",
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown,
@@ -424,6 +439,7 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
             profileId,
             packageLevel,
             predicted: null, // 预测记在批量总结里，不重复挂到每个子渠道
+            useAiReportAnalysis: false, // AI 分析在批次层只做一次（选最优渠道），不逐个渠道重复发
           },
           taskContext,
         ),
@@ -460,14 +476,29 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
   };
   summary = await attachRunArtifacts(batchId, summary, { results });
   summary.predictedConsumption = normalizePredicted(body.predicted);
-  const reportMarkdown = formatBatchAdmissionReport(summary);
+  const aiAnalysisProfile = selectBatchAnalysisProfile(profiles, summary, validProfileIds);
+  const aiAnalysis = await maybeBuildAiAnalysis({
+    enabled: body.useAiReportAnalysis,
+    reportType: "batch-admission",
+    profile: aiAnalysisProfile,
+    summary,
+    runId: batchId,
+    taskContext,
+  });
+  const reportMarkdown = formatBatchAdmissionReport(summary, { aiAnalysis });
   const reportFiles = await saveReportFiles(batchId, reportMarkdown, "批量准入评测报告");
+  const aiAnalysisFiles = await saveAiAnalysisReport(
+    batchId,
+    formatAiAnalysisDocument(aiAnalysis, { title: "批量准入评测 · AI 辅助分析" }),
+    "批量准入评测 · AI 辅助分析",
+  );
 
   await persistTestRun({
     ...summary,
     type: "batch-admission",
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown: undefined,
@@ -478,6 +509,7 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
     type: "batch-admission",
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown,

@@ -657,7 +657,8 @@ export function formatBatchReport(summary, options = {}) {
   ].join("\n");
 }
 
-export function formatBatchAdmissionReport(summary) {
+export function formatBatchAdmissionReport(summary, options = {}) {
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
   const rankedResults = [...(summary.results || [])]
     .filter((result) => !result.error)
     .sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
@@ -734,10 +735,13 @@ export function formatBatchAdmissionReport(summary) {
     "- 高分候选应继续做 10 轮以上稳定性测试，并在编程、长文本和工具调用场景复核。",
     "- 低分候选应先检查协议、模型名、渠道类型和上游响应结构。",
     "- 报告不包含 API Key。",
+    "",
+    ...optionalReportSection(aiAnalysisSection),
   ].join("\n");
 }
 
-export function formatAdmissionReport(summary, records) {
+export function formatAdmissionReport(summary, records, options = {}) {
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
   const caseRows = summary.cases.map((item, index) =>
     [
       index + 1,
@@ -857,6 +861,8 @@ export function formatAdmissionReport(summary, records) {
     "- 准入等级由连通性、协议结构、工具调用、任务行为、耗时和 token 返回情况综合判断。",
     "- 如果分数低或出现结构失败，需要先复核协议、模型名、渠道类型和上游转换逻辑，再进入稳定性测试。",
     "- 报告不包含 API Key。",
+    "",
+    ...optionalReportSection(aiAnalysisSection),
   ].join("\n");
 }
 

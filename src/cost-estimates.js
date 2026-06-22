@@ -38,29 +38,31 @@ export function estimateAdmissionCost(payload) {
   const familyProbeCount = packageLevel === "quick" ? 0 : knownModelFamily(payload.modelName) ? 1 : 0;
   const requests = (packageLevel === "deep" ? 12 : packageLevel === "quick" ? 5 : 11) + familyProbeCount;
   const normalRequests = Math.max(0, requests - 1);
-  return {
+  return withAiAnalysisEstimate(payload, {
     requests,
     lowTokens: TOKEN_ESTIMATES.short[0] * 2 + normalRequests * TOKEN_ESTIMATES.normal[0],
     highTokens: TOKEN_ESTIMATES.short[1] * 2 + normalRequests * TOKEN_ESTIMATES.normal[1],
     risk: packageLevel === "deep" ? "中" : "低",
     note: "准入评测会检查连通、结构化输出、标称一致性、工具调用、流式结构、任务行为和模型指纹探针，用于接入前初筛。",
-  };
+  });
 }
 
 export function estimateAdmissionBatchCost(payload) {
   const profiles = payload.profileIds?.length || 0;
   const modelNames = Array.isArray(payload.modelNames) ? payload.modelNames : [];
+  // 单渠道估算里关掉 AI 分析（批次只在总层做一次），避免逐渠道重复累加。
   const estimates = profiles > 0
-    ? Array.from({ length: profiles }, (_, index) => estimateAdmissionCost({ ...payload, modelName: modelNames[index] }))
+    ? Array.from({ length: profiles }, (_, index) =>
+        estimateAdmissionCost({ ...payload, modelName: modelNames[index], useAiReportAnalysis: "" }))
     : [];
   const requests = estimates.reduce((total, estimate) => total + estimate.requests, 0);
-  return {
+  return withAiAnalysisEstimate(payload, {
     requests,
     lowTokens: estimates.reduce((total, estimate) => total + estimate.lowTokens, 0),
     highTokens: estimates.reduce((total, estimate) => total + estimate.highTokens, 0),
     risk: requests >= 60 ? "中高" : requests >= 24 ? "中" : "低",
     note: "批量准入会对多个 API 逐个执行准入评测，用于同模型多渠道初筛。建议先选 2-3 个关键候选。",
-  };
+  });
 }
 
 export function estimateBatchCost(payload) {
