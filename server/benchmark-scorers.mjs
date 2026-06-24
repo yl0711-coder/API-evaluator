@@ -251,7 +251,9 @@ export function scoreExactAnswer(response, expected, opts = {}) {
       return { passed: true, score: 1, extracted: candidate, issues: [] };
     }
   }
-  return { passed: false, score: 0, extracted: candidate, issues: [`答案不符（抽取：${candidate.slice(0, 60)}）`] };
+  // 失败信息同时给出「期望」与「抽取」，避免误以为抽取值==模型回答就该判对（真正比对的是期望答案）。
+  const expectedText = accepted.map((x) => String(x)).join(" / ").slice(0, 80);
+  return { passed: false, score: 0, extracted: candidate, issues: [`答案不符（期望：${expectedText}；抽取：${candidate.slice(0, 60)}）`] };
 }
 
 // 把任意 JSON 值拍平成「路径 → 标量」映射，用于逐叶比对（对象键排序，保证稳定）。

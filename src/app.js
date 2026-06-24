@@ -109,6 +109,7 @@ modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
 requireElement("#reload-model-targets").addEventListener("click", () => channelAdmin.loadModelTargets());
+requireElement("#push-model-tags").addEventListener("click", () => channelAdmin.pushModelTags());
 const quickVerifyProfileSelect = requireElement("#quickverify-profile-select");
 const quickVerifySubmit = requireElement("#quickverify-submit");
 const quickVerifyResult = requireElement("#quickverify-result");

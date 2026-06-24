@@ -178,6 +178,21 @@ export function createChannelAdmin({ state, els, onChange }) {
     }
   }
 
+  // 把本平台已授予的模型标签推送到 new-api 模型广场（后端聚合模型目标 tags 并写回）。
+  async function pushModelTags() {
+    try {
+      const r = await api("/api/model-targets/push-tags", { method: "POST", body: "{}" });
+      if (r.note) {
+        toast(r.note, true);
+        return;
+      }
+      const failNote = r.errors?.length ? `，失败 ${r.errors.length}` : "";
+      toast(`推送完成：更新 ${r.updated}、未变 ${r.unchanged}、匹配 ${r.matched}/${r.totalModels} 个模型${failNote}。`);
+    } catch (error) {
+      toast(`推送标签失败：${error.message}`, true);
+    }
+  }
+
   async function importFromNewapi() {
     try {
       const r = await api("/api/channels/import", { method: "POST", body: "{}" });
@@ -189,6 +204,6 @@ export function createChannelAdmin({ state, els, onChange }) {
     }
   }
 
-  return { loadChannels, loadModelTargets, saveChannel, saveModelTarget, importFromNewapi };
+  return { loadChannels, loadModelTargets, saveChannel, saveModelTarget, importFromNewapi, pushModelTags };
 }
 

@@ -1785,6 +1785,8 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 /* ===== API 配置页 v2：topbar + 两栏（表单 / 右侧贴士）===== */
 .cfg { max-width: 1180px; display: flex; flex-direction: column; gap: 22px; }
 .cfg-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+/* 操作按钮放标题块内时（如模型管理）：左对齐、置于描述下方 */
+.cfg-topbar > div > .action-row { justify-content: flex-start; margin-top: 12px; }
 .cfg-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 22px; align-items: start; }
 .cfg-grid #profile-form { margin: 0; }
 .cfg-tips { padding: 22px; display: flex; flex-direction: column; gap: 16px; height: fit-content; }

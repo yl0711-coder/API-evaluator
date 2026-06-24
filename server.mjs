@@ -84,6 +84,7 @@ import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./s
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
+import { pushModelTagsToNewapi } from "./server/newapi-tag-writer.mjs";
 import { withRunBy } from "./server/run-context.mjs";
 import { APP_VERSION } from "./server/version.mjs";
 
@@ -677,6 +678,33 @@ async function handleApi(req, res) {
         };
       }),
     );
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/model-targets/push-tags") {
+    // 把本平台已授予的模型标签推送到 new-api 模型广场。按模型名聚合（同名多渠道目标取并集）。
+    const targets = await loadModelTargets();
+    const tagSets = {};
+    for (const t of targets) {
+      const tags = Array.isArray(t.tags) ? t.tags : [];
+      if (!t.model || !tags.length) continue;
+      (tagSets[t.model] ||= new Set());
+      tags.forEach((x) => tagSets[t.model].add(x));
+    }
+    const tagMap = Object.fromEntries(Object.entries(tagSets).map(([k, v]) => [k, [...v]]));
+    if (!Object.keys(tagMap).length) {
+      sendJson(res, 200, { configured: true, totalModels: 0, matched: 0, updated: 0, unchanged: 0, errors: [], note: "没有已授予标签的模型可推送（先跑场景测试得到标签）。" });
+      return;
+    }
+    try {
+      const summary = await pushModelTagsToNewapi(tagMap);
+      if (summary.configured === false) {
+        sendJson(res, 400, { error: "newapi_not_configured", userMessage: summary.error });
+        return;
+      }
+      sendJson(res, 200, summary);
+    } catch (error) {
+      sendJson(res, 502, { error: "newapi_push_failed", userMessage: error.message });
+    }
     return;
   }
   if (req.method === "POST" && /^\/api\/model-targets\/[^/]+\/remove-tag$/.test(url.pathname)) {

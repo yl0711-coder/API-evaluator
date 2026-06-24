@@ -6,7 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-24
+
+### Added
+- **Push model tags to new-api** — aggregate the capability tags granted to model
+  targets and write them back to the new-api model marketplace (read-modify-write the
+  `tags` field). New endpoint `POST /api/model-targets/push-tags`
+  (`server/newapi-tag-writer.mjs`) and a "推送标签到 new-api" button on the model page.
+- **LiveBench-style anti-contamination probe pack** for scenario tests (objective
+  capability probes resistant to benchmark leakage).
+- **Claude tokenizer fingerprint** baseline tool (probe + `count_tokens` / chat dual
+  mode); admission tests now cross-check the tokenizer fingerprint.
+- **Two-dimension batch target picker** (channel health-check / channel selection) and
+  a cascading channel→model picker for single-target run pages.
+- Report-center conclusion cards reworked; reports gained a "model return" column; AI
+  analysis split into its own HTML; AI summary can read an API from the environment.
+
 ### Fixed
+- `styles.css`: resolve the undefined `--border` custom property (use `--line`).
 - Channel / model-target / profile validation failures now return HTTP 400 with a
   user-facing message instead of being swallowed as a 500.
 
