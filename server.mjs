@@ -1,8 +1,8 @@
 import { createServer } from "node:http";
 import { readFile, rm } from "node:fs/promises";
-import { extname } from "node:path";
+import { extname, join } from "node:path";
 import { MIME_TYPES, TEST_SCENARIOS } from "./server/constants.mjs";
-import { ERROR_LOG_FILE, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
+import { ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
 import { ensureDataDir, readRecentErrors, readRecentRequests, readRecentTasks, readRecentTestRuns } from "./server/data-store.mjs";
 import {
   analyzeClientLogs,
@@ -51,7 +51,7 @@ import {
   runScenarioTest,
   runStabilityTest,
 } from "./server/test-runner.mjs";
-import { openReportInBrowser } from "./server/report-files.mjs";
+import { openReportInBrowser, sanitizeReportBaseName } from "./server/report-files.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, requiredString, safeJson, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -854,6 +854,26 @@ async function handleApi(req, res) {
   // 报告中心元数据列表（全平台共享，登录可读）
   if (req.method === "GET" && url.pathname === "/api/reports") {
     sendJson(res, 200, await queryRecentReports(200));
+    return;
+  }
+
+  // 在浏览器里查看一份报告 HTML（Docker/远程部署看报告的正路：应用内浮层 iframe 或新标签页打开）。
+  // 鉴权同其它 /api/*（已登录即可读）。文件名经 sanitizeReportBaseName 防目录穿越；报告为纯静态
+  // HTML+CSS、无脚本，再叠加 nosniff + 禁脚本 CSP，直开标签页也无 XSS 面。
+  if (req.method === "GET" && /^\/api\/reports\/[^/]+\/view$/.test(url.pathname)) {
+    const id = sanitizeReportBaseName(decodeURIComponent(url.pathname.split("/")[3]));
+    try {
+      const html = await readFile(join(REPORTS_DIR, `${id}.html`), "utf8");
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'",
+        "Cache-Control": "no-store",
+      });
+      res.end(html);
+    } catch {
+      sendJson(res, 404, { error: "report_not_found", userMessage: "报告不存在或已被清理。" });
+    }
     return;
   }
 

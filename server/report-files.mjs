@@ -1,7 +1,7 @@
 // 报告文件落盘：把 Markdown + 渲染后的 HTML 写到报告目录，并登记报告中心元数据。
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { recordReport } from "./db.mjs";
 import { REPORTS_DIR } from "./paths.mjs";
 import { renderReportHtml } from "./report-html.mjs";
@@ -85,6 +85,13 @@ function inferReportType(baseName) {
   if (name.includes("replay")) return "replay";
   if (name.includes("supplier")) return "supplier-evidence";
   return "report";
+}
+
+// 从落盘的报告 HTML 路径反推报告 id（= 落盘时的 safeBaseName，去掉目录与 .html 后缀）。
+// 供前端拼出 HTTP 查看 URL（/api/reports/<id>/view）。路径由本进程 join 生成，故 basename 跨平台正确。
+export function reportIdFromHtmlPath(htmlPath) {
+  if (!htmlPath) return "";
+  return basename(String(htmlPath)).replace(/\.html$/i, "");
 }
 
 export function sanitizeReportBaseName(baseName) {

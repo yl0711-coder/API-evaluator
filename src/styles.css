@@ -2058,3 +2058,23 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 #quick-test .result-box, #stability-test .result-box, #scenario-test .result-box { padding: 16px 18px; }
 /* 一键快检结果框并入控件面板，占位时不需 160px 高，收紧后面板底边贴近内容（与稳定/场景提交面板一致） */
 #quickverify-result { min-height: 88px; }
+
+/* ===== 报告浮层（任务完成自动弹出报告，Docker/远程无桌面可用）===== */
+.report-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.report-overlay__backdrop { position: absolute; inset: 0; background: rgba(4, 8, 16, 0.62); backdrop-filter: blur(3px); }
+.report-overlay__panel {
+  position: relative; width: min(1180px, 94vw); height: min(88vh, 1000px);
+  display: flex; flex-direction: column; background: var(--panel-strong, #101b2e);
+  border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+.report-overlay__bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.report-overlay__title { color: var(--text); font-size: 15px; }
+.report-overlay__actions { display: flex; align-items: center; gap: 10px; }
+.report-overlay__link { color: var(--accent); font-size: 13px; text-decoration: none; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.report-overlay__link:hover { border-color: var(--accent); }
+.report-overlay__close { background: transparent; border: 1px solid var(--line); color: var(--muted); border-radius: 8px; width: 30px; height: 30px; cursor: pointer; font-size: 14px; line-height: 1; }
+.report-overlay__close:hover { color: var(--text); border-color: var(--accent); }
+.report-overlay__frame { flex: 1; width: 100%; border: 0; background: #fff; }
+.report-overlay__toggle { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+.report-overlay__toggle input { accent-color: var(--accent); }

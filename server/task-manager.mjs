@@ -3,7 +3,7 @@
 // 不关心具体测试怎么跑（runner 由调用方注入），便于独立测试任务状态机。
 import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
-import { openReportInBrowser } from "./report-files.mjs";
+import { openReportInBrowser, reportIdFromHtmlPath } from "./report-files.mjs";
 
 // Owns remote task lifecycle only. It does not know how a stability or scenario
 // test works; callers inject runners so task state can be tested independently.
@@ -280,6 +280,9 @@ function summarizePublicTaskResult(result) {
   const { reportMarkdown, results, records, ...safeResult } = result;
   return {
     ...safeResult,
+    // 报告 id：供前端拼 HTTP 查看 URL，在应用内浮层弹出报告（Docker/远程无桌面也能看）。
+    reportId: reportIdFromHtmlPath(result.reportHtmlPath),
+    aiAnalysisId: reportIdFromHtmlPath(result.aiAnalysisHtmlPath),
     reportMarkdown: reportMarkdown ? "报告内容已写入本地报告文件，请在报告中心查看。" : "",
     resultCount: Array.isArray(results) ? results.length : undefined,
     recordCount: Array.isArray(records) ? records.length : undefined,

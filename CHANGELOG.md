@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-24
+
+### Added
+- **In-app report popup** — when a long task (stability / scenario / batch) finishes, the
+  report now opens automatically in an in-app overlay (iframe), so it works on headless
+  Docker / remote deployments where the desktop browser auto-open (`EVALUATOR_OPEN_REPORT`)
+  cannot. Toolbar link to open in a new tab; a client toggle (default on) disables it.
+- New auth-gated route `GET /api/reports/:id/view` serves a report's HTML over HTTP
+  (filename sanitized via `sanitizeReportBaseName`; `nosniff` + script-free CSP). Public
+  task results now carry `reportId` / `aiAnalysisId` for the frontend to build the URL.
+
 ## [0.4.1] - 2026-06-24
 
 ### Added
