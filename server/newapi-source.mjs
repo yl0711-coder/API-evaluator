@@ -30,16 +30,22 @@ export async function fetchNewapiChannels() {
 }
 
 async function fetchViaApi() {
-  const base = String(envCompat("NEWAPI_BASE_URL") || "").replace(/\/+$/, "");
-  const token = envCompat("NEWAPI_IMPORT_TOKEN");
+  // 去掉可能误带的行内注释（空白后的 #...）与首尾空白，避免把注释/全角符号塞进 HTTP 头（与 newapi-tag-writer 一致）。
+  const clean = (v) => String(v || "").replace(/\s+#.*$/, "").trim();
+  const base = clean(envCompat("NEWAPI_BASE_URL")).replace(/\/+$/, "");
+  const token = clean(envCompat("NEWAPI_IMPORT_TOKEN"));
+  // new-api 管理接口需双头鉴权：Authorization=系统访问令牌 + New-Api-User=管理员用户ID。
+  // 缺 New-Api-User 会被判未登录返回 401 —— 这正是「导入失败 401」的根因。默认管理员 1。
+  const userId = clean(envCompat("NEWAPI_USER_ID")) || "1";
   if (!base || !token) throw new Error("api 模式需要 EVALUATOR_NEWAPI_BASE_URL + EVALUATOR_NEWAPI_IMPORT_TOKEN（new-api 管理员 access token）。");
+  const headers = { Authorization: token, "New-Api-User": userId };
   const PAGE_SIZE = 100;
   const PAGE_CAP = 50; // 最多 5000 个渠道；超出则只导前 5000 并告警，避免无界翻页
   const rows = [];
   let truncated = false;
   for (let page = 0; page < PAGE_CAP; page += 1) {
-    const res = await fetch(`${base}/api/channel/?p=${page}&page_size=${PAGE_SIZE}`, { headers: { Authorization: token } });
-    if (!res.ok) throw new Error(`new-api 渠道接口返回 ${res.status}（确认 token 有管理员权限）。`);
+    const res = await fetch(`${base}/api/channel/?p=${page}&page_size=${PAGE_SIZE}`, { headers });
+    if (!res.ok) throw new Error(`new-api 渠道接口返回 ${res.status}（确认系统访问令牌与 New-Api-User 有管理员权限）。`);
     const body = await res.json().catch(() => null);
     const items = Array.isArray(body?.data) ? body.data : Array.isArray(body?.data?.items) ? body.data.items : [];
     if (!items.length) break;

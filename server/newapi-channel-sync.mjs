@@ -116,3 +116,27 @@ export async function addModelToNewapiChannel(newapiChannelId, modelName) {
   await callNewapi(cfg, "PUT", "/api/channel/", { id: newapiChannelId, models: next });
   return { added: true, models: next };
 }
+
+// 删除同步：整条删除 new-api 渠道。返回 { deleted:true }。
+export async function deleteNewapiChannel(newapiChannelId) {
+  const cfg = readConfig();
+  await callNewapi(cfg, "DELETE", `/api/channel/${encodeURIComponent(newapiChannelId)}`);
+  return { deleted: true };
+}
+
+// 删除同步：把 modelName 从 new-api 渠道(newapiChannelId)的 models 列表移除。
+// 返回 { removed:bool, models:string }；本就不在则 removed=false（不发 PUT）。
+export async function removeModelFromNewapiChannel(newapiChannelId, modelName) {
+  const cfg = readConfig();
+  const got = await callNewapi(cfg, "GET", `/api/channel/${encodeURIComponent(newapiChannelId)}`);
+  const current = got?.data || {};
+  const models = splitModels(current.models);
+  const model = String(modelName || "").trim();
+  if (!models.includes(model)) {
+    return { removed: false, models: models.join(",") };
+  }
+  const next = models.filter((m) => m !== model).join(",");
+  // patch 回写：只带 id + models，不带 key。
+  await callNewapi(cfg, "PUT", "/api/channel/", { id: newapiChannelId, models: next });
+  return { removed: true, models: next };
+}

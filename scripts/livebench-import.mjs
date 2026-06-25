@@ -37,6 +37,12 @@ const CATEGORIES = [
   { name: "data_analysis", cn: "数据分析", scorer: "structured", difficulty: "normal", maxTokens: 4096, maxAnswerChars: 4800, jsonOnly: true },
 ];
 
+// data_analysis 三类子任务判分有别：表格重排/连接输出整张表，其 ground truth 把原始 dataframe 行号当顶层键
+// （题面不展示、模型无从复现）→ 用 table 判分器（忽略行号、列名容差、行集合比对）；列类型标注(cta)是
+// {列名→类型} 字典，严格深比对正合适 → 仍用 structured。
+const TABLE_TASKS = new Set(["tablereformat", "tablejoin"]);
+const scorerForRow = (cat, row) => (cat.name === "data_analysis" && TABLE_TASKS.has(row.task) ? "table" : cat.scorer);
+
 // 输出纪律后缀（英文，匹配 LiveBench 题面语言）。目的：压住推理，避免输出撞 max_tokens 被截。
 // answerOnly = 直接给答案、不输出任何推理（用户明确要求）；仍用 <solution> 包裹以便稳定抽取。
 const ANSWER_ONLY_SUFFIX =
@@ -163,7 +169,7 @@ async function importCategory(cat, { proxy, count, offset }) {
       difficulty: cat.difficulty,
       maxTokens: cat.maxTokens, // 输出窗口下限，避免难题答案被截断（运行时只抬高）
       prompt: prompt + promptSuffix(cat), // 追加输出纪律后缀，压住冗长推理
-      scorer: cat.scorer,
+      scorer: scorerForRow(cat, row),
       expected,
       // 溯源：便于按月刷新与许可核对。
       source: `livebench/${cat.name} · ${row.task || "-"} · release ${String(row.livebench_release_date || "-").slice(0, 10)}`,
@@ -180,7 +186,8 @@ function renderFile(scenarios, meta) {
     "// 【自动生成 —— 勿手改】由 scripts/livebench-import.mjs 从 HuggingFace livebench/* 生成。",
     `// 生成时间：${meta.generatedAt}`,
     `// 覆盖类别：${meta.categories}（不含 coding；language/instruction_following 暂未导入）。`,
-    "// 判分：scorer=exact（math/reasoning，答案抽取+归一化精确匹配）/ structured（data_analysis，JSON 深比对）。",
+    "// 判分：scorer=exact（math/reasoning，答案抽取+归一化精确匹配）/ table（data_analysis 表格重排·连接，",
+    "//   忽略不可复现的行号键、列名容差的行集合比对）/ structured（data_analysis 列类型标注，JSON 深比对）。",
     "// 用途：抗污染客观能力探针包，主要服务档位降级判别（声称高档却在硬题崩）。默认关闭，",
     "//      由 EVALUATOR_ENABLE_LIVEBENCH=1 开启（见 server/scenarios/index.mjs）。",
     "// 刷新：重跑 scripts/livebench-import.mjs（可 --offset 换批 / --count 调量）。落库前核对各数据集许可。",

@@ -72,3 +72,65 @@ test("confirm-dialog：正常单次确认 / 取消", async () => {
     globalThis.document = prevDoc;
   }
 });
+
+test("confirm-dialog：三态返回 confirm/cancel/dismiss", async () => {
+  const prevDoc = globalThis.document;
+  globalThis.document = { addEventListener() {} };
+  try {
+    const modal = mockEl();
+    const ok = mockEl();
+    const cancel = mockEl();
+    const confirmAction = createConfirmDialog({ modal, titleElement: mockEl(), messageElement: mockEl(), confirmButton: ok, cancelButton: cancel });
+
+    const p1 = confirmAction({ title: "A", message: "a", tristate: true });
+    ok._fire("click");
+    assert.equal(await p1, "confirm");
+
+    const p2 = confirmAction({ title: "B", message: "b", tristate: true });
+    cancel._fire("click");
+    assert.equal(await p2, "cancel");
+
+    const p3 = confirmAction({ title: "C", message: "c", tristate: true });
+    modal._fire("click", { target: modal }); // 点背景
+    assert.equal(await p3, "dismiss");
+  } finally {
+    globalThis.document = prevDoc;
+  }
+});
+
+test("confirm-dialog：右上角 ❌(closeButton) 触发 dismiss", async () => {
+  const prevDoc = globalThis.document;
+  globalThis.document = { addEventListener() {} };
+  try {
+    const ok = mockEl();
+    const cancel = mockEl();
+    const closeButton = mockEl();
+    const confirmAction = createConfirmDialog({ modal: mockEl(), titleElement: mockEl(), messageElement: mockEl(), confirmButton: ok, cancelButton: cancel, closeButton });
+    const p = confirmAction({ title: "X", message: "x", tristate: true });
+    closeButton._fire("click");
+    assert.equal(await p, "dismiss");
+  } finally {
+    globalThis.document = prevDoc;
+  }
+});
+
+test("confirm-dialog：confirmDelayMs 期间确认钮禁用、点击无效", async () => {
+  const prevDoc = globalThis.document;
+  globalThis.document = { addEventListener() {} };
+  try {
+    const ok = mockEl();
+    const cancel = mockEl();
+    const confirmAction = createConfirmDialog({ modal: mockEl(), titleElement: mockEl(), messageElement: mockEl(), confirmButton: ok, cancelButton: cancel });
+    const p = confirmAction({ title: "X", message: "x", tristate: true, confirmDelayMs: 2000 });
+    assert.equal(ok.disabled, true, "进入即禁用");
+    ok._fire("click"); // 禁用期内点击应被忽略
+    let settled = false;
+    p.then(() => (settled = true));
+    await Promise.resolve();
+    assert.equal(settled, false, "禁用期内点击不决议");
+    cancel._fire("click"); // 用取消收尾，避免悬挂
+    assert.equal(await p, "cancel");
+  } finally {
+    globalThis.document = prevDoc;
+  }
+});

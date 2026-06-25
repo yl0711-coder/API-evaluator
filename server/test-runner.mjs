@@ -1159,19 +1159,21 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
   };
 }
 
-// 场景测验夺标阈值：逐场景质量分严格大于此值才授予该场景的能力标签。
+// 场景测验夺标阈值：逐场景质量分达到此值（含）即授予该场景的能力标签。
 const TAG_AWARD_MIN_SCORE = 90;
 
-// 场景测验夺标：某模型在某场景 avgQualityScore > 90 → 授予该场景的能力标签（并集去重、只增不撤）。
+// 场景测验夺标：某模型在某场景 avgQualityScore >= 90 → 授予该场景的能力标签（并集去重、只增不撤）。
 // profile.id === 模型目标 id，故按 result.profileId 直接回写模型目标。best-effort。
 async function awardScenarioTags(summary, selectedScenarios) {
+  // 设置「为高分通过场景测试的模型添加对应标签」关闭时，即使 >=90 分也不授标签。
+  if (!getSettings().enableAutoTag) return;
   const tagById = new Map(selectedScenarios.map((s) => [s.id, s.tag]).filter(([, t]) => t));
   const earnedByProfile = new Map();
   for (const r of summary.results || []) {
     if (!r?.profileId) continue;
     const earned = new Set();
     for (const sc of r.scenarios || []) {
-      if (Number(sc.avgQualityScore) > TAG_AWARD_MIN_SCORE) {
+      if (Number(sc.avgQualityScore) >= TAG_AWARD_MIN_SCORE) {
         const tag = tagById.get(sc.scenarioId);
         if (tag) earned.add(tag);
       }
@@ -1257,7 +1259,7 @@ export async function runScenarioTest(body, taskContext = {}) {
   });
   summary = await attachRunArtifacts(runId, summary, { profileResults });
   summary.predictedConsumption = normalizePredicted(body.predicted);
-  // 场景测验夺标：>90 分给对应模型授予能力标签。best-effort，绝不影响出报告。
+  // 场景测验夺标：>=90 分给对应模型授予能力标签。best-effort，绝不影响出报告。
   try {
     await awardScenarioTags(summary, selectedScenarios);
   } catch {

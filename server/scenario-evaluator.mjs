@@ -7,6 +7,7 @@ import {
   scoreNeedleRetrieval,
   scoreSetMatch,
   scoreStructuredMatch,
+  scoreTableReformat,
 } from "./benchmark-scorers.mjs";
 
 // 按场景声明的 benchmark scorer 判分（替代关键词启发式）。返回 null 则回退默认启发式。
@@ -38,6 +39,11 @@ function scoreByBenchmark(scenario, record, text) {
   if (scenario.scorer === "structured") {
     const r = scoreStructuredMatch(text, scenario.expected);
     return { score: Math.round(r.score * 100), passed: r.passed, issues: r.issues, scorer: "structured" };
+  }
+  // 表格重排/连接：忽略不可复现的行号键、列名容差的行集合比对（见 scoreTableReformat 说明）。
+  if (scenario.scorer === "table") {
+    const r = scoreTableReformat(text, scenario.expected);
+    return { score: Math.round(r.score * 100), passed: r.passed, issues: r.issues, scorer: "table" };
   }
   if (scenario.scorer === "set") {
     const r = scoreSetMatch(text, scenario.expectedSet);

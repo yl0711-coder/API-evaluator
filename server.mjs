@@ -85,7 +85,7 @@ import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
 import { pushModelTagsToNewapi, isNewapiTagWriterConfigured } from "./server/newapi-tag-writer.mjs";
-import { pushChannelToNewapi, addModelToNewapiChannel } from "./server/newapi-channel-sync.mjs";
+import { pushChannelToNewapi, addModelToNewapiChannel, deleteNewapiChannel, removeModelFromNewapiChannel } from "./server/newapi-channel-sync.mjs";
 import { getSettings, loadSettings, saveSettings } from "./server/settings-store.mjs";
 import { withRunBy } from "./server/run-context.mjs";
 import { APP_VERSION } from "./server/version.mjs";
@@ -109,6 +109,24 @@ const taskManager = createTaskManager({
 await ensureDataDir();
 await loadSettings(); // 暖运行时设置缓存（AI 总结模型 / LiveBench / 安全题开关）
 await pruneReportsOnStartup();
+
+// 「删除同步至 new-api」公共逻辑：best-effort 调 action(newapiChannelId)，结果并入 DELETE 响应。
+// 任何失败都不影响已完成的本地删除，只在响应里说明同步结果，供前端 toast。
+async function syncNewapiDelete(wantSync, newapiChannelId, action) {
+  if (!wantSync) return {};
+  if (!isNewapiTagWriterConfigured()) {
+    return { newapiSynced: false, newapiSkipped: "未配置 new-api，已仅删除本地。" };
+  }
+  if (!newapiChannelId) {
+    return { newapiSynced: false, newapiSkipped: "该渠道未推送到 new-api，已仅删除本地。" };
+  }
+  try {
+    await action(newapiChannelId);
+    return { newapiSynced: true };
+  } catch (error) {
+    return { newapiSynced: false, newapiError: error.message };
+  }
+}
 
 createServer(async (req, res) => {
   try {
@@ -689,12 +707,17 @@ async function handleApi(req, res) {
     }
     const channels = await loadChannels();
     const channel = channels.find((item) => item.id === id);
+    // 删本地前捕获 newapiChannelId（本地删后就拿不到了），供「删除同步至 new-api」用。
+    const wantSync = url.searchParams.get("syncNewapi") === "1";
+    const newapiChannelId = channel?.newapiChannelId || null;
     if (channel) await deleteChannelApiKey(channel);
     await saveChannels(channels.filter((item) => item.id !== id));
     // 级联删除该渠道下的模型目标，避免孤儿。
     const targets = await loadModelTargets();
     await saveModelTargets(targets.filter((target) => target.channelId !== id));
-    sendJson(res, 200, { ok: true });
+    // best-effort 同步删除 new-api 渠道：失败不影响本地删，结果并入响应。
+    const sync = await syncNewapiDelete(wantSync, newapiChannelId, (cid) => deleteNewapiChannel(cid));
+    sendJson(res, 200, { ok: true, ...sync });
     return;
   }
 
@@ -827,8 +850,18 @@ async function handleApi(req, res) {
   if (req.method === "DELETE" && url.pathname.startsWith("/api/model-targets/")) {
     const id = decodeURIComponent(url.pathname.replace("/api/model-targets/", ""));
     const targets = await loadModelTargets();
+    const target = targets.find((item) => item.id === id);
+    // 删本地前定位所属渠道的 newapiChannelId 与模型名，供「删除同步」从 new-api 渠道 models 移除。
+    const wantSync = url.searchParams.get("syncNewapi") === "1";
+    let newapiChannelId = null;
+    const modelName = target?.model || "";
+    if (wantSync && target) {
+      const channel = (await loadChannels()).find((c) => c.id === target.channelId);
+      newapiChannelId = channel?.newapiChannelId || null;
+    }
     await saveModelTargets(targets.filter((item) => item.id !== id));
-    sendJson(res, 200, { ok: true });
+    const sync = await syncNewapiDelete(wantSync, newapiChannelId, (cid) => removeModelFromNewapiChannel(cid, modelName));
+    sendJson(res, 200, { ok: true, ...sync });
     return;
   }
 

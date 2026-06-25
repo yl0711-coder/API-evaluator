@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { SETTINGS_FILE } from "./paths.mjs";
 
-const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false };
+const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableDeleteSync: false, enableAutoTag: true };
 
 let cache = null;
 
@@ -18,6 +18,9 @@ function normalize(raw) {
     enableSafety: raw?.enableSafety === true,
     enableHle: raw?.enableHle === true,
     enableHardcoreLogic: raw?.enableHardcoreLogic === true,
+    enableDeleteSync: raw?.enableDeleteSync === true,
+    // 高分通过场景测试自动授予能力标签：默认开启；仅显式 false 关闭（兼容旧 settings.json 缺该字段→视为开）。
+    enableAutoTag: raw?.enableAutoTag !== false,
   };
 }
 

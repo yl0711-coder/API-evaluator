@@ -103,6 +103,8 @@ const channelAdmin = createChannelAdmin({
   state,
   els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect },
   onChange: () => renderProfileOptions(),
+  // 用 thunk 传确认弹框：confirmAction 在本文件后面才声明，但删除点击发生在初始化之后，闭包取值时已就绪。
+  confirmDeleteSync: (opts) => confirmAction(opts),
 });
 channelForm.addEventListener("submit", channelAdmin.saveChannel);
 modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
@@ -238,6 +240,7 @@ const confirmAction = createConfirmDialog({
   messageElement: requireElement("#confirm-modal-message"),
   confirmButton: requireElement("#confirm-modal-ok"),
   cancelButton: requireElement("#confirm-modal-cancel"),
+  closeButton: requireElement("#confirm-modal-close"),
 });
 const keyPrompt = createKeyModal({
   modal: keyModal,
@@ -925,7 +928,7 @@ applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
 try {
-  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
+  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), preloadSettings(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
   renderPageHelp("dashboard");
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
@@ -1026,6 +1029,8 @@ const setLivebench = requireElement("#set-livebench");
 const setSafety = requireElement("#set-safety");
 const setHle = requireElement("#set-hle");
 const setHardcoreLogic = requireElement("#set-hardcore-logic");
+const setDeleteSync = requireElement("#set-delete-sync");
+const setAutoTag = requireElement("#set-auto-tag");
 // 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
 const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
 
@@ -1038,13 +1043,26 @@ function applyAiSpecifiedGate() {
 }
 setAiSpecified.addEventListener("change", applyAiSpecifiedGate);
 
+// 启动预载：只把设置塞进 state（供删除流读 enableDeleteSync），不碰下面才声明的 set-* 元素，避免 TDZ。
+// 函数声明会提升，可在上方启动 Promise.all 里调用。
+async function preloadSettings() {
+  try {
+    state.settings = await api("/api/settings");
+  } catch {
+    /* 启动期设置加载失败不阻断首屏；进设置页会再试 */
+  }
+}
+
 async function loadSettings() {
   try {
     const s = await api("/api/settings");
+    state.settings = s; // 供删除流读取 enableDeleteSync 等开关
     setLivebench.checked = Boolean(s.enableLivebench);
     setSafety.checked = Boolean(s.enableSafety);
     setHle.checked = Boolean(s.enableHle);
     setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
+    setDeleteSync.checked = Boolean(s.enableDeleteSync);
+    setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
     settingsAiCascade.refresh({ channels: state.channels, modelTargets: state.modelTargets, profiles: state.profiles });
     settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
     setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
@@ -1062,9 +1080,12 @@ settingsForm.addEventListener("submit", async (event) => {
     enableSafety: setSafety.checked,
     enableHle: setHle.checked,
     enableHardcoreLogic: setHardcoreLogic.checked,
+    enableDeleteSync: setDeleteSync.checked,
+    enableAutoTag: setAutoTag.checked,
   };
   try {
-    await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+    const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+    state.settings = saved; // 即时生效：删除流随即按新开关走
     await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
     toast("设置已保存。");
   } catch (error) {

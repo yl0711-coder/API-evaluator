@@ -208,18 +208,28 @@ function normalizeAnswer(s) {
   return t.trim();
 }
 
+// 剥掉「答案标签」(最终答案/答案/the answer is/answer)：取最后一个标签后的内容，无标签则原样返回。
+// 场景：题面常要求 "Answer: <...>"，模型会把整行（含标签）塞进 <solution>，导致抽取出 "Answer: 4, 1, 2, 3"
+// 与期望 "4,1,2,3" 比不上。英文词加 \b 词界，避免误伤 "answered" 等。
+function afterAnswerLabel(s) {
+  const t = String(s || "").trim();
+  const matches = [...t.matchAll(/(?:最终答案|答案(?:是|为)?|\bthe\s+answer\s+is\b|\banswer\b)(?:\s+is)?\s*[:：=]?\s*(.+)/gi)];
+  const last = matches.length ? matches[matches.length - 1][1].trim() : "";
+  return last || t;
+}
+
 // 从模型回答里抽取候选答案：<solution></solution> → 剥代码围栏 → \boxed{} → "答案/answer" 标记 → 末行。
 function extractAnswer(response) {
   let text = String(response || "").trim();
   // LiveBench 多任务（zebra/web_of_lies 等）要求把最终答案放进 <solution></solution>，优先取其中内容；
-  // 取最后一处，避免命中题面里的示例标签。
+  // 取最后一处，避免命中题面里的示例标签。再剥一层答案标签（奥赛填空等会把 "Answer: ..." 整行放进来）。
   const sols = [...text.matchAll(/<solution>\s*([\s\S]*?)\s*<\/solution>/gi)];
-  if (sols.length) return sols[sols.length - 1][1].trim();
+  if (sols.length) return afterAnswerLabel(sols[sols.length - 1][1].trim());
   text = text.replace(/```[a-zA-Z0-9_-]*\n?/g, "").replace(/```/g, "").trim();
   const boxed = text.match(/\\boxed\{([^}]*)\}/);
   if (boxed) return boxed[1].trim();
-  const marker = text.match(/(?:最终答案|答案(?:是|为)?|the\s+answer\s+is|answer)\s*[:：=]?\s*(.+)$/im);
-  if (marker && marker[1].trim()) return marker[1].trim();
+  const labeled = afterAnswerLabel(text);
+  if (labeled !== text) return labeled; // 命中答案标签
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   return lines.length ? lines[lines.length - 1] : text;
 }
@@ -333,6 +343,68 @@ export function scoreStructuredMatch(response, expected) {
   if (wrong.length) issues.push(`字段不符：${wrong.slice(0, 5).join(", ")}${wrong.length > 5 ? "…" : ""}`);
   if (extra.length) issues.push(`多余字段：${extra.length}`);
   return { passed, score, matched, total: expLeaves.size, issues };
+}
+
+// 把「表格的 JSON 表示」归一成「行对象数组」，吸收三种合法编排：
+//   - 行对象数组 / JSONL（orient=records）→ 原样；
+//   - 以行号为键的对象（orient=index，值都是对象）→ 取 values（丢掉行号，因为行号不可由模型复现）；
+//   - 单个行对象 → 包一层。
+// 其它（标量、列向 orient=columns 等）无法可靠判定行集，返回 null 让上层判失败。
+function toRowList(parsed) {
+  if (parsed == null) return null;
+  if (Array.isArray(parsed)) return parsed.every((r) => r && typeof r === "object" && !Array.isArray(r)) ? parsed : null;
+  if (typeof parsed === "object") {
+    const vals = Object.values(parsed);
+    if (vals.length && vals.every((v) => v && typeof v === "object" && !Array.isArray(v))) return vals;
+    return [parsed]; // 扁平的单行对象
+  }
+  return null;
+}
+// 行内键去首尾空白（吸收 TSV 表头 "Accident " 这类尾空格），值原样保留。
+function normalizeRow(row) {
+  const out = {};
+  for (const k of Object.keys(row)) out[String(k).trim()] = row[k];
+  return out;
+}
+// 两行相等：同列集合 + 每列叶子相等（数值容差/归一化，复用 leafEqual）。
+function rowsEqual(a, b) {
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) {
+    if (!(k in b) || !leafEqual(a[k], b[k])) return false;
+  }
+  return true;
+}
+
+// 表格重排/连接专用判分（data-analysis tablereformat/tablejoin）。LiveBench 的 ground truth 把原始
+// dataframe 的「行号」当顶层键（如 "69"/"2266"），而题面并不展示这些行号 —— 模型无从复现。故这里按
+// **行对象的多重集合**比对：忽略顶层行号键、去列名首尾空白、数值容差、行序无关。全部行命中且无多余行才 passed。
+export function scoreTableReformat(response, expected) {
+  const exp = typeof expected === "string" ? parseStructured(expected) : expected;
+  const expRows = toRowList(exp);
+  if (!expRows) return { passed: false, score: 0, matched: 0, total: 0, issues: ["expected 不是可解析的表格"] };
+  const got = parseStructured(String(response || ""));
+  const gotRows = toRowList(got);
+  if (!gotRows) return { passed: false, score: 0, matched: 0, total: expRows.length, issues: ["模型输出不是可解析的表格（应为行对象数组/JSON/JSONL）"] };
+  const expN = expRows.map(normalizeRow);
+  const gotN = gotRows.map(normalizeRow);
+  const used = new Array(gotN.length).fill(false);
+  let matched = 0;
+  for (const er of expN) {
+    const idx = gotN.findIndex((gr, i) => !used[i] && rowsEqual(er, gr));
+    if (idx >= 0) {
+      used[idx] = true;
+      matched += 1;
+    }
+  }
+  const extra = gotN.length - matched;
+  const total = expN.length || 1;
+  const score = Math.round((matched / total) * 1000) / 1000;
+  const passed = matched === expN.length && extra === 0;
+  const issues = [];
+  if (matched < expN.length) issues.push(`行不符：命中 ${matched}/${expN.length}`);
+  if (extra > 0) issues.push(`多余行：${extra}`);
+  return { passed, score, matched, total: expN.length, issues };
 }
 
 // 把文本拆成成员集合：按换行/逗号/顿号/分号/竖线分隔，归一化去空。

@@ -7,7 +7,12 @@
 // 流程：用唯一名新建一个测试渠道 → 校验已建 → 给它加一个模型（addModel）→ 校验 models 增加
 //       → 删除该测试渠道还原。全程不碰任何已有渠道。
 import { readConfig, authHeaders, isNewapiTagWriterConfigured } from "../server/newapi-tag-writer.mjs";
-import { pushChannelToNewapi, addModelToNewapiChannel } from "../server/newapi-channel-sync.mjs";
+import {
+  pushChannelToNewapi,
+  addModelToNewapiChannel,
+  removeModelFromNewapiChannel,
+  deleteNewapiChannel,
+} from "../server/newapi-channel-sync.mjs";
 
 async function callNewapi(cfg, method, path, bodyObj) {
   const init = { method, headers: { ...authHeaders(cfg) } };
@@ -55,9 +60,10 @@ async function main() {
 
     console.log("\n[2/4] 校验渠道已建…");
     const got = await getChannel(cfg, newId);
-    console.log(`  new-api 渠道：name=「${got?.name}」 type=${got?.type} models=「${got?.models}」`);
-    const okCreate = got && got.name === testChannel.name && String(got.models || "").includes("eval-probe-a");
-    console.log(`  新建校验：${okCreate ? "✓" : "✗"}`);
+    console.log(`  new-api 渠道：name=「${got?.name}」 type=${got?.type} group=「${got?.group}」 models=「${got?.models}」`);
+    const okGroup = got && got.group === "internal_test";
+    const okCreate = got && got.name === testChannel.name && String(got.models || "").includes("eval-probe-a") && okGroup;
+    console.log(`  新建校验：${okCreate ? "✓" : "✗"}（分组 internal_test：${okGroup ? "✓" : "✗"}）`);
 
     console.log("\n[3/4] 给该渠道加模型 eval-probe-b…");
     const r2 = await addModelToNewapiChannel(newId, "eval-probe-b");
@@ -68,7 +74,13 @@ async function main() {
     const r3 = await addModelToNewapiChannel(newId, "eval-probe-b");
     console.log(`  幂等复跑 added=${r3.added}（应 false）→ ${r3.added === false ? "✓" : "✗"}`);
 
-    const allOk = okCreate && okAdd && r3.added === false;
+    console.log("\n[3.5/5] 删除同步：从渠道 models 移除 eval-probe-b…");
+    const rm = await removeModelFromNewapiChannel(newId, "eval-probe-b");
+    const after2 = await getChannel(cfg, newId);
+    const okRemove = rm.removed && !String(after2.models || "").split(",").includes("eval-probe-b");
+    console.log(`  removed=${rm.removed} models=「${after2?.models}」 → 移除校验：${okRemove ? "✓" : "✗"}`);
+
+    const allOk = okCreate && okAdd && r3.added === false && okRemove;
     console.log(`\n=== 实测${allOk ? "通过 ✓" : "存在问题 ✗"} ===`);
     process.exitCode = allOk ? 0 : 1;
   } catch (e) {
@@ -76,11 +88,11 @@ async function main() {
     process.exitCode = 1;
   } finally {
     if (newId) {
-      console.log(`\n[4/4] 清理：删除测试渠道 id=${newId} …`);
+      console.log(`\n[5/5] 清理：deleteNewapiChannel(id=${newId}) …`);
       try {
-        await callNewapi(cfg, "DELETE", `/api/channel/${newId}`);
+        await deleteNewapiChannel(newId);
         const gone = await getChannel(cfg, newId).catch(() => null);
-        console.log(`  ${gone ? "✗ 仍存在(请人工删除)" : "✓ 已删除，环境还原"}`);
+        console.log(`  ${gone && gone.id ? "✗ 仍存在(请人工删除)" : "✓ 已删除，环境还原"}`);
       } catch (e) {
         console.error(`  删除失败（请人工删除 id=${newId}）：`, e.message);
       }

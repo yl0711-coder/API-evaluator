@@ -10,6 +10,7 @@ import {
   scoreNeedleRetrieval,
   scoreSetMatch,
   scoreStructuredMatch,
+  scoreTableReformat,
 } from "../server/benchmark-scorers.mjs";
 
 const approx = (a, b, tol, m) => assert.ok(Math.abs(a - b) <= tol, `${m}: expected ${b}±${tol}, got ${a}`);
@@ -126,6 +127,19 @@ test("scoreExactAnswer unwraps LiveBench <solution></solution> tags", () => {
   assert.equal(scoreExactAnswer(withExample, "c, d").passed, true);
 });
 
+test("scoreExactAnswer strips a leading Answer label inside <solution> (奥赛填空)", () => {
+  // 题面要求 "Answer: <...>"，模型把整行（含标签）塞进 <solution>，期望只比逗号序列
+  assert.equal(scoreExactAnswer("<solution>Answer: 4, 1, 2, 3</solution>", "4,1,2,3").passed, true);
+  assert.equal(scoreExactAnswer("<solution>Answer is 4,1,2,3</solution>", "4,1,2,3").passed, true);
+  assert.equal(scoreExactAnswer("<solution>The answer is 4, 1, 2, 3.</solution>", "4,1,2,3").passed, true);
+  assert.equal(scoreExactAnswer("<solution>答案：1,6,7,2,3,4,5</solution>", "1,6,7,2,3,4,5").passed, true);
+  // 不误伤：内含 "answer" 子串的普通答案、纯字母答案
+  assert.equal(scoreExactAnswer("<solution>answered the call</solution>", "answered the call").passed, true);
+  assert.equal(scoreExactAnswer("<solution>B</solution>", "B").passed, true);
+  // 错误答案仍判错
+  assert.equal(scoreExactAnswer("<solution>Answer: 9, 9</solution>", "1,2").passed, false);
+});
+
 test("scoreExactAnswer normalizes width/case/punctuation and numbers", () => {
   assert.equal(scoreExactAnswer("答案：４２。", "42").passed, true); // 全角 + 句号
   assert.equal(scoreExactAnswer("ANSWER: Hello", "hello").passed, true); // 大小写
@@ -174,6 +188,30 @@ test("scoreStructuredMatch flags extra fields and unparseable output", () => {
   const bad = scoreStructuredMatch("这不是 JSON", { a: 1 });
   assert.equal(bad.passed, false);
   assert.equal(bad.score, 0);
+});
+
+// --- LiveBench: scoreTableReformat（表格重排：忽略不可复现的行号键、列名容差、行序无关）---
+test("scoreTableReformat ignores non-reproducible row-index keys (orient=index)", () => {
+  // ground truth 以原始 dataframe 行号为顶层键（题面不展示，模型无从复现）
+  const expected = '{"69":{"a":1,"b":2},"88":{"a":3,"b":4}}';
+  // 模型按行对象数组输出（records）——没有行号，应判过
+  const asArray = scoreTableReformat('[{"a":1,"b":2},{"a":3,"b":4}]', expected);
+  assert.equal(asArray.passed, true);
+  assert.equal(asArray.score, 1);
+  // 模型用顺序行号（0/1）输出，也应判过
+  assert.equal(scoreTableReformat('{"0":{"a":1,"b":2},"1":{"a":3,"b":4}}', expected).passed, true);
+  // 行序无关
+  assert.equal(scoreTableReformat('[{"a":3,"b":4},{"a":1,"b":2}]', expected).passed, true);
+});
+
+test("scoreTableReformat tolerates trailing-space column names; catches real errors", () => {
+  // TSV 表头带尾空格 "Accident "，模型自然 trim 成 "Accident"——应判过
+  const expected = '{"Calendar Year":2008,"Accident ":506.0}\n{"Calendar Year":1988,"Accident ":1080.0}';
+  assert.equal(scoreTableReformat('{"Calendar Year":2008,"Accident":506}\n{"Calendar Year":1988,"Accident":1080}', expected).passed, true);
+  // 少一行 / 错值 / 缺列 应判错
+  assert.equal(scoreTableReformat('{"Calendar Year":2008,"Accident":506}', expected).passed, false);
+  assert.equal(scoreTableReformat('{"Calendar Year":2008,"Accident":999}\n{"Calendar Year":1988,"Accident":1080}', expected).passed, false);
+  assert.equal(scoreTableReformat('{"Calendar Year":2008}\n{"Calendar Year":1988}', expected).passed, false);
 });
 
 // --- LiveBench: scoreSetMatch ---

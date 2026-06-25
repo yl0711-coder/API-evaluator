@@ -1128,7 +1128,7 @@
 
             <div class="form-section-title">
               <h3>场景测试题库</h3>
-              <p class="section-desc">控制场景测试里是否纳入这两类额外题目（默认都不含）。</p>
+              <p class="section-desc">控制场景测试里是否纳入额外题目（默认都不含）。</p>
             </div>
             <label class="wide checkbox-option">
               <input type="checkbox" id="set-livebench" />
@@ -1159,6 +1159,30 @@
               </span>
             </label>
 
+            <div class="form-section-title">
+              <h3>能力标签</h3>
+              <p class="section-desc">控制是否根据场景测试成绩自动给模型授予能力标签（默认开启）。</p>
+            </div>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-auto-tag" />
+              <span>
+                为高分通过场景测试的模型添加对应标签
+                <small>开启后，模型某场景质量分 ≥ 90 即获得该场景对应的能力标签；关闭后，即使得分 90 以上也不授予标签。</small>
+              </span>
+            </label>
+
+            <div class="form-section-title">
+              <h3>new-api 删除同步</h3>
+              <p class="section-desc">删除渠道/模型时可一并删除 new-api 侧（默认关闭）。</p>
+            </div>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-delete-sync" />
+              <span>
+                允许删除同步至new-api
+                <small>开启后，删除渠道/模型会询问是否一并在 new-api 删除（“是”需等待 2 秒，破坏性操作请谨慎）。</small>
+              </span>
+            </label>
+
             <div class="wide action-row">
               <button id="save-settings" class="primary" type="submit">保存设置</button>
             </div>
@@ -1185,6 +1209,7 @@
 
         <div id="confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
           <div class="modal-card confirm-card">
+            <button id="confirm-modal-close" class="modal-close" type="button" aria-label="关闭">✕</button>
             <div>
               <p class="eyebrow">操作确认</p>
               <h3 id="confirm-modal-title">请确认</h3>

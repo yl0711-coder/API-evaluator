@@ -57,6 +57,12 @@ const gameSlug = (name) => gameKey(name) || "game";
 
 const PROBE_LEN = 60; // 每个采样点抓多少行（凑游戏种类，不必整档拉全）
 
+// 输出纪律后缀：题面已要求输出 {solvable,solution} JSON，这里追加「推理务必简短」，
+// 避免硬谜题长篇思考把最终 JSON 撑爆 / 截断（截断会被判分器排除出能力分母，浪费一题）。
+const BRIEF_SUFFIX =
+  "\n\n---\nKeep your reasoning brief (a few sentences at most) so your output is not cut off, " +
+  "then output ONLY the JSON object described above as the very last thing you output.";
+
 function parseArgs(argv) {
   const args = { proxy: "", perConfig: 4, probes: 8 };
   for (let i = 2; i < argv.length; i++) {
@@ -265,7 +271,7 @@ async function main() {
       config: cfg.name,
       difficulty: "hard",
       maxTokens: 8192,
-      prompt: String(row.prompt),
+      prompt: String(row.prompt) + BRIEF_SUFFIX,
       scorer: "structured",
       expected: buildExpected(cfg.name, row.solution),
       source: `${DATASET} · ${cfg.name} · ${row.id || "-"}`,

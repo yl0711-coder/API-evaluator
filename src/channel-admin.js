@@ -2,7 +2,31 @@ import { api } from "./api-client.js";
 import { escapeHtml, protocolLabel, toast } from "./client-utils.js";
 
 // v0.3.0 两区管理：渠道（超管，含 key）+ 模型目标（管理员，选渠道+填模型，不见 key）。
-export function createChannelAdmin({ state, els, onChange }) {
+export function createChannelAdmin({ state, els, onChange, confirmDeleteSync }) {
+  // 删除前若「允许删除同步至new-api」开启，弹框问是否一并删 new-api。
+  // 返回 { proceed:bool, sync:bool }：是→同步删、否→仅本地删、Esc/背景→不删。
+  async function resolveDeleteSync(what) {
+    if (!state.settings?.enableDeleteSync || !confirmDeleteSync) return { proceed: true, sync: false };
+    const choice = await confirmDeleteSync({
+      title: "删除确认",
+      message: `是否将删除同步至new-api？`,
+      detail: `“是”会同时在 new-api 删除该${what}；“否”仅删除本地。`,
+      confirmLabel: "是",
+      cancelLabel: "否",
+      confirmDelayMs: 2000,
+      tristate: true,
+      tone: "danger",
+    });
+    if (choice === "dismiss") return { proceed: false, sync: false };
+    return { proceed: true, sync: choice === "confirm" };
+  }
+  // 同步删除结果 → toast 文案。三种结果文案显著区分，避免「是/否」看起来一样。
+  function syncToast(base, r) {
+    if (r.newapiSynced) return `${base}，并已在 new-api 同步删除。`; // 「是」成功
+    if (r.newapiError) return `${base}（本地）；new-api 同步失败：${r.newapiError}`; // 「是」失败
+    if (r.newapiSkipped) return `${base}（本地）；${r.newapiSkipped}`; // 「是」但跳过
+    return `${base}（仅本地，未同步 new-api）。`; // 「否」仅本地删（响应无 newapiSynced 字段）
+  }
   async function loadChannels() {
     state.channels = await api("/api/channels");
     renderChannelList();
@@ -47,7 +71,12 @@ export function createChannelAdmin({ state, els, onChange }) {
     }
   }
   function channelRow(channel) {
-    const status = channel.status === "disabled" ? `<span class="chan-pill bad">已禁用</span>` : `<span class="chan-pill good">启用</span>`;
+    // 未配置 Key 的渠道无法调用，状态显示「未配置」；配好 Key 后才按 enabled/disabled 显示启用/已禁用。
+    const status = !channel.hasKey
+      ? `<span class="chan-pill warn">未配置</span>`
+      : channel.status === "disabled"
+        ? `<span class="chan-pill bad">已禁用</span>`
+        : `<span class="chan-pill good">启用</span>`;
     const source = channel.source === "newapi" ? " · 来自 new-api" : "";
     const models = Array.isArray(channel.models) ? channel.models.length : 0;
     return `
@@ -57,7 +86,7 @@ export function createChannelAdmin({ state, els, onChange }) {
           <small>${escapeHtml(protocolLabel(channel.protocol))} · ${models} 个模型 · ${channel.hasKey ? "已存 Key" : "缺 Key"}${source}</small>
         </div>
         ${status}
-        <div class="row-actions">
+        <div class="row-actions${channel.source === "newapi" ? " actions-grid" : ""}">
           ${channel.source === "newapi" ? `<button class="secondary" data-sync-channel="${channel.id}">同步模型</button>` : ""}
           <button class="secondary" data-push-channel="${channel.id}">推送</button>
           <button class="secondary" data-edit-channel="${channel.id}">编辑</button>
@@ -108,7 +137,7 @@ export function createChannelAdmin({ state, els, onChange }) {
   }
   function modelTargetRow(target) {
     const badge = target.channelStatus === "disabled"
-      ? `<span class="chan-pill bad">渠道已禁用</span>`
+      ? `<span class="chan-pill bad">已禁用</span>`
       : target.channelStatus === "missing"
         ? `<span class="chan-pill bad">渠道缺失</span>`
         : `<span class="chan-pill good">可测</span>`;
@@ -165,10 +194,12 @@ export function createChannelAdmin({ state, els, onChange }) {
     f.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   async function deleteChannel(id) {
+    const { proceed, sync } = await resolveDeleteSync("渠道");
+    if (!proceed) return;
     try {
-      await api(`/api/channels/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const r = await api(`/api/channels/${encodeURIComponent(id)}${sync ? "?syncNewapi=1" : ""}`, { method: "DELETE" });
       await Promise.all([loadChannels(), loadModelTargets()]);
-      toast("渠道已删除（其下模型目标一并清除）。");
+      toast(syncToast("渠道已删除（其下模型目标一并清除）", r));
     } catch (error) {
       toast(error.message, true);
     }
@@ -187,10 +218,12 @@ export function createChannelAdmin({ state, els, onChange }) {
     }
   }
   async function deleteModelTarget(id) {
+    const { proceed, sync } = await resolveDeleteSync("模型");
+    if (!proceed) return;
     try {
-      await api(`/api/model-targets/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const r = await api(`/api/model-targets/${encodeURIComponent(id)}${sync ? "?syncNewapi=1" : ""}`, { method: "DELETE" });
       await loadModelTargets();
-      toast("已删除。");
+      toast(syncToast("已删除", r));
     } catch (error) {
       toast(error.message, true);
     }

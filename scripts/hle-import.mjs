@@ -47,13 +47,43 @@ const CATEGORY_META = {
 };
 const catMeta = (c) => CATEGORY_META[c] || { cn: String(c || "其他"), slug: "other" };
 
-// 输出纪律后缀（英文，匹配 HLE 题面语言）。允许推理，但强制最终答案进 <solution>，便于稳定抽取。
+// 输出纪律后缀（英文，匹配 HLE 题面语言）。要求简短推理（避免硬题长思考把答案撑爆/截断），
+// 但强制最终答案进 <solution>，便于稳定抽取。
 const MC_SUFFIX =
-  "\n\n---\nWork through it, then put ONLY the letter of the correct choice (e.g. A) " +
-  "inside <solution></solution> tags. The <solution> block must be the last thing you output.";
-const ANSWER_SUFFIX =
-  "\n\n---\nWork through it, then put ONLY your final answer (no extra words) " +
-  "inside <solution></solution> tags. The <solution> block must be the last thing you output.";
+  "\n\n---\nReason briefly (a few sentences at most) so your output is not cut off, then put ONLY " +
+  "the letter of the correct choice (e.g. A) inside <solution></solution> tags. " +
+  "The <solution> block must be the last thing you output.";
+const ANSWER_DISCIPLINE =
+  "Reason briefly (a few sentences at most) so your output is not cut off, then put ONLY " +
+  "your final answer (no extra words) inside <solution></solution> tags. " +
+  "The <solution> block must be the last thing you output.";
+const ANSWER_SUFFIX = "\n\n---\n" + ANSWER_DISCIPLINE;
+
+// 有效数字位数：去符号/小数点/前导零后剩余数字位数（对本题库的数值答案足够）。
+function countSigFigs(mantissa) {
+  const d = String(mantissa).replace(/[+\-.]/g, "").replace(/^0+/, "");
+  return Math.max(1, d.length);
+}
+
+// 数值短答：从期望答案推导「保留位数 + 回答格式」提示，写进题面，避免模型因精度/写法不同被判错。
+// 用中性示例（不泄露真实答案数值）。非数值答案（LaTeX/文本等）返回空串、不加提示。
+function numericFormatHint(expected) {
+  const s = String(expected).trim();
+  const sci = s.match(/^[+-]?(\d+(?:\.\d+)?)\s*[*x×]\s*10\s*\^?\s*\(?[-+]?\d+\)?$/i);
+  if (sci) {
+    return `Give your final answer to ${countSigFigs(sci[1])} significant figures, in plain-ASCII scientific notation written as "mantissa * 10^exponent" (for example 1.23 * 10^-5). Do not include units, words, or unicode — use * and ^, not × or superscripts.`;
+  }
+  if (/^[+-]?\d+(?:\.\d+)?$/.test(s)) {
+    return `Give your final answer as a plain number to ${countSigFigs(s)} significant figures (for example 1.23). Do not include units, words, or commas.`;
+  }
+  return "";
+}
+
+// 短答后缀：数值答案先加保留位数/格式提示，再接通用输出纪律。
+function answerSuffix(expected) {
+  const hint = numericFormatHint(expected);
+  return "\n\n---\n" + (hint ? hint + "\n" : "") + ANSWER_DISCIPLINE;
+}
 
 function parseArgs(argv) {
   const args = { proxy: "", count: 2, offset: 0 };
@@ -149,7 +179,7 @@ function toScenario(row, ordinal, canaryRef) {
     hleCategory: row.category, // 原始 HLE 类别，供 index.mjs 解析 UI 标签
     difficulty: "hard",
     maxTokens: 4096, // 运行时统一强制 4096，仅作记录
-    prompt: String(row.question).trim() + (mc ? MC_SUFFIX : ANSWER_SUFFIX),
+    prompt: String(row.question).trim() + (mc ? MC_SUFFIX : answerSuffix(row.answer)),
     scorer: "exact",
     expected: String(row.answer).trim(),
     source: `${DATASET} · ${row.raw_subject || row.category || "-"} · ${row.id || "-"}`,

@@ -4,7 +4,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { channelType, pushChannelToNewapi, addModelToNewapiChannel } from "../server/newapi-channel-sync.mjs";
+import {
+  channelType,
+  pushChannelToNewapi,
+  addModelToNewapiChannel,
+  deleteNewapiChannel,
+  removeModelFromNewapiChannel,
+} from "../server/newapi-channel-sync.mjs";
 
 async function withMockNewapi(handler, run) {
   const server = createServer((req, res) => {
@@ -58,6 +64,10 @@ function buildHandler({ record, getChannelData, searchItems, postResponse, putRe
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(obj));
     };
+    if (req.method === "DELETE" && /^\/api\/channel\/\d+$/.test(u.pathname)) {
+      record.deletedId = u.pathname.split("/").pop();
+      return json(200, { success: true });
+    }
     if (req.method === "GET" && /^\/api\/channel\/\d+$/.test(u.pathname)) {
       record.getChannelId = u.pathname.split("/").pop();
       return json(200, { success: true, data: getChannelData });
@@ -204,6 +214,237 @@ test("令牌含非 ASCII → 抛出（不发请求）", async () => {
     await withEnv({ base, token: "tok中" }, async () => {
       await assert.rejects(() => pushChannelToNewapi(ch(), "k"), /非 ASCII/);
       assert.equal(record.post, undefined);
+    });
+  });
+});
+
+test("userId 含非 ASCII → 抛出", async () => {
+  const record = {};
+  await withMockNewapi(buildHandler({ record }), async (base) => {
+    await withEnv({ base, token: "ok", userId: "１" }, async () => {
+      await assert.rejects(() => pushChannelToNewapi(ch(), "k"), /非 ASCII/);
+    });
+  });
+});
+
+// ===================== channelType 全映射 =====================
+
+test("channelType：覆盖全部 provider 码", () => {
+  const cases = { OpenAI: 1, Anthropic: 14, Baidu: 15, Zhipu: 16, Alibaba: 17, Google: 24, Moonshot: 25, DeepSeek: 43, xAI: 48 };
+  for (const [provider, type] of Object.entries(cases)) {
+    assert.equal(channelType(ch({ provider })), type, `${provider}→${type}`);
+  }
+});
+
+// ===================== 渠道推送：默认分组 / 体边界 =====================
+
+test("pushChannelToNewapi：默认分组 internal_test", async () => {
+  const record = {};
+  await withMockNewapi(buildHandler({ record }), async (base) => {
+    await withEnv({ base }, async () => {
+      await pushChannelToNewapi(ch(), "k");
+      assert.equal(record.post.channel.group, "internal_test");
+    });
+  });
+});
+
+test("pushChannelToNewapi：models 为空数组 → models:''", async () => {
+  const record = {};
+  await withMockNewapi(buildHandler({ record }), async (base) => {
+    await withEnv({ base }, async () => {
+      await pushChannelToNewapi(ch({ models: [] }), "k");
+      assert.equal(record.post.channel.models, "");
+    });
+  });
+});
+
+test("pushChannelToNewapi：UTF-8 中文渠道名/模型整条字节正确", async () => {
+  const record = {};
+  await withMockNewapi(buildHandler({ record }), async (base) => {
+    await withEnv({ base }, async () => {
+      await pushChannelToNewapi(ch({ name: "内部测试渠道", models: ["豆包-总结"] }), "k");
+      assert.equal(record.post.channel.name, "内部测试渠道");
+      assert.equal(record.post.channel.models, "豆包-总结");
+    });
+  });
+});
+
+test("pushChannelToNewapi 新建：POST 返回 data 为数字 id", async () => {
+  const record = {};
+  const handler = buildHandler({ record, postResponse: { status: 200, body: { success: true, data: 321 } } });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await pushChannelToNewapi(ch(), "k");
+      assert.equal(r.newapiChannelId, 321);
+    });
+  });
+});
+
+test("pushChannelToNewapi 新建：data 缺失 + 搜索返回裸数组 → 取回 id", async () => {
+  const record = {};
+  const handler = buildHandler({ record, postResponse: { status: 200, body: { success: true } }, searchItems: [{ id: 88, name: "我的渠道" }] });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await pushChannelToNewapi(ch(), "k");
+      assert.equal(r.newapiChannelId, 88);
+    });
+  });
+});
+
+test("pushChannelToNewapi 新建：搜索无匹配 → newapiChannelId=null", async () => {
+  const record = {};
+  const handler = buildHandler({ record, postResponse: { status: 200, body: { success: true } }, searchItems: [] });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await pushChannelToNewapi(ch(), "k");
+      assert.equal(r.newapiChannelId, null);
+    });
+  });
+});
+
+test("pushChannelToNewapi 更新：PUT 体含 group=internal_test + id + key", async () => {
+  const record = {};
+  await withMockNewapi(buildHandler({ record }), async (base) => {
+    await withEnv({ base }, async () => {
+      await pushChannelToNewapi(ch({ newapiChannelId: 9 }), "sk-up");
+      assert.equal(record.put.id, 9);
+      assert.equal(record.put.group, "internal_test");
+      assert.equal(record.put.key, "sk-up");
+    });
+  });
+});
+
+// ===================== 模型加入渠道：边界 =====================
+
+test("addModelToNewapiChannel：渠道 models 为空 → 直接加该模型", async () => {
+  const record = {};
+  const handler = buildHandler({ record, getChannelData: { id: 5, models: "" } });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await addModelToNewapiChannel(5, "solo");
+      assert.equal(r.added, true);
+      assert.equal(r.models, "solo");
+    });
+  });
+});
+
+test("addModelToNewapiChannel：GET models 含空格/重复 → 归一去重后再加", async () => {
+  const record = {};
+  const handler = buildHandler({ record, getChannelData: { id: 5, models: " a , b , a " } });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await addModelToNewapiChannel(5, "c");
+      assert.equal(r.models, "a,b,c");
+    });
+  });
+});
+
+test("addModelToNewapiChannel：空模型名 → 抛错", async () => {
+  const record = {};
+  const handler = buildHandler({ record, getChannelData: { id: 5, models: "a" } });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      await assert.rejects(() => addModelToNewapiChannel(5, "   "), /模型名为空/);
+      assert.equal(record.put, undefined);
+    });
+  });
+});
+
+// ===================== callNewapi 错误分支 =====================
+
+test("上游 success:false 无 message → 默认中文错误", async () => {
+  const record = {};
+  const handler = buildHandler({ record, postResponse: { status: 200, body: { success: false } } });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      await assert.rejects(() => pushChannelToNewapi(ch(), "k"), /success=false/);
+    });
+  });
+});
+
+test("上游 HTTP 403 → 抛出（含管理员权限提示）", async () => {
+  const record = {};
+  const handler = buildHandler({ record, postResponse: { status: 403, body: { success: false } } });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      await assert.rejects(() => pushChannelToNewapi(ch(), "k"), /HTTP 403|管理员权限/);
+    });
+  });
+});
+
+test("addModel：GET 渠道 HTTP 500 → 抛出，不发 PUT", async () => {
+  const record = {};
+  // getChannelData 设为 undefined 时 mock 仍回 200；这里改用自定义 handler 让 GET 返回 500。
+  await withMockNewapi(
+    async (req, res) => {
+      const u = new URL(req.url, "http://x");
+      if (req.method === "PUT") {
+        record.put = "called";
+      }
+      res.writeHead(req.method === "GET" && /^\/api\/channel\/\d+$/.test(u.pathname) ? 500 : 200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ success: false }));
+    },
+    async (base) => {
+      await withEnv({ base }, async () => {
+        await assert.rejects(() => addModelToNewapiChannel(5, "x"), /HTTP 500|管理员权限/);
+        assert.equal(record.put, undefined);
+      });
+    },
+  );
+});
+
+// ===================== 删除同步：deleteNewapiChannel =====================
+
+test("deleteNewapiChannel：命中 DELETE /api/channel/:id", async () => {
+  const record = {};
+  await withMockNewapi(buildHandler({ record }), async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await deleteNewapiChannel(55);
+      assert.equal(r.deleted, true);
+      assert.equal(record.deletedId, "55");
+    });
+  });
+});
+
+test("deleteNewapiChannel：上游 500 → 抛出", async () => {
+  await withMockNewapi(
+    async (req, res) => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ success: false }));
+    },
+    async (base) => {
+      await withEnv({ base }, async () => {
+        await assert.rejects(() => deleteNewapiChannel(55), /HTTP 500|管理员权限/);
+      });
+    },
+  );
+});
+
+// ===================== 删除同步：removeModelFromNewapiChannel =====================
+
+test("removeModelFromNewapiChannel：移除存在的模型 → PUT 去掉它（不带 key）", async () => {
+  const record = {};
+  const handler = buildHandler({ record, getChannelData: { id: 7, models: "a,b,c", key: "sk-MASK" } });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await removeModelFromNewapiChannel(7, "b");
+      assert.equal(r.removed, true);
+      assert.equal(r.models, "a,c");
+      assert.equal(record.put.id, 7);
+      assert.equal(record.put.models, "a,c");
+      assert.equal("key" in record.put, false, "PUT 不回传 key");
+    });
+  });
+});
+
+test("removeModelFromNewapiChannel：模型本就不在 → removed=false，不发 PUT", async () => {
+  const record = {};
+  const handler = buildHandler({ record, getChannelData: { id: 7, models: "a,c" } });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await removeModelFromNewapiChannel(7, "b");
+      assert.equal(r.removed, false);
+      assert.equal(record.put, undefined);
     });
   });
 });

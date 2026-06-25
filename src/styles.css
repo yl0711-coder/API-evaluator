@@ -1253,6 +1253,27 @@ button.quiet-action {
 
 .confirm-card {
   width: min(560px, 100%);
+  position: relative;
+}
+
+/* 确认框右上角 ❌（点击等同 Esc 取消）。参照 report-overlay__close 风格。 */
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  line-height: 1;
+  font-size: 13px;
+  cursor: pointer;
+}
+.modal-close:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .confirm-message {
@@ -1894,6 +1915,10 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 .cfg #model-target-list .chan-pill { justify-self: start; }
 .cfg #channel-list .row-actions,
 .cfg #model-target-list .row-actions { justify-self: end; display: flex; flex-wrap: wrap; gap: 8px; }
+/* 仅「有同步模型按钮」的渠道卡（4 个按钮）固定两两并排（2 列网格），启用/已禁用排版一致；
+   没有同步模型的卡片（3 个按钮）维持原 flex 排版。 */
+.cfg #channel-list .actions-grid { display: grid; grid-template-columns: repeat(2, 1fr); }
+.cfg #channel-list .actions-grid button { width: 100%; }
 
 /* ===== 全局：内容限宽，所有页与已迁移页一致（防宽屏摊开）===== */
 .page > .section-header, .page > .panel, .page > .helper-details, .page > .technical-details, .page > details { max-width: 1180px; }
