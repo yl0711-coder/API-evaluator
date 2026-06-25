@@ -1180,7 +1180,7 @@ function formatAiAnalysisPointer(aiAnalysis) {
     "",
     "- 状态：已启用。完整 AI 分析已生成为**单独的 HTML 文件**（见报告中心，文件名以 `-ai-analysis.html` 结尾）。",
     `- 额外消耗：${formatAiUsageText(aiAnalysis)}`,
-    "- 说明：AI 分析由 AI 分析模型（被测渠道或 .env.evaluator 指定的专用模型）基于脱敏摘要生成，仅作辅助解释；最终判断仍以本地规则结论、原始日志与人工复核为准。",
+    "- 说明：AI 分析由 AI 分析模型（被测渠道，或在『设置』里指定的 AI 总结模型）基于脱敏摘要生成，仅作辅助解释；最终判断仍以本地规则结论、原始日志与人工复核为准。",
   ].join("\n");
 }
 
@@ -1206,7 +1206,7 @@ export function formatAiAnalysisDocument(aiAnalysis, { title = "AI 辅助分析"
     "",
     "- 状态：已启用。",
     `- 额外消耗：${usageText}`,
-    "- 说明：本段由 AI 分析模型（被测渠道或 .env.evaluator 指定的专用模型）基于脱敏后的测试摘要生成，只作为辅助解释；最终判断仍要结合本地规则结论、原始日志和人工复核。",
+    "- 说明：本段由 AI 分析模型（被测渠道，或在『设置』里指定的 AI 总结模型）基于脱敏后的测试摘要生成，只作为辅助解释；最终判断仍要结合本地规则结论、原始日志和人工复核。",
     "",
     aiAnalysis.text || "- AI 没有返回有效分析内容。",
   ].join("\n");

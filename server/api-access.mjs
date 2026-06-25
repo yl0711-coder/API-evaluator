@@ -12,6 +12,7 @@ export function requiresAdmin(method, pathname) {
   if (pathname === "/api/support-bundle") return true;
   if (pathname.startsWith("/api/profiles")) return method !== "GET";
   if (pathname.startsWith("/api/channels")) return method !== "GET";
+  if (pathname === "/api/settings") return method !== "GET"; // 平台级设置：写需超管，读任意会话
   return false;
 }
 

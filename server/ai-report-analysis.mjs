@@ -2,35 +2,11 @@
 // 可选的 AI 辅助分析：按脱敏后的报告摘要构造提示词、解析被测模型返回的分析结果。
 // 仅作辅助解释，最终判断仍以本地规则结论为准。
 import { summarizeText } from "./utils.mjs";
-import { envCompat } from "./env-compat.mjs";
 
 const MAX_ANALYSIS_TEXT = 3000;
 
 export function isAiReportAnalysisEnabled(value) {
   return value === true || value === "true" || value === "1" || value === "on" || value === "yes";
-}
-
-// 从 .env.evaluator 读取专用 AI 分析模型端点（完整端点：BASE_URL + API_KEY + MODEL）。
-// 三要素齐全才返回合成 profile（明文 key 直配，走 readProfileApiKey 的明文分支）；
-// 任一缺失返回 null → 调用方回退到被测渠道（向后兼容）。
-export function loadAiAnalysisProfile() {
-  const baseUrl = String(envCompat("AI_ANALYSIS_BASE_URL") || "").trim();
-  const apiKey = String(envCompat("AI_ANALYSIS_API_KEY") || "").trim();
-  const model = String(envCompat("AI_ANALYSIS_MODEL") || "").trim();
-  if (!baseUrl || !apiKey || !model) return null;
-  return {
-    id: "__env_ai_analysis__",
-    name: "AI 分析模型(.env.evaluator)",
-    role: "judge",
-    provider: "env",
-    baseUrl,
-    apiKey,
-    defaultModel: model,
-    protocol: String(envCompat("AI_ANALYSIS_PROTOCOL") || "openai_compatible").trim(),
-    maxTokens: Number(envCompat("AI_ANALYSIS_MAX_TOKENS")) || 1200,
-    timeoutMs: Number(envCompat("AI_ANALYSIS_TIMEOUT_MS")) || 90000,
-    anthropicVersion: envCompat("AI_ANALYSIS_ANTHROPIC_VERSION") || undefined,
-  };
 }
 
 export function buildAiReportAnalysisPrompt({ reportType, summary }) {

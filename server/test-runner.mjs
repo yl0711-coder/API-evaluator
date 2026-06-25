@@ -6,9 +6,9 @@ import {
   buildAiAnalysisResult,
   buildAiReportAnalysisPrompt,
   isAiReportAnalysisEnabled,
-  loadAiAnalysisProfile,
 } from "./ai-report-analysis.mjs";
-import { TEST_SCENARIOS } from "./scenarios/index.mjs";
+import { getSettings } from "./settings-store.mjs";
+import { getTestScenarios } from "./scenarios/index.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
 import { loadRunnableProfiles } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
@@ -1201,7 +1201,7 @@ export async function runScenarioTest(body, taskContext = {}) {
   const profileIds = normalizeProfileIds(body.profileIds);
   const scenarioIds = normalizeScenarioIds(body.scenarioIds);
   const selectedProfiles = profiles.filter((profile) => profileIds.includes(profile.id));
-  const selectedScenarios = TEST_SCENARIOS.filter((scenario) => scenarioIds.includes(scenario.id));
+  const selectedScenarios = getTestScenarios().filter((scenario) => scenarioIds.includes(scenario.id));
 
   if (selectedProfiles.length === 0) {
     throw new Error("请至少选择一个被测 API。");
@@ -1318,7 +1318,7 @@ export function normalizeScenarioIds(value) {
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean);
-  return ids.length > 0 ? ids : TEST_SCENARIOS.map((scenario) => scenario.id);
+  return ids.length > 0 ? ids : getTestScenarios().map((scenario) => scenario.id);
 }
 
 async function runScenarioProfile({ runId, profile, scenarios, repeats, requestConcurrency, taskContext }) {
@@ -1873,8 +1873,14 @@ async function maybeBuildAiAnalysis({ enabled, reportType, profile, summary, run
     return { enabled: false };
   }
   assertTaskNotCancelled(taskContext);
-  // 优先用 .env.evaluator 指定的专用 AI 分析模型；未配置则回退到被测渠道（保持现状）。
-  const analysisProfile = loadAiAnalysisProfile() || profile;
+  // 优先用「设置」里指定的 AI 总结模型（一个已配置的模型目标）；未指定/失效则用被测渠道自己。
+  const settings = getSettings();
+  let analysisProfile = null;
+  if (settings.aiAnalysisModelTargetId) {
+    const profiles = await loadRunnableProfiles();
+    analysisProfile = profiles.find((p) => p.id === settings.aiAnalysisModelTargetId) || null;
+  }
+  analysisProfile = analysisProfile || profile;
   if (!analysisProfile) {
     return {
       enabled: true,

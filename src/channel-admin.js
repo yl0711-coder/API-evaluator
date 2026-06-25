@@ -23,6 +23,18 @@ export function createChannelAdmin({ state, els, onChange }) {
     els.channelList.querySelectorAll("[data-del-channel]").forEach((b) => b.addEventListener("click", () => deleteChannel(b.dataset.delChannel)));
     els.channelList.querySelectorAll("[data-edit-channel]").forEach((b) => b.addEventListener("click", () => editChannel(b.dataset.editChannel)));
     els.channelList.querySelectorAll("[data-sync-channel]").forEach((b) => b.addEventListener("click", () => syncChannelModels(b.dataset.syncChannel)));
+    els.channelList.querySelectorAll("[data-push-channel]").forEach((b) => b.addEventListener("click", () => pushChannelToNewapi(b.dataset.pushChannel)));
+  }
+
+  // 把本平台渠道（含上游 Key + models）推送到 new-api：新建或更新已关联渠道。
+  async function pushChannelToNewapi(id) {
+    try {
+      const r = await api(`/api/channels/${encodeURIComponent(id)}/push-to-newapi`, { method: "POST", body: "{}" });
+      await loadChannels();
+      toast(r.action === "updated" ? `已更新 new-api 渠道「${r.name}」。` : `已在 new-api 新建渠道「${r.name}」。`);
+    } catch (error) {
+      toast(`推送渠道失败：${error.message}`, true);
+    }
   }
 
   async function syncChannelModels(id) {
@@ -47,6 +59,7 @@ export function createChannelAdmin({ state, els, onChange }) {
         ${status}
         <div class="row-actions">
           ${channel.source === "newapi" ? `<button class="secondary" data-sync-channel="${channel.id}">同步模型</button>` : ""}
+          <button class="secondary" data-push-channel="${channel.id}">推送</button>
           <button class="secondary" data-edit-channel="${channel.id}">编辑</button>
           <button class="secondary" data-del-channel="${channel.id}">删除</button>
         </div>
@@ -81,6 +94,17 @@ export function createChannelAdmin({ state, els, onChange }) {
       .join("");
     els.modelTargetList.querySelectorAll("[data-del-target]").forEach((b) => b.addEventListener("click", () => deleteModelTarget(b.dataset.delTarget)));
     els.modelTargetList.querySelectorAll("[data-del-tag]").forEach((b) => b.addEventListener("click", () => removeModelTargetTag(b.dataset.tagTarget, b.dataset.delTag)));
+    els.modelTargetList.querySelectorAll("[data-push-target]").forEach((b) => b.addEventListener("click", () => pushModelTargetToNewapi(b.dataset.pushTarget)));
+  }
+
+  // 把该模型并入其渠道在 new-api 的 models 列表（需先把渠道推送到 new-api）。
+  async function pushModelTargetToNewapi(id) {
+    try {
+      const r = await api(`/api/model-targets/${encodeURIComponent(id)}/push-to-newapi`, { method: "POST", body: "{}" });
+      toast(r.added ? "已把该模型加入 new-api 渠道。" : "该模型在 new-api 渠道里已存在，无需重复添加。");
+    } catch (error) {
+      toast(`推送模型失败：${error.message}`, true);
+    }
   }
   function modelTargetRow(target) {
     const badge = target.channelStatus === "disabled"
@@ -107,7 +131,10 @@ export function createChannelAdmin({ state, els, onChange }) {
           ${tagChips}
         </div>
         ${badge}
-        <div class="row-actions"><button class="secondary" data-del-target="${target.id}">删除</button></div>
+        <div class="row-actions">
+          <button class="secondary" data-push-target="${target.id}">推送到 new-api</button>
+          <button class="secondary" data-del-target="${target.id}">删除</button>
+        </div>
       </div>`;
   }
 

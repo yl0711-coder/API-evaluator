@@ -44,7 +44,7 @@ export async function saveProfileApiKey(profileId, apiKey) {
 }
 
 export async function readProfileApiKey(profile) {
-  // 明文直配的 key（如 .env.evaluator 指定的 AI 分析模型）优先；真实被测渠道不带明文 key，行为不变。
+  // 若 profile 直接带明文 key 则优先用它；真实渠道走 apiKeyRef 从密钥库取，不带明文，行为不变。
   if (profile?.apiKey) {
     return profile.apiKey;
   }

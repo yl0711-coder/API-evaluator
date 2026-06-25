@@ -26,7 +26,7 @@ test("AI report analysis prompt uses compact sanitized report data", () => {
   });
 
   assert.match(prompt, /脱敏测试摘要 JSON/);
-  assert.match(prompt, /AI 人话结论/);
+  assert.match(prompt, /## 结论/);
   assert.match(prompt, /Demo API/);
   assert.match(prompt, /请求超时/);
   assert.equal(prompt.includes("sk-should-not-appear"), false);

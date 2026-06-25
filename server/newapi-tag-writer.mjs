@@ -11,11 +11,14 @@ const PAGE_SIZE = 100;
 const PAGE_CAP = 100; // 最多 1 万个模型，防无界翻页
 
 // 复用导入用的 new-api 配置；New-Api-User 默认管理员 1，可用 EVALUATOR_NEWAPI_USER_ID 覆盖。
-function readConfig() {
+// 容错：去掉可能误带入的行内注释（空白后的 #...）与首尾空白，避免把注释/全角符号塞进 HTTP 头。
+// 导出供只读校验/还原脚本复用（scripts/newapi-tag-writer-live.mjs）。运行时主流程仍内部调用。
+export function readConfig() {
+  const clean = (v) => String(v || "").replace(/\s+#.*$/, "").trim();
   return {
-    base: String(envCompat("NEWAPI_BASE_URL") || "").replace(/\/+$/, ""),
-    token: String(envCompat("NEWAPI_IMPORT_TOKEN") || "").trim(),
-    userId: String(envCompat("NEWAPI_USER_ID") || "1").trim(),
+    base: clean(envCompat("NEWAPI_BASE_URL")).replace(/\/+$/, ""),
+    token: clean(envCompat("NEWAPI_IMPORT_TOKEN")),
+    userId: clean(envCompat("NEWAPI_USER_ID")) || "1",
   };
 }
 
@@ -24,7 +27,20 @@ export function isNewapiTagWriterConfigured() {
   return Boolean(base && token);
 }
 
-function authHeaders({ token, userId }) {
+// HTTP 头只接受 Latin-1（码点 ≤255）。令牌/用户ID 若含中文/全角符号（多因复制时带入了注释或全角括号），
+// fetch 会抛 "Cannot convert argument to a ByteString"。这里提前给出可操作的中文报错，便于排查 .env。
+function assertHeaderSafe(envName, value) {
+  const bad = [...String(value)].find((ch) => ch.codePointAt(0) > 255);
+  if (bad !== undefined) {
+    throw new Error(
+      `${envName} 含非 ASCII 字符「${bad}」，HTTP 请求头不支持。请检查 .env.evaluator 里该项的值（应为纯英文/数字，` +
+        `不要把注释、全角括号「（）」或中文复制进去），改正后重启服务。`,
+    );
+  }
+}
+
+// 导出供渠道推送脚本/模块复用（scripts、newapi-channel-sync.mjs）。
+export function authHeaders({ token, userId }) {
   return { Authorization: token, "New-Api-User": userId };
 }
 
@@ -47,7 +63,8 @@ function mergeTags(existing, incoming) {
 }
 
 // 翻页拉取全部模型（返回完整 model 对象，供整条回写）。
-async function fetchAllModels(cfg) {
+// 导出供只读校验/快照脚本复用（scripts/newapi-tag-writer-live.mjs），运行时主流程仍内部调用。
+export async function fetchAllModels(cfg) {
   const out = [];
   for (let p = 1; p <= PAGE_CAP; p += 1) {
     const res = await fetch(`${cfg.base}/api/models/?p=${p}&page_size=${PAGE_SIZE}`, { headers: authHeaders(cfg) });
@@ -67,6 +84,9 @@ export async function pushModelTagsToNewapi(tagMap) {
   if (!cfg.base || !cfg.token) {
     return { configured: false, error: "未配置 EVALUATOR_NEWAPI_BASE_URL + EVALUATOR_NEWAPI_IMPORT_TOKEN（new-api 系统访问令牌）。" };
   }
+  // 提前校验请求头安全，把 fetch 的 ByteString 报错换成可操作的中文提示。
+  assertHeaderSafe("EVALUATOR_NEWAPI_IMPORT_TOKEN", cfg.token);
+  assertHeaderSafe("EVALUATOR_NEWAPI_USER_ID", cfg.userId);
   const models = await fetchAllModels(cfg);
   const summary = { configured: true, totalModels: models.length, matched: 0, updated: 0, unchanged: 0, errors: [] };
   for (const model of models) {

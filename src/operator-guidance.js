@@ -165,6 +165,24 @@ export const SCENARIO_PACKS = {
     requestConcurrency: "1",
     note: "LiveBench 客观难题（math/reasoning/data_analysis），主要服务档位降级判别：声称高档却在硬题崩。需后端开启 EVALUATOR_ENABLE_LIVEBENCH=1，硬题更耗额度、并发保守。",
   },
+  "scenario-hle": {
+    label: "HLE 前沿专家难题包",
+    categories: ["hle"],
+    limit: Infinity,
+    repeats: "1",
+    maxParallelProfiles: "1",
+    requestConcurrency: "1",
+    note: "HLE（Humanity's Last Exam）跨百余学科专家级客观难题（单选/短答，exact 判分），主要服务档位降级判别：声称高档却在硬题崩。需在「设置」勾选「加入 HLE」，硬题更耗额度、并发保守。",
+  },
+  "scenario-hardcore-logic": {
+    label: "HardcoreLogic 长尾逻辑谜题包",
+    categories: ["hardcore-logic"],
+    limit: Infinity,
+    repeats: "1",
+    maxParallelProfiles: "1",
+    requestConcurrency: "1",
+    note: "HardcoreLogic 10 类逻辑谜题的长尾变体/无解题（structured 客观判分，须输出完整解 JSON），主要服务档位降级判别：声称高档却在长尾/无解题上崩。需在「设置」勾选「加入 HardcoreLogic」，硬题更耗额度、并发保守。",
+  },
 };
 
 const ERROR_ADVICES = {

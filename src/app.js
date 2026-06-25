@@ -956,6 +956,9 @@ function showPage(page) {
   if (page === "manual" && !state.manualLoaded) {
     loadManual();
   }
+  if (page === "settings") {
+    loadSettings();
+  }
 }
 
 async function loadProfiles() {
@@ -1013,6 +1016,61 @@ function loadManual() {
   manualContent.innerHTML = renderMarkdown(guide);
   state.manualLoaded = true;
 }
+
+// —— 设置页：AI 总结模型 / 场景题库开关（脱离环境变量，存本机）——
+const settingsForm = requireElement("#settings-form");
+const setAiSpecified = requireElement("#set-ai-specified");
+const setAiChannel = requireElement("#set-ai-channel");
+const setAiModel = requireElement("#set-ai-model");
+const setLivebench = requireElement("#set-livebench");
+const setSafety = requireElement("#set-safety");
+const setHle = requireElement("#set-hle");
+const setHardcoreLogic = requireElement("#set-hardcore-logic");
+// 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
+const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
+
+// 「指定模型」勾选门控两级下拉：未勾=都禁用（AI 用被测模型）；勾上=渠道可选，模型随级联。
+function applyAiSpecifiedGate() {
+  const on = setAiSpecified.checked;
+  setAiChannel.disabled = !on;
+  if (!on) setAiModel.disabled = true;
+  else if (setAiChannel.value) setAiModel.disabled = false;
+}
+setAiSpecified.addEventListener("change", applyAiSpecifiedGate);
+
+async function loadSettings() {
+  try {
+    const s = await api("/api/settings");
+    setLivebench.checked = Boolean(s.enableLivebench);
+    setSafety.checked = Boolean(s.enableSafety);
+    setHle.checked = Boolean(s.enableHle);
+    setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
+    settingsAiCascade.refresh({ channels: state.channels, modelTargets: state.modelTargets, profiles: state.profiles });
+    settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
+    setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
+    applyAiSpecifiedGate();
+  } catch (error) {
+    toast(`加载设置失败：${error.message}`, true);
+  }
+}
+
+settingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = {
+    aiAnalysisModelTargetId: setAiSpecified.checked ? settingsAiCascade.value || "" : "",
+    enableLivebench: setLivebench.checked,
+    enableSafety: setSafety.checked,
+    enableHle: setHle.checked,
+    enableHardcoreLogic: setHardcoreLogic.checked,
+  };
+  try {
+    await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+    await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
+    toast("设置已保存。");
+  } catch (error) {
+    toast(`保存设置失败：${error.message}`, true);
+  }
+});
 
 async function loadRequests() {
   if (state.demoMode) {
@@ -1419,6 +1477,8 @@ function renderScenarioOptions() {
 function syncScenarioTemplateAvailability() {
   syncTemplateOption("safety", "scenario-safety");
   syncTemplateOption("livebench", "scenario-livebench");
+  syncTemplateOption("hle", "scenario-hle");
+  syncTemplateOption("hardcore-logic", "scenario-hardcore-logic");
 }
 
 // 某类场景未启用（后端 env 开关关）时，隐藏对应模板选项；当前已选则回落基础包。

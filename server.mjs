@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { readFile, rm } from "node:fs/promises";
 import { extname, join } from "node:path";
-import { MIME_TYPES, TEST_SCENARIOS } from "./server/constants.mjs";
+import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
 import { ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
 import { ensureDataDir, readRecentErrors, readRecentRequests, readRecentTasks, readRecentTestRuns } from "./server/data-store.mjs";
 import {
@@ -28,7 +28,7 @@ import {
   normalizeProfile,
   saveProfiles,
 } from "./server/profile-store.mjs";
-import { deleteProfileApiKey, saveProfileApiKey } from "./server/secret-store.mjs";
+import { deleteProfileApiKey, readProfileApiKey, saveProfileApiKey } from "./server/secret-store.mjs";
 import { createTaskManager } from "./server/task-manager.mjs";
 import { buildSupportBundle } from "./server/support-bundle.mjs";
 import {
@@ -84,7 +84,9 @@ import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./s
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
-import { pushModelTagsToNewapi } from "./server/newapi-tag-writer.mjs";
+import { pushModelTagsToNewapi, isNewapiTagWriterConfigured } from "./server/newapi-tag-writer.mjs";
+import { pushChannelToNewapi, addModelToNewapiChannel } from "./server/newapi-channel-sync.mjs";
+import { getSettings, loadSettings, saveSettings } from "./server/settings-store.mjs";
 import { withRunBy } from "./server/run-context.mjs";
 import { APP_VERSION } from "./server/version.mjs";
 
@@ -105,6 +107,7 @@ const taskManager = createTaskManager({
 });
 
 await ensureDataDir();
+await loadSettings(); // 暖运行时设置缓存（AI 总结模型 / LiveBench / 安全题开关）
 await pruneReportsOnStartup();
 
 createServer(async (req, res) => {
@@ -212,7 +215,7 @@ async function handleApi(req, res) {
       service: "evaluator-api",
       pid: process.pid,
       proxyEnvDetected: hasProxyEnv(),
-      safetyScenariosEnabled: TEST_SCENARIOS.some((scenario) => scenario.category === "safety"),
+      safetyScenariosEnabled: getTestScenarios().some((scenario) => scenario.category === "safety"),
       version: APP_VERSION,
     });
     return;
@@ -466,7 +469,7 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/scenarios") {
-    sendJson(res, 200, TEST_SCENARIOS.map(maskScenario));
+    sendJson(res, 200, getTestScenarios().map(maskScenario));
     return;
   }
 
@@ -644,6 +647,40 @@ async function handleApi(req, res) {
     sendJson(res, 200, { ok: true, newTargets: plan.summary.newTargets });
     return;
   }
+  if (req.method === "POST" && /^\/api\/channels\/.+\/push-to-newapi$/.test(url.pathname)) {
+    // 把本平台渠道（含上游 Key + models 列表）推送到 new-api：新建或更新已关联渠道。
+    const id = decodeURIComponent(url.pathname.replace("/api/channels/", "").replace("/push-to-newapi", ""));
+    const channels = await loadChannels();
+    const channel = channels.find((item) => item.id === id);
+    if (!channel) {
+      sendJson(res, 404, { error: "channel_not_found", userMessage: "没有找到该渠道。" });
+      return;
+    }
+    if (!isNewapiTagWriterConfigured()) {
+      sendJson(res, 400, { error: "newapi_not_configured", userMessage: "未配置 new-api（在 .env.evaluator 填 EVALUATOR_NEWAPI_BASE_URL + 系统访问令牌）。" });
+      return;
+    }
+    const key = await readProfileApiKey(channel);
+    if (!key) {
+      sendJson(res, 400, { error: "missing_key", userMessage: "该渠道未保存上游 Key，无法在 new-api 建渠道。请先在渠道里更新 Key。" });
+      return;
+    }
+    try {
+      const result = await pushChannelToNewapi(channel, key);
+      // 回存 new-api 渠道 id，便于后续“模型推送/渠道更新”定位。
+      if (result.newapiChannelId && channel.newapiChannelId !== result.newapiChannelId) {
+        const idx = channels.findIndex((item) => item.id === channel.id);
+        if (idx >= 0) {
+          channels[idx] = { ...channel, newapiChannelId: result.newapiChannelId };
+          await saveChannels(channels);
+        }
+      }
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (error) {
+      sendJson(res, 502, { error: "newapi_push_failed", userMessage: error.message });
+    }
+    return;
+  }
   if (req.method === "DELETE" && url.pathname.startsWith("/api/channels/")) {
     const id = decodeURIComponent(url.pathname.replace("/api/channels/", ""));
     if (!id) {
@@ -658,6 +695,17 @@ async function handleApi(req, res) {
     const targets = await loadModelTargets();
     await saveModelTargets(targets.filter((target) => target.channelId !== id));
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // —— 运行时设置（AI 总结模型 / 场景测试题库开关；脱离环境变量）——
+  if (req.method === "GET" && url.pathname === "/api/settings") {
+    sendJson(res, 200, getSettings());
+    return;
+  }
+  if (req.method === "PUT" && url.pathname === "/api/settings") {
+    const next = await saveSettings(await readJson(req));
+    sendJson(res, 200, next);
     return;
   }
 
@@ -702,6 +750,37 @@ async function handleApi(req, res) {
         return;
       }
       sendJson(res, 200, summary);
+    } catch (error) {
+      sendJson(res, 502, { error: "newapi_push_failed", userMessage: error.message });
+    }
+    return;
+  }
+  if (req.method === "POST" && /^\/api\/model-targets\/[^/]+\/push-to-newapi$/.test(url.pathname)) {
+    // 把该模型名并入其渠道在 new-api 的 models 列表（让模型可被调用）。需渠道已推送到 new-api。
+    const id = decodeURIComponent(url.pathname.split("/")[3]);
+    const targets = await loadModelTargets();
+    const target = targets.find((item) => item.id === id);
+    if (!target) {
+      sendJson(res, 404, { error: "target_not_found", userMessage: "没有找到该模型目标。" });
+      return;
+    }
+    if (!isNewapiTagWriterConfigured()) {
+      sendJson(res, 400, { error: "newapi_not_configured", userMessage: "未配置 new-api（在 .env.evaluator 填 EVALUATOR_NEWAPI_BASE_URL + 系统访问令牌）。" });
+      return;
+    }
+    const channels = await loadChannels();
+    const channel = channels.find((item) => item.id === target.channelId);
+    if (!channel) {
+      sendJson(res, 404, { error: "channel_not_found", userMessage: "该模型所属渠道不存在。" });
+      return;
+    }
+    if (!channel.newapiChannelId) {
+      sendJson(res, 400, { error: "channel_not_pushed", userMessage: "请先在“渠道管理”把该模型所属渠道「推送到 new-api」。" });
+      return;
+    }
+    try {
+      const result = await addModelToNewapiChannel(channel.newapiChannelId, target.model);
+      sendJson(res, 200, { ok: true, ...result });
     } catch (error) {
       sendJson(res, 502, { error: "newapi_push_failed", userMessage: error.message });
     }

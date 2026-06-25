@@ -17,6 +17,7 @@ export const RUNTIME_DIR = join(DATA_DIR, ".runtime");
 export const PROFILES_FILE = join(CONFIG_DIR, "profiles.json");
 export const CHANNELS_FILE = join(CONFIG_DIR, "channels.json");
 export const MODEL_TARGETS_FILE = join(CONFIG_DIR, "model-targets.json");
+export const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
 export const SQLITE_DB_FILE = envCompat("SQLITE_DB") || join(DATA_DIR, "evaluator.db");
 export const REQUEST_LOG_FILE = join(LOGS_DIR, "requests.jsonl");
 export const TEST_RUNS_FILE = join(LOGS_DIR, "test-runs.jsonl");

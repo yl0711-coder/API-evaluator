@@ -4,7 +4,9 @@ import { CODING_SCENARIOS } from "./coding.mjs";
 import { LONG_CONTEXT_SCENARIOS } from "./long-context.mjs";
 import { SAFETY_SCENARIOS } from "./safety.mjs";
 import { LIVEBENCH_SCENARIOS } from "./livebench.mjs";
-import { envCompat } from "../env-compat.mjs";
+import { HLE_SCENARIOS } from "./hle.mjs";
+import { HARDCORE_LOGIC_SCENARIOS } from "./hardcore-logic.mjs";
+import { getSettings } from "../settings-store.mjs";
 
 // 场景能力标签（UI 展示用）：每个场景一个标签。规则：JSON 相关→代码，其余按内容归类。
 // 多数场景按 category 直接映射；中文场景与 LiveBench 同 category 但内容各异，按 id 细分。
@@ -33,6 +35,13 @@ function resolveScenarioTag(scenario) {
   if (scenario.category === "livebench") {
     return scenario.id.includes("data_analysis") ? "代码" : "逻辑推理";
   }
+  // HLE 全为 category=hle，跨学科：理工科按推理归类，其余按知识事实归类（依原始 hleCategory）。
+  if (scenario.category === "hle") {
+    const reasoningCats = ["Math", "Physics", "Engineering", "Computer Science/AI"];
+    return reasoningCats.includes(scenario.hleCategory) ? "逻辑推理" : "知识事实";
+  }
+  // HardcoreLogic 全为 category=hardcore-logic：10 类逻辑谜题的长尾变体/无解题，统归逻辑推理。
+  if (scenario.category === "hardcore-logic") return "逻辑推理";
   return TAG_BY_CATEGORY[scenario.category] || "";
 }
 // 浅拷贝挂上 tag，保留 id/prompt/scorer 等全部原字段；runner 按 id 过滤，不受影响。
@@ -47,24 +56,19 @@ export const ABILITY_SCENARIOS = [
   ...CHINESE_SCENARIOS,
 ].map(withTag);
 
-export const TEST_SCENARIOS = [
-  ...ABILITY_SCENARIOS,
-  ...enabledSafetyScenarios().map(withTag),
-  ...enabledLiveBenchScenarios().map(withTag),
-];
-
-// 内容安全场景默认【关闭】，需显式开启（EVALUATOR_ENABLE_SAFETY_SCENARIOS=1）。
-// 理由：这些是对你自己模型的"拒绝行为"红队测试（见 safety.mjs 文件头），提示词原文含
-// 敏感类别字面；开源仓库默认关闭可避免被误解，需要做安全测试的人显式打开即可。
-function enabledSafetyScenarios() {
-  const flag = String(envCompat("ENABLE_SAFETY_SCENARIOS") || "").toLowerCase();
-  return flag === "1" || flag === "true" ? SAFETY_SCENARIOS : [];
+// 运行时场景列表（数据驱动「设置」，完全脱离环境变量）：
+//   - LiveBench 抗污染难题、安全红线红队题默认【关闭】，仅当「设置」开启时纳入。
+//   - 同步读 settings 缓存，便于 /api/scenarios、runScenarioTest 等同步消费。
+export function getTestScenarios() {
+  const settings = getSettings();
+  return [
+    ...ABILITY_SCENARIOS,
+    ...(settings.enableSafety ? SAFETY_SCENARIOS.map(withTag) : []),
+    ...(settings.enableLivebench ? LIVEBENCH_SCENARIOS.map(withTag) : []),
+    ...(settings.enableHle ? HLE_SCENARIOS.map(withTag) : []),
+    ...(settings.enableHardcoreLogic ? HARDCORE_LOGIC_SCENARIOS.map(withTag) : []),
+  ];
 }
 
-// LiveBench 抗污染难题包默认【关闭】，需显式开启（EVALUATOR_ENABLE_LIVEBENCH=1）。
-// 理由：硬题更耗额度，主要服务档位降级判别这一特定用途（见 livebench.mjs 文件头）；
-// 客观 ground-truth 判分（exact/structured），不污染默认场景跑。
-function enabledLiveBenchScenarios() {
-  const flag = String(envCompat("ENABLE_LIVEBENCH") || "").toLowerCase();
-  return flag === "1" || flag === "true" ? LIVEBENCH_SCENARIOS : [];
-}
+// 向后兼容快照（import 期、设置缓存未加载 → 只含 ABILITY）。运行时一律调 getTestScenarios()。
+export const TEST_SCENARIOS = getTestScenarios();

@@ -38,8 +38,9 @@
           <button class="nav-button" type="button" data-page="trend">稳定性趋势</button>
         </div>
         <div class="nav-group">
-          <span>帮助</span>
+          <span>帮助与设置</span>
           <button class="nav-button" type="button" data-page="manual">使用手册</button>
+          <button class="nav-button" type="button" data-page="settings">设置</button>
         </div>
       </aside>
 
@@ -170,7 +171,7 @@
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
                 使用 AI 分析报告结果
-                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），单独生成一份 HTML，额外消耗 token。不勾选时只使用本地规则判断。</small>
+                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在『设置』里指定了 AI 总结模型则用它），单独生成一份 HTML，额外消耗 token。不勾选时只使用本地规则判断。</small>
               </span>
             </label>
             <button id="admission-submit" class="primary wide" type="submit">开始准入评测</button>
@@ -288,7 +289,7 @@
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
                 使用 AI 分析报告结果
-                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
+                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在『设置』里指定了 AI 总结模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
               </span>
             </label>
             <button id="standard-eval-submit" class="primary wide" type="submit">开始标准评测</button>
@@ -672,7 +673,7 @@
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
                 使用 AI 分析报告结果
-                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
+                <small>会额外调用 AI 分析模型生成分析结论（默认用被测渠道；若在『设置』里指定了 AI 总结模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
               </span>
             </label>
             <button id="stability-submit" class="primary wide" type="submit">开始稳定性测试</button>
@@ -751,7 +752,7 @@
                 <input name="useAiReportAnalysis" type="checkbox" value="1" />
                 <span>
                   使用 AI 分析报告结果
-                  <small>会额外调用 AI 分析模型生成分析结论（默认用本批次表现最好的渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
+                  <small>会额外调用 AI 分析模型生成分析结论（默认用本批次表现最好的渠道；若在『设置』里指定了 AI 总结模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
                 </span>
               </label>
               <button id="batch-submit" class="primary wide" type="submit">开始批量测试</button>
@@ -809,6 +810,8 @@
                 <option value="scenario-basic" selected>基础能力全量包：不含内容安全场景</option>
                 <option value="scenario-deep">候选深度复测包：能力场景重复 2 次</option>
                 <option value="scenario-livebench">LiveBench 抗污染难题包：客观判分，主攻档位降级</option>
+                <option value="scenario-hle">HLE 前沿专家难题包：跨学科客观判分，主攻档位降级</option>
+                <option value="scenario-hardcore-logic">HardcoreLogic 长尾逻辑谜题包：客观判分，主攻档位降级</option>
               </select>
               <small id="scenario-template-hint" class="field-hint">基础能力全量包适合稳定性已经通过后的能力评估，不会默认包含内容安全探测。</small>
             </label>
@@ -843,7 +846,7 @@
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
                 使用 AI 分析报告结果
-                <small>会额外调用 AI 分析模型生成分析结论（默认用本轮表现较好的渠道；若在 .env.evaluator 配置了专用 AI 分析模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
+                <small>会额外调用 AI 分析模型生成分析结论（默认用本轮表现较好的渠道；若在『设置』里指定了 AI 总结模型则用它），额外消耗 token。不勾选时只使用本地规则判断。</small>
               </span>
             </label>
             <button id="scenario-submit" class="primary wide" type="submit">开始场景测试</button>
@@ -1095,6 +1098,71 @@
               <p class="muted">正在加载使用手册...</p>
             </div>
           </div>
+        </section>
+
+        <section class="page" id="settings">
+          <div class="section-header">
+            <div>
+              <h2><span class="step">平台设置</span>设置</h2>
+              <p class="section-desc">这些开关只保存在本机，立即生效、无需重启，也不依赖环境变量。</p>
+            </div>
+          </div>
+          <form id="settings-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3>AI 总结报告</h3>
+              <p class="section-desc">勾选「使用 AI 分析报告结果」时由谁来写这段分析。</p>
+            </div>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-ai-specified" />
+              <span>
+                指定 AI 总结所用模型
+                <small>不勾选时，AI 分析默认由被测渠道/模型自己生成；勾选后用下面选定的模型来写。</small>
+              </span>
+            </label>
+            <label class="wide">
+              AI 总结模型（先选渠道，再选模型）
+              <select id="set-ai-channel" disabled></select>
+              <select id="set-ai-model" disabled></select>
+              <small class="field-hint">渠道与模型来自「渠道管理 / 模型管理」。先去配置，这里才有可选项。</small>
+            </label>
+
+            <div class="form-section-title">
+              <h3>场景测试题库</h3>
+              <p class="section-desc">控制场景测试里是否纳入这两类额外题目（默认都不含）。</p>
+            </div>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-livebench" />
+              <span>
+                加入 LiveBench 抗污染难题
+                <small>数学奥赛 / 逻辑谜题 / 表格重排等客观判分硬题，更耗额度，主要用于档位降级判别。</small>
+              </span>
+            </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-safety" />
+              <span>
+                加入安全红线题
+                <small>测「模型会不会拒绝违规请求」的红队场景（通过=模型拒绝）。请人工复核原始回答。</small>
+              </span>
+            </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-hle" />
+              <span>
+                加入 HLE 前沿专家难题
+                <small>跨百余学科的专家级硬题（单选/短答客观判分），更耗额度，主攻档位降级判别。</small>
+              </span>
+            </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-hardcore-logic" />
+              <span>
+                加入 HardcoreLogic 长尾逻辑谜题
+                <small>10 类逻辑谜题的长尾变体/无解题（JSON 客观判分），更耗额度，主攻档位降级判别。</small>
+              </span>
+            </label>
+
+            <div class="wide action-row">
+              <button id="save-settings" class="primary" type="submit">保存设置</button>
+            </div>
+          </form>
         </section>
 
         <div id="key-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="key-modal-title">
