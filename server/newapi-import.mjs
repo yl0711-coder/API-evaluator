@@ -48,7 +48,7 @@ export function mapNewapiChannel(row) {
 // 编排：把 new-api 行 upsert 进现有渠道、按 models 拆出模型目标。纯函数。
 // 返回 { channels, targets, keys:{channelId:明文key}, summary }。明文 key 只在 keys 里短暂带出，
 // 端点负责存进加密库并丢弃，绝不落入 channels（不进库、不下发浏览器）。
-export function buildImportPlan({ rows = [], existingChannels = [], existingTargets = [], syncModels = true } = {}) {
+export function buildImportPlan({ rows = [], existingChannels = [], existingTargets = [], syncModels = true, modelTags = null } = {}) {
   const channels = existingChannels.map((c) => ({ ...c }));
   const targets = existingTargets.map((t) => ({ ...t }));
   const indexById = new Map(channels.map((c, i) => [c.id, i]));
@@ -65,6 +65,8 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
   let updated = 0;
   let newTargets = 0;
   let disabled = 0;
+  let taggedTargets = 0;
+  const touchedChannelIds = new Set(); // 本次导入涉及的渠道 id，标签只并到这些渠道下的模型目标
 
   for (const row of rows) {
     const mapped = mapNewapiChannel(row);
@@ -89,6 +91,7 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
     }
 
     if (row.key) keys[channelId] = String(row.key); // A2(DB) 带 key；A1(API) 不带。用实际 channelId 存。
+    touchedChannelIds.add(channelId);
 
     if (syncModels) {
       for (const model of mapped.models) {
@@ -102,5 +105,22 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
     }
   }
 
-  return { channels, targets, keys, summary: { total: rows.length, imported, updated, newTargets, disabled } };
+  // 把 new-api 模型广场标签（按模型名）并到本次导入涉及渠道下的模型目标上：并集去重、保留本地已有标签、只增不撤。
+  if (modelTags) {
+    for (const t of targets) {
+      if (!touchedChannelIds.has(t.channelId)) continue;
+      const incoming = modelTags[t.model];
+      if (!Array.isArray(incoming) || !incoming.length) continue;
+      const cur = new Set(Array.isArray(t.tags) ? t.tags : []);
+      const before = cur.size;
+      incoming.forEach((x) => cur.add(x));
+      if (cur.size !== before) {
+        t.tags = [...cur];
+        t.updatedAt = now;
+        taggedTargets += 1;
+      }
+    }
+  }
+
+  return { channels, targets, keys, summary: { total: rows.length, imported, updated, newTargets, disabled, taggedTargets } };
 }

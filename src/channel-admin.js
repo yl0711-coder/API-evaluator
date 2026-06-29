@@ -258,7 +258,8 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync }) 
       const r = await api("/api/channels/import", { method: "POST", body: "{}" });
       await Promise.all([loadChannels(), loadModelTargets()]);
       const keyNote = r.mode === "api" ? "（api 模式不含 Key，请逐个补 Key）" : "";
-      toast(`从 new-api 导入完成：新增 ${r.imported} / 更新 ${r.updated} 个渠道，${r.newTargets} 个模型，禁用 ${r.disabled} 个${keyNote}。`);
+      const tagNote = r.taggedTargets ? `，标签同步 ${r.taggedTargets} 个模型` : "";
+      toast(`从 new-api 导入完成：新增 ${r.imported} / 更新 ${r.updated} 个渠道，${r.newTargets} 个模型，禁用 ${r.disabled} 个${tagNote}${keyNote}。`);
     } catch (error) {
       toast(`导入失败：${error.message}`, true);
     }

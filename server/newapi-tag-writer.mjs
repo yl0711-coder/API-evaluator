@@ -78,6 +78,20 @@ export async function fetchAllModels(cfg) {
   return out;
 }
 
+// 拉取 new-api 模型广场的「模型名 → 标签数组」映射，供导入时把标签一并并到本地模型目标上。
+// 未配置则返回空对象（best-effort，由调用方吞错）。
+export async function fetchNewapiModelTagMap() {
+  const cfg = readConfig();
+  if (!cfg.base || !cfg.token) return {};
+  const models = await fetchAllModels(cfg);
+  const map = {};
+  for (const m of models) {
+    const tags = splitTags(m.tags);
+    if (m.model_name && tags.length) map[String(m.model_name)] = tags;
+  }
+  return map;
+}
+
 // 主流程。tagMap: { 模型名 -> string[] 标签 }。返回写入汇总（不抛分项错误，逐条收集）。
 export async function pushModelTagsToNewapi(tagMap) {
   const cfg = readConfig();

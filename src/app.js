@@ -88,6 +88,9 @@ const state = {
 
 const pages = requireElements(".page");
 const navButtons = requireElements(".nav-button");
+// 设置页「未保存改动」追踪：早声明，避免在启动期（顶层 await 暂停）被 showPage 引用时命中 TDZ。
+let settingsDirty = false;
+let currentPage = "dashboard";
 const projectInfoForm = requireElement("#project-info-form");
 const projectInfoSummary = requireElement("#project-info-summary");
 const profileForm = requireElement("#profile-form");
@@ -953,6 +956,12 @@ function renderStartupError(error) {
 }
 
 function showPage(page) {
+  // 离开设置页且有未保存改动 → 提示。loadSettings 会在重新进入时重置 dirty（丢弃未保存改动）。
+  if (currentPage === "settings" && page !== "settings" && settingsDirty) {
+    toast("设置未保存。", true);
+    settingsDirty = false;
+  }
+  currentPage = page;
   navButtons.forEach((item) => item.classList.toggle("active", item.dataset.page === page));
   pages.forEach((item) => item.classList.toggle("active", item.id === page));
   renderPageHelp(page);
@@ -1067,10 +1076,16 @@ async function loadSettings() {
     settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
     setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
     applyAiSpecifiedGate();
+    settingsDirty = false; // 刚载入官方值，不算「未保存改动」
   } catch (error) {
     toast(`加载设置失败：${error.message}`, true);
   }
 }
+
+// 用户改动任一设置项（复选框/AI 模型选择等）→ 标记未保存。程序化赋值（loadSettings）不触发 change，故不会误标。
+settingsForm.addEventListener("change", () => {
+  settingsDirty = true;
+});
 
 settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1086,6 +1101,7 @@ settingsForm.addEventListener("submit", async (event) => {
   try {
     const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
     state.settings = saved; // 即时生效：删除流随即按新开关走
+    settingsDirty = false; // 已保存，清除未保存标记
     await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
     toast("设置已保存。");
   } catch (error) {

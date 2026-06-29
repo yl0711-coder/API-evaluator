@@ -84,7 +84,7 @@ import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./s
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
-import { pushModelTagsToNewapi, isNewapiTagWriterConfigured } from "./server/newapi-tag-writer.mjs";
+import { pushModelTagsToNewapi, isNewapiTagWriterConfigured, fetchNewapiModelTagMap } from "./server/newapi-tag-writer.mjs";
 import { pushChannelToNewapi, addModelToNewapiChannel, deleteNewapiChannel, removeModelFromNewapiChannel } from "./server/newapi-channel-sync.mjs";
 import { getSettings, loadSettings, saveSettings } from "./server/settings-store.mjs";
 import { withRunBy } from "./server/run-context.mjs";
@@ -616,7 +616,16 @@ async function handleApi(req, res) {
       return;
     }
     const [existingChannels, existingTargets] = await Promise.all([loadChannels(), loadModelTargets()]);
-    const plan = buildImportPlan({ rows, existingChannels, existingTargets });
+    // 顺带拉取 new-api 模型广场的「模型名→标签」，导入时并到对应模型目标上（best-effort，失败不影响导入）。
+    let modelTags = {};
+    if (isNewapiTagWriterConfigured()) {
+      try {
+        modelTags = await fetchNewapiModelTagMap();
+      } catch {
+        /* 拉标签失败不影响导入主流程 */
+      }
+    }
+    const plan = buildImportPlan({ rows, existingChannels, existingTargets, modelTags });
     // 明文 key（仅 A2/DB 模式带）立刻存进加密库、从渠道对象剥离；A1/API 无 key，导入后需手动补。
     const indexById = new Map(plan.channels.map((item, i) => [item.id, i]));
     for (const [channelId, key] of Object.entries(plan.keys)) {
