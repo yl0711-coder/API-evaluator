@@ -219,6 +219,7 @@ const rankingList = requireElement("#ranking-list");
 const modelComparisonList = requireElement("#model-comparison-list");
 const handoffSummary = requireElement("#handoff-summary");
 const handoffTemplate = requireElement("#handoff-template");
+const pageHelp = requireElement("#page-help");
 const pageHelpContent = requireElement("#page-help-content");
 const manualContent = requireElement("#manual-content");
 const dashboardEmpty = requireElement("#dashboard-empty");
@@ -311,7 +312,6 @@ requireElement("#reload-requests").addEventListener("click", async () => {
 });
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
-requireElement("#reload-manual").addEventListener("click", loadManual);
 requireElement("#export-profiles").addEventListener("click", exportProfiles);
 requireElement("#export-support-bundle").addEventListener("click", exportSupportBundle);
 
@@ -1345,6 +1345,9 @@ function renderResultsViews() {
 }
 
 function renderPageHelp(page) {
+  // 使用手册页不显示「这个页面怎么用？」。
+  pageHelp.classList.toggle("hidden", page === "manual");
+  if (page === "manual") return;
   renderPageHelpPanel(pageHelpContent, page);
 }
 

@@ -946,28 +946,18 @@
               <p class="muted">还没有可分析的测试报告。</p>
             </div>
           </div>
-          <div class="panel">
-            <div class="section-header compact">
-              <div>
-                <p class="eyebrow">横向对比</p>
-                <h3>模型 / 渠道排行榜</h3>
-              </div>
-            </div>
+          <details class="panel collapsible-panel">
+            <summary>横向对比 · 模型 / 渠道排行榜</summary>
             <div id="ranking-list" class="ranking-list">
               <p class="muted">完成标准评测或高级复测后会生成排行榜。</p>
             </div>
-          </div>
-          <div class="panel">
-            <div class="section-header compact">
-              <div>
-                <p class="eyebrow">同模型对比</p>
-                <h3>多渠道对比矩阵</h3>
-              </div>
-            </div>
+          </details>
+          <details class="panel collapsible-panel">
+            <summary>同模型对比 · 多渠道对比矩阵</summary>
             <div id="model-comparison-list" class="comparison-list">
               <p class="muted">同一模型有多个候选或可信基线时，这里会显示对比矩阵。</p>
             </div>
-          </div>
+          </details>
           <details class="panel collapsible-panel">
             <summary>最近测试报告</summary>
             <div id="test-run-list" class="table"></div>
@@ -1111,7 +1101,6 @@
             <div>
               <h2><span class="step">中文使用说明</span>使用手册</h2>
             </div>
-            <button id="reload-manual" class="secondary" type="button">刷新手册</button>
           </div>
 
           <div class="panel manual-panel">
