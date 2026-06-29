@@ -499,7 +499,7 @@
                 <p class="section-desc">渠道 = 连接信息（Base URL + Key + 协议）。Key 只存本机、不进报告/导出、管理员看不到。一个渠道下可挂多个模型，去“模型管理”里选用。</p>
               </div>
               <div class="action-row">
-                <button id="import-from-newapi" class="secondary" type="button">从 new-api 导入</button>
+                <button id="import-from-newapi" class="secondary" type="button">从 new-api 一键导入</button>
                 <button id="reload-channels" class="secondary" type="button">刷新</button>
               </div>
             </div>
@@ -536,7 +536,8 @@
                 <h2><span class="step">第 2 步 · 模型管理</span>配置要测的模型（管理员）</h2>
                 <p class="section-desc">选一个渠道 + 填一个模型名 = 一个测试目标。看不到也不需要 Key。运行测试时从这里选目标。</p>
                 <div class="action-row">
-                  <button id="push-model-tags" class="secondary" type="button">推送标签到 new-api</button>
+                  <button id="push-model-tags" class="secondary" type="button">推送所有标签到 new-api</button>
+                  <button id="sync-all-tags" class="secondary" type="button">从 new-api 同步所有标签</button>
                   <button id="reload-model-targets" class="secondary" type="button">刷新</button>
                 </div>
               </div>
@@ -547,6 +548,11 @@
                 <label class="wide">渠道<select name="channelId" id="model-target-channel" required></select></label>
                 <label>模型名<input name="model" autocomplete="off" placeholder="gpt-4o" required /></label>
                 <label>备注<input name="note" autocomplete="off" placeholder="可选" /></label>
+                <div class="wide field-tags">
+                  <span class="tag-field-label">标签</span>
+                  <div id="model-target-tags" class="tag-pick"></div>
+                  <small class="field-hint">勾选要为该模型标记的能力标签；新增标签呈明黄，待「推送标签到 new-api」后转橙。</small>
+                </div>
                 <div class="wide action-row">
                   <button class="primary" id="save-model-target" type="submit">添加模型</button>
                 </div>
@@ -913,6 +919,21 @@
               <button id="reload-requests" class="secondary" type="button">刷新</button>
             </div>
           </div>
+          <details id="report-files-panel" class="panel collapsible-panel">
+            <summary>全部报告文件</summary>
+            <p class="muted">这里列出已保存到「评测数据/报告」的全部报告，点「查看」可在应用内打开。</p>
+            <div class="report-files-filters">
+              <select id="rf-filter-channel" aria-label="按渠道筛选"><option value="">全部渠道</option></select>
+              <select id="rf-filter-model" aria-label="按模型筛选"><option value="">全部模型</option></select>
+              <select id="rf-filter-type" aria-label="按测试种类筛选"><option value="">全部种类</option></select>
+              <div class="report-files-daterange">
+                <input type="date" id="rf-filter-date-from" aria-label="起始日期" />
+                <span class="rff-sep">至</span>
+                <input type="date" id="rf-filter-date-to" aria-label="终止日期" />
+              </div>
+            </div>
+            <div id="report-files-list" class="table"><p class="muted">展开本面板即自动加载报告列表。</p></div>
+          </details>
           <div class="panel">
             <div class="section-header compact">
               <div>

@@ -799,6 +799,63 @@ button.quiet-action {
   background: rgba(8, 17, 31, 0.44);
   min-width: 860px;
 }
+/* 「查看报告」文件列表行：类型/文件名 + 时间 + 大小 + 查看按钮 */
+.report-file-row {
+  grid-template-columns: 1fr auto auto auto;
+  min-width: 0;
+}
+/* 「查看报告」筛选：渠道 / 模型 / 种类 / 日期，两两并排（2 列网格），拉长占满面板宽度 */
+.report-files-filters {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin: 4px 0 12px;
+  width: 100%;
+}
+.report-files-filters select,
+.report-files-filters input[type="date"] {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-family: "宋体", SimSun, serif;
+}
+/* 原生日期控件按深色渲染（字段文字 + 日历图标 + Chrome/Edge 的弹出日历都变深色），匹配站点风格。 */
+.report-files-filters input[type="date"] {
+  color-scheme: dark;
+  height: 100%; /* 与同行下拉等高 */
+}
+.report-files-filters input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.85;
+}
+/* 日期范围（起始 至 终止）占一个网格格，两个日期框等分该格 */
+.report-files-daterange {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.report-files-daterange input[type="date"] {
+  flex: 1;
+  min-width: 0;
+}
+.report-files-daterange .rff-sep {
+  flex: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+/* 「查看报告」分页条：上一页 / 第 X/Y 页 / 下一页 */
+.report-files-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 10px 0 2px;
+}
+.report-files-pager button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 .row-actions {
   display: flex;
@@ -1871,6 +1928,9 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 .cfg-stack #model-target-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
 .cfg-stack #model-target-form > label { margin: 0; flex: 1 1 200px; }
 .cfg-stack #model-target-form .wide { grid-column: auto; flex: 1 1 200px; }
+/* 标签字段独占整行，置于渠道/模型名/备注下方（chip 多、需要更宽）；
+   外层是 div（非 label），自行 grid 排版还原「标题在上、内容在下」。 */
+.cfg-stack #model-target-form .field-tags { flex: 1 0 100%; display: grid; gap: 7px; }
 /* 按钮自成一行、置于最后一项下方（与渠道表单一致），而非挤在右侧 */
 .cfg-stack #model-target-form > .action-row { flex: 1 0 100%; margin-top: 2px; }
 
@@ -1892,8 +1952,37 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 /* 场景测验夺标得到的能力标签 chip（可点 × 移除）*/
 .model-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .model-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--accent); border: 1px solid rgba(246, 181, 107, 0.4); background: rgba(246, 181, 107, 0.12); border-radius: 999px; padding: 2px 4px 2px 9px; }
+/* 明黄：新增未推送标签，提示用户及时「推送标签到 new-api」。 */
+.model-tag.pending { color: #fff27a; border-color: rgba(255, 232, 102, 0.8); background: rgba(255, 226, 70, 0.26); }
+/* 灰：本地已删但 new-api 仍在，提示去 new-api 手动删；无 × 不可再删。 */
+.model-tag.removed { color: var(--muted); border-color: var(--line); background: rgba(255, 255, 255, 0.04); padding: 2px 9px; text-decoration: line-through; }
 .model-tag-x { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
 .model-tag-x:hover { color: var(--bad); }
+
+/* 标签字段标题（外层用 div，避免整块当 label 误勾第一个复选框）*/
+.field-tags .tag-field-label { color: #ccd6e4; }
+
+/* 配置模型「标签」勾选区：朴素可勾选标签（隐藏原生勾选框，整粒可点）*/
+.tag-pick { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; }
+.tag-pick .tag-opt { display: inline-flex; cursor: pointer; }
+/* 视觉隐藏原生 checkbox，但仍可被 querySelectorAll(':checked') 读取 */
+.tag-pick .tag-opt input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
+.tag-pick .tag-opt-face {
+  font-size: 14.5px; font-weight: 500; line-height: 1;
+  color: var(--muted);
+  padding: 9px 18px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+}
+.tag-pick .tag-opt:hover .tag-opt-face { color: var(--text); border-color: var(--muted); }
+.tag-pick .tag-opt input:focus-visible + .tag-opt-face { outline: 1px solid rgba(246, 181, 107, 0.6); outline-offset: 2px; }
+/* 选中态：橙底 + 深色加粗字（朴素，无渐变/发光/动画）*/
+.tag-pick .tag-opt input:checked + .tag-opt-face {
+  color: #1b1206; font-weight: 700;
+  border-color: var(--accent);
+  background: var(--accent);
+}
 
 /* 卡片：名称+元信息占顶行，状态徽标左下、操作右下 */
 .cfg #channel-list .chan-row,
@@ -1917,8 +2006,10 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 .cfg #model-target-list .row-actions { justify-self: end; display: flex; flex-wrap: wrap; gap: 8px; }
 /* 仅「有同步模型按钮」的渠道卡（4 个按钮）固定两两并排（2 列网格），启用/已禁用排版一致；
    没有同步模型的卡片（3 个按钮）维持原 flex 排版。 */
-.cfg #channel-list .actions-grid { display: grid; grid-template-columns: repeat(2, 1fr); }
-.cfg #channel-list .actions-grid button { width: 100%; }
+.cfg #channel-list .actions-grid,
+.cfg #model-target-list .actions-grid { display: grid; grid-template-columns: repeat(2, 1fr); }
+.cfg #channel-list .actions-grid button,
+.cfg #model-target-list .actions-grid button { width: 100%; }
 
 /* ===== 全局：内容限宽，所有页与已迁移页一致（防宽屏摊开）===== */
 .page > .section-header, .page > .panel, .page > .helper-details, .page > .technical-details, .page > details { max-width: 1180px; }

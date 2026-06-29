@@ -2,7 +2,7 @@
 // 从 new-api 导入渠道的纯映射 + 编排（无 I/O，便于单测）。数据来源（A1 管理 API / A2 只读 DB）
 // 在 newapi-source.mjs 里取行，本文件只负责：new-api 渠道行 -> 我们的渠道/模型目标。
 // 明文 key 不进渠道记录：buildImportPlan 单独把 key 收进 keys 映射，由端点存进加密库后丢弃。
-import { deterministicModelTargetId, normalizeModelList } from "./channel-model.mjs";
+import { deterministicModelTargetId, normalizeModelList, syncTagsFromNewapi } from "./channel-model.mjs";
 
 // new-api 渠道 type（见其 constant/channel.go）。14=Anthropic 走 Claude Messages，其余按 OpenAI 兼容。
 const TYPE_PROVIDER = { 1: "OpenAI", 14: "Anthropic", 15: "Baidu", 16: "Zhipu", 17: "Alibaba", 24: "Google", 25: "Moonshot", 43: "DeepSeek", 48: "xAI" };
@@ -105,20 +105,14 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
     }
   }
 
-  // 把 new-api 模型广场标签（按模型名）并到本次导入涉及渠道下的模型目标上：并集去重、保留本地已有标签、只增不撤。
+  // 把 new-api 模型广场标签同步到本次导入涉及渠道下的模型目标上——与「同步」按钮行为完全一致：
+  // 复用 syncTagsFromNewapi：new-api 标签为橙；本地未推送的明黄标签若 new-api 没有则保留；
+  // 橙色标签以 new-api 为准、不在则移除。
+  // 注意：modelTags 为 null 表示「未取到 new-api 标签」（未配置 / 拉取失败），此时绝不动标签，避免误清空。
   if (modelTags) {
     for (const t of targets) {
       if (!touchedChannelIds.has(t.channelId)) continue;
-      const incoming = modelTags[t.model];
-      if (!Array.isArray(incoming) || !incoming.length) continue;
-      const cur = new Set(Array.isArray(t.tags) ? t.tags : []);
-      const before = cur.size;
-      incoming.forEach((x) => cur.add(x));
-      if (cur.size !== before) {
-        t.tags = [...cur];
-        t.updatedAt = now;
-        taggedTargets += 1;
-      }
+      if (syncTagsFromNewapi(t, modelTags[t.model] || [])) taggedTargets += 1;
     }
   }
 

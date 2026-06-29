@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-29
+
+### Added
+- **Push channels & models to new-api** — sync configured channels and their test models
+  back to a new-api gateway, with a live channel-sync endpoint and tests
+  (`server/newapi-channel-sync.mjs`, import scripts under `scripts/`).
+- **New scenario packs** — hardcore-logic and HLE (harder objective probes) added alongside
+  the existing livebench pack (`server/scenarios/hardcore-logic.mjs`, `server/scenarios/hle.mjs`).
+
+### Changed
+- Benchmark scorers, scenario evaluator, new-api import/source handling, and the
+  confirm-dialog refined; accompanying test updates.
+
 ## [0.4.2] - 2026-06-24
 
 ### Added

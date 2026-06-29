@@ -88,6 +88,21 @@ async function attachRunArtifacts(runId, summary, artifacts = {}) {
   };
 }
 
+// 报告命名：渠道_模型；取不到渠道/模型则返回空串（→ 多目标）。profile.name = "渠道 / 模型"。
+function reportTargetSlug(profile) {
+  const channel = String(profile?.name || "").split(" / ")[0].trim();
+  const model = String(profile?.defaultModel || profile?.model || "").trim();
+  if (!channel) return model;
+  return model ? `${channel}_${model}` : channel;
+}
+// 报告 id：渠道_模型_测试_YYYYMMDD_HHMMSS_短哈希；headSlug 为空（多目标）时用「多目标」。
+function buildReportId(type, headSlug) {
+  const stamp = compactDate(new Date()).replace("-", "_"); // YYYYMMDD_HHMMSS
+  const hash = crypto.randomUUID().slice(0, 4);
+  const head = (headSlug || "").trim() || "多目标";
+  return `${head}_${type}_${stamp}_${hash}`;
+}
+
 export async function runQuickTest(profileId, prompt) {
   const profiles = await loadRunnableProfiles();
   const profile = profiles.find((item) => item.id === profileId);
@@ -121,7 +136,7 @@ export async function runQuickVerify(body, taskContext = {}) {
     throw new Error("没有找到被测 API 配置。");
   }
 
-  const runId = `quickverify-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = buildReportId("quickverify", reportTargetSlug(profile));
   const startedAt = new Date();
   // token 高效：探针输出封顶（指纹/身份只需短 JSON），单次成本可预估、可控。
   const leanProfile = { ...profile, maxTokens: Math.min(Number(profile.maxTokens) || QUICK_VERIFY_MAX_OUTPUT, QUICK_VERIFY_MAX_OUTPUT) };
@@ -294,7 +309,7 @@ export async function runAdmissionTest(body, taskContext = {}) {
   const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel)
     ? body.packageLevel
     : "standard";
-  const runId = `admission-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = buildReportId("admission", reportTargetSlug(profile));
   const startedAt = new Date();
   const cases = buildAdmissionCases(packageLevel, profile.defaultModel);
   // 档位降级判别：仅 standard/deep + Claude + 有匹配档位参考时，追加"多跑几次的判别题"。
@@ -430,7 +445,10 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
     ? body.packageLevel
     : "standard";
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 3, 1);
-  const batchId = `admission-batch-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const batchId = buildReportId(
+    "admission-batch",
+    validProfileIds.length === 1 ? reportTargetSlug(profiles.find((p) => p.id === validProfileIds[0])) : "",
+  );
   const startedAt = new Date();
   const results = [];
 
@@ -981,7 +999,7 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
   const rounds = clampNumber(body.rounds, 1, 100, 10);
   const concurrency = clampNumber(body.concurrency, 1, 5, 1);
   const prompt = String(body.prompt || "").trim() || "请用两句话说明你可以正常工作，并返回当前测试编号。";
-  const runId = `run-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = buildReportId("run", reportTargetSlug(profile));
   const startedAt = new Date();
   const records = [];
 
@@ -1065,7 +1083,10 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
     throw new Error("没有找到可用的被测 API 配置。");
   }
 
-  const batchId = `batch-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const batchId = buildReportId(
+    "batch",
+    validProfileIds.length === 1 ? reportTargetSlug(profiles.find((p) => p.id === validProfileIds[0])) : "",
+  );
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const startedAt = new Date();
   const results = [];
@@ -1212,7 +1233,7 @@ export async function runScenarioTest(body, taskContext = {}) {
     throw new Error("请至少选择一个测试场景。");
   }
 
-  const runId = `scenario-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = buildReportId("scenario", selectedProfiles.length === 1 ? reportTargetSlug(selectedProfiles[0]) : "");
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const requestConcurrency = clampNumber(body.requestConcurrency || body.concurrency, 1, 3, 1);
   const repeats = clampNumber(body.repeats, 1, 5, 1);

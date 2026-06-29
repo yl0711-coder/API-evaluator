@@ -76,14 +76,19 @@ export async function saveAiAnalysisReport(baseName, markdown, title) {
   return { htmlPath };
 }
 
-function inferReportType(baseName) {
+export function inferReportType(baseName) {
   const name = String(baseName || "");
-  if (name.startsWith("scenario")) return "scenario";
-  if (name.startsWith("stability")) return "stability";
-  if (name.startsWith("batch")) return "batch";
-  if (name.includes("admission")) return "admission";
-  if (name.includes("replay")) return "replay";
-  if (name.includes("supplier")) return "supplier-evidence";
+  // 新格式 渠道_模型_<type>_<YYYYMMDD>_<HHMMSS>_<hash>：type 在 8 位日期 token 前一个。
+  // 旧格式 <type>-YYYYMMDD-...：无下划线分段 → probe 回退为整名（行为不变）。
+  const parts = name.split("_");
+  const dateIdx = parts.findIndex((p) => /^\d{8}$/.test(p));
+  const probe = dateIdx > 0 ? parts[dateIdx - 1] : name;
+  if (probe.includes("scenario")) return "scenario";
+  if (probe.includes("stability") || probe === "run") return "stability";
+  if (probe.includes("admission")) return "admission"; // 先于 batch：admission-batch 归 admission（同旧行为）
+  if (probe.includes("batch")) return "batch";
+  if (probe.includes("replay")) return "replay";
+  if (probe.includes("supplier")) return "supplier-evidence";
   return "report";
 }
 
@@ -95,10 +100,13 @@ export function reportIdFromHtmlPath(htmlPath) {
 }
 
 export function sanitizeReportBaseName(baseName) {
+  // 允许中文等 unicode（报告名含渠道名「小侠」），但仍防目录穿越/非法文件名字符：
   const safeName = String(baseName || "")
     .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^\.+/, "")
-    .slice(0, 120);
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_") // 路径分隔 / Windows 非法字符 / 控制字符 → _
+    .replace(/\.\.+/g, "_") // 禁 .. 父目录穿越
+    .replace(/\s+/g, "_") // 空白 → _
+    .replace(/^[._]+/, "") // 去前导点 / 下划线
+    .slice(0, 200);
   return safeName || "report";
 }

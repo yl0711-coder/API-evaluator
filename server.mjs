@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
 import { ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
@@ -80,7 +80,7 @@ import {
   saveChannels,
 } from "./server/channel-store.mjs";
 import { loadModelTargets, saveModelTargets } from "./server/model-target-store.mjs";
-import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./server/channel-model.mjs";
+import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget, syncTagsFromNewapi, unifySameNameTags } from "./server/channel-model.mjs";
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
@@ -616,13 +616,14 @@ async function handleApi(req, res) {
       return;
     }
     const [existingChannels, existingTargets] = await Promise.all([loadChannels(), loadModelTargets()]);
-    // 顺带拉取 new-api 模型广场的「模型名→标签」，导入时并到对应模型目标上（best-effort，失败不影响导入）。
-    let modelTags = {};
+    // 顺带拉取 new-api 模型广场的「模型名→标签」，导入时按「同步」语义覆盖到对应模型目标（best-effort）。
+    // null = 未取到（未配置 / 拉取失败）→ buildImportPlan 不动标签，避免把本地标签误清空。
+    let modelTags = null;
     if (isNewapiTagWriterConfigured()) {
       try {
         modelTags = await fetchNewapiModelTagMap();
       } catch {
-        /* 拉标签失败不影响导入主流程 */
+        /* 拉标签失败不影响导入主流程；modelTags 保持 null（不动标签）*/
       }
     }
     const plan = buildImportPlan({ rows, existingChannels, existingTargets, modelTags });
@@ -781,6 +782,22 @@ async function handleApi(req, res) {
         sendJson(res, 400, { error: "newapi_not_configured", userMessage: summary.error });
         return;
       }
+      // 推送成功（模型不在 errors）→ 把该模型目标的存活标签标记为已推送（黄→橙）。
+      const failedModels = new Set((summary.errors || []).map((e) => e.model));
+      let changed = false;
+      for (const t of targets) {
+        const tags = Array.isArray(t.tags) ? t.tags : [];
+        if (!t.model || !tags.length || failedModels.has(t.model)) continue;
+        const pushed = new Set(Array.isArray(t.pushedTags) ? t.pushedTags : []);
+        const before = pushed.size;
+        tags.forEach((x) => pushed.add(x));
+        if (pushed.size !== before) {
+          t.pushedTags = [...pushed];
+          t.updatedAt = new Date().toISOString();
+          changed = true;
+        }
+      }
+      if (changed) await saveModelTargets(targets);
       sendJson(res, 200, summary);
     } catch (error) {
       sendJson(res, 502, { error: "newapi_push_failed", userMessage: error.message });
@@ -812,7 +829,23 @@ async function handleApi(req, res) {
     }
     try {
       const result = await addModelToNewapiChannel(channel.newapiChannelId, target.model);
-      sendJson(res, 200, { ok: true, ...result });
+      // ① 同时把该模型的标签推送到 new-api 模型广场（复用「推送标签」库，仅此模型）。
+      const tags = Array.isArray(target.tags) ? target.tags : [];
+      let tagSummary = null;
+      if (tags.length) {
+        tagSummary = await pushModelTagsToNewapi({ [target.model]: tags });
+        const failed = new Set((tagSummary.errors || []).map((e) => e.model));
+        if (!failed.has(target.model)) {
+          // 推送成功 → 本地标橙（黄→橙）+ 同名模型统一。
+          const pushedSet = new Set(Array.isArray(target.pushedTags) ? target.pushedTags : []);
+          tags.forEach((x) => pushedSet.add(x));
+          target.pushedTags = [...pushedSet];
+          target.updatedAt = new Date().toISOString();
+          unifySameNameTags(targets, target);
+          await saveModelTargets(targets);
+        }
+      }
+      sendJson(res, 200, { ok: true, ...result, tagSummary });
     } catch (error) {
       sendJson(res, 502, { error: "newapi_push_failed", userMessage: error.message });
     }
@@ -827,10 +860,66 @@ async function handleApi(req, res) {
       sendJson(res, 404, { error: "not_found", userMessage: "模型目标不存在。" });
       return;
     }
+    // 旧记录无 pushedTags → 既有标签按已同步（橙）处理：删除应转灰提示。
+    const pushedArr = Array.isArray(target.pushedTags) ? target.pushedTags : Array.isArray(target.tags) ? target.tags : [];
+    const wasPushed = pushedArr.includes(tag);
     target.tags = (Array.isArray(target.tags) ? target.tags : []).filter((t) => t !== tag);
+    target.pushedTags = pushedArr.filter((t) => t !== tag);
+    // 橙色（已同步）标签删除 → 转灰名单，提示用户去 new-api 手动删；明黄（未推送）标签直接消失。
+    if (wasPushed) {
+      const removed = new Set(Array.isArray(target.removedTags) ? target.removedTags : []);
+      removed.add(tag);
+      target.removedTags = [...removed];
+    }
     target.updatedAt = new Date().toISOString();
+    unifySameNameTags(targets, target); // 同名模型标签完全统一
     await saveModelTargets(targets);
-    sendJson(res, 200, { ok: true, tags: target.tags });
+    sendJson(res, 200, { ok: true, tags: target.tags, pushedTags: target.pushedTags, removedTags: target.removedTags });
+    return;
+  }
+  if (req.method === "POST" && /^\/api\/model-targets\/[^/]+\/sync-tags$/.test(url.pathname)) {
+    // 仅从 new-api 同步该模型的标签：拉回的标签标橙、对账灰名单（不动渠道/模型本身）。
+    const id = decodeURIComponent(url.pathname.split("/")[3]);
+    if (!isNewapiTagWriterConfigured()) {
+      sendJson(res, 400, { error: "newapi_not_configured", userMessage: "未配置 new-api（在 .env.evaluator 填 EVALUATOR_NEWAPI_BASE_URL + 系统访问令牌）。" });
+      return;
+    }
+    const targets = await loadModelTargets();
+    const target = targets.find((item) => item.id === id);
+    if (!target) {
+      sendJson(res, 404, { error: "not_found", userMessage: "模型目标不存在。" });
+      return;
+    }
+    try {
+      const map = await fetchNewapiModelTagMap();
+      const changed = syncTagsFromNewapi(target, map[target.model] || []); // 以 new-api 为准、保留本地明黄
+      const unified = unifySameNameTags(targets, target); // 同步一个 → 同名模型全统一
+      if (changed || unified) await saveModelTargets(targets);
+      sendJson(res, 200, { ok: true, changed, tags: target.tags, pushedTags: target.pushedTags, removedTags: target.removedTags });
+    } catch (error) {
+      sendJson(res, 502, { error: "newapi_sync_failed", userMessage: error.message });
+    }
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/model-targets/sync-all-tags") {
+    // 从 new-api 同步所有模型的标签（拉一次映射，逐目标套用）。
+    if (!isNewapiTagWriterConfigured()) {
+      sendJson(res, 400, { error: "newapi_not_configured", userMessage: "未配置 new-api（在 .env.evaluator 填 EVALUATOR_NEWAPI_BASE_URL + 系统访问令牌）。" });
+      return;
+    }
+    const targets = await loadModelTargets();
+    try {
+      const map = await fetchNewapiModelTagMap();
+      let updated = 0;
+      for (const target of targets) {
+        // 覆盖式：每个模型目标标签变为与 new-api 完全一致、全橙。
+        if (syncTagsFromNewapi(target, map[target.model] || [])) updated += 1;
+      }
+      if (updated) await saveModelTargets(targets);
+      sendJson(res, 200, { ok: true, synced: targets.length, updated });
+    } catch (error) {
+      sendJson(res, 502, { error: "newapi_sync_failed", userMessage: error.message });
+    }
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/model-targets") {
@@ -852,6 +941,7 @@ async function handleApi(req, res) {
     const index = targets.findIndex((item) => item.id === target.id);
     if (index >= 0) targets[index] = target;
     else targets.push(target);
+    unifySameNameTags(targets, target); // 编辑/新增后，同名模型标签完全统一
     await saveModelTargets(targets);
     sendJson(res, 200, target);
     return;
@@ -975,6 +1065,30 @@ async function handleApi(req, res) {
   // 报告中心元数据列表（全平台共享，登录可读）
   if (req.method === "GET" && url.pathname === "/api/reports") {
     sendJson(res, 200, await queryRecentReports(200));
+    return;
+  }
+
+  // 列出报告目录（评测数据/报告）里的全部 .html 报告文件，供「查看报告」浏览。
+  // best-effort：目录不存在/读失败 → 返回 []。每项 id 与 /view 路由一致（基名去 .html）。
+  if (req.method === "GET" && url.pathname === "/api/reports/files") {
+    let files = [];
+    try {
+      const names = (await readdir(REPORTS_DIR)).filter((n) => n.toLowerCase().endsWith(".html"));
+      const stats = await Promise.all(
+        names.map(async (name) => {
+          try {
+            const st = await stat(join(REPORTS_DIR, name));
+            return { id: name.replace(/\.html$/i, ""), mtimeMs: st.mtimeMs, sizeBytes: st.size };
+          } catch {
+            return null;
+          }
+        }),
+      );
+      files = stats.filter(Boolean).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 500);
+    } catch {
+      /* 目录不存在/读失败 → 空列表 */
+    }
+    sendJson(res, 200, files);
     return;
   }
 
