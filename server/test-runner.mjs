@@ -12,6 +12,7 @@ import { getTestScenarios } from "./scenarios/index.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
 import { loadRunnableProfiles } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
+import { computeEarnedTags, applyEarnedTags } from "./scenario-tag-award.mjs";
 import { evaluateScenarioOutput } from "./scenario-evaluator.mjs";
 import { readProfileApiKey } from "./secret-store.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
@@ -1180,43 +1181,18 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
   };
 }
 
-// 场景测验夺标阈值：逐场景质量分达到此值（含）即授予该场景的能力标签。
-const TAG_AWARD_MIN_SCORE = 90;
-
 // 场景测验夺标：某模型在某场景 avgQualityScore >= 90 → 授予该场景的能力标签（并集去重、只增不撤）。
 // profile.id === 模型目标 id，故按 result.profileId 直接回写模型目标。best-effort。
+// 纯逻辑（推导应得标签 / 合并去重）抽到 scenario-tag-award.mjs 单测；此处只做开关门禁与读写编排。
 async function awardScenarioTags(summary, selectedScenarios) {
   // 设置「为高分通过场景测试的模型添加对应标签」关闭时，即使 >=90 分也不授标签。
   if (!getSettings().enableAutoTag) return;
-  const tagById = new Map(selectedScenarios.map((s) => [s.id, s.tag]).filter(([, t]) => t));
-  const earnedByProfile = new Map();
-  for (const r of summary.results || []) {
-    if (!r?.profileId) continue;
-    const earned = new Set();
-    for (const sc of r.scenarios || []) {
-      if (Number(sc.avgQualityScore) >= TAG_AWARD_MIN_SCORE) {
-        const tag = tagById.get(sc.scenarioId);
-        if (tag) earned.add(tag);
-      }
-    }
-    if (earned.size) earnedByProfile.set(r.profileId, earned);
-  }
+  const earnedByProfile = computeEarnedTags(summary, selectedScenarios);
   if (!earnedByProfile.size) return;
   const targets = await loadModelTargets();
-  let changed = false;
-  for (const t of targets) {
-    const earned = earnedByProfile.get(t.id);
-    if (!earned) continue;
-    const cur = new Set(Array.isArray(t.tags) ? t.tags : []);
-    const before = cur.size;
-    earned.forEach((x) => cur.add(x));
-    if (cur.size !== before) {
-      t.tags = [...cur];
-      t.updatedAt = new Date().toISOString();
-      changed = true;
-    }
+  if (applyEarnedTags(targets, earnedByProfile, new Date().toISOString())) {
+    await saveModelTargets(targets);
   }
-  if (changed) await saveModelTargets(targets);
 }
 
 export async function runScenarioTest(body, taskContext = {}) {
