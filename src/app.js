@@ -12,6 +12,7 @@ import { applyRoleVisibility, ensureAuthenticated, wireUnauthorizedRedirect } fr
 import { createConfirmDialog } from "./confirm-dialog.js";
 import { openReportOverlay } from "./report-overlay.js";
 import { parseReportId, matchesReportFilter, computeDateBounds } from "./report-id.js";
+import { normalizeCustomTags } from "./model-tags.js";
 import {
   confirmExecution,
   estimateAdmissionBatchCost,
@@ -104,9 +105,10 @@ const channelList = requireElement("#channel-list");
 const modelTargetForm = requireElement("#model-target-form");
 const modelTargetList = requireElement("#model-target-list");
 const modelTargetChannelSelect = requireElement("#model-target-channel");
+const modelTagFilter = requireElement("#model-tag-filter");
 const channelAdmin = createChannelAdmin({
   state,
-  els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect },
+  els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect, modelTagFilter },
   onChange: () => renderProfileOptions(),
   // 用 thunk 传确认弹框：confirmAction 在本文件后面才声明，但删除点击发生在初始化之后，闭包取值时已就绪。
   confirmDeleteSync: (opts) => confirmAction(opts),
@@ -116,9 +118,7 @@ channelForm.addEventListener("submit", channelAdmin.saveChannel);
 modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
-requireElement("#reload-model-targets").addEventListener("click", () => channelAdmin.loadModelTargets());
-requireElement("#push-model-tags").addEventListener("click", () => channelAdmin.pushModelTags());
-requireElement("#sync-all-tags").addEventListener("click", () => channelAdmin.syncAllTags());
+requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
 const quickVerifyProfileSelect = requireElement("#quickverify-profile-select");
 const quickVerifySubmit = requireElement("#quickverify-submit");
 const quickVerifyResult = requireElement("#quickverify-result");
@@ -1210,8 +1210,48 @@ const setHle = requireElement("#set-hle");
 const setHardcoreLogic = requireElement("#set-hardcore-logic");
 const setDeleteSync = requireElement("#set-delete-sync");
 const setAutoTag = requireElement("#set-auto-tag");
+const setNewapiBase = requireElement("#set-newapi-base");
+const setNewapiToken = requireElement("#set-newapi-token");
+const setNewapiUserid = requireElement("#set-newapi-userid");
+const setCustomTagInput = requireElement("#set-custom-tag-input");
+const setCustomTagAdd = requireElement("#set-custom-tag-add");
+const setCustomTagsBox = requireElement("#set-custom-tags");
 // 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
 const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
+
+// 设置页自定义能力标签（内存态，保存时随表单一起 PUT）。
+let customTags = [];
+function renderCustomTagChips() {
+  setCustomTagsBox.innerHTML = customTags.length
+    ? customTags
+        .map((t) => `<span class="tag-chip">${escapeHtml(t)}<button type="button" class="model-tag-x" data-del-custom-tag="${escapeHtml(t)}" title="删除标签">×</button></span>`)
+        .join("")
+    : `<span class="field-hint">还没有自定义标签。</span>`;
+  setCustomTagsBox.querySelectorAll("[data-del-custom-tag]").forEach((b) =>
+    b.addEventListener("click", () => {
+      customTags = customTags.filter((t) => t !== b.dataset.delCustomTag);
+      renderCustomTagChips();
+      settingsDirty = true; // 按钮点击不触发表单 change，手动标记未保存。
+    }),
+  );
+}
+function addCustomTag() {
+  const next = normalizeCustomTags([...customTags, setCustomTagInput.value]);
+  if (next.length !== customTags.length) {
+    customTags = next;
+    renderCustomTagChips();
+    settingsDirty = true;
+  }
+  setCustomTagInput.value = "";
+  setCustomTagInput.focus();
+}
+setCustomTagAdd.addEventListener("click", addCustomTag);
+setCustomTagInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault(); // 防止回车触发表单 submit。
+    addCustomTag();
+  }
+});
 
 // 「指定模型」勾选门控两级下拉：未勾=都禁用（AI 用被测模型）；勾上=渠道可选，模型随级联。
 function applyAiSpecifiedGate() {
@@ -1242,6 +1282,13 @@ async function loadSettings() {
     setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
     setDeleteSync.checked = Boolean(s.enableDeleteSync);
     setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
+    // new-api 网关：网址/用户ID 回填；令牌不回显，按已配置状态切占位符、清空输入值。
+    setNewapiBase.value = s.newapiBaseUrl || "";
+    setNewapiUserid.value = s.newapiUserId || "";
+    setNewapiToken.value = "";
+    setNewapiToken.placeholder = s.newapiImportTokenSet ? "已配置（留空不改）" : "未配置";
+    customTags = Array.isArray(s.customTags) ? [...s.customTags] : [];
+    renderCustomTagChips();
     settingsAiCascade.refresh({ channels: state.channels, modelTargets: state.modelTargets, profiles: state.profiles });
     settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
     setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
@@ -1267,12 +1314,18 @@ settingsForm.addEventListener("submit", async (event) => {
     enableHardcoreLogic: setHardcoreLogic.checked,
     enableDeleteSync: setDeleteSync.checked,
     enableAutoTag: setAutoTag.checked,
+    customTags: [...customTags],
+    newapiBaseUrl: setNewapiBase.value.trim(),
+    newapiUserId: setNewapiUserid.value.trim(),
+    newapiImportToken: setNewapiToken.value, // 空串→后端保留原令牌
   };
   try {
     const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
     state.settings = saved; // 即时生效：删除流随即按新开关走
     settingsDirty = false; // 已保存，清除未保存标记
     await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
+    await loadSettings(); // 刷新令牌「已配置」占位符状态
+    channelAdmin.renderTagOptions(); // 自定义标签变化 → 模型表单勾选项即时并入
     toast("设置已保存。");
   } catch (error) {
     toast(`保存设置失败：${error.message}`, true);

@@ -535,11 +535,6 @@
               <div>
                 <h2><span class="step">第 2 步 · 模型管理</span>配置要测的模型（管理员）</h2>
                 <p class="section-desc">选一个渠道 + 填一个模型名 = 一个测试目标。看不到也不需要 Key。运行测试时从这里选目标。</p>
-                <div class="action-row">
-                  <button id="push-model-tags" class="secondary" type="button">推送所有标签到 new-api</button>
-                  <button id="sync-all-tags" class="secondary" type="button">从 new-api 同步所有标签</button>
-                  <button id="reload-model-targets" class="secondary" type="button">刷新</button>
-                </div>
               </div>
             </div>
             <div class="cfg-stack">
@@ -551,12 +546,17 @@
                 <div class="wide field-tags">
                   <span class="tag-field-label">标签</span>
                   <div id="model-target-tags" class="tag-pick"></div>
-                  <small class="field-hint">勾选要为该模型标记的能力标签；新增标签呈明黄，待「推送标签到 new-api」后转橙。</small>
+                  <small class="field-hint">勾选要为该模型标记的能力标签（仅本平台本地记录）。</small>
                 </div>
                 <div class="wide action-row">
                   <button class="primary" id="save-model-target" type="submit">添加模型</button>
                 </div>
               </form>
+              <div class="model-list-toolbar">
+                <label class="inline-filter">标签
+                  <select id="model-tag-filter"><option value="">全部</option></select>
+                </label>
+              </div>
               <aside class="panel" id="model-target-list"><p class="section-desc">加载中…</p></aside>
             </div>
           </div>
@@ -1180,6 +1180,15 @@
                 <small>开启后，模型某场景质量分 ≥ 90 即获得该场景对应的能力标签；关闭后，即使得分 90 以上也不授予标签。</small>
               </span>
             </label>
+            <label class="wide">
+              自定义能力标签
+              <div class="tag-editor">
+                <input id="set-custom-tag-input" type="text" autocomplete="off" placeholder="输入标签名，回车或点添加" />
+                <button id="set-custom-tag-add" class="secondary" type="button">添加</button>
+              </div>
+              <div id="set-custom-tags" class="tag-chips"></div>
+              <small class="field-hint">这些标签会并入「模型管理」的标签勾选项，供手动给模型打标签。</small>
+            </label>
 
             <div class="form-section-title">
               <h3>new-api 删除同步</h3>
@@ -1191,6 +1200,24 @@
                 允许删除同步至new-api
                 <small>开启后，删除渠道/模型会询问是否一并在 new-api 删除（“是”需等待 2 秒，破坏性操作请谨慎）。</small>
               </span>
+            </label>
+
+            <div class="form-section-title" data-requires-admin>
+              <h3>new-api 网关</h3>
+              <p class="section-desc">配置后“从 new-api 导入 / 推送标签 / 渠道同步”即可用；保存即生效、无需重启。令牌仅本机保存、不回显。</p>
+            </div>
+            <label class="wide" data-requires-admin>
+              new-api 网址
+              <input id="set-newapi-base" type="url" placeholder="https://your-newapi.example.com" />
+            </label>
+            <label class="wide" data-requires-admin>
+              系统访问令牌
+              <input id="set-newapi-token" type="password" autocomplete="off" placeholder="未配置" />
+              <small class="field-hint">new-api 管理员系统访问令牌；留空表示保留已保存的值。</small>
+            </label>
+            <label data-requires-admin>
+              管理员用户ID
+              <input id="set-newapi-userid" type="text" inputmode="numeric" placeholder="1" />
             </label>
 
             <div class="wide action-row">

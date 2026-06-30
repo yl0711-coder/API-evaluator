@@ -83,17 +83,11 @@ function dedupeTags(input) {
 }
 
 // 规范化一个测试模型目标：引用渠道 + 模型名。
-// 标签三态：tags=存活标签；pushedTags⊆tags 为已推送/已同步（橙）；tags−pushedTags 为新增未推送（黄）；
-//   removedTags 为本地已删但 new-api 仍在（灰，待手动删）。
+// 标签为纯本地概念（单一状态）：tags=该模型在本渠道下被授予的能力标签，不再与 new-api 联动、不再跨渠道统一。
 export function normalizeModelTarget(body, existing = null) {
   const now = new Date().toISOString();
   // 场景测验夺标得到的能力标签：编辑模型目标（POST 全量覆盖）时保留，别被清空。
   const tags = dedupeTags(Array.isArray(body.tags) ? body.tags : existing?.tags);
-  // 旧记录无 pushedTags → 旧标签全部按「已同步」处理（升级后显示橙色）；再并上灰名单（灰标签本就在 new-api）。
-  const prevPushed = new Set([
-    ...(Array.isArray(existing?.pushedTags) ? existing.pushedTags : Array.isArray(existing?.tags) ? existing.tags : []),
-    ...(Array.isArray(existing?.removedTags) ? existing.removedTags : []),
-  ]);
   return {
     id: String(body.id || existing?.id || crypto.randomUUID()),
     channelId: requiredString(body.channelId ?? existing?.channelId, "渠道"),
@@ -101,80 +95,9 @@ export function normalizeModelTarget(body, existing = null) {
     note: String(body.note ?? existing?.note ?? "").trim(),
     source: body.source || existing?.source || "manual",
     tags,
-    // 仅保留仍存活且此前已推送的标签为橙；新勾选的标签不在 prevPushed → 黄。
-    pushedTags: tags.filter((t) => prevPushed.has(t)),
-    // 若用户在表单里重新勾回某个灰标签，则它从灰名单移除、恢复为存活标签。
-    removedTags: dedupeTags(existing?.removedTags).filter((t) => !tags.includes(t)),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
-}
-
-// 把 new-api 上某模型的标签（incoming）合并进模型目标，返回是否有改动（原地修改 target）。
-//   - 灰名单对账：new-api 已无的灰标签 → 去掉灰提示；仍在的保留为灰（不复活，尊重本地删除意图）。
-//   - liveIncoming：来自 new-api 且未被本地主动删除的标签 → 并入 tags 且标橙。
-export function applyNewapiTagsToTarget(target, incoming) {
-  const before = JSON.stringify([target.tags, target.pushedTags, target.removedTags]);
-  const incomingTags = dedupeTags(incoming);
-  const incomingSet = new Set(incomingTags);
-  const removed = dedupeTags(target.removedTags).filter((t) => incomingSet.has(t)); // new-api 已删则清灰
-  const removedSet = new Set(removed);
-  const liveIncoming = incomingTags.filter((t) => !removedSet.has(t));
-  const liveSet = new Set(liveIncoming);
-  const tags = dedupeTags([...(Array.isArray(target.tags) ? target.tags : []), ...liveIncoming]);
-  // 旧记录无 pushedTags → 既有标签全部按已同步（橙）处理。
-  const prevPushed = new Set(Array.isArray(target.pushedTags) ? target.pushedTags : Array.isArray(target.tags) ? target.tags : []);
-  // 已推送 = 仍存活且此前已推送的标签 ∪ 本次来自 new-api 的标签（皆为橙）。
-  const pushed = tags.filter((t) => prevPushed.has(t) || liveSet.has(t));
-  target.tags = tags;
-  target.pushedTags = pushed;
-  target.removedTags = removed;
-  const changed = JSON.stringify([target.tags, target.pushedTags, target.removedTags]) !== before;
-  if (changed) target.updatedAt = new Date().toISOString();
-  return changed;
-}
-
-// 「同步」：以 new-api 为准刷新模型目标标签。new-api 上该模型的标签为橙（已同步）；
-// 本地「明黄（未推送）且 new-api 没有」的标签予以保留（不丢未推送的本地工作）；
-// 橙色标签以 new-api 为准——不在 new-api 则移除。清空灰名单。返回是否有改动（原地修改 target）。
-export function syncTagsFromNewapi(target, incoming) {
-  const before = JSON.stringify([target.tags, target.pushedTags, target.removedTags]);
-  const incomingTags = dedupeTags(incoming);
-  const incomingSet = new Set(incomingTags);
-  const prevTags = dedupeTags(target.tags);
-  // 旧记录无 pushedTags → 既有标签视为已推送（橙），不当明黄保留。
-  const prevPushed = new Set(Array.isArray(target.pushedTags) ? target.pushedTags : prevTags);
-  // 明黄（本地未推送）且 new-api 没有的标签 → 保留为黄。
-  const pending = prevTags.filter((t) => !prevPushed.has(t) && !incomingSet.has(t));
-  target.tags = dedupeTags([...incomingTags, ...pending]);
-  target.pushedTags = [...incomingTags]; // 仅来自 new-api 的为橙
-  target.removedTags = [];
-  const changed = JSON.stringify([target.tags, target.pushedTags, target.removedTags]) !== before;
-  if (changed) target.updatedAt = new Date().toISOString();
-  return changed;
-}
-
-// 把 canonical 的标签三态镜像到所有同名（同 model）目标，实现「改一个 → 同名全统一」。
-// 返回是否改动了除 canonical 以外的目标。canonical 自身也会被赋值（幂等、无副作用）。
-export function unifySameNameTags(targets, canonical) {
-  let changedOthers = false;
-  for (const t of targets) {
-    if (t.model !== canonical.model) continue;
-    const next = {
-      tags: dedupeTags(canonical.tags),
-      pushedTags: dedupeTags(canonical.pushedTags),
-      removedTags: dedupeTags(canonical.removedTags),
-    };
-    const before = JSON.stringify([t.tags, t.pushedTags, t.removedTags]);
-    if (before !== JSON.stringify([next.tags, next.pushedTags, next.removedTags])) {
-      t.tags = next.tags;
-      t.pushedTags = next.pushedTags;
-      t.removedTags = next.removedTags;
-      t.updatedAt = new Date().toISOString();
-      if (t.id !== canonical.id) changedOthers = true;
-    }
-  }
-  return changedOthers;
 }
 
 // 判重键：渠道按 baseUrl + keyHash（同地址同密钥即同渠道，模型不再参与）；

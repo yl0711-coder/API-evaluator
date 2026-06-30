@@ -2,7 +2,7 @@
 // 从 new-api 导入渠道的纯映射 + 编排（无 I/O，便于单测）。数据来源（A1 管理 API / A2 只读 DB）
 // 在 newapi-source.mjs 里取行，本文件只负责：new-api 渠道行 -> 我们的渠道/模型目标。
 // 明文 key 不进渠道记录：buildImportPlan 单独把 key 收进 keys 映射，由端点存进加密库后丢弃。
-import { deterministicModelTargetId, normalizeModelList, syncTagsFromNewapi } from "./channel-model.mjs";
+import { deterministicModelTargetId, normalizeModelList } from "./channel-model.mjs";
 
 // new-api 渠道 type（见其 constant/channel.go）。14=Anthropic 走 Claude Messages，其余按 OpenAI 兼容。
 const TYPE_PROVIDER = { 1: "OpenAI", 14: "Anthropic", 15: "Baidu", 16: "Zhipu", 17: "Alibaba", 24: "Google", 25: "Moonshot", 43: "DeepSeek", 48: "xAI" };
@@ -48,7 +48,7 @@ export function mapNewapiChannel(row) {
 // 编排：把 new-api 行 upsert 进现有渠道、按 models 拆出模型目标。纯函数。
 // 返回 { channels, targets, keys:{channelId:明文key}, summary }。明文 key 只在 keys 里短暂带出，
 // 端点负责存进加密库并丢弃，绝不落入 channels（不进库、不下发浏览器）。
-export function buildImportPlan({ rows = [], existingChannels = [], existingTargets = [], syncModels = true, modelTags = null } = {}) {
+export function buildImportPlan({ rows = [], existingChannels = [], existingTargets = [], syncModels = true } = {}) {
   const channels = existingChannels.map((c) => ({ ...c }));
   const targets = existingTargets.map((t) => ({ ...t }));
   const indexById = new Map(channels.map((c, i) => [c.id, i]));
@@ -65,8 +65,6 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
   let updated = 0;
   let newTargets = 0;
   let disabled = 0;
-  let taggedTargets = 0;
-  const touchedChannelIds = new Set(); // 本次导入涉及的渠道 id，标签只并到这些渠道下的模型目标
 
   for (const row of rows) {
     const mapped = mapNewapiChannel(row);
@@ -91,7 +89,6 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
     }
 
     if (row.key) keys[channelId] = String(row.key); // A2(DB) 带 key；A1(API) 不带。用实际 channelId 存。
-    touchedChannelIds.add(channelId);
 
     if (syncModels) {
       for (const model of mapped.models) {
@@ -105,16 +102,5 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
     }
   }
 
-  // 把 new-api 模型广场标签同步到本次导入涉及渠道下的模型目标上——与「同步」按钮行为完全一致：
-  // 复用 syncTagsFromNewapi：new-api 标签为橙；本地未推送的明黄标签若 new-api 没有则保留；
-  // 橙色标签以 new-api 为准、不在则移除。
-  // 注意：modelTags 为 null 表示「未取到 new-api 标签」（未配置 / 拉取失败），此时绝不动标签，避免误清空。
-  if (modelTags) {
-    for (const t of targets) {
-      if (!touchedChannelIds.has(t.channelId)) continue;
-      if (syncTagsFromNewapi(t, modelTags[t.model] || [])) taggedTargets += 1;
-    }
-  }
-
-  return { channels, targets, keys, summary: { total: rows.length, imported, updated, newTargets, disabled, taggedTargets } };
+  return { channels, targets, keys, summary: { total: rows.length, imported, updated, newTargets, disabled } };
 }

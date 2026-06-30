@@ -130,8 +130,16 @@ Set `EVALUATOR_IMPORT_SOURCE` to pick the source (it is off when unset):
 
 | Mode | What it imports | Needs | Note |
 |---|---|---|---|
-| `api` | url / models / status / protocol (no key) | `EVALUATOR_NEWAPI_BASE_URL` + `EVALUATOR_NEWAPI_IMPORT_TOKEN` (admin access token) | new-api protects the plaintext key behind 2FA, so keys can't be pulled via the API — fill them in afterwards. |
+| `api` | url / models / status / protocol (no key) | new-api base URL + import token (admin access token) | new-api protects the plaintext key behind 2FA, so keys can't be pulled via the API — fill them in afterwards. |
 | `db` | everything incl. keys (fully automatic) | `EVALUATOR_NEWAPI_DB_DSN` (read-only) + `mysql2` (`pnpm add mysql2`; not a core dep, lazy-loaded) | Reads the `channels` table directly. Grant the read-only account `SELECT` on `channels`. |
+
+For `api` mode, the new-api **base URL / import token / admin user id** can be set in-app under
+**帮助与设置 → 设置 → new-api 网关** (super admin only; saved to local `settings.json`, takes effect
+immediately without a restart). The token is write-only — it is never echoed back to the browser.
+The matching `EVALUATOR_NEWAPI_*` env vars remain as a fallback (used only when the settings fields
+are blank), so existing deployments keep working. Note the auth backend (`EVALUATOR_AUTH_BACKEND=newapi`)
+still reads `EVALUATOR_NEWAPI_BASE_URL` from env for login, since that happens before any session exists.
+The `db`-mode DSN stays env-only.
 
 Compatibility: verified against new-api **v1.0.0-rc.4**. The `db` mode reads only the long-stable
 core columns `id / type / name / base_url / models / status / key` and degrades gracefully, so it
