@@ -1,8 +1,11 @@
 import { api } from "./api-client.js";
 import { escapeHtml, protocolLabel, toast } from "./client-utils.js";
+import { unionTagVocabulary, distinctTargetTags, hasUntaggedTarget, filterTargetsByTag, NO_TAG_FILTER } from "./model-tags.js";
 
 // v0.3.0 两区管理：渠道（超管，含 key）+ 模型目标（管理员，选渠道+填模型，不见 key）。
 export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, confirm }) {
+  // 「按标签筛选」当前选中的标签：""=全部、NO_TAG_FILTER=无标签、其它=该标签。
+  let tagFilter = "";
   // 删除前若「允许删除同步至new-api」开启，弹框问是否一并删 new-api。
   // 返回 { proceed:bool, sync:bool }：是→同步删、否→仅本地删、Esc/背景→不删。
   async function resolveDeleteSync(what) {
@@ -35,6 +38,7 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
   }
   async function loadModelTargets() {
     state.modelTargets = await api("/api/model-targets");
+    populateTagFilter();
     renderModelTargetList();
     onChange?.();
   }
@@ -101,14 +105,9 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
       : `<option value="">请先在“渠道管理”添加渠道</option>`;
   }
 
-  // 配置模型表单的「标签」可勾选项：词表取自场景库的去重能力标签（state.scenarios[].tag）。
+  // 配置模型表单的「标签」可勾选项：场景库去重能力标签 ∪ 设置页自定义标签。
   function tagVocabulary() {
-    const tags = new Set();
-    for (const s of state.scenarios || []) {
-      const t = String(s.tag || "").trim();
-      if (t) tags.add(t);
-    }
-    return [...tags];
+    return unionTagVocabulary(state.scenarios, state.settings?.customTags);
   }
   function renderTagOptions(selected = []) {
     const box = els.modelTargetForm.querySelector("#model-target-tags");
@@ -125,10 +124,36 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
       : `<span class="field-hint">暂无可选标签（场景库为空）。</span>`;
   }
 
+  // 用模型目标上实际出现的标签重建「按标签筛选」下拉，保留当前选中（已不存在则回落「全部」）。
+  function populateTagFilter() {
+    const sel = els.modelTagFilter;
+    if (!sel) return;
+    const targets = state.modelTargets || [];
+    const tags = distinctTargetTags(targets);
+    if (tagFilter && tagFilter !== NO_TAG_FILTER && !tags.includes(tagFilter)) tagFilter = "";
+    if (tagFilter === NO_TAG_FILTER && !hasUntaggedTarget(targets)) tagFilter = "";
+    const opts = [`<option value="">全部</option>`];
+    for (const t of tags) opts.push(`<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`);
+    if (hasUntaggedTarget(targets)) opts.push(`<option value="${NO_TAG_FILTER}">无标签</option>`);
+    sel.innerHTML = opts.join("");
+    sel.value = tagFilter;
+  }
+  // 切换「按标签筛选」选中项 → 重渲染列表。
+  function setTagFilter(value) {
+    tagFilter = value || "";
+    renderModelTargetList();
+  }
+
   function renderModelTargetList() {
-    const list = state.modelTargets || [];
-    if (!list.length) {
+    const all = state.modelTargets || [];
+    if (!all.length) {
       els.modelTargetList.innerHTML = `<div class="empty-state"><strong>还没有测试模型</strong><p>选一个渠道 + 填模型名添加。</p></div>`;
+      return;
+    }
+    // 先按「按标签筛选」过滤，再按渠道分组。
+    const list = filterTargetsByTag(all, tagFilter);
+    if (!list.length) {
+      els.modelTargetList.innerHTML = `<div class="empty-state"><strong>没有符合该标签的模型</strong><p>换个标签，或选「全部」查看所有模型。</p></div>`;
       return;
     }
     // 按渠道分组：同一渠道的模型聚在一起，加渠道小标题（一个渠道可挂多个模型）。
@@ -149,19 +174,17 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
     els.modelTargetList.querySelectorAll("[data-del-tag]").forEach((b) => b.addEventListener("click", () => removeModelTargetTag(b.dataset.tagTarget, b.dataset.delTag)));
     els.modelTargetList.querySelectorAll("[data-push-target]").forEach((b) => b.addEventListener("click", () => pushModelTargetToNewapi(b.dataset.pushTarget)));
     els.modelTargetList.querySelectorAll("[data-edit-target]").forEach((b) => b.addEventListener("click", () => editModelTarget(b.dataset.editTarget)));
-    els.modelTargetList.querySelectorAll("[data-sync-target]").forEach((b) => b.addEventListener("click", () => syncModelTargetTags(b.dataset.syncTarget)));
   }
 
-  // 把该模型并入其渠道在 new-api 的 models 列表，并推送该模型标签（需先把渠道推送到 new-api）。
+  // 把该模型并入其渠道在 new-api 的 models 列表（需先把渠道推送到 new-api）。标签为纯本地概念，不再推送。
   async function pushModelTargetToNewapi(id) {
     const target = (state.modelTargets || []).find((t) => t.id === id);
     const modelName = target?.model || "该模型";
-    if (!(await confirm({ title: "推送模型", message: `确定把「${modelName}」推送到 new-api（并推送其标签）吗？`, confirmLabel: "推送", cancelLabel: "取消" }))) return;
+    if (!(await confirm({ title: "推送模型", message: `确定把「${modelName}」推送到 new-api 吗？`, confirmLabel: "推送", cancelLabel: "取消" }))) return;
     try {
       const r = await api(`/api/model-targets/${encodeURIComponent(id)}/push-to-newapi`, { method: "POST", body: "{}" });
-      await loadModelTargets(); // 标签黄→橙即时刷新
-      const tagNote = r.tagSummary ? "，并推送了标签" : "";
-      toast((r.added ? "已把该模型加入 new-api 渠道" : "该模型在 new-api 渠道里已存在") + tagNote + "。");
+      await loadModelTargets();
+      toast((r.added ? "已把该模型加入 new-api 渠道。" : "该模型在 new-api 渠道里已存在。"));
     } catch (error) {
       toast(`推送模型失败：${error.message}`, true);
     }
@@ -178,35 +201,20 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
     renderTagOptions(Array.isArray(target.tags) ? target.tags : []);
     f.scrollIntoView({ behavior: "smooth", block: "start" });
   }
-  // 仅从 new-api 同步该模型的标签（不动渠道/模型本身）。
-  async function syncModelTargetTags(id) {
-    try {
-      const r = await api(`/api/model-targets/${encodeURIComponent(id)}/sync-tags`, { method: "POST", body: "{}" });
-      await loadModelTargets();
-      toast(r.changed ? "已从 new-api 同步该模型标签。" : "该模型标签与 new-api 一致，无变化。");
-    } catch (error) {
-      toast(`同步标签失败：${error.message}`, true);
-    }
-  }
   function modelTargetRow(target) {
     const badge = target.channelStatus === "disabled"
       ? `<span class="chan-pill bad">已禁用</span>`
       : target.channelStatus === "missing"
         ? `<span class="chan-pill bad">渠道缺失</span>`
         : `<span class="chan-pill good">可测</span>`;
-    // 标签三态：存活∩已推送=橙（默认）、存活−已推送=明黄（pending）、灰名单=灰（removed，不可删）。
+    // 标签为纯本地概念（单一样式），× 本地移除。不再区分明黄/灰、不再与 new-api 联动。
     const tags = Array.isArray(target.tags) ? target.tags : [];
-    // 旧记录无 pushedTags → 既有标签全部按已同步（橙）显示。
-    const pushed = Array.isArray(target.pushedTags) ? new Set(target.pushedTags) : new Set(tags);
-    const removed = Array.isArray(target.removedTags) ? target.removedTags : [];
-    const chip = (t, cls, withX) =>
-      `<span class="model-tag${cls}">${escapeHtml(t)}${withX ? `<button type="button" class="model-tag-x" data-tag-target="${target.id}" data-del-tag="${escapeHtml(t)}" title="移除标签">×</button>` : ""}</span>`;
-    const allChips = [
-      ...tags.map((t) => chip(t, pushed.has(t) ? "" : " pending", true)),
-      ...removed.map((t) => chip(t, " removed", false)), // 灰：本地已删、待去 new-api 手动删，无 ×。
-    ];
+    const allChips = tags.map(
+      (t) =>
+        `<span class="model-tag">${escapeHtml(t)}<button type="button" class="model-tag-x" data-tag-target="${target.id}" data-del-tag="${escapeHtml(t)}" title="移除标签">×</button></span>`,
+    );
     const tagChips = allChips.length ? `<div class="model-tags">${allChips.join("")}</div>` : "";
-    // 渠道名已在分组标题里，卡片小字只显示协议 + 备注。操作四按钮 2×2 对齐渠道卡。
+    // 渠道名已在分组标题里，卡片小字只显示协议 + 备注。操作三按钮一排（推送/编辑/删除）。
     return `
       <div class="chan-row">
         <div class="chan-who">
@@ -216,7 +224,6 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
         </div>
         ${badge}
         <div class="row-actions actions-grid">
-          <button class="secondary" data-sync-target="${target.id}">同步</button>
           <button class="secondary" data-push-target="${target.id}">推送</button>
           <button class="secondary" data-edit-target="${target.id}">编辑</button>
           <button class="secondary" data-del-target="${target.id}">删除</button>
@@ -300,47 +307,17 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
     }
   }
 
-  // 把本平台已授予的模型标签推送到 new-api 模型广场（后端聚合模型目标 tags 并写回）。
-  async function pushModelTags() {
-    if (!(await confirm({ title: "推送所有标签", message: "确定把所有模型的标签推送到 new-api 吗？", confirmLabel: "推送", cancelLabel: "取消", confirmDelayMs: 2000 }))) return;
-    try {
-      const r = await api("/api/model-targets/push-tags", { method: "POST", body: "{}" });
-      if (r.note) {
-        toast(r.note, true);
-        return;
-      }
-      const failNote = r.errors?.length ? `，失败 ${r.errors.length}` : "";
-      await loadModelTargets(); // 刷新卡片：推送成功的标签由明黄转橙。
-      toast(`推送完成：更新 ${r.updated}、未变 ${r.unchanged}、匹配 ${r.matched}/${r.totalModels} 个模型${failNote}。`);
-    } catch (error) {
-      toast(`推送标签失败：${error.message}`, true);
-    }
-  }
-
-  // 从 new-api 同步所有模型的标签（拉回标签标橙、对账灰名单）。
-  async function syncAllTags() {
-    if (!(await confirm({ title: "从 new-api 同步所有标签", message: "确定用 new-api 的标签刷新本地所有模型吗？未推送的标签会保留。", confirmLabel: "同步", cancelLabel: "取消" }))) return;
-    try {
-      const r = await api("/api/model-targets/sync-all-tags", { method: "POST", body: "{}" });
-      await loadModelTargets();
-      toast(`已从 new-api 同步标签：更新 ${r.updated}/${r.synced} 个模型。`);
-    } catch (error) {
-      toast(`同步标签失败：${error.message}`, true);
-    }
-  }
-
   async function importFromNewapi() {
     try {
       const r = await api("/api/channels/import", { method: "POST", body: "{}" });
       await Promise.all([loadChannels(), loadModelTargets()]);
       const keyNote = r.mode === "api" ? "（api 模式不含 Key，请逐个补 Key）" : "";
-      const tagNote = r.taggedTargets ? `，标签同步 ${r.taggedTargets} 个模型` : "";
-      toast(`从 new-api 导入完成：新增 ${r.imported} / 更新 ${r.updated} 个渠道，${r.newTargets} 个模型，禁用 ${r.disabled} 个${tagNote}${keyNote}。`);
+      toast(`从 new-api 导入完成：新增 ${r.imported} / 更新 ${r.updated} 个渠道，${r.newTargets} 个模型，禁用 ${r.disabled} 个${keyNote}。`);
     } catch (error) {
       toast(`导入失败：${error.message}`, true);
     }
   }
 
-  return { loadChannels, loadModelTargets, saveChannel, saveModelTarget, importFromNewapi, pushModelTags, syncAllTags, renderTagOptions };
+  return { loadChannels, loadModelTargets, saveChannel, saveModelTarget, importFromNewapi, renderTagOptions, setTagFilter };
 }
 

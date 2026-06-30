@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { SETTINGS_FILE } from "./paths.mjs";
 
-const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableDeleteSync: false, enableAutoTag: true };
+const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableDeleteSync: false, enableAutoTag: true, customTags: [], newapiBaseUrl: "", newapiUserId: "", newapiImportToken: "" };
 
 let cache = null;
 
@@ -21,6 +21,12 @@ function normalize(raw) {
     enableDeleteSync: raw?.enableDeleteSync === true,
     // 高分通过场景测试自动授予能力标签：默认开启；仅显式 false 关闭（兼容旧 settings.json 缺该字段→视为开）。
     enableAutoTag: raw?.enableAutoTag !== false,
+    // 用户自定义能力标签清单：trim、去空、去重、保序；非数组→空。并入模型表单的可勾选标签词表。
+    customTags: Array.isArray(raw?.customTags) ? [...new Set(raw.customTags.map((t) => String(t ?? "").trim()).filter(Boolean))] : [],
+    // new-api 网关配置（脱离环境变量；令牌不回显，见 server.mjs /api/settings）。
+    newapiBaseUrl: typeof raw?.newapiBaseUrl === "string" ? raw.newapiBaseUrl : "",
+    newapiUserId: typeof raw?.newapiUserId === "string" ? raw.newapiUserId : "",
+    newapiImportToken: typeof raw?.newapiImportToken === "string" ? raw.newapiImportToken : "",
   };
 }
 

@@ -60,7 +60,7 @@ test("api 模式缺 token → 报错", async () => {
   process.env.EVALUATOR_NEWAPI_BASE_URL = "https://x.test";
   delete process.env.EVALUATOR_NEWAPI_IMPORT_TOKEN;
   try {
-    await assert.rejects(() => fetchNewapiChannels(), /NEWAPI_IMPORT_TOKEN/);
+    await assert.rejects(() => fetchNewapiChannels(), /系统访问令牌/);
   } finally {
     delete process.env.EVALUATOR_IMPORT_SOURCE;
     delete process.env.EVALUATOR_NEWAPI_BASE_URL;

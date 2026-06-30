@@ -1876,7 +1876,7 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 
 /* ===== API 配置页排版精修（scope .cfg，纯观感）===== */
 .cfg-topbar h2 { font-size: 21px; font-weight: 650; letter-spacing: .3px; margin: 4px 0 6px; }
-.cfg-topbar .section-desc { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+/* 说明文字沿用全站基础 .section-desc 字号（不再缩小），与其它界面一致。 */
 /* 必填区单列、加大行距；高级设置内部仍走 2 列 */
 .cfg #profile-form { grid-template-columns: 1fr; gap: 18px; padding: 24px 26px; }
 .cfg .form-section-title { margin-bottom: 0; }
@@ -1952,12 +1952,19 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 /* 场景测验夺标得到的能力标签 chip（可点 × 移除）*/
 .model-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .model-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--accent); border: 1px solid rgba(246, 181, 107, 0.4); background: rgba(246, 181, 107, 0.12); border-radius: 999px; padding: 2px 4px 2px 9px; }
-/* 明黄：新增未推送标签，提示用户及时「推送标签到 new-api」。 */
-.model-tag.pending { color: #fff27a; border-color: rgba(255, 232, 102, 0.8); background: rgba(255, 226, 70, 0.26); }
-/* 灰：本地已删但 new-api 仍在，提示去 new-api 手动删；无 × 不可再删。 */
-.model-tag.removed { color: var(--muted); border-color: var(--line); background: rgba(255, 255, 255, 0.04); padding: 2px 9px; text-decoration: line-through; }
 .model-tag-x { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
 .model-tag-x:hover { color: var(--bad); }
+
+/* 模型管理「按标签筛选」：放在「添加模型」表单下方、模型列表上方的小工具条 */
+.model-list-toolbar { display: flex; justify-content: flex-end; }
+.inline-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.inline-filter select { padding: 6px 10px; font-size: 12.5px; }
+
+/* 设置页自定义标签编辑器：输入框 + 添加按钮一行，下方 chip 列表 */
+.tag-editor { display: flex; gap: 8px; margin-top: 4px; }
+.tag-editor input { flex: 1; min-width: 0; }
+.tag-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: var(--accent); border: 1px solid rgba(246, 181, 107, 0.4); background: rgba(246, 181, 107, 0.12); border-radius: 999px; padding: 2px 4px 2px 9px; }
 
 /* 标签字段标题（外层用 div，避免整块当 label 误勾第一个复选框）*/
 .field-tags .tag-field-label { color: #ccd6e4; }
@@ -2004,10 +2011,11 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 .cfg #model-target-list .chan-pill { justify-self: start; }
 .cfg #channel-list .row-actions,
 .cfg #model-target-list .row-actions { justify-self: end; display: flex; flex-wrap: wrap; gap: 8px; }
-/* 仅「有同步模型按钮」的渠道卡（4 个按钮）固定两两并排（2 列网格），启用/已禁用排版一致；
-   没有同步模型的卡片（3 个按钮）维持原 flex 排版。 */
-.cfg #channel-list .actions-grid,
-.cfg #model-target-list .actions-grid { display: grid; grid-template-columns: repeat(2, 1fr); }
+/* 「有同步模型按钮」的渠道卡（4 个按钮）固定两两并排（2 列网格），启用/已禁用排版一致；
+   没有同步模型的渠道卡（3 个按钮）维持原 flex 排版。 */
+.cfg #channel-list .actions-grid { display: grid; grid-template-columns: repeat(2, 1fr); }
+/* 模型卡片三按钮（推送/编辑/删除）一排平分。 */
+.cfg #model-target-list .actions-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
 .cfg #channel-list .actions-grid button,
 .cfg #model-target-list .actions-grid button { width: 100%; }
 
