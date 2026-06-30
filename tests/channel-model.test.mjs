@@ -60,6 +60,32 @@ test("normalizeModelTarget：必填 channelId + model", () => {
   assert.throws(() => normalizeModelTarget({ channelId: "c1" }), /模型名/);
 });
 
+test("normalizeModelTarget：能力标签去空白/去重/保序", () => {
+  const t = normalizeModelTarget({ channelId: "c1", model: "m", tags: ["  推理 ", "推理", "", "编程"] });
+  assert.deepEqual(t.tags, ["推理", "编程"]);
+});
+
+test("normalizeModelTarget：编辑(全量覆盖)未带 tags → 沿用 existing，不被清空", () => {
+  // 场景测验夺标得到的标签，编辑备注等操作不应清空它们（channel-model.mjs:90 的契约）。
+  const t = normalizeModelTarget({ channelId: "c1", model: "m", note: "改备注" }, { id: "x", tags: ["推理", "编程"] });
+  assert.deepEqual(t.tags, ["推理", "编程"]);
+});
+
+test("normalizeModelTarget：显式传 tags → 覆盖 existing；显式空数组 → 清空", () => {
+  assert.deepEqual(
+    normalizeModelTarget({ channelId: "c1", model: "m", tags: ["写作"] }, { tags: ["推理"] }).tags,
+    ["写作"],
+    "显式数组覆盖",
+  );
+  // 显式 [] 与「缺省 tags」语义不同：前者主动清空，后者保留——区分点是 Array.isArray(body.tags)。
+  assert.deepEqual(
+    normalizeModelTarget({ channelId: "c1", model: "m", tags: [] }, { tags: ["推理"] }).tags,
+    [],
+    "显式空数组清空",
+  );
+  assert.deepEqual(normalizeModelTarget({ channelId: "c1", model: "m" }).tags, [], "无 tags 无 existing → []");
+});
+
 test("判重键：渠道按 url+keyHash；模型目标按 channelId+model", () => {
   assert.equal(channelDedupKey({ baseUrl: "https://a/", keyHash: "h1" }), "https://a|h1");
   assert.equal(channelDedupKey({ baseUrl: "https://a", keyHash: "h2" }) === channelDedupKey({ baseUrl: "https://a", keyHash: "h1" }), false);
