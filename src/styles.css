@@ -2206,9 +2206,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .report-overlay__toggle { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
 .report-overlay__toggle input { accent-color: var(--accent); }
 
-/* ===== 提示词修改（原开发者界面）===== */
-/* 设置页底部入口：站点统一的次级按钮，左对齐、与表单留出间距。 */
-.dev-entrance-row { margin-top: 24px; }
+/* ===== 测试场景维护（原开发者界面）===== */
 /* 标签录入行：输入框占主、按钮跟随，flex 排布。 */
 .dev-tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .dev-tag-row input { flex: 1; min-width: 200px; }
@@ -2220,8 +2218,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .dev-group-chip b { font-weight: 600; color: var(--text); }
 .dev-group-chip .linklike { background: none; border: 0; color: var(--blue); font-size: 12px; cursor: pointer; padding: 0; font-family: inherit; }
 .dev-group-chip .linklike:hover { text-decoration: underline; }
-/* 退出按钮与页头标题留点间距。 */
-#developer #dev-exit { margin-bottom: 12px; }
 /* 此页内的工具栏/操作行左对齐（站点默认 .action-row 右对齐）。 */
 #developer .action-row { justify-content: flex-start; }
 /* 场景列表里的折叠卡之间留白。 */

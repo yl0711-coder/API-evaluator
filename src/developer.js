@@ -1,5 +1,5 @@
 // src/developer.js
-// 「提示词修改」（仅超管）：自定义能力标签编辑 + 场景测试源数据增删改。样式与全站统一（站点 .panel/.secondary 等）。
+// 「测试场景维护」（仅超管）：自定义能力标签编辑 + 场景测试源数据增删改。样式与全站统一（站点 .panel/.secondary 等）。
 // 场景编辑默认「结构化表单」，可一键「切到 JSON」编辑完整对象（含复杂答案）；二者编辑同一条。
 // 注：表单/JSON 的显隐用内联 style.display 切换（折叠卡用站点 .helper-details 样式）。
 // 数据经 /api/dev/scenarios（不脱敏）增删改，后端会改写 server/scenarios/*.mjs 源文件并即时生效。
@@ -8,6 +8,7 @@ import { api } from "./api-client.js";
 import { normalizeCustomTags } from "./model-tags.js";
 import { requireElement } from "./dom-utils.js";
 import scorerDoc from "./docs/scorer-mechanism.md?raw";
+import categoryDoc from "./docs/category-field.md?raw";
 
 // 结构化表单直接编辑的「简单字段」（中文标签）；其余复杂字段（expectedSet/needle/instructions 等）由 JSON 模式编辑、结构化保存时原样保留。
 const SIMPLE_FIELDS = [
@@ -103,9 +104,10 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
   const addBtn = requireElement("#dev-add-scenario");
   const reloadBtn = requireElement("#dev-reload-scenarios");
   const scorerDocBtn = requireElement("#dev-scorer-doc");
+  const categoryDocBtn = requireElement("#dev-category-doc");
 
-  // 「评分器机制说明」：新标签页渲染该 md 文档（含表格），便于阅读。
-  scorerDocBtn.addEventListener("click", () => {
+  // 新标签页渲染 md 文档（含表格），便于阅读。评分器说明、类别说明共用。
+  function openDocInNewTab(title, md) {
     const w = window.open("", "_blank");
     if (!w) {
       toast("浏览器拦截了弹窗，请允许后重试。", true);
@@ -119,10 +121,12 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
       "table{border-collapse:collapse;width:100%;margin:12px 0}" +
       "th,td{border:1px solid #d4d9e0;padding:6px 10px;text-align:left;font-size:14px}th{background:#f2f4f7}";
     w.document.write(
-      `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>评分器机制说明</title><style>${style}</style></head><body>${renderMarkdown(scorerDoc)}</body></html>`,
+      `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${style}</style></head><body>${renderMarkdown(md)}</body></html>`,
     );
     w.document.close();
-  });
+  }
+  scorerDocBtn.addEventListener("click", () => openDocInNewTab("评分器机制说明", scorerDoc));
+  categoryDocBtn.addEventListener("click", () => openDocInNewTab("「类别」字段说明", categoryDoc));
 
   function el(tag, props = {}, children = []) {
     const node = document.createElement(tag);

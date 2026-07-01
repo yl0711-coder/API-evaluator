@@ -1,4 +1,5 @@
 import { escapeHtml } from "./client-utils.js";
+import { distinctGroups, filterRowsByGroup, resolveGroupFilterValue, visibleSelectableIds, selectedRows } from "./scenario-grouping.js";
 
 // 场景多选器:复用 .batch-picker 的视觉(勾选列表 + 全选/清空 + chips),与上方
 // 「勾选要体检的模型」样式一致。真值仍写回隐藏的 <select multiple>(scenarioCaseSelect),
@@ -27,15 +28,14 @@ export function createScenarioCasePicker(container, hiddenSelect) {
   }
   // 当前分组筛选下的可见项（空＝全部）。
   function visibleRows() {
-    const g = groupFilter.value;
-    return g ? rows().filter((r) => r.group === g) : rows();
+    return filterRowsByGroup(rows(), groupFilter.value);
   }
   // 用当前 rows 的去重分组重建下拉选项（保留当前选中值）。
   function syncGroupOptions() {
-    const groups = [...new Set(rows().map((r) => r.group).filter(Boolean))];
+    const groups = distinctGroups(rows());
     const cur = groupFilter.value;
     groupFilter.innerHTML = `<option value="">全部分组</option>` + groups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
-    groupFilter.value = groups.includes(cur) ? cur : "";
+    groupFilter.value = resolveGroupFilterValue(groups, cur);
   }
 
   function setSelected(id, on) {
@@ -70,7 +70,7 @@ export function createScenarioCasePicker(container, hiddenSelect) {
 
   function renderChips() {
     const data = rows();
-    const selected = data.filter((r) => r.selected);
+    const selected = selectedRows(data);
     chips.innerHTML = selected.length
       ? selected.map((r) => `<span class="chip" data-id="${escapeHtml(r.id)}">${escapeHtml(r.name)} <span class="x">✕</span></span>`).join("")
       : `<span class="empty-chips">未选择</span>`;
@@ -87,7 +87,7 @@ export function createScenarioCasePicker(container, hiddenSelect) {
 
   // 全选/清空只作用于「当前分组筛选下可见」的场景，符合筛选后的直觉。
   function setVisibleSelected(on) {
-    const visible = new Set(visibleRows().map((r) => r.id));
+    const visible = visibleSelectableIds(rows(), groupFilter.value);
     [...hiddenSelect.options].forEach((o) => {
       if (o.value && visible.has(o.value)) o.selected = on;
     });

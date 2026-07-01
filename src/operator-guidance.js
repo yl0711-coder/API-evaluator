@@ -101,90 +101,6 @@ export const PROFILE_TEMPLATES = {
   },
 };
 
-export const SCENARIO_PACKS = {
-  "scenario-small": {
-    label: "低成本初筛包",
-    categories: ["connectivity", "speed", "structured"],
-    limit: 3,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合第一次验证，只确认连通、速度和结构化输出。",
-  },
-  "scenario-coding": {
-    label: "编程能力包",
-    categories: ["coding", "reasoning"],
-    limit: 4,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合测试代码排错、工程分析和复杂决策。",
-  },
-  "scenario-long-context": {
-    label: "长上下文包",
-    categories: ["long_context", "reasoning", "writing"],
-    limit: 4,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合验证大输入、资料归纳和业务说明能力，token 消耗较高。",
-  },
-  "scenario-safety": {
-    label: "内容安全合规包",
-    categories: ["safety"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "用于低风险探测色情、暴力、血腥、政治谣言等内容是否被安全拒绝或改写。不会发送露骨细节。",
-  },
-  "scenario-basic": {
-    label: "基础能力全量包",
-    categories: ["connectivity", "speed", "structured", "coding", "long_context", "reasoning", "writing"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "2",
-    requestConcurrency: "1",
-    note: "适合稳定性已通过后的基础能力评估。",
-  },
-  "scenario-deep": {
-    label: "候选深度复测包",
-    categories: ["connectivity", "speed", "structured", "coding", "long_context", "reasoning", "writing"],
-    limit: Infinity,
-    repeats: "2",
-    maxParallelProfiles: "2",
-    requestConcurrency: "1",
-    note: "适合准备推荐某个候选渠道前复测，成本更高。",
-  },
-  "scenario-livebench": {
-    label: "LiveBench 抗污染难题包",
-    categories: ["livebench"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "LiveBench 客观难题（math/reasoning/data_analysis），主要服务档位降级判别：声称高档却在硬题崩。需后端开启 EVALUATOR_ENABLE_LIVEBENCH=1，硬题更耗额度、并发保守。",
-  },
-  "scenario-hle": {
-    label: "HLE 前沿专家难题包",
-    categories: ["hle"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "HLE（Humanity's Last Exam）跨百余学科专家级客观难题（单选/短答，exact 判分），主要服务档位降级判别：声称高档却在硬题崩。需在「设置」勾选「加入 HLE」，硬题更耗额度、并发保守。",
-  },
-  "scenario-hardcore-logic": {
-    label: "HardcoreLogic 长尾逻辑谜题包",
-    categories: ["hardcore-logic"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "HardcoreLogic 10 类逻辑谜题的长尾变体/无解题（structured 客观判分，须输出完整解 JSON），主要服务档位降级判别：声称高档却在长尾/无解题上崩。需在「设置」勾选「加入 HardcoreLogic」，硬题更耗额度、并发保守。",
-  },
-};
-
 const ERROR_ADVICES = {
   auth_failed: {
     title: "认证失败",
@@ -358,18 +274,6 @@ export function validateProfileConfig(payload) {
     hasBlockers: issues.some((issue) => issue.level === "blocker"),
     hasWarnings: issues.some((issue) => issue.level === "warning"),
   };
-}
-
-export function getScenarioPack(templateKey) {
-  return SCENARIO_PACKS[templateKey] || SCENARIO_PACKS["scenario-basic"];
-}
-
-export function pickScenarioIdsForPack(scenarios, templateKey) {
-  const pack = getScenarioPack(templateKey);
-  const source = pack.categories.length
-    ? scenarios.filter((scenario) => pack.categories.includes(scenario.category))
-    : scenarios;
-  return source.slice(0, pack.limit).map((scenario) => scenario.id);
 }
 
 export function normalizeErrorKey(errorLike) {

@@ -1143,7 +1143,7 @@ function showPage(page) {
   if (page === "settings") {
     loadSettings();
   }
-  // 「提示词修改」页（原开发者页）：与全站统一风格，保留侧边栏，进入时加载数据。
+  // 「测试场景维护」页（原开发者页）：与全站统一风格，保留侧边栏，进入时加载数据。
   if (page === "developer") {
     developer.load();
   }

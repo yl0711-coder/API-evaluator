@@ -41,6 +41,7 @@
           <span>帮助与设置</span>
           <button class="nav-button" type="button" data-page="manual">使用手册</button>
           <button class="nav-button" type="button" data-page="settings">设置</button>
+          <button class="nav-button" type="button" data-page="developer" data-requires-admin>测试场景维护</button>
         </div>
       </aside>
 
@@ -1200,18 +1201,13 @@
               <button id="save-settings" class="primary" type="submit">保存设置</button>
             </div>
           </form>
-
-          <div class="dev-entrance-row" data-requires-admin>
-            <button id="dev-entrance" class="secondary" type="button" data-go-page="developer">提示词修改</button>
-          </div>
         </section>
 
         <section class="page" id="developer" data-requires-admin hidden>
           <div class="section-header">
             <div>
-              <button id="dev-exit" class="secondary" type="button" data-go-page="settings">← 返回设置</button>
-              <h2><span class="step">平台设置</span>提示词修改</h2>
-              <p class="section-desc">仅超级管理员可见。在这里编辑场景测试的提示词与自定义能力标签，保存会改写服务端源文件并即时生效。</p>
+              <h2><span class="step">平台设置</span>测试场景维护</h2>
+              <p class="section-desc">仅超级管理员可见。在这里维护场景测试题、场景分组与自定义能力标签，保存会改写服务端源文件并即时生效。</p>
             </div>
           </div>
 
@@ -1249,6 +1245,7 @@
                 <select id="dev-group-filter"><option value="">全部分组</option></select>
               </label>
               <button id="dev-scorer-doc" class="secondary" type="button">评分器机制说明</button>
+              <button id="dev-category-doc" class="secondary" type="button">「类别」字段说明</button>
               <button id="dev-add-scenario" class="primary" type="button">+ 新增场景</button>
               <button id="dev-reload-scenarios" class="secondary" type="button">重新载入</button>
             </div>

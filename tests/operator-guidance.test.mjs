@@ -7,7 +7,6 @@ import {
   buildStandardOperatorSummary,
   buildStandardNextStepAdvice,
   normalizeErrorKey,
-  pickScenarioIdsForPack,
   PROFILE_TEMPLATES,
   validateProfileConfig,
 } from "../src/operator-guidance.js";
@@ -43,22 +42,6 @@ test("operator guidance maps common API errors to user-facing advice", () => {
   const advice = buildErrorAdviceText("Content block not found");
   assert.match(advice, /内容块缺失/);
   assert.match(advice, /协议/);
-});
-
-test("operator guidance selects scenario packs by category", () => {
-  const scenarios = [
-    { id: "a", category: "connectivity" },
-    { id: "b", category: "speed" },
-    { id: "c", category: "structured" },
-    { id: "d", category: "coding" },
-    { id: "e", category: "long_context" },
-    { id: "f", category: "safety" },
-  ];
-
-  assert.deepEqual(pickScenarioIdsForPack(scenarios, "scenario-small"), ["a", "b", "c"]);
-  assert.deepEqual(pickScenarioIdsForPack(scenarios, "scenario-coding"), ["d"]);
-  assert.deepEqual(pickScenarioIdsForPack(scenarios, "scenario-safety"), ["f"]);
-  assert.deepEqual(pickScenarioIdsForPack(scenarios, "scenario-basic"), ["a", "b", "c", "d", "e"]);
 });
 
 test("operator guidance recommends next step after standard evaluation", () => {
