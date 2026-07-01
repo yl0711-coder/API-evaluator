@@ -7,7 +7,8 @@ import { dirname } from "node:path";
 import { SETTINGS_FILE } from "./paths.mjs";
 
 // 注意：new-api 系统访问令牌（敏感）不在此——它走加密库（secret-store），绝不入 settings.json。
-const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableDeleteSync: false, enableAutoTag: true, customTags: [], newapiBaseUrl: "", newapiUserId: "" };
+const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic"];
+const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableDeleteSync: false, enableAutoTag: true, customTags: [], scenarioGroups: [...DEFAULT_SCENARIO_GROUPS], newapiBaseUrl: "", newapiUserId: "" };
 
 let cache = null;
 
@@ -24,6 +25,8 @@ function normalize(raw) {
     enableAutoTag: raw?.enableAutoTag !== false,
     // 用户自定义能力标签清单：trim、去空、去重、保序；非数组→空。并入模型表单的可勾选标签词表。
     customTags: Array.isArray(raw?.customTags) ? [...new Set(raw.customTags.map((t) => String(t ?? "").trim()).filter(Boolean))] : [],
+    // 场景分组清单：trim、去空、去重、保序；非数组→回落默认 5 组（默认非空，供场景测试/开发者页筛选）。
+    scenarioGroups: Array.isArray(raw?.scenarioGroups) ? [...new Set(raw.scenarioGroups.map((g) => String(g ?? "").trim()).filter(Boolean))] : [...DEFAULT_SCENARIO_GROUPS],
     // new-api 网关非密配置（脱离环境变量）；令牌不在此，走加密库（见 newapi-tag-writer / server.mjs）。
     newapiBaseUrl: typeof raw?.newapiBaseUrl === "string" ? raw.newapiBaseUrl : "",
     newapiUserId: typeof raw?.newapiUserId === "string" ? raw.newapiUserId : "",

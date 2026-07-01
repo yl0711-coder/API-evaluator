@@ -1828,9 +1828,12 @@ select:disabled { opacity: .55; cursor: not-allowed; color: var(--muted); }
 .batch-picker .seg button.on { background: rgba(246, 181, 107, 0.12); color: var(--accent); border-color: rgba(246, 181, 107, 0.4); }
 .batch-picker .bp-anchor-label { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 7px; }
 .batch-picker .bp-anchor { width: 100%; }
-.batch-picker .bp-listhead { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; }
+.batch-picker .bp-listhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 16px 0 6px; }
 .batch-picker .bp-list-title { font-size: 13px; color: var(--text-2); }
-.batch-picker .bp-acts button { background: none; border: 1px solid var(--line); color: var(--text-2); border-radius: 8px; padding: 5px 11px; font: inherit; cursor: pointer; margin-left: 8px; }
+/* 分组下拉 + 全选/清空 恒在同一行、依次向右排布（分组框在「全选」左侧）。 */
+.batch-picker .bp-acts { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 8px; }
+.batch-picker .bp-group-filter { padding: 5px 9px; font: inherit; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-strong); color: var(--text-2); cursor: pointer; }
+.batch-picker .bp-acts button { white-space: nowrap; background: none; border: 1px solid var(--line); color: var(--text-2); border-radius: 8px; padding: 5px 11px; font: inherit; cursor: pointer; }
 .batch-picker .list { border: 1px solid var(--line); border-radius: 12px; max-height: 240px; overflow: auto; }
 .batch-picker .opt { display: flex; align-items: center; gap: 11px; padding: 9px 13px; border-bottom: 1px solid var(--line); cursor: pointer; border-left: 3px solid transparent; margin: 0; }
 .batch-picker .opt:last-child { border-bottom: none; }
@@ -2211,6 +2214,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .dev-tag-row input { flex: 1; min-width: 200px; }
 /* 已添加标签 chip：横向排布、可换行（胶囊样式复用模型管理的橙金 .model-tag）。 */
 .dev-tag-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; color: var(--muted); }
+/* 分组管理清单：每个分组一枚 chip + 重命名/删除。 */
+.dev-group-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; color: var(--muted); }
+.dev-group-chip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; }
+.dev-group-chip b { font-weight: 600; color: var(--text); }
+.dev-group-chip .linklike { background: none; border: 0; color: var(--blue); font-size: 12px; cursor: pointer; padding: 0; font-family: inherit; }
+.dev-group-chip .linklike:hover { text-decoration: underline; }
 /* 退出按钮与页头标题留点间距。 */
 #developer #dev-exit { margin-bottom: 12px; }
 /* 此页内的工具栏/操作行左对齐（站点默认 .action-row 右对齐）。 */
@@ -2222,3 +2231,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 /* 折叠卡内容区：内边距 + 各区块间距。 */
 .dev-scenario-body { padding: 14px 16px; display: grid; gap: 14px; }
 .dev-scenario-form { display: grid; gap: 10px; }
+/* 场景表单：字段名与输入同一行；关键词/提示词等长内容仍沿用 label 默认竖排。 */
+.dev-scenario-form .dev-field-inline > label { display: flex; align-items: center; gap: 8px; }
+/* 字段名定宽，让各行输入框左缘对齐。 */
+.dev-scenario-form .dev-field-inline > label .dev-field-name { flex: none; width: 92px; }
+.dev-scenario-form .dev-field-inline > label input,
+.dev-scenario-form .dev-field-inline > label select { flex: 1; min-width: 0; }
+/* 只读字段（编辑态 ID、对象型期望答案）：灰底 + 禁用光标，示意不可改。 */
+.dev-scenario-form input:disabled { background: rgba(145, 160, 183, 0.18); color: var(--muted); cursor: not-allowed; }

@@ -6,7 +6,10 @@ export {
   getAllScenariosForAdmin,
   upsertScenario,
   deleteScenario,
+  renameScenarioGroup,
+  clearScenarioGroup,
   resolveScenarioTag,
+  resolveScenarioGroup,
   ABILITY_SCENARIOS,
   TEST_SCENARIOS,
 } from "./store.mjs";

@@ -14,6 +14,7 @@ export const CUSTOM_SCENARIOS = [
       "收到",
       "收到"
     ],
-    "tag": "测试"
+    "tag": "测试",
+    "group": "测试"
   }
 ];

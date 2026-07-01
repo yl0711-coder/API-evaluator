@@ -56,6 +56,28 @@ function withTag(scenario) {
   return { ...scenario, tag };
 }
 
+// —— 分组解析：每个场景一个分组。显式 group 优先；否则按 bank 归入初始 5 组（与 scenarioGroups 默认清单一致）。——
+const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic"];
+const BANK_GROUP = {
+  basic: "基础",
+  coding: "基础",
+  "long-context": "基础",
+  chinese: "基础",
+  custom: "基础",
+  safety: "安全红线",
+  livebench: "LiveBench",
+  hle: "HLE",
+  "hardcore-logic": "HardcoreLogic",
+};
+export function resolveScenarioGroup(scenario, bankKey) {
+  if (typeof scenario.group === "string" && scenario.group) return scenario.group;
+  return BANK_GROUP[bankKey] || "基础";
+}
+// 同时挂 tag + group（group 需要 bankKey，故不并入 withTag）。
+function withMeta(scenario, bankKey) {
+  return { ...withTag(scenario), group: resolveScenarioGroup(scenario, bankKey) };
+}
+
 // —— bank 注册表：always=常开；flag=受设置开关控制。顺序即 getTestScenarios 输出顺序。——
 const SOURCES = {
   basic: BASIC_SCENARIOS,
@@ -83,7 +105,9 @@ const BANK_META = [
 const clone = (arr) => JSON.parse(JSON.stringify(Array.isArray(arr) ? arr : []));
 
 let BANKS = null;
-let writeDirOverride = null; // 测试用：把改写重定向到临时目录，避免污染源码
+// 把「改写源文件」重定向到别处，避免污染源码。测试/子进程可用 EVALUATOR_SCENARIO_WRITE_DIR 指定；
+// 进程内单测用 __setScenarioWriteDirForTest 覆盖。生产不设 → 就地改写 server/scenarios/*.mjs。
+let writeDirOverride = process.env.EVALUATOR_SCENARIO_WRITE_DIR || null;
 
 function banks() {
   if (!BANKS) BANKS = BANK_META.map((m) => ({ ...m, scenarios: clone(SOURCES[m.key]) }));
@@ -98,7 +122,7 @@ export function getTestScenarios() {
   const settings = getSettings();
   const out = [];
   for (const b of banks()) {
-    if (b.always || settings[b.flag]) out.push(...b.scenarios.map(withTag));
+    if (b.always || settings[b.flag]) out.push(...b.scenarios.map((s) => withMeta(s, b.key)));
   }
   return out;
 }
@@ -110,7 +134,7 @@ export function getAllScenariosForAdmin() {
   const out = [];
   for (const b of banks()) {
     const active = b.always || Boolean(settings[b.flag]);
-    for (const s of b.scenarios) out.push({ ...s, bankKey: b.key, active, resolvedTag: withTag(s).tag });
+    for (const s of b.scenarios) out.push({ ...s, bankKey: b.key, active, resolvedTag: withTag(s).tag, resolvedGroup: resolveScenarioGroup(s, b.key) });
   }
   return out;
 }
@@ -186,6 +210,59 @@ export async function deleteScenario(id, { persist = true } = {}) {
     }
   }
   return { ok: true, found: true, bankKey: bank.key, persisted, persistError };
+}
+
+// best-effort 改写一批 bank 文件，聚合首个错误。
+async function rewriteBanks(bankList, persist) {
+  if (!persist) return { persisted: false, persistError: null };
+  let persistError = null;
+  for (const b of bankList) {
+    try {
+      await rewriteBank(b);
+    } catch (e) {
+      if (!persistError) persistError = String(e?.message || e);
+    }
+  }
+  return { persisted: !persistError, persistError };
+}
+
+// 重命名整组：把「解析后 == oldName」的所有场景写上显式 group=newName（含 materialize 派生项），改写受影响 bank。
+export async function renameScenarioGroup(oldName, newName, { persist = true } = {}) {
+  const from = String(oldName ?? "").trim();
+  const to = String(newName ?? "").trim();
+  if (!from || !to) return { ok: false, userMessage: "分组名不能为空。" };
+  const changedBanks = new Set();
+  let changed = 0;
+  for (const b of banks()) {
+    for (const s of b.scenarios) {
+      if (resolveScenarioGroup(s, b.key) === from && s.group !== to) {
+        s.group = to;
+        changedBanks.add(b);
+        changed += 1;
+      }
+    }
+  }
+  const { persisted, persistError } = await rewriteBanks([...changedBanks], persist);
+  return { ok: true, changed, persisted, persistError };
+}
+
+// 删除组：清掉「显式 group === name」的字段（落回 bank 默认组），改写受影响 bank。
+export async function clearScenarioGroup(name, { persist = true } = {}) {
+  const target = String(name ?? "").trim();
+  if (!target) return { ok: false, userMessage: "分组名不能为空。" };
+  const changedBanks = new Set();
+  let changed = 0;
+  for (const b of banks()) {
+    for (const s of b.scenarios) {
+      if (s.group === target) {
+        delete s.group;
+        changedBanks.add(b);
+        changed += 1;
+      }
+    }
+  }
+  const { persisted, persistError } = await rewriteBanks([...changedBanks], persist);
+  return { ok: true, changed, persisted, persistError };
 }
 
 // —— 兼容导出（保持 index.mjs / 测试里的名字语义）——

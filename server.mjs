@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
-import { getAllScenariosForAdmin, upsertScenario, deleteScenario } from "./server/scenarios/index.mjs";
+import { getAllScenariosForAdmin, upsertScenario, deleteScenario, renameScenarioGroup, clearScenarioGroup } from "./server/scenarios/index.mjs";
 import { ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
 import { ensureDataDir, readRecentErrors, readRecentRequests, readRecentTasks, readRecentTestRuns } from "./server/data-store.mjs";
 import {
@@ -531,6 +531,44 @@ async function handleApi(req, res) {
       return;
     }
     sendJson(res, 200, result);
+    return;
+  }
+
+  // —— 开发者接口：场景分组清单（新建 / 重命名 / 删除；仅超管）——
+  if (req.method === "POST" && url.pathname === "/api/dev/scenario-groups") {
+    const name = String((await readJson(req)).name ?? "").trim();
+    if (!name) {
+      sendJson(res, 400, { error: "invalid_group", userMessage: "分组名不能为空。" });
+      return;
+    }
+    const next = await saveSettings({ scenarioGroups: [...(getSettings().scenarioGroups || []), name] }); // normalize 去重保序
+    sendJson(res, 200, { ok: true, scenarioGroups: next.scenarioGroups });
+    return;
+  }
+  if (req.method === "PUT" && url.pathname === "/api/dev/scenario-groups") {
+    const body = await readJson(req);
+    const from = String(body.name ?? "").trim();
+    const to = String(body.newName ?? "").trim();
+    if (!from || !to) {
+      sendJson(res, 400, { error: "invalid_group", userMessage: "分组名不能为空。" });
+      return;
+    }
+    const groups = (getSettings().scenarioGroups || []).map((x) => (x === from ? to : x));
+    const next = await saveSettings({ scenarioGroups: groups });
+    const cascade = await renameScenarioGroup(from, to); // 级联改题 + 改写源文件
+    sendJson(res, 200, { ok: true, scenarioGroups: next.scenarioGroups, changed: cascade.changed, persistError: cascade.persistError });
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/dev/scenario-groups") {
+    const name = String((await readJson(req)).name ?? "").trim();
+    if (!name) {
+      sendJson(res, 400, { error: "invalid_group", userMessage: "分组名不能为空。" });
+      return;
+    }
+    const groups = (getSettings().scenarioGroups || []).filter((x) => x !== name);
+    const next = await saveSettings({ scenarioGroups: groups });
+    const cascade = await clearScenarioGroup(name); // 成员落回 bank 默认组 + 改写源文件
+    sendJson(res, 200, { ok: true, scenarioGroups: next.scenarioGroups, changed: cascade.changed, persistError: cascade.persistError });
     return;
   }
 

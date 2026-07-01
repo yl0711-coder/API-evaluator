@@ -20,16 +20,16 @@ const SIMPLE_FIELDS = [
 
 // 仅供前端展示/分组的元信息，编辑时从场景对象里剥除，避免写回源文件。
 function stripMeta(scn) {
-  const { bankKey, active, resolvedTag, ...rest } = scn;
+  const { bankKey, active, resolvedTag, resolvedGroup, ...rest } = scn;
   return rest;
 }
 
-export function createDeveloper({ state, onTagsSaved }) {
+export function createDeveloper({ state, onTagsSaved, confirm }) {
   // —— 自定义能力标签 ——
+  // 增删即写：添加/删除后自动保存（不再有「保存」按钮）；删除前弹危险确认框（与模型管理删除同款）。
   const tagInput = requireElement("#set-custom-tag-input");
   const tagAdd = requireElement("#set-custom-tag-add");
   const tagsBox = requireElement("#set-custom-tags");
-  const saveTagsBtn = requireElement("#dev-save-tags");
   let customTags = [];
 
   function renderChips() {
@@ -39,38 +39,64 @@ export function createDeveloper({ state, onTagsSaved }) {
           .join("")
       : "（还没有自定义标签）";
     tagsBox.querySelectorAll("[data-del-tag]").forEach((b) =>
-      b.addEventListener("click", () => {
-        customTags = customTags.filter((t) => t !== b.dataset.delTag);
-        renderChips();
-      }),
+      b.addEventListener("click", () => removeTag(b.dataset.delTag)),
     );
   }
-  function addTag() {
-    customTags = normalizeCustomTags([...customTags, tagInput.value]);
-    renderChips();
-    tagInput.value = "";
-    tagInput.focus();
-  }
-  async function saveTags() {
+  // 把当前 customTags 写回服务端；成功后以服务端返回为准回填并刷新模型表单勾选项。
+  // 失败则回滚到服务端已知状态（state.settings.customTags），避免界面与后端不一致。
+  async function persistTags(okMsg) {
     try {
       const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify({ customTags: [...customTags] }) });
       state.settings = saved;
       customTags = Array.isArray(saved.customTags) ? [...saved.customTags] : [];
       renderChips();
       onTagsSaved?.(); // 模型表单标签勾选项即时并入
-      toast("自定义标签已保存。");
+      if (okMsg) toast(okMsg);
     } catch (error) {
       toast(`保存标签失败：${error.message}`, true);
+      customTags = Array.isArray(state.settings?.customTags) ? [...state.settings.customTags] : [];
+      renderChips();
     }
   }
+  async function addTag() {
+    const next = normalizeCustomTags([...customTags, tagInput.value]);
+    tagInput.value = "";
+    tagInput.focus();
+    if (next.length === customTags.length) return; // 空或重复 → 不触发保存
+    customTags = next;
+    renderChips();
+    await persistTags("自定义标签已保存。");
+  }
+  async function removeTag(tag) {
+    if (!customTags.includes(tag)) return;
+    const ok = await confirm?.({
+      title: "删除标签",
+      message: `确定删除自定义标签「${tag}」吗？`,
+      detail: "删除后会同步改写服务端设置，「模型管理」的标签勾选项也会移除该标签。",
+      confirmLabel: "删除",
+      cancelLabel: "取消",
+      tone: "danger",
+    });
+    if (!ok) return;
+    customTags = customTags.filter((t) => t !== tag);
+    renderChips();
+    await persistTags("已删除标签。");
+  }
   tagAdd.addEventListener("click", addTag);
-  saveTagsBtn.addEventListener("click", saveTags);
   tagInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       addTag();
     }
   });
+
+  // —— 场景分组 ——
+  const groupInput = requireElement("#dev-group-input");
+  const groupAddBtn = requireElement("#dev-group-add");
+  const groupListBox = requireElement("#dev-group-list");
+  const groupFilterSel = requireElement("#dev-group-filter");
+  let scenarioGroups = [];
+  let allScenarios = [];
 
   // —— 场景测试（结构化表单 ⇄ JSON）——
   const listBox = requireElement("#dev-scenario-list");
@@ -104,8 +130,12 @@ export function createDeveloper({ state, onTagsSaved }) {
     for (const c of [].concat(children)) node.append(c);
     return node;
   }
-  function field(label, input) {
-    return el("div", {}, [el("label", {}, [`${label}：`, input])]);
+  // 默认「字段名 + 输入」同一行（dev-field-inline）；inline:false 时沿用 label 默认竖排（关键词等长内容）。
+  // 字段名包在定宽 span 里，让同行各字段的输入框左缘对齐。
+  function field(label, input, { inline = true } = {}) {
+    const name = el("span", { className: "dev-field-name", textContent: `${label}：` });
+    const lbl = el("label", {}, [name, input]);
+    return el("div", { className: inline ? "dev-field dev-field-inline" : "dev-field" }, [lbl]);
   }
   const promptText = (p) => (typeof p === "string" ? p : (p || []).join("\n"));
 
@@ -124,6 +154,16 @@ export function createDeveloper({ state, onTagsSaved }) {
       inputs[f.key] = inp;
       form.append(field(f.label, inp));
     }
+    // 分组下拉：选项＝分组清单，空＝按题库默认。当前值不在清单里也补一项，避免丢失。
+    const curGroup = working.group || scn.resolvedGroup || "";
+    const groupOpts = ["", ...scenarioGroups];
+    if (curGroup && !groupOpts.includes(curGroup)) groupOpts.push(curGroup);
+    const groupSelect = el("select");
+    groupSelect.innerHTML = groupOpts
+      .map((g) => `<option value="${escapeHtml(g)}"${g === curGroup ? " selected" : ""}>${g === "" ? "（默认：按题库）" : escapeHtml(g)}</option>`)
+      .join("");
+    form.append(field("分组", groupSelect));
+
     const minCharsInput = el("input", { value: working.minChars ?? "", type: "number" });
     form.append(field("最少字数", minCharsInput));
 
@@ -136,7 +176,7 @@ export function createDeveloper({ state, onTagsSaved }) {
     form.append(field("期望答案", expectedInput));
 
     const requiredAnyInput = el("input", { value: Array.isArray(working.requiredAny) ? working.requiredAny.join(", ") : "", size: 70 });
-    form.append(field("关键词（任一命中，逗号分隔）", requiredAnyInput));
+    form.append(field("关键词（任一命中，逗号分隔）", requiredAnyInput, { inline: false }));
 
     const promptArea = el("textarea", { value: promptText(working.prompt), rows: 8, cols: 90 });
     form.append(el("div", {}, ["提示词：", el("br"), promptArea]));
@@ -166,6 +206,9 @@ export function createDeveloper({ state, onTagsSaved }) {
       const ra = requiredAnyInput.value.trim();
       if (ra) next.requiredAny = ra.split(",").map((s) => s.trim()).filter(Boolean);
       else delete next.requiredAny;
+      const g = groupSelect.value.trim();
+      if (g) next.group = g;
+      else delete next.group;
       next.prompt = promptArea.value;
       return next;
     }
@@ -173,6 +216,7 @@ export function createDeveloper({ state, onTagsSaved }) {
     function fillForm(obj) {
       idInput.value = obj.id ?? "";
       for (const f of SIMPLE_FIELDS) inputs[f.key].value = obj[f.key] ?? "";
+      groupSelect.value = obj.group ?? "";
       minCharsInput.value = obj.minChars ?? "";
       if (!expectedIsObject) expectedInput.value = obj.expected ?? "";
       requiredAnyInput.value = Array.isArray(obj.requiredAny) ? obj.requiredAny.join(", ") : "";
@@ -247,7 +291,7 @@ export function createDeveloper({ state, onTagsSaved }) {
 
     const summaryText = isNew
       ? "★ 新增场景（填 ID 与提示词后保存）"
-      : `${scn.id} — ${scn.name || ""}  [${scn.resolvedTag || scn.tag || "无标签"}]  (${scn.bankKey}${scn.active ? "" : "·未启用"})`;
+      : `${scn.name || scn.id}  [${scn.resolvedTag || scn.tag || "无标签"}] 〔${scn.resolvedGroup || "未分组"}〕 (${scn.bankKey}${scn.active ? "" : "·未启用"})`;
     const actions = el("div", { className: "action-row" }, [toggleBtn, saveBtn, delBtn]);
     const body = el("div", { className: "dev-scenario-body" }, [form, jsonView, actions]);
     const wrapper = el("details", { className: "helper-details", open: isNew });
@@ -255,23 +299,98 @@ export function createDeveloper({ state, onTagsSaved }) {
     return wrapper;
   }
 
-  async function load() {
-    // 标签：取最新设置（GET 不回显令牌但含 customTags）
+  // —— 分组管理 ——
+  function renderGroups() {
+    groupListBox.innerHTML = scenarioGroups.length
+      ? scenarioGroups
+          .map(
+            (g) =>
+              `<span class="dev-group-chip"><b>${escapeHtml(g)}</b><button type="button" class="linklike" data-rename-group="${escapeHtml(g)}">重命名</button><button type="button" class="linklike" data-del-group="${escapeHtml(g)}">删除</button></span>`,
+          )
+          .join("")
+      : "（暂无分组）";
+    groupListBox.querySelectorAll("[data-rename-group]").forEach((b) => b.addEventListener("click", () => renameGroup(b.dataset.renameGroup)));
+    groupListBox.querySelectorAll("[data-del-group]").forEach((b) => b.addEventListener("click", () => deleteGroup(b.dataset.delGroup)));
+    // 筛选下拉（保留当前选中）。
+    const cur = groupFilterSel.value;
+    groupFilterSel.innerHTML = `<option value="">全部分组</option>` + scenarioGroups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
+    groupFilterSel.value = scenarioGroups.includes(cur) ? cur : "";
+  }
+  async function addGroup() {
+    const name = groupInput.value.trim();
+    if (!name) return;
     try {
-      const s = state.settings && Array.isArray(state.settings.customTags) ? state.settings : await api("/api/settings");
+      const r = await api("/api/dev/scenario-groups", { method: "POST", body: JSON.stringify({ name }) });
+      scenarioGroups = Array.isArray(r.scenarioGroups) ? r.scenarioGroups : scenarioGroups;
+      groupInput.value = "";
+      renderGroups();
+      renderScenarioList(); // 让每题分组下拉纳入新组
+      toast("已新建分组。");
+    } catch (error) {
+      toast(`新建分组失败：${error.message}`, true);
+    }
+  }
+  async function renameGroup(name) {
+    // eslint-disable-next-line no-alert
+    const input = window.prompt(`把分组「${name}」重命名为：`, name);
+    if (input == null) return;
+    const newName = input.trim();
+    if (!newName || newName === name) return;
+    try {
+      const r = await api("/api/dev/scenario-groups", { method: "PUT", body: JSON.stringify({ name, newName }) });
+      toast(`已重命名（改动 ${r.changed ?? 0} 题）` + (r.persistError ? `（写回源文件失败：${r.persistError}）` : ""));
+      await load();
+    } catch (error) {
+      toast(`重命名失败：${error.message}`, true);
+    }
+  }
+  async function deleteGroup(name) {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`删除分组「${name}」？该组题目会落回题库默认分组。`)) return;
+    try {
+      const r = await api("/api/dev/scenario-groups", { method: "DELETE", body: JSON.stringify({ name }) });
+      toast(`已删除分组（改动 ${r.changed ?? 0} 题）` + (r.persistError ? `（写回源文件失败：${r.persistError}）` : ""));
+      await load();
+    } catch (error) {
+      toast(`删除失败：${error.message}`, true);
+    }
+  }
+  groupAddBtn.addEventListener("click", addGroup);
+  groupInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addGroup();
+    }
+  });
+  groupFilterSel.addEventListener("change", renderScenarioList);
+
+  // 按当前分组筛选渲染场景编辑器列表。
+  function renderScenarioList() {
+    const g = groupFilterSel.value;
+    const shown = g ? allScenarios.filter((s) => (s.resolvedGroup || "") === g) : allScenarios;
+    listBox.innerHTML = "";
+    listBox.append(el("div", { className: "muted", textContent: `共 ${shown.length} / ${allScenarios.length} 条场景。` }));
+    for (const scn of shown) listBox.append(scenarioEditor(scn, scn.id));
+  }
+
+  async function load() {
+    // 取最新设置：自定义标签 + 分组清单（GET /api/settings 不回显令牌）。
+    try {
+      const s = await api("/api/settings");
       state.settings = s;
       customTags = Array.isArray(s.customTags) ? [...s.customTags] : [];
+      scenarioGroups = Array.isArray(s.scenarioGroups) ? [...s.scenarioGroups] : [];
     } catch {
       customTags = [];
+      scenarioGroups = [];
     }
     renderChips();
+    renderGroups();
 
     listBox.textContent = "正在加载…";
     try {
-      const scenarios = await api("/api/dev/scenarios");
-      listBox.innerHTML = "";
-      listBox.append(el("div", { textContent: `共 ${scenarios.length} 条场景。` }));
-      for (const scn of scenarios) listBox.append(scenarioEditor(scn, scn.id));
+      allScenarios = await api("/api/dev/scenarios");
+      renderScenarioList();
     } catch (error) {
       listBox.textContent = `加载场景失败：${error.message}`;
     }
