@@ -16,6 +16,8 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const PORT = 5393; // 避开其它端点测试占用的 5391/5392/5394-5399
 const dataDir = mkdtempSync(join(tmpdir(), "dev-scn-"));
+// 分组重命名/删除会「改写场景源文件」——重定向到临时目录，绝不动 server/scenarios 源码。
+const scenarioWriteDir = mkdtempSync(join(tmpdir(), "dev-scn-write-"));
 let server;
 let ready = false;
 let cookieAdmin = "";
@@ -53,18 +55,21 @@ async function get(path, cookie) {
   const r = await fetch(`http://127.0.0.1:${PORT}${path}`, { headers: { origin: `http://127.0.0.1:${PORT}`, cookie } });
   return { status: r.status, body: await r.json().catch(() => null) };
 }
-async function post(path, cookie, body) {
+async function send(method, path, cookie, body) {
   const r = await fetch(`http://127.0.0.1:${PORT}${path}`, {
-    method: "POST",
+    method,
     headers: { "content-type": "application/json", origin: `http://127.0.0.1:${PORT}`, cookie },
     body: JSON.stringify(body),
   });
-  return { status: r.status };
+  return { status: r.status, body: await r.json().catch(() => null) };
 }
+const post = (path, cookie, body) => send("POST", path, cookie, body);
+const put = (path, cookie, body) => send("PUT", path, cookie, body);
+const del = (path, cookie, body) => send("DELETE", path, cookie, body);
 
 before(async () => {
   server = spawn(process.execPath, [join(root, "server.mjs")], {
-    env: { ...process.env, ...baseEnv, EVALUATOR_DATA_DIR: dataDir, PORT: String(PORT) },
+    env: { ...process.env, ...baseEnv, EVALUATOR_DATA_DIR: dataDir, EVALUATOR_SCENARIO_WRITE_DIR: scenarioWriteDir, PORT: String(PORT) },
     stdio: "ignore",
   });
   ready = await waitHealthy(PORT);
@@ -76,10 +81,12 @@ before(async () => {
 
 after(() => {
   server?.kill();
-  try {
-    rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-  } catch {
-    /* best-effort */
+  for (const dir of [dataDir, scenarioWriteDir]) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch {
+      /* best-effort */
+    }
   }
 });
 
@@ -103,10 +110,49 @@ test("普通管理员(role=10) POST /api/dev/scenarios → 403（写前即被挡
   assert.equal((await post("/api/dev/scenarios", cookieUser, { id: "x", prompt: "p" })).status, 403);
 });
 
-test("公开 GET /api/scenarios：仍脱敏、不含 prompt", async () => {
+test("公开 GET /api/scenarios：仍脱敏、不含 prompt，但含 group", async () => {
   assert.ok(ready, "server 未就绪");
   const { status, body } = await get("/api/scenarios", cookieAdmin);
   assert.equal(status, 200);
   assert.ok(Array.isArray(body) && body.length > 0);
   assert.ok(body.every((s) => typeof s.prompt === "undefined"), "公开接口不暴露 prompt");
+  assert.ok(body.every((s) => typeof s.group === "string" && s.group), "每条带非空 group，供分组筛选");
+});
+
+test("超管 GET /api/dev/scenarios：每条带 resolvedGroup（默认按 bank）", async () => {
+  assert.ok(ready, "server 未就绪");
+  const { body } = await get("/api/dev/scenarios", cookieAdmin);
+  assert.equal(body.find((s) => s.bankKey === "basic").resolvedGroup, "基础");
+  assert.equal(body.find((s) => s.bankKey === "safety").resolvedGroup, "安全红线");
+});
+
+test("分组端点：新建 → GET /api/settings 反映；改写重定向到临时目录（不动源码）", async () => {
+  assert.ok(ready, "server 未就绪");
+  const { status, body } = await post("/api/dev/scenario-groups", cookieAdmin, { name: "我的新组" });
+  assert.equal(status, 200);
+  assert.ok(body.scenarioGroups.includes("我的新组"));
+  const s = await get("/api/settings", cookieAdmin);
+  assert.ok(s.body.scenarioGroups.includes("我的新组"));
+});
+
+test("分组端点：重命名级联改到该组所有题（resolvedGroup 随之变）→ 再删除落回默认", async () => {
+  assert.ok(ready, "server 未就绪");
+  const r = await put("/api/dev/scenario-groups", cookieAdmin, { name: "安全红线", newName: "安全测试组" });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.changed >= 1, "至少改动一题");
+  const afterRename = await get("/api/dev/scenarios", cookieAdmin);
+  assert.equal(afterRename.body.some((s) => s.resolvedGroup === "安全红线"), false, "不再有「安全红线」");
+  assert.ok(afterRename.body.some((s) => s.bankKey === "safety" && s.resolvedGroup === "安全测试组"));
+
+  const d = await del("/api/dev/scenario-groups", cookieAdmin, { name: "安全测试组" });
+  assert.equal(d.status, 200);
+  const afterDel = await get("/api/dev/scenarios", cookieAdmin);
+  assert.equal(afterDel.body.find((s) => s.bankKey === "safety").resolvedGroup, "安全红线", "删除后落回 bank 默认");
+});
+
+test("普通管理员(role=10) 对分组端点 → 403", async () => {
+  assert.ok(ready, "server 未就绪");
+  assert.equal((await post("/api/dev/scenario-groups", cookieUser, { name: "x" })).status, 403);
+  assert.equal((await put("/api/dev/scenario-groups", cookieUser, { name: "基础", newName: "y" })).status, 403);
+  assert.equal((await del("/api/dev/scenario-groups", cookieUser, { name: "基础" })).status, 403);
 });

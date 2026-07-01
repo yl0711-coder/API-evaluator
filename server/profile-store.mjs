@@ -163,6 +163,7 @@ export function maskScenario(scenario) {
     name: scenario.name,
     category: scenario.category,
     tag: scenario.tag || "",
+    group: scenario.group || "",
     difficulty: scenario.difficulty,
     minChars: scenario.minChars,
     expectsJson: Boolean(scenario.expectsJson),

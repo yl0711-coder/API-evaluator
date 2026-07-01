@@ -15,6 +15,9 @@ import {
   deleteScenario,
   serializeBank,
   resolveScenarioTag,
+  resolveScenarioGroup,
+  renameScenarioGroup,
+  clearScenarioGroup,
   __resetStoreForTest,
   __setScenarioWriteDirForTest,
 } from "../server/scenarios/store.mjs";
@@ -108,4 +111,44 @@ test("upsert persist=true：改写定向到临时目录、源码不动", async (
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
+});
+
+// ===================== 分组 =====================
+
+test("分组默认按 bank；显式 group 覆盖；admin/runtime 都带 group", () => {
+  assert.equal(resolveScenarioGroup({}, "basic"), "基础");
+  assert.equal(resolveScenarioGroup({}, "safety"), "安全红线");
+  assert.equal(resolveScenarioGroup({}, "livebench"), "LiveBench");
+  assert.equal(resolveScenarioGroup({}, "hle"), "HLE");
+  assert.equal(resolveScenarioGroup({}, "hardcore-logic"), "HardcoreLogic");
+  assert.equal(resolveScenarioGroup({ group: "我的组" }, "basic"), "我的组", "显式 group 优先");
+  // getAllScenariosForAdmin 带 resolvedGroup
+  const all = getAllScenariosForAdmin();
+  assert.equal(all.find((s) => s.bankKey === "basic").resolvedGroup, "基础");
+  assert.equal(all.find((s) => s.bankKey === "safety").resolvedGroup, "安全红线");
+  // getTestScenarios 每条带 group
+  assert.ok(getTestScenarios().every((s) => typeof s.group === "string" && s.group));
+});
+
+test("renameScenarioGroup：级联把「解析==旧名」的题（含派生）置显式 group=新名", async () => {
+  const before = getAllScenariosForAdmin().filter((s) => s.resolvedGroup === "基础").length;
+  assert.ok(before > 0);
+  const r = await renameScenarioGroup("基础", "入门", { persist: false });
+  assert.equal(r.ok, true);
+  assert.equal(r.changed, before, "改动数=原「基础」组题数");
+  const admin = getAllScenariosForAdmin();
+  assert.equal(admin.some((s) => s.resolvedGroup === "基础"), false, "不再有解析为「基础」的题");
+  assert.ok(admin.filter((s) => s.resolvedGroup === "入门").length >= before);
+  // 派生题被 materialize 为显式 group
+  assert.equal(admin.find((s) => s.bankKey === "basic").group, "入门");
+});
+
+test("clearScenarioGroup：清掉显式 group=该名的题，落回 bank 默认组", async () => {
+  const basic = getAllScenariosForAdmin().find((s) => s.bankKey === "basic");
+  await upsertScenario({ ...basic, group: "临时组" }, { persist: false });
+  assert.equal(getAllScenariosForAdmin().find((s) => s.id === basic.id).resolvedGroup, "临时组");
+  const r = await clearScenarioGroup("临时组", { persist: false });
+  assert.equal(r.ok, true);
+  assert.equal(r.changed, 1);
+  assert.equal(getAllScenariosForAdmin().find((s) => s.id === basic.id).resolvedGroup, "基础", "落回 bank 默认");
 });

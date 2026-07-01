@@ -8,7 +8,7 @@ export function createScenarioCasePicker(container, hiddenSelect) {
   container.innerHTML = `
     <div class="bp-listhead">
       <span class="bp-list-title">勾选要测试的场景</span>
-      <span class="bp-acts"><button type="button" class="bp-all">全选</button><button type="button" class="bp-clear">清空</button></span>
+      <span class="bp-acts"><select class="bp-group-filter"><option value="">全部分组</option></select><button type="button" class="bp-all">全选</button><button type="button" class="bp-clear">清空</button></span>
     </div>
     <div class="list bp-list"></div>
     <p class="bp-echo"></p>
@@ -17,12 +17,25 @@ export function createScenarioCasePicker(container, hiddenSelect) {
   const list = container.querySelector(".bp-list");
   const echo = container.querySelector(".bp-echo");
   const chips = container.querySelector(".bp-chips");
+  const groupFilter = container.querySelector(".bp-group-filter");
 
-  // 当前可选项,从隐藏 select 的 option 读出(value + data-name + data-tag + data-difficulty + selected)。
+  // 当前可选项,从隐藏 select 的 option 读出(value + data-name + data-tag + data-difficulty + data-group + selected)。
   function rows() {
     return [...hiddenSelect.options]
       .filter((o) => o.value)
-      .map((o) => ({ id: o.value, name: o.dataset.name || o.textContent, tag: o.dataset.tag || "", difficulty: o.dataset.difficulty || "", selected: o.selected }));
+      .map((o) => ({ id: o.value, name: o.dataset.name || o.textContent, tag: o.dataset.tag || "", difficulty: o.dataset.difficulty || "", group: o.dataset.group || "", selected: o.selected }));
+  }
+  // 当前分组筛选下的可见项（空＝全部）。
+  function visibleRows() {
+    const g = groupFilter.value;
+    return g ? rows().filter((r) => r.group === g) : rows();
+  }
+  // 用当前 rows 的去重分组重建下拉选项（保留当前选中值）。
+  function syncGroupOptions() {
+    const groups = [...new Set(rows().map((r) => r.group).filter(Boolean))];
+    const cur = groupFilter.value;
+    groupFilter.innerHTML = `<option value="">全部分组</option>` + groups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
+    groupFilter.value = groups.includes(cur) ? cur : "";
   }
 
   function setSelected(id, on) {
@@ -36,7 +49,7 @@ export function createScenarioCasePicker(container, hiddenSelect) {
   }
 
   function renderList() {
-    const data = rows();
+    const data = visibleRows();
     list.innerHTML = data.length
       ? data
           .map(
@@ -72,25 +85,26 @@ export function createScenarioCasePicker(container, hiddenSelect) {
     echo.innerHTML = `已选 <b>${selected.length}</b> / ${data.length} 个场景`;
   }
 
-  container.querySelector(".bp-all").addEventListener("click", () => {
+  // 全选/清空只作用于「当前分组筛选下可见」的场景，符合筛选后的直觉。
+  function setVisibleSelected(on) {
+    const visible = new Set(visibleRows().map((r) => r.id));
     [...hiddenSelect.options].forEach((o) => {
-      if (o.value) o.selected = true;
+      if (o.value && visible.has(o.value)) o.selected = on;
     });
     emitChange();
     renderList();
     renderChips();
-  });
-  container.querySelector(".bp-clear").addEventListener("click", () => {
-    [...hiddenSelect.options].forEach((o) => {
-      o.selected = false;
-    });
-    emitChange();
+  }
+  container.querySelector(".bp-all").addEventListener("click", () => setVisibleSelected(true));
+  container.querySelector(".bp-clear").addEventListener("click", () => setVisibleSelected(false));
+  groupFilter.addEventListener("change", () => {
     renderList();
     renderChips();
   });
 
-  // 外部改了隐藏 select(重新载入场景 / 套用模板)后调用,重渲染勾选与 chips。
+  // 外部改了隐藏 select(重新载入场景 / 套用模板)后调用,重建分组选项并重渲染勾选与 chips。
   function refresh() {
+    syncGroupOptions();
     renderList();
     renderChips();
   }
