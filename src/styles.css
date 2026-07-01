@@ -2014,11 +2014,11 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 .cfg #model-target-list .chan-pill { justify-self: start; }
 .cfg #channel-list .row-actions,
 .cfg #model-target-list .row-actions { justify-self: end; display: flex; flex-wrap: wrap; gap: 8px; }
-/* 「有同步模型按钮」的渠道卡（4 个按钮）固定两两并排（2 列网格），启用/已禁用排版一致；
-   没有同步模型的渠道卡（3 个按钮）维持原 flex 排版。 */
-.cfg #channel-list .actions-grid { display: grid; grid-template-columns: repeat(2, 1fr); }
-/* 模型卡片三按钮（推送/编辑/删除）一排平分。 */
-.cfg #model-target-list .actions-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+/* 「有同步模型按钮」的渠道卡（同步模型/编辑/删除 3 个按钮）一排平分（3 列网格），启用/已禁用排版一致；
+   没有同步模型的渠道卡（编辑/删除 2 个按钮）维持原 flex 排版。 */
+.cfg #channel-list .actions-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+/* 模型卡片两按钮（编辑/删除）一排平分（列数实际由行内 style 按按钮数注入，这里作后备）。 */
+.cfg #model-target-list .actions-grid { display: grid; grid-template-columns: repeat(2, 1fr); }
 .cfg #channel-list .actions-grid button,
 .cfg #model-target-list .actions-grid button { width: 100%; }
 
@@ -2207,6 +2207,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .report-overlay__toggle input { accent-color: var(--accent); }
 
 /* ===== 测试场景维护（原开发者界面）===== */
+/* 未持久化常驻横幅：写盘失败时显示（红底），直到下次成功保存才 .hidden 收起。红色复用 error toast 观感。 */
+.dev-persist-banner { margin: 0 0 16px; padding: 12px 16px; border-radius: 10px; background: rgba(240, 109, 125, 0.16); border: 1px solid #f06d7d; color: #f06d7d; font-size: 14px; line-height: 1.6; }
 /* 标签录入行：输入框占主、按钮跟随，flex 排布。 */
 .dev-tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .dev-tag-row input { flex: 1; min-width: 200px; }

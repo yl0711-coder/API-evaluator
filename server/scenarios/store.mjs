@@ -1,10 +1,12 @@
 // server/scenarios/store.mjs
 // 场景测试的运行态单一真源：把各 bank 的静态字面量数组深拷贝进可变内存表，运行时统一从这里读，
-// 编辑/新增/删除即时生效；并把改动「改写回源文件」(server/scenarios/*.mjs) 以便重启后自然加载。
-// 源文件永远是 `export const NAME = <纯 JSON 数据>;`，改写只 JSON.stringify 纯数据，绝不拼接用户 JS。
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join, basename } from "node:path";
-import { fileURLToPath } from "node:url";
+// 编辑/新增/删除即时生效；并把改动写进「覆盖层」JSON（持久卷 /data 下的 CONFIG_DIR），
+// 启动时 loadScenarioOverrides() 读回、按 id 合并到内置 bank 之上，故重启/换镜像后仍在。
+// 内置 server/scenarios/*.mjs 保持纯代码不被改写；覆盖层只 JSON.stringify 纯数据，绝不拼接用户 JS。
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
+import { SCENARIO_OVERRIDES_FILE } from "../paths.mjs";
 
 import { BASIC_SCENARIOS } from "./basic.mjs";
 import { CODING_SCENARIOS } from "./coding.mjs";
@@ -16,8 +18,6 @@ import { LIVEBENCH_SCENARIOS } from "./livebench.mjs";
 import { HLE_SCENARIOS } from "./hle.mjs";
 import { HARDCORE_LOGIC_SCENARIOS } from "./hardcore-logic.mjs";
 import { getSettings } from "../settings-store.mjs";
-
-const HERE = dirname(fileURLToPath(import.meta.url));
 
 // —— 标签解析（自 index.mjs 迁入）：每个场景一个标签。优先用显式 tag（开发者分配），否则按规则推断。——
 const TAG_BY_CATEGORY = {
@@ -105,16 +105,86 @@ const BANK_META = [
 const clone = (arr) => JSON.parse(JSON.stringify(Array.isArray(arr) ? arr : []));
 
 let BANKS = null;
-// 把「改写源文件」重定向到别处，避免污染源码。测试/子进程可用 EVALUATOR_SCENARIO_WRITE_DIR 指定；
-// 进程内单测用 __setScenarioWriteDirForTest 覆盖。生产不设 → 就地改写 server/scenarios/*.mjs。
-let writeDirOverride = process.env.EVALUATOR_SCENARIO_WRITE_DIR || null;
+// 编辑覆盖层（按 id）：upserts=新建/改过的场景（含仅改 group），deletes=被删的【内置】场景 id 墓碑。
+// 不变量：同一 id 不同时在 upserts 与 deletes。写盘目标默认 SCENARIO_OVERRIDES_FILE，测试可覆盖。
+let overlay = { upserts: {}, deletes: [] };
+let overridesFile = SCENARIO_OVERRIDES_FILE;
+// 内置场景 id 全集：删除内置项才需要墓碑；纯自定义 id 删除时从 upserts 移除即可。
+const builtinIds = new Set(Object.values(SOURCES).flatMap((arr) => (Array.isArray(arr) ? arr.map((s) => s.id) : [])));
+
+// 把覆盖层套到「克隆自 SOURCES」的 bank 列表上：先按墓碑删、再按 upserts 原地替换或落 custom（复刻 upsert 落位）。
+function applyOverlay(bankList) {
+  if (overlay.deletes.length) {
+    const dead = new Set(overlay.deletes);
+    for (const b of bankList) b.scenarios = b.scenarios.filter((s) => !dead.has(s.id));
+  }
+  for (const [id, scn] of Object.entries(overlay.upserts)) {
+    const next = { ...scn, id };
+    let placed = false;
+    for (const b of bankList) {
+      const i = b.scenarios.findIndex((s) => s.id === id);
+      if (i >= 0) {
+        b.scenarios[i] = next;
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) bankList.find((b) => b.key === "custom").scenarios.push(next);
+  }
+}
 
 function banks() {
-  if (!BANKS) BANKS = BANK_META.map((m) => ({ ...m, scenarios: clone(SOURCES[m.key]) }));
+  if (!BANKS) {
+    BANKS = BANK_META.map((m) => ({ ...m, scenarios: clone(SOURCES[m.key]) }));
+    applyOverlay(BANKS);
+  }
   return BANKS;
 }
 function findBankOf(id) {
   return banks().find((b) => b.scenarios.some((s) => s.id === id)) || null;
+}
+
+// 启动时读回覆盖层（best-effort，仿 loadSettings）：读失败/无文件 → 空覆盖层。置 BANKS=null 触发下次重建合并。
+export async function loadScenarioOverrides() {
+  try {
+    if (existsSync(overridesFile)) {
+      const raw = JSON.parse((await readFile(overridesFile, "utf8")) || "{}");
+      overlay = normalizeOverlay(raw);
+    } else {
+      overlay = { upserts: {}, deletes: [] };
+    }
+  } catch {
+    overlay = { upserts: {}, deletes: [] };
+  }
+  BANKS = null;
+  return overlay;
+}
+
+// 只认已知结构，杜绝脏数据：upserts 取「值为对象且带 id」的项，deletes 取去重后的非空字符串。
+function normalizeOverlay(raw) {
+  const upserts = {};
+  if (raw && typeof raw.upserts === "object" && raw.upserts) {
+    for (const [id, scn] of Object.entries(raw.upserts)) {
+      if (scn && typeof scn === "object" && String(scn.id ?? id).trim()) upserts[id] = scn;
+    }
+  }
+  const deletes = Array.isArray(raw?.deletes) ? [...new Set(raw.deletes.map((x) => String(x ?? "").trim()).filter(Boolean))] : [];
+  return { upserts, deletes };
+}
+
+// 覆盖层落盘（建目录 + 写 JSON）。抛错由各调用方 try/catch 成 persistError。
+async function persistOverlay() {
+  await mkdir(dirname(overridesFile), { recursive: true });
+  await writeFile(overridesFile, JSON.stringify({ version: 1, ...overlay }, null, 2), "utf8");
+}
+// 覆盖层记账小工具：记一次 upsert（顺带从墓碑移除）/ 记一次删除。
+function overlayUpsert(scn) {
+  overlay.upserts[scn.id] = scn;
+  if (overlay.deletes.length) overlay.deletes = overlay.deletes.filter((x) => x !== scn.id);
+}
+function overlayDelete(id) {
+  delete overlay.upserts[id];
+  if (builtinIds.has(id) && !overlay.deletes.includes(id)) overlay.deletes.push(id);
 }
 
 // —— 运行时场景列表：按设置开关拼装 always + 受控 bank，逐条挂 tag。getTestScenarios 等同步消费点用。——
@@ -144,18 +214,16 @@ export function serializeBank(exportName, arr, header = "") {
   return `${header}export const ${exportName} = ${JSON.stringify(arr, null, 2)};\n`;
 }
 
-// 改写某 bank 的源文件：保留其现有头注释（export 之前的内容），只换数据体。best-effort。
-async function rewriteBank(bank) {
-  const target = writeDirOverride ? join(writeDirOverride, basename(bank.file)) : join(HERE, bank.file);
-  let header = "";
+// 覆盖层记账 + 落盘。persist=false → 不动覆盖层、不写盘（供纯内存单测）。record 可记多条 upsert/delete。
+async function persistChange(persist, record) {
+  if (!persist) return { persisted: false, persistError: null };
+  record();
   try {
-    const cur = await readFile(join(HERE, bank.file), "utf8");
-    const idx = cur.indexOf("export const");
-    if (idx > 0) header = cur.slice(0, idx);
-  } catch {
-    /* 源文件读不到（如新文件）→ 无头注释 */
+    await persistOverlay();
+    return { persisted: true, persistError: null };
+  } catch (e) {
+    return { persisted: false, persistError: String(e?.message || e) };
   }
-  await writeFile(target, serializeBank(bank.exportName, bank.scenarios, header), "utf8");
 }
 
 function validateScenario(scn) {
@@ -167,7 +235,7 @@ function validateScenario(scn) {
   return null;
 }
 
-// 新增/编辑：命中已有 id→替换其 bank；新 id→进 custom bank。persist 时改写源文件。
+// 新增/编辑：命中已有 id→替换其 bank；新 id→进 custom bank。persist 时记进覆盖层并落盘。
 export async function upsertScenario(scn, { persist = true } = {}) {
   const err = validateScenario(scn);
   if (err) return { ok: false, userMessage: err };
@@ -181,16 +249,7 @@ export async function upsertScenario(scn, { persist = true } = {}) {
     bank = banks().find((b) => b.key === "custom");
     bank.scenarios.push(next);
   }
-  let persisted = false;
-  let persistError = null;
-  if (persist) {
-    try {
-      await rewriteBank(bank);
-      persisted = true;
-    } catch (e) {
-      persistError = String(e?.message || e);
-    }
-  }
+  const { persisted, persistError } = await persistChange(persist, () => overlayUpsert(next));
   return { ok: true, scenario: withTag(next), bankKey: bank.key, persisted, persistError };
 }
 
@@ -199,70 +258,43 @@ export async function deleteScenario(id, { persist = true } = {}) {
   const bank = findBankOf(key);
   if (!bank) return { ok: false, found: false, userMessage: "场景不存在。" };
   bank.scenarios = bank.scenarios.filter((s) => s.id !== key);
-  let persisted = false;
-  let persistError = null;
-  if (persist) {
-    try {
-      await rewriteBank(bank);
-      persisted = true;
-    } catch (e) {
-      persistError = String(e?.message || e);
-    }
-  }
+  const { persisted, persistError } = await persistChange(persist, () => overlayDelete(key));
   return { ok: true, found: true, bankKey: bank.key, persisted, persistError };
 }
 
-// best-effort 改写一批 bank 文件，聚合首个错误。
-async function rewriteBanks(bankList, persist) {
-  if (!persist) return { persisted: false, persistError: null };
-  let persistError = null;
-  for (const b of bankList) {
-    try {
-      await rewriteBank(b);
-    } catch (e) {
-      if (!persistError) persistError = String(e?.message || e);
-    }
-  }
-  return { persisted: !persistError, persistError };
-}
-
-// 重命名整组：把「解析后 == oldName」的所有场景写上显式 group=newName（含 materialize 派生项），改写受影响 bank。
+// 重命名整组：把「解析后 == oldName」的所有场景写上显式 group=newName（含 materialize 派生项），改动记进覆盖层。
 export async function renameScenarioGroup(oldName, newName, { persist = true } = {}) {
   const from = String(oldName ?? "").trim();
   const to = String(newName ?? "").trim();
   if (!from || !to) return { ok: false, userMessage: "分组名不能为空。" };
-  const changedBanks = new Set();
-  let changed = 0;
+  const changedScenarios = [];
   for (const b of banks()) {
     for (const s of b.scenarios) {
       if (resolveScenarioGroup(s, b.key) === from && s.group !== to) {
         s.group = to;
-        changedBanks.add(b);
-        changed += 1;
+        changedScenarios.push(s);
       }
     }
   }
-  const { persisted, persistError } = await rewriteBanks([...changedBanks], persist);
-  return { ok: true, changed, persisted, persistError };
+  const { persisted, persistError } = await persistChange(persist, () => changedScenarios.forEach(overlayUpsert));
+  return { ok: true, changed: changedScenarios.length, persisted, persistError };
 }
 
-// 删除组：清掉「显式 group === name」的字段（落回 bank 默认组），改写受影响 bank。
+// 删除组：清掉「显式 group === name」的字段（落回 bank 默认组），改动记进覆盖层。
 export async function clearScenarioGroup(name, { persist = true } = {}) {
   const target = String(name ?? "").trim();
   if (!target) return { ok: false, userMessage: "分组名不能为空。" };
-  const changedBanks = new Set();
-  let changed = 0;
+  const changedScenarios = [];
   for (const b of banks()) {
     for (const s of b.scenarios) {
       if (s.group === target) {
         delete s.group;
-        changedBanks.add(b);
-        changed += 1;
+        changedScenarios.push(s);
       }
     }
   }
-  const { persisted, persistError } = await rewriteBanks([...changedBanks], persist);
-  return { ok: true, changed, persisted, persistError };
+  const { persisted, persistError } = await persistChange(persist, () => changedScenarios.forEach(overlayUpsert));
+  return { ok: true, changed: changedScenarios.length, persisted, persistError };
 }
 
 // —— 兼容导出（保持 index.mjs / 测试里的名字语义）——
@@ -279,8 +311,9 @@ export const TEST_SCENARIOS = getTestScenarios();
 // —— 测试钩子 ——
 export function __resetStoreForTest() {
   BANKS = null;
-  writeDirOverride = null;
+  overlay = { upserts: {}, deletes: [] };
+  overridesFile = SCENARIO_OVERRIDES_FILE;
 }
-export function __setScenarioWriteDirForTest(dir) {
-  writeDirOverride = dir || null;
+export function __setScenarioOverridesFileForTest(file) {
+  overridesFile = file || SCENARIO_OVERRIDES_FILE;
 }

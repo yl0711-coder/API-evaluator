@@ -75,8 +75,6 @@ test("v0.3.0 渠道写=超管(100)，模型目标写=管理员(10)即可", () =>
   // 模型目标不持 key，管理员可写（增删改）
   assert.equal(requiresAdmin("POST", "/api/model-targets"), false);
   assert.equal(requiresAdmin("DELETE", "/api/model-targets/x"), false);
-  // 但「推送模型到 new-api」写外部，仅超管
-  assert.equal(requiresAdmin("POST", "/api/model-targets/x/push-to-newapi"), true);
 
   // 管理员(10)写渠道 → 403；超管(100) → 放行
   assert.equal(evaluateApiAccess({ method: "POST", pathname: "/api/channels", session: user }).error, "forbidden_admin");
@@ -84,7 +82,4 @@ test("v0.3.0 渠道写=超管(100)，模型目标写=管理员(10)即可", () =>
   // 管理员(10)看渠道列表(GET)、写模型目标 → 放行
   assert.equal(evaluateApiAccess({ method: "GET", pathname: "/api/channels", session: user }).allow, true);
   assert.equal(evaluateApiAccess({ method: "POST", pathname: "/api/model-targets", session: user }).allow, true);
-  // 管理员(10)推送模型 → 403；超管(100) → 放行
-  assert.equal(evaluateApiAccess({ method: "POST", pathname: "/api/model-targets/x/push-to-newapi", session: user }).error, "forbidden_admin");
-  assert.equal(evaluateApiAccess({ method: "POST", pathname: "/api/model-targets/x/push-to-newapi", session: admin }).allow, true);
 });

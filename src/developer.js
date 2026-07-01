@@ -26,6 +26,20 @@ function stripMeta(scn) {
 }
 
 export function createDeveloper({ state, onTagsSaved, confirm }) {
+  // —— 未持久化常驻横幅 ——
+  // 后端把场景增删改写进 /data 覆盖层（重启后自然加载）。写盘失败时 persistError 非空：
+  // 除红色 toast 外再挂一条常驻横幅，直到下次成功保存才消失，避免超管误以为存住了、重启即丢。
+  const persistBanner = requireElement("#dev-persist-banner");
+  const PERSIST_FAIL_MSG = "⚠ 有改动未持久化：写盘失败，重启后会丢失。请检查数据目录（/data）挂载与写权限。";
+  function showPersistBanner(show, detail) {
+    if (show) {
+      persistBanner.textContent = detail ? `${PERSIST_FAIL_MSG}（${detail}）` : PERSIST_FAIL_MSG;
+      persistBanner.classList.remove("hidden");
+    } else {
+      persistBanner.classList.add("hidden");
+    }
+  }
+
   // —— 自定义能力标签 ——
   // 增删即写：添加/删除后自动保存（不再有「保存」按钮）；删除前弹危险确认框（与模型管理删除同款）。
   const tagInput = requireElement("#set-custom-tag-input");
@@ -269,7 +283,13 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
       try {
         const path = isNew ? "/api/dev/scenarios" : `/api/dev/scenarios/${encodeURIComponent(originalId)}`;
         const r = await api(path, { method: isNew ? "POST" : "PUT", body: JSON.stringify(body) });
-        toast(`已保存：${r.scenario?.id || body.id}` + (r.persistError ? `（写回源文件失败：${r.persistError}，重启后会丢失）` : ""));
+        if (r.persistError) {
+          toast(`已在内存生效，但写盘失败：${r.persistError}（重启后会丢失）`, true);
+          showPersistBanner(true, r.persistError);
+        } else {
+          toast(`已保存：${r.scenario?.id || body.id}`);
+          showPersistBanner(false);
+        }
         await load();
       } catch (error) {
         toast(`保存失败：${error.message}`, true);
@@ -283,10 +303,16 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
         return;
       }
       // eslint-disable-next-line no-alert
-      if (!window.confirm(`确定删除场景「${originalId}」？会改写源文件。`)) return;
+      if (!window.confirm(`确定删除场景「${originalId}」？`)) return;
       try {
         const r = await api(`/api/dev/scenarios/${encodeURIComponent(originalId)}`, { method: "DELETE" });
-        toast(`已删除：${originalId}` + (r.persistError ? `（写回源文件失败：${r.persistError}）` : ""));
+        if (r.persistError) {
+          toast(`已在内存删除，但写盘失败：${r.persistError}（重启后会回来）`, true);
+          showPersistBanner(true, r.persistError);
+        } else {
+          toast(`已删除：${originalId}`);
+          showPersistBanner(false);
+        }
         await load();
       } catch (error) {
         toast(`删除失败：${error.message}`, true);
@@ -342,7 +368,13 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
     if (!newName || newName === name) return;
     try {
       const r = await api("/api/dev/scenario-groups", { method: "PUT", body: JSON.stringify({ name, newName }) });
-      toast(`已重命名（改动 ${r.changed ?? 0} 题）` + (r.persistError ? `（写回源文件失败：${r.persistError}）` : ""));
+      if (r.persistError) {
+        toast(`已重命名（改动 ${r.changed ?? 0} 题），但写盘失败：${r.persistError}（重启后会丢失）`, true);
+        showPersistBanner(true, r.persistError);
+      } else {
+        toast(`已重命名（改动 ${r.changed ?? 0} 题）`);
+        showPersistBanner(false);
+      }
       await load();
     } catch (error) {
       toast(`重命名失败：${error.message}`, true);
@@ -353,7 +385,13 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
     if (!window.confirm(`删除分组「${name}」？该组题目会落回题库默认分组。`)) return;
     try {
       const r = await api("/api/dev/scenario-groups", { method: "DELETE", body: JSON.stringify({ name }) });
-      toast(`已删除分组（改动 ${r.changed ?? 0} 题）` + (r.persistError ? `（写回源文件失败：${r.persistError}）` : ""));
+      if (r.persistError) {
+        toast(`已删除分组（改动 ${r.changed ?? 0} 题），但写盘失败：${r.persistError}（重启后会丢失）`, true);
+        showPersistBanner(true, r.persistError);
+      } else {
+        toast(`已删除分组（改动 ${r.changed ?? 0} 题）`);
+        showPersistBanner(false);
+      }
       await load();
     } catch (error) {
       toast(`删除失败：${error.message}`, true);

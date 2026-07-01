@@ -132,17 +132,15 @@ test("PUT /api/settings：普通管理员(role=10) 可改普通设置，new-api 
   const r1 = await putSettings(cookieUser, { enableHle: true });
   assert.equal(r1.status, 200, "普通管理员可写非 new-api 设置");
   assert.equal(r1.body.enableHle, true, "普通设置已生效");
-  // 试图改 new-api 网关配置 + 删除同步 → 被剔除，原值不动。
+  // 试图改 new-api 网关配置 → 被剔除，原值不动。
   const r2 = await putSettings(cookieUser, {
     newapiBaseUrl: "https://evil.example.com",
     newapiUserId: "666",
     newapiImportToken: "SHOULD-BE-IGNORED",
-    enableDeleteSync: true,
   });
   assert.equal(r2.status, 200);
   assert.equal(r2.body.newapiBaseUrl, "https://changed.example.com", "网址未被普通管理员改动");
   assert.equal(r2.body.newapiUserId, "1", "用户ID未被改动");
-  assert.equal(r2.body.enableDeleteSync, false, "删除同步开关未被普通管理员打开");
 });
 
 test("PUT /api/settings：customTags 数组 trim/去空/去重后存取", async () => {

@@ -18,6 +18,9 @@ export const PROFILES_FILE = join(CONFIG_DIR, "profiles.json");
 export const CHANNELS_FILE = join(CONFIG_DIR, "channels.json");
 export const MODEL_TARGETS_FILE = join(CONFIG_DIR, "model-targets.json");
 export const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
+// 场景编辑覆盖层：超管在「测试场景维护」页的增删改按 id 落到这里（持久卷 /data），
+// 启动时读回合并到内置 bank 之上。内置 server/scenarios/*.mjs 保持纯代码不被改写。
+export const SCENARIO_OVERRIDES_FILE = join(CONFIG_DIR, "scenario-overrides.json");
 export const SQLITE_DB_FILE = envCompat("SQLITE_DB") || join(DATA_DIR, "evaluator.db");
 export const REQUEST_LOG_FILE = join(LOGS_DIR, "requests.jsonl");
 export const TEST_RUNS_FILE = join(LOGS_DIR, "test-runs.jsonl");

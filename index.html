@@ -1168,20 +1168,8 @@
             </label>
 
             <div class="form-section-title" data-requires-admin>
-              <h3>new-api 删除同步</h3>
-              <p class="section-desc">删除渠道/模型时可一并删除 new-api 侧（默认关闭）。</p>
-            </div>
-            <label class="wide checkbox-option" data-requires-admin>
-              <input type="checkbox" id="set-delete-sync" />
-              <span>
-                允许删除同步至new-api
-                <small>开启后，删除渠道/模型会询问是否一并在 new-api 删除（“是”需等待 2 秒，破坏性操作请谨慎）。</small>
-              </span>
-            </label>
-
-            <div class="form-section-title" data-requires-admin>
               <h3>new-api 网关</h3>
-              <p class="section-desc">配置后“从 new-api 导入 / 推送标签 / 渠道同步”即可用；保存即生效、无需重启。令牌仅本机保存、不回显。</p>
+              <p class="section-desc">配置后“从 new-api 导入 / 渠道同步”即可用；保存即生效、无需重启。令牌仅本机保存、不回显。</p>
             </div>
             <label class="wide" data-requires-admin>
               new-api 网址
@@ -1207,9 +1195,10 @@
           <div class="section-header">
             <div>
               <h2><span class="step">平台设置</span>测试场景维护</h2>
-              <p class="section-desc">仅超级管理员可见。在这里维护场景测试题、场景分组与自定义能力标签，保存会改写服务端源文件并即时生效。</p>
+              <p class="section-desc">仅超级管理员可见。在这里维护场景测试题、场景分组与自定义能力标签，保存会写入服务端数据目录（/data）并即时生效，重启后仍保留。</p>
             </div>
           </div>
+          <div id="dev-persist-banner" class="dev-persist-banner hidden" role="alert"></div>
 
           <div class="panel">
             <div class="form-section-title">

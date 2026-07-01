@@ -3,33 +3,9 @@ import { escapeHtml, protocolLabel, toast } from "./client-utils.js";
 import { unionTagVocabulary, distinctTargetTags, hasUntaggedTarget, filterTargetsByTag, NO_TAG_FILTER } from "./model-tags.js";
 
 // v0.3.0 两区管理：渠道（超管，含 key）+ 模型目标（管理员，选渠道+填模型，不见 key）。
-export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, confirm }) {
+export function createChannelAdmin({ state, els, onChange }) {
   // 「按标签筛选」当前选中的标签：""=全部、NO_TAG_FILTER=无标签、其它=该标签。
   let tagFilter = "";
-  // 删除前若「允许删除同步至new-api」开启，弹框问是否一并删 new-api。
-  // 返回 { proceed:bool, sync:bool }：是→同步删、否→仅本地删、Esc/背景→不删。
-  async function resolveDeleteSync(what) {
-    if (!state.settings?.enableDeleteSync || !confirmDeleteSync) return { proceed: true, sync: false };
-    const choice = await confirmDeleteSync({
-      title: "删除确认",
-      message: `是否将删除同步至new-api？`,
-      detail: `“是”会同时在 new-api 删除该${what}；“否”仅删除本地。`,
-      confirmLabel: "是",
-      cancelLabel: "否",
-      confirmDelayMs: 2000,
-      tristate: true,
-      tone: "danger",
-    });
-    if (choice === "dismiss") return { proceed: false, sync: false };
-    return { proceed: true, sync: choice === "confirm" };
-  }
-  // 同步删除结果 → toast 文案。三种结果文案显著区分，避免「是/否」看起来一样。
-  function syncToast(base, r) {
-    if (r.newapiSynced) return `${base}，并已在 new-api 同步删除。`; // 「是」成功
-    if (r.newapiError) return `${base}（本地）；new-api 同步失败：${r.newapiError}`; // 「是」失败
-    if (r.newapiSkipped) return `${base}（本地）；${r.newapiSkipped}`; // 「是」但跳过
-    return `${base}（仅本地，未同步 new-api）。`; // 「否」仅本地删（响应无 newapiSynced 字段）
-  }
   async function loadChannels() {
     state.channels = await api("/api/channels");
     renderChannelList();
@@ -51,18 +27,6 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
     els.channelList.querySelectorAll("[data-del-channel]").forEach((b) => b.addEventListener("click", () => deleteChannel(b.dataset.delChannel)));
     els.channelList.querySelectorAll("[data-edit-channel]").forEach((b) => b.addEventListener("click", () => editChannel(b.dataset.editChannel)));
     els.channelList.querySelectorAll("[data-sync-channel]").forEach((b) => b.addEventListener("click", () => syncChannelModels(b.dataset.syncChannel)));
-    els.channelList.querySelectorAll("[data-push-channel]").forEach((b) => b.addEventListener("click", () => pushChannelToNewapi(b.dataset.pushChannel)));
-  }
-
-  // 把本平台渠道（含上游 Key + models）推送到 new-api：新建或更新已关联渠道。
-  async function pushChannelToNewapi(id) {
-    try {
-      const r = await api(`/api/channels/${encodeURIComponent(id)}/push-to-newapi`, { method: "POST", body: "{}" });
-      await loadChannels();
-      toast(r.action === "updated" ? `已更新 new-api 渠道「${r.name}」。` : `已在 new-api 新建渠道「${r.name}」。`);
-    } catch (error) {
-      toast(`推送渠道失败：${error.message}`, true);
-    }
   }
 
   async function syncChannelModels(id) {
@@ -92,7 +56,6 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
         ${status}
         <div class="row-actions${channel.source === "newapi" ? " actions-grid" : ""}">
           ${channel.source === "newapi" ? `<button class="secondary" data-sync-channel="${channel.id}">同步模型</button>` : ""}
-          <button class="secondary" data-push-channel="${channel.id}">推送</button>
           <button class="secondary" data-edit-channel="${channel.id}">编辑</button>
           <button class="secondary" data-del-channel="${channel.id}">删除</button>
         </div>
@@ -172,23 +135,9 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
       .join("");
     els.modelTargetList.querySelectorAll("[data-del-target]").forEach((b) => b.addEventListener("click", () => deleteModelTarget(b.dataset.delTarget)));
     els.modelTargetList.querySelectorAll("[data-del-tag]").forEach((b) => b.addEventListener("click", () => removeModelTargetTag(b.dataset.tagTarget, b.dataset.delTag)));
-    els.modelTargetList.querySelectorAll("[data-push-target]").forEach((b) => b.addEventListener("click", () => pushModelTargetToNewapi(b.dataset.pushTarget)));
     els.modelTargetList.querySelectorAll("[data-edit-target]").forEach((b) => b.addEventListener("click", () => editModelTarget(b.dataset.editTarget)));
   }
 
-  // 把该模型并入其渠道在 new-api 的 models 列表（需先把渠道推送到 new-api）。标签为纯本地概念，不再推送。
-  async function pushModelTargetToNewapi(id) {
-    const target = (state.modelTargets || []).find((t) => t.id === id);
-    const modelName = target?.model || "该模型";
-    if (!(await confirm({ title: "推送模型", message: `确定把「${modelName}」推送到 new-api 吗？`, confirmLabel: "推送", cancelLabel: "取消" }))) return;
-    try {
-      const r = await api(`/api/model-targets/${encodeURIComponent(id)}/push-to-newapi`, { method: "POST", body: "{}" });
-      await loadModelTargets();
-      toast((r.added ? "已把该模型加入 new-api 渠道。" : "该模型在 new-api 渠道里已存在。"));
-    } catch (error) {
-      toast(`推送模型失败：${error.message}`, true);
-    }
-  }
   // 重新编辑模型：回填表单（含标签勾选），保存沿用同一 saveModelTarget（按 id 覆盖）。
   function editModelTarget(id) {
     const target = (state.modelTargets || []).find((t) => t.id === id);
@@ -214,9 +163,7 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
         `<span class="model-tag">${escapeHtml(t)}<button type="button" class="model-tag-x" data-tag-target="${target.id}" data-del-tag="${escapeHtml(t)}" title="移除标签">×</button></span>`,
     );
     const tagChips = allChips.length ? `<div class="model-tags">${allChips.join("")}</div>` : "";
-    // 「推送模型到 new-api」会写外部、仅超管可用 → 非超管不渲染该按钮（后端 api-access 也强制 403）。
     const actions = [];
-    if (state.canConfig) actions.push(`<button class="secondary" data-push-target="${target.id}">推送</button>`);
     actions.push(`<button class="secondary" data-edit-target="${target.id}">编辑</button>`);
     actions.push(`<button class="secondary" data-del-target="${target.id}">删除</button>`);
     // 渠道名已在分组标题里，卡片小字只显示协议 + 备注。按钮一排（列数随按钮数自适应，避免空格）。
@@ -263,12 +210,10 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
     f.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   async function deleteChannel(id) {
-    const { proceed, sync } = await resolveDeleteSync("渠道");
-    if (!proceed) return;
     try {
-      const r = await api(`/api/channels/${encodeURIComponent(id)}${sync ? "?syncNewapi=1" : ""}`, { method: "DELETE" });
+      await api(`/api/channels/${encodeURIComponent(id)}`, { method: "DELETE" });
       await Promise.all([loadChannels(), loadModelTargets()]);
-      toast(syncToast("渠道已删除（其下模型目标一并清除）", r));
+      toast("渠道已删除（其下模型目标一并清除）。");
     } catch (error) {
       toast(error.message, true);
     }
@@ -292,12 +237,10 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
     }
   }
   async function deleteModelTarget(id) {
-    const { proceed, sync } = await resolveDeleteSync("模型");
-    if (!proceed) return;
     try {
-      const r = await api(`/api/model-targets/${encodeURIComponent(id)}${sync ? "?syncNewapi=1" : ""}`, { method: "DELETE" });
+      await api(`/api/model-targets/${encodeURIComponent(id)}`, { method: "DELETE" });
       await loadModelTargets();
-      toast(syncToast("已删除", r));
+      toast("已删除。");
     } catch (error) {
       toast(error.message, true);
     }

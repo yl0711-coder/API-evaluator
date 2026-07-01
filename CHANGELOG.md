@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **new-api write operations** — removed pushing channels/models to new-api and delete-sync
+  (including the `enableDeleteSync` setting and its UI). The only external write features were
+  these; new-api integration is now read-only (import + sync-models). Deleted
+  `server/newapi-channel-sync.mjs` and its live script/tests; delete of a channel/model is now
+  local-only.
+
 ## [0.4.3] - 2026-06-29
 
 ### Added

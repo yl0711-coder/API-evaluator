@@ -6,7 +6,7 @@
 // 范式照搬 tests/settings-newapi-endpoint.test.mjs。
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -15,9 +15,8 @@ import test, { before, after } from "node:test";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const PORT = 5393; // 避开其它端点测试占用的 5391/5392/5394-5399
+// 增删改/分组级联会写「覆盖层 JSON」——落到 EVALUATOR_DATA_DIR/配置 下的临时目录，绝不动 server/scenarios 源码。
 const dataDir = mkdtempSync(join(tmpdir(), "dev-scn-"));
-// 分组重命名/删除会「改写场景源文件」——重定向到临时目录，绝不动 server/scenarios 源码。
-const scenarioWriteDir = mkdtempSync(join(tmpdir(), "dev-scn-write-"));
 let server;
 let ready = false;
 let cookieAdmin = "";
@@ -69,7 +68,7 @@ const del = (path, cookie, body) => send("DELETE", path, cookie, body);
 
 before(async () => {
   server = spawn(process.execPath, [join(root, "server.mjs")], {
-    env: { ...process.env, ...baseEnv, EVALUATOR_DATA_DIR: dataDir, EVALUATOR_SCENARIO_WRITE_DIR: scenarioWriteDir, PORT: String(PORT) },
+    env: { ...process.env, ...baseEnv, EVALUATOR_DATA_DIR: dataDir, PORT: String(PORT) },
     stdio: "ignore",
   });
   ready = await waitHealthy(PORT);
@@ -81,12 +80,10 @@ before(async () => {
 
 after(() => {
   server?.kill();
-  for (const dir of [dataDir, scenarioWriteDir]) {
-    try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-    } catch {
-      /* best-effort */
-    }
+  try {
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch {
+    /* best-effort */
   }
 });
 
@@ -143,6 +140,8 @@ test("分组端点：重命名级联改到该组所有题（resolvedGroup 随之
   const afterRename = await get("/api/dev/scenarios", cookieAdmin);
   assert.equal(afterRename.body.some((s) => s.resolvedGroup === "安全红线"), false, "不再有「安全红线」");
   assert.ok(afterRename.body.some((s) => s.bankKey === "safety" && s.resolvedGroup === "安全测试组"));
+  // 级联改动落进覆盖层 JSON（在临时数据目录下，非源码树）。
+  assert.ok(existsSync(join(dataDir, "配置", "scenario-overrides.json")), "覆盖层文件已写入数据目录");
 
   const d = await del("/api/dev/scenario-groups", cookieAdmin, { name: "安全测试组" });
   assert.equal(d.status, 200);

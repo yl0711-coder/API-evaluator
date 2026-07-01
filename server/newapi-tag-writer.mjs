@@ -1,8 +1,6 @@
 // server/newapi-tag-writer.mjs
-// new-api 配置 / 鉴权 helper（标签联动功能已下线，本文件只保留共享的连接配置与鉴权头）。
-// 严格遵循 new-api 管理 API 约定：
-//   - 鉴权双头：Authorization=系统访问令牌（不带 Bearer）、New-Api-User=管理员用户ID。
-// 被 newapi-channel-sync.mjs（渠道/模型推送）、newapi-source.mjs（导入）、server.mjs（配置门禁）复用。
+// new-api 连接配置 / 令牌 helper（标签联动与渠道推送/删除同步均已下线，本文件只保留只读导入所需的连接配置与令牌）。
+// 被 newapi-source.mjs（只读导入）、server.mjs（令牌加载/保存、设置回显）复用。
 //
 // 安全：系统访问令牌（敏感）走加密库（secret-store，固定 ref `newapi:import-token`），不落 settings.json。
 // 启动时由 loadNewapiToken() 解密一次、缓存进内存；readConfig() 仍同步读内存——所有调用方无需改动。
@@ -54,13 +52,3 @@ export function readConfig() {
   };
 }
 
-// 通用「new-api 是否已配置」门禁（base + token 齐备）。
-export function isNewapiTagWriterConfigured() {
-  const { base, token } = readConfig();
-  return Boolean(base && token);
-}
-
-// 渠道/模型推送复用的鉴权头（newapi-channel-sync.mjs）。
-export function authHeaders({ token, userId }) {
-  return { Authorization: token, "New-Api-User": userId };
-}

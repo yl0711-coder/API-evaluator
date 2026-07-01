@@ -59,5 +59,21 @@ export const CUSTOM_SCENARIOS = [
     "scorer": "exact",
     "expected": "克苏鲁的呼唤",
     "group": "测试"
+  },
+  {
+    "id": "test_6",
+    "name": "测试-冷门知识提问（实际考察调用搜索工具的能力）",
+    "category": "basic",
+    "difficulty": "small",
+    "prompt": "你是一名《原神》游戏攻略博主，请你依次回答以下四个输出手法所对应的角色。要求：先输出全部的正确选项，再简要描述推导过程。\nA.zzpszs B.11aazs C.2aq2as2as3aw D.eeeqeee",
+    "minChars": 1,
+    "tag": "知识事实",
+    "group": "测试",
+    "requiredAny": [
+      "玛薇卡",
+      "胡桃",
+      "丝柯克",
+      "八重神子"
+    ]
   }
 ];

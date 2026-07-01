@@ -109,9 +109,6 @@ const channelAdmin = createChannelAdmin({
   state,
   els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect, modelTagFilter },
   onChange: () => renderProfileOptions(),
-  // 用 thunk 传确认弹框：confirmAction 在本文件后面才声明，但删除点击发生在初始化之后，闭包取值时已就绪。
-  confirmDeleteSync: (opts) => confirmAction(opts),
-  confirm: (opts) => confirmAction(opts),
 });
 channelForm.addEventListener("submit", channelAdmin.saveChannel);
 modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
@@ -1098,7 +1095,6 @@ async function replayClientRequestsFromLogs() {
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
-state.canConfig = Boolean(authUser?.canConfig); // 超管标记：供动态渲染的「推送」按钮按角色显示
 applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
@@ -1214,7 +1210,6 @@ const setLivebench = requireElement("#set-livebench");
 const setSafety = requireElement("#set-safety");
 const setHle = requireElement("#set-hle");
 const setHardcoreLogic = requireElement("#set-hardcore-logic");
-const setDeleteSync = requireElement("#set-delete-sync");
 const setAutoTag = requireElement("#set-auto-tag");
 const setNewapiBase = requireElement("#set-newapi-base");
 const setNewapiToken = requireElement("#set-newapi-token");
@@ -1233,7 +1228,7 @@ function applyAiSpecifiedGate() {
 }
 setAiSpecified.addEventListener("change", applyAiSpecifiedGate);
 
-// 启动预载：只把设置塞进 state（供删除流读 enableDeleteSync），不碰下面才声明的 set-* 元素，避免 TDZ。
+// 启动预载：只把设置塞进 state（供各处读设置开关），不碰下面才声明的 set-* 元素，避免 TDZ。
 // 函数声明会提升，可在上方启动 Promise.all 里调用。
 async function preloadSettings() {
   try {
@@ -1246,12 +1241,11 @@ async function preloadSettings() {
 async function loadSettings() {
   try {
     const s = await api("/api/settings");
-    state.settings = s; // 供删除流读取 enableDeleteSync 等开关
+    state.settings = s; // 缓存设置供各处读取开关
     setLivebench.checked = Boolean(s.enableLivebench);
     setSafety.checked = Boolean(s.enableSafety);
     setHle.checked = Boolean(s.enableHle);
     setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
-    setDeleteSync.checked = Boolean(s.enableDeleteSync);
     setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
     // new-api 网关：网址/用户ID 回填；令牌不回显，按已配置状态切占位符、清空输入值。
     setNewapiBase.value = s.newapiBaseUrl || "";
@@ -1281,7 +1275,6 @@ settingsForm.addEventListener("submit", async (event) => {
     enableSafety: setSafety.checked,
     enableHle: setHle.checked,
     enableHardcoreLogic: setHardcoreLogic.checked,
-    enableDeleteSync: setDeleteSync.checked,
     enableAutoTag: setAutoTag.checked,
     newapiBaseUrl: setNewapiBase.value.trim(),
     newapiUserId: setNewapiUserid.value.trim(),
