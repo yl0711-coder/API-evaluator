@@ -806,21 +806,6 @@
           </details>
 
           <form id="scenario-test-form" class="panel form-grid">
-            <label class="wide">
-              测试模板
-              <select id="scenario-template">
-                <option value="scenario-small">低成本初筛包：连通、速度、结构化</option>
-                <option value="scenario-coding">编程能力包：代码排错、复杂决策</option>
-                <option value="scenario-long-context">长上下文包：资料归纳、业务说明</option>
-                <option value="scenario-safety">内容安全合规包：低风险风控探测</option>
-                <option value="scenario-basic" selected>基础能力全量包：不含内容安全场景</option>
-                <option value="scenario-deep">候选深度复测包：能力场景重复 2 次</option>
-                <option value="scenario-livebench">LiveBench 抗污染难题包：客观判分，主攻档位降级</option>
-                <option value="scenario-hle">HLE 前沿专家难题包：跨学科客观判分，主攻档位降级</option>
-                <option value="scenario-hardcore-logic">HardcoreLogic 长尾逻辑谜题包：客观判分，主攻档位降级</option>
-              </select>
-              <small id="scenario-template-hint" class="field-hint">基础能力全量包适合稳定性已经通过后的能力评估，不会默认包含内容安全探测。</small>
-            </label>
             <div class="wide" id="scenario-picker"></div>
             <select name="profileIds" id="scenario-profile-select" multiple hidden></select>
             <div class="wide" id="scenario-case-picker"></div>
@@ -1181,11 +1166,11 @@
               </span>
             </label>
 
-            <div class="form-section-title">
+            <div class="form-section-title" data-requires-admin>
               <h3>new-api 删除同步</h3>
               <p class="section-desc">删除渠道/模型时可一并删除 new-api 侧（默认关闭）。</p>
             </div>
-            <label class="wide checkbox-option">
+            <label class="wide checkbox-option" data-requires-admin>
               <input type="checkbox" id="set-delete-sync" />
               <span>
                 允许删除同步至new-api

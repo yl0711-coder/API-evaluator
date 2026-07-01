@@ -58,7 +58,6 @@ import { createTaskFormController, requireSelectedValues } from "./test-form-con
 import {
   applyBatchTemplate as applyBatchTemplateToForm,
   applyProfileTemplate as applyProfileTemplateToForm,
-  applyScenarioTemplate as applyScenarioTemplateToForm,
   applyStabilityTemplate as applyStabilityTemplateToForm,
 } from "./test-templates.js";
 import {
@@ -212,8 +211,6 @@ const stabilityPromptPreset = requireElement("#stability-prompt-preset");
 const stabilityPromptHint = requireElement("#stability-prompt-hint");
 const batchPromptPreset = requireElement("#batch-prompt-preset");
 const batchPromptHint = requireElement("#batch-prompt-hint");
-const scenarioTemplate = requireElement("#scenario-template");
-const scenarioTemplateHint = requireElement("#scenario-template-hint");
 const stabilityEstimate = requireElement("#stability-estimate");
 const batchEstimate = requireElement("#batch-estimate");
 const scenarioEstimate = requireElement("#scenario-estimate");
@@ -501,7 +498,6 @@ batchTemplate.addEventListener("change", applyBatchTemplate);
 standardPromptPreset.addEventListener("change", applyStandardPromptPreset);
 stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
-scenarioTemplate.addEventListener("change", applyScenarioTemplate);
 profileTemplate.addEventListener("change", applyProfileTemplate);
 clientLogForm.addEventListener("submit", analyzeClientLogs);
 clientEvidenceSubmit.addEventListener("click", generateSupplierEvidence);
@@ -701,8 +697,6 @@ createStandardEvalController({
   stabilityProfileSelect: stabilityProfileTarget,
   stabilityTemplate,
   applyStabilityTemplate,
-  scenarioTemplate,
-  applyScenarioTemplate,
   scenarioProfileSelect,
   updateEstimates,
 });
@@ -1171,7 +1165,6 @@ async function loadProfiles() {
 async function loadScenarios() {
   state.scenarios = await api("/api/scenarios");
   renderScenarioOptions();
-  applyScenarioTemplate();
   channelAdmin.renderTagOptions(); // 场景库就绪后渲染「配置模型」的标签勾选项。
   updateEstimates();
 }
@@ -1695,39 +1688,23 @@ function renderProfileOptions() {
 }
 
 function renderScenarioOptions() {
-  syncScenarioTemplateAvailability();
   if (state.scenarios.length === 0) {
     scenarioCaseSelect.innerHTML = `<option value="">暂无测试场景</option>`;
     scenarioCasePicker.refresh();
     return;
   }
 
+  // 默认只勾选「连通性：基础响应」这一个场景；缺失时回落到第一个场景，避免默认零选。
+  const defaultScenarioId = state.scenarios.some((scenario) => scenario.id === "connectivity-basic")
+    ? "connectivity-basic"
+    : state.scenarios[0].id;
   scenarioCaseSelect.innerHTML = state.scenarios
     .map(
       (scenario) =>
-        `<option value="${scenario.id}" data-name="${escapeHtml(scenario.name)}" data-difficulty="${escapeHtml(scenario.difficulty)}" data-tag="${escapeHtml(scenario.tag || "")}" selected>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
+        `<option value="${scenario.id}" data-name="${escapeHtml(scenario.name)}" data-difficulty="${escapeHtml(scenario.difficulty)}" data-tag="${escapeHtml(scenario.tag || "")}"${scenario.id === defaultScenarioId ? " selected" : ""}>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
     )
     .join("");
   scenarioCasePicker.refresh();
-}
-
-function syncScenarioTemplateAvailability() {
-  syncTemplateOption("safety", "scenario-safety");
-  syncTemplateOption("livebench", "scenario-livebench");
-  syncTemplateOption("hle", "scenario-hle");
-  syncTemplateOption("hardcore-logic", "scenario-hardcore-logic");
-}
-
-// 某类场景未启用（后端 env 开关关）时，隐藏对应模板选项；当前已选则回落基础包。
-function syncTemplateOption(category, templateValue) {
-  const has = state.scenarios.some((scenario) => scenario.category === category);
-  const option = scenarioTemplate.querySelector(`option[value="${templateValue}"]`);
-  if (!option) return;
-  option.hidden = !has;
-  option.disabled = !has;
-  if (!has && scenarioTemplate.value === templateValue) {
-    scenarioTemplate.value = "scenario-basic";
-  }
 }
 
 function renderRequests() {
@@ -1844,18 +1821,6 @@ function applyBatchPromptPreset() {
     hint: batchPromptHint,
     updateEstimates,
   });
-}
-
-function applyScenarioTemplate() {
-  applyScenarioTemplateToForm({
-    form: scenarioTestForm,
-    template: scenarioTemplate,
-    scenarios: state.scenarios,
-    scenarioSelect: scenarioCaseSelect,
-    hint: scenarioTemplateHint,
-    updateEstimates,
-  });
-  scenarioCasePicker.refresh();
 }
 
 function applyProfileTemplate() {

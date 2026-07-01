@@ -772,6 +772,11 @@ async function handleApi(req, res) {
   }
   if (req.method === "PUT" && url.pathname === "/api/settings") {
     const patch = await readJson(req);
+    // 影响 new-api 的设置仅超管可改：网关配置(网址/用户ID/令牌) + 删除同步开关。
+    // 普通管理员(role 10)的 patch 剔除这些字段，既防越权、也防其表单里的空值误清空网关配置。
+    if (!canWriteConfig(req.session.role)) {
+      for (const k of ["newapiBaseUrl", "newapiUserId", "newapiImportToken", "enableDeleteSync"]) delete patch[k];
+    }
     // 令牌走加密库、绝不入 settings.json：从 patch 摘出，非空才更新（留空＝保留原令牌）。
     const tokenInput = typeof patch.newapiImportToken === "string" ? patch.newapiImportToken : "";
     delete patch.newapiImportToken;

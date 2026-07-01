@@ -1,4 +1,4 @@
-import { getScenarioPack, pickScenarioIdsForPack, applyProfileTemplateToForm } from "./operator-guidance.js";
+import { applyProfileTemplateToForm } from "./operator-guidance.js";
 
 export function applyStabilityTemplate({ form, template, updateEstimates }) {
   const value = template.value;
@@ -25,23 +25,6 @@ export function applyBatchTemplate({ form, template, updateEstimates }) {
   form.elements.rounds.value = value === "batch-smoke" ? "3" : value === "batch-candidate" ? "30" : "10";
   form.elements.maxParallelProfiles.value = "2";
   form.elements.concurrency.value = "1";
-  updateEstimates();
-}
-
-export function applyScenarioTemplate({ form, template, scenarios, scenarioSelect, hint, updateEstimates }) {
-  const value = template.value;
-  const pack = getScenarioPack(value);
-  const selectedIds = new Set(pickScenarioIdsForPack(scenarios, value));
-  form.elements.repeats.value = pack.repeats;
-  form.elements.maxParallelProfiles.value = pack.maxParallelProfiles;
-  form.elements.requestConcurrency.value = pack.requestConcurrency;
-  const shouldSelectAll = pack.categories.length === 0;
-  Array.from(scenarioSelect.options).forEach((option) => {
-    option.selected = shouldSelectAll || selectedIds.has(option.value);
-  });
-  if (hint) {
-    hint.textContent = pack.note;
-  }
   updateEstimates();
 }
 

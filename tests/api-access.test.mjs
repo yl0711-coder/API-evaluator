@@ -61,6 +61,10 @@ test("requiresAdmin 规则", () => {
   assert.equal(requiresAdmin("GET", "/api/profiles"), false);
   assert.equal(requiresAdmin("GET", "/api/support-bundle"), true);
   assert.equal(requiresAdmin("POST", "/api/tests/quick"), false);
+  // 设置读写都不再一刀切要超管：普通管理员可改「不影响 new-api」的设置，
+  // new-api 相关字段在端点内字段级门禁（见 server.mjs PUT /api/settings）。
+  assert.equal(requiresAdmin("GET", "/api/settings"), false);
+  assert.equal(requiresAdmin("PUT", "/api/settings"), false);
 });
 
 test("v0.3.0 渠道写=超管(100)，模型目标写=管理员(10)即可", () => {
