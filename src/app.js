@@ -12,7 +12,7 @@ import { applyRoleVisibility, ensureAuthenticated, wireUnauthorizedRedirect } fr
 import { createConfirmDialog } from "./confirm-dialog.js";
 import { openReportOverlay } from "./report-overlay.js";
 import { parseReportId, matchesReportFilter, computeDateBounds } from "./report-id.js";
-import { normalizeCustomTags } from "./model-tags.js";
+import { createDeveloper } from "./developer.js";
 import {
   confirmExecution,
   estimateAdmissionBatchCost,
@@ -116,6 +116,12 @@ const channelAdmin = createChannelAdmin({
 });
 channelForm.addEventListener("submit", channelAdmin.saveChannel);
 modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
+
+// 「开发者界面」（仅超管）：场景测试源数据增删改 + 自定义能力标签。标签保存后刷新模型表单勾选项。
+const developer = createDeveloper({
+  state,
+  onTagsSaved: () => channelAdmin.renderTagOptions(),
+});
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
 requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
@@ -1096,6 +1102,7 @@ async function replayClientRequestsFromLogs() {
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
+state.canConfig = Boolean(authUser?.canConfig); // 超管标记：供动态渲染的「推送」按钮按角色显示
 applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
@@ -1139,6 +1146,10 @@ function showPage(page) {
   }
   if (page === "settings") {
     loadSettings();
+  }
+  // 「提示词修改」页（原开发者页）：与全站统一风格，保留侧边栏，进入时加载数据。
+  if (page === "developer") {
+    developer.load();
   }
 }
 
@@ -1213,45 +1224,10 @@ const setAutoTag = requireElement("#set-auto-tag");
 const setNewapiBase = requireElement("#set-newapi-base");
 const setNewapiToken = requireElement("#set-newapi-token");
 const setNewapiUserid = requireElement("#set-newapi-userid");
-const setCustomTagInput = requireElement("#set-custom-tag-input");
-const setCustomTagAdd = requireElement("#set-custom-tag-add");
-const setCustomTagsBox = requireElement("#set-custom-tags");
 // 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
 const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
 
-// 设置页自定义能力标签（内存态，保存时随表单一起 PUT）。
-let customTags = [];
-function renderCustomTagChips() {
-  setCustomTagsBox.innerHTML = customTags.length
-    ? customTags
-        .map((t) => `<span class="tag-chip">${escapeHtml(t)}<button type="button" class="model-tag-x" data-del-custom-tag="${escapeHtml(t)}" title="删除标签">×</button></span>`)
-        .join("")
-    : `<span class="field-hint">还没有自定义标签。</span>`;
-  setCustomTagsBox.querySelectorAll("[data-del-custom-tag]").forEach((b) =>
-    b.addEventListener("click", () => {
-      customTags = customTags.filter((t) => t !== b.dataset.delCustomTag);
-      renderCustomTagChips();
-      settingsDirty = true; // 按钮点击不触发表单 change，手动标记未保存。
-    }),
-  );
-}
-function addCustomTag() {
-  const next = normalizeCustomTags([...customTags, setCustomTagInput.value]);
-  if (next.length !== customTags.length) {
-    customTags = next;
-    renderCustomTagChips();
-    settingsDirty = true;
-  }
-  setCustomTagInput.value = "";
-  setCustomTagInput.focus();
-}
-setCustomTagAdd.addEventListener("click", addCustomTag);
-setCustomTagInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault(); // 防止回车触发表单 submit。
-    addCustomTag();
-  }
-});
+// 自定义能力标签已迁至「开发者界面」（src/developer.js），设置页不再承载。
 
 // 「指定模型」勾选门控两级下拉：未勾=都禁用（AI 用被测模型）；勾上=渠道可选，模型随级联。
 function applyAiSpecifiedGate() {
@@ -1287,8 +1263,6 @@ async function loadSettings() {
     setNewapiUserid.value = s.newapiUserId || "";
     setNewapiToken.value = "";
     setNewapiToken.placeholder = s.newapiImportTokenSet ? "已配置（留空不改）" : "未配置";
-    customTags = Array.isArray(s.customTags) ? [...s.customTags] : [];
-    renderCustomTagChips();
     settingsAiCascade.refresh({ channels: state.channels, modelTargets: state.modelTargets, profiles: state.profiles });
     settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
     setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
@@ -1314,7 +1288,6 @@ settingsForm.addEventListener("submit", async (event) => {
     enableHardcoreLogic: setHardcoreLogic.checked,
     enableDeleteSync: setDeleteSync.checked,
     enableAutoTag: setAutoTag.checked,
-    customTags: [...customTags],
     newapiBaseUrl: setNewapiBase.value.trim(),
     newapiUserId: setNewapiUserid.value.trim(),
     newapiImportToken: setNewapiToken.value, // 空串→后端保留原令牌
@@ -1398,9 +1371,10 @@ function renderResultsViews() {
 }
 
 function renderPageHelp(page) {
-  // 使用手册页不显示「这个页面怎么用？」。
-  pageHelp.classList.toggle("hidden", page === "manual");
-  if (page === "manual") return;
+  // 使用手册页、开发者页不显示「这个页面怎么用？」。
+  const noHelp = page === "manual" || page === "developer";
+  pageHelp.classList.toggle("hidden", noHelp);
+  if (noHelp) return;
   renderPageHelpPanel(pageHelpContent, page);
 }
 

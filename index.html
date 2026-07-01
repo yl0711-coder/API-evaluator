@@ -1180,15 +1180,6 @@
                 <small>开启后，模型某场景质量分 ≥ 90 即获得该场景对应的能力标签；关闭后，即使得分 90 以上也不授予标签。</small>
               </span>
             </label>
-            <label class="wide">
-              自定义能力标签
-              <div class="tag-editor">
-                <input id="set-custom-tag-input" type="text" autocomplete="off" placeholder="输入标签名，回车或点添加" />
-                <button id="set-custom-tag-add" class="secondary" type="button">添加</button>
-              </div>
-              <div id="set-custom-tags" class="tag-chips"></div>
-              <small class="field-hint">这些标签会并入「模型管理」的标签勾选项，供手动给模型打标签。</small>
-            </label>
 
             <div class="form-section-title">
               <h3>new-api 删除同步</h3>
@@ -1224,6 +1215,46 @@
               <button id="save-settings" class="primary" type="submit">保存设置</button>
             </div>
           </form>
+
+          <div class="dev-entrance-row" data-requires-admin>
+            <button id="dev-entrance" class="secondary" type="button" data-go-page="developer">提示词修改</button>
+          </div>
+        </section>
+
+        <section class="page" id="developer" data-requires-admin hidden>
+          <div class="section-header">
+            <div>
+              <button id="dev-exit" class="secondary" type="button" data-go-page="settings">← 返回设置</button>
+              <h2><span class="step">平台设置</span>提示词修改</h2>
+              <p class="section-desc">仅超级管理员可见。在这里编辑场景测试的提示词与自定义能力标签，保存会改写服务端源文件并即时生效。</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="form-section-title">
+              <h3>自定义能力标签</h3>
+              <p class="section-desc">这些标签会并入「模型管理」的标签勾选项，供手动给模型打标签。</p>
+            </div>
+            <div class="dev-tag-row">
+              <input id="set-custom-tag-input" type="text" autocomplete="off" placeholder="输入标签名" />
+              <button id="set-custom-tag-add" class="secondary" type="button">添加</button>
+              <button id="dev-save-tags" class="primary" type="button">保存</button>
+            </div>
+            <div id="set-custom-tags" class="dev-tag-chips"></div>
+          </div>
+
+          <div class="panel">
+            <div class="form-section-title">
+              <h3>场景测试</h3>
+              <p class="section-desc">直接增删改场景测试的源数据；保存即写回服务端源文件并即时生效。</p>
+            </div>
+            <div class="action-row">
+              <button id="dev-scorer-doc" class="secondary" type="button">评分器机制说明</button>
+              <button id="dev-add-scenario" class="primary" type="button">+ 新增场景</button>
+              <button id="dev-reload-scenarios" class="secondary" type="button">重新载入</button>
+            </div>
+            <div id="dev-scenario-list">正在加载…</div>
+          </div>
         </section>
 
         <div id="key-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="key-modal-title">

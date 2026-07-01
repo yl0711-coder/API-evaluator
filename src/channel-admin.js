@@ -214,7 +214,14 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
         `<span class="model-tag">${escapeHtml(t)}<button type="button" class="model-tag-x" data-tag-target="${target.id}" data-del-tag="${escapeHtml(t)}" title="移除标签">×</button></span>`,
     );
     const tagChips = allChips.length ? `<div class="model-tags">${allChips.join("")}</div>` : "";
-    // 渠道名已在分组标题里，卡片小字只显示协议 + 备注。操作三按钮一排（推送/编辑/删除）。
+    // 「推送模型到 new-api」会写外部、仅超管可用 → 非超管不渲染该按钮（后端 api-access 也强制 403）。
+    const actions = [];
+    if (state.canConfig) actions.push(`<button class="secondary" data-push-target="${target.id}">推送</button>`);
+    actions.push(`<button class="secondary" data-edit-target="${target.id}">编辑</button>`);
+    actions.push(`<button class="secondary" data-del-target="${target.id}">删除</button>`);
+    // 渠道名已在分组标题里，卡片小字只显示协议 + 备注。按钮一排（列数随按钮数自适应，避免空格）。
+    // 列数整体注入为一个变量，避免 IDE 把内联样式里的 repeat(${...}) 当 CSS 语法误报。
+    const gridCols = `repeat(${actions.length}, 1fr)`;
     return `
       <div class="chan-row">
         <div class="chan-who">
@@ -223,10 +230,8 @@ export function createChannelAdmin({ state, els, onChange, confirmDeleteSync, co
           ${tagChips}
         </div>
         ${badge}
-        <div class="row-actions actions-grid">
-          <button class="secondary" data-push-target="${target.id}">推送</button>
-          <button class="secondary" data-edit-target="${target.id}">编辑</button>
-          <button class="secondary" data-del-target="${target.id}">删除</button>
+        <div class="row-actions actions-grid" style="grid-template-columns: ${gridCols}">
+          ${actions.join("")}
         </div>
       </div>`;
   }

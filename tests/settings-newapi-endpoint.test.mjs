@@ -6,7 +6,7 @@
 // 范式照搬 tests/tag-sync-endpoints.test.mjs 的 spawn 子进程 + 登录方式。
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -149,4 +149,16 @@ test("PUT /api/settings：customTags 非数组 → 归一为 []", async () => {
   assert.ok(ready, "server 未就绪");
   const { body } = await putSettings(cookieAdmin, { customTags: "not-an-array" });
   assert.deepEqual(body.customTags, []);
+});
+
+test("安全：令牌绝不写入磁盘 settings.json（走加密库）", async () => {
+  assert.ok(ready, "server 未就绪");
+  // 先存一个独特令牌，再直接读磁盘上的 settings.json 核对其不含令牌。
+  await putSettings(cookieAdmin, { newapiBaseUrl: "https://disk.example.com", newapiImportToken: "PLAINTEXT-LEAK-CANARY-9f3a" });
+  const onDisk = readFileSync(join(dataDir, "配置", "settings.json"), "utf8");
+  assert.equal(onDisk.includes("PLAINTEXT-LEAK-CANARY-9f3a"), false, "settings.json 不得含令牌明文");
+  assert.equal(onDisk.includes("newapiImportToken"), false, "settings.json 不得含令牌字段");
+  // 但令牌确实生效（GET 报告已配置）。
+  const g = await getSettings(cookieAdmin);
+  assert.equal(g.body.newapiImportTokenSet, true);
 });

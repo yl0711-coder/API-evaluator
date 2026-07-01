@@ -302,6 +302,22 @@ test("pushChannelToNewapi 新建：搜索无匹配 → newapiChannelId=null", as
   });
 });
 
+test("pushChannelToNewapi 新建：搜索仅模糊匹配（无精确同名）→ null，绝不回退 items[0] 绑错渠道", async () => {
+  const record = {};
+  // 关键词模糊命中两条名字仅「包含」该词的别的渠道，但无精确同名 → 不能误记成本渠道。
+  const handler = buildHandler({
+    record,
+    postResponse: { status: 200, body: { success: true } },
+    searchItems: [{ id: 111, name: "我的渠道-备用" }, { id: 222, name: "我的渠道2" }],
+  });
+  await withMockNewapi(handler, async (base) => {
+    await withEnv({ base }, async () => {
+      const r = await pushChannelToNewapi(ch(), "k");
+      assert.equal(r.newapiChannelId, null, "无精确同名即 null，不取 items[0]=111");
+    });
+  });
+});
+
 test("pushChannelToNewapi 更新：PUT 体含 group=internal_test + id + key", async () => {
   const record = {};
   await withMockNewapi(buildHandler({ record }), async (base) => {

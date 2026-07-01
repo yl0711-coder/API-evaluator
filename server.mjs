@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
+import { getAllScenariosForAdmin, upsertScenario, deleteScenario } from "./server/scenarios/index.mjs";
 import { ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
 import { ensureDataDir, readRecentErrors, readRecentRequests, readRecentTasks, readRecentTestRuns } from "./server/data-store.mjs";
 import {
@@ -84,9 +85,9 @@ import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./s
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
-import { isNewapiTagWriterConfigured } from "./server/newapi-tag-writer.mjs";
+import { isNewapiTagWriterConfigured, readConfig as readNewapiConfig, loadNewapiToken, saveNewapiToken } from "./server/newapi-tag-writer.mjs";
 import { pushChannelToNewapi, addModelToNewapiChannel, deleteNewapiChannel, removeModelFromNewapiChannel } from "./server/newapi-channel-sync.mjs";
-import { getSettings, loadSettings, saveSettings } from "./server/settings-store.mjs";
+import { getSettings, loadSettings, saveSettings, peekLegacyNewapiToken, stripLegacyNewapiToken } from "./server/settings-store.mjs";
 import { withRunBy } from "./server/run-context.mjs";
 import { APP_VERSION } from "./server/version.mjs";
 
@@ -108,12 +109,18 @@ const taskManager = createTaskManager({
 
 await ensureDataDir();
 await loadSettings(); // 暖运行时设置缓存（AI 总结模型 / LiveBench / 安全题开关）
+// new-api 系统令牌走加密库：启动解密一次缓存进内存（readConfig 同步读）。
+// 迁移旧版明文令牌：先写进加密库，再从 settings.json 抹除（顺序保证不丢令牌）。
+const legacyNewapiToken = await peekLegacyNewapiToken();
+await loadNewapiToken(legacyNewapiToken);
+if (legacyNewapiToken) await stripLegacyNewapiToken();
 await pruneReportsOnStartup();
 
 // 「删除同步至 new-api」公共逻辑：best-effort 调 action(newapiChannelId)，结果并入 DELETE 响应。
 // 任何失败都不影响已完成的本地删除，只在响应里说明同步结果，供前端 toast。
 async function syncNewapiDelete(wantSync, newapiChannelId, action) {
-  if (!wantSync) return {};
+  // 后端强制超管安全开关：enableDeleteSync 关闭时，忽略请求里的 syncNewapi，绝不连带删 new-api（仅本地删）。
+  if (!wantSync || !getSettings().enableDeleteSync) return {};
   if (!isNewapiTagWriterConfigured()) {
     return { newapiSynced: false, newapiSkipped: "未配置 new-api，已仅删除本地。" };
   }
@@ -491,6 +498,42 @@ async function handleApi(req, res) {
     return;
   }
 
+  // —— 开发者接口（仅超管，见 api-access.requiresAdmin）：场景测试的完整数据 + 增删改 ——
+  if (req.method === "GET" && url.pathname === "/api/dev/scenarios") {
+    sendJson(res, 200, getAllScenariosForAdmin());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/dev/scenarios") {
+    const result = await upsertScenario(await readJson(req));
+    if (!result.ok) {
+      sendJson(res, 400, { error: "invalid_scenario", userMessage: result.userMessage });
+      return;
+    }
+    sendJson(res, 200, result);
+    return;
+  }
+  if (req.method === "PUT" && url.pathname.startsWith("/api/dev/scenarios/")) {
+    const id = decodeURIComponent(url.pathname.slice("/api/dev/scenarios/".length));
+    const body = await readJson(req);
+    const result = await upsertScenario({ ...body, id });
+    if (!result.ok) {
+      sendJson(res, 400, { error: "invalid_scenario", userMessage: result.userMessage });
+      return;
+    }
+    sendJson(res, 200, result);
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/dev/scenarios/")) {
+    const id = decodeURIComponent(url.pathname.slice("/api/dev/scenarios/".length));
+    const result = await deleteScenario(id);
+    if (!result.ok) {
+      sendJson(res, 404, { error: "not_found", userMessage: result.userMessage });
+      return;
+    }
+    sendJson(res, 200, result);
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/profiles") {
     const body = await readJson(req);
     const profiles = await loadProfiles();
@@ -723,16 +766,18 @@ async function handleApi(req, res) {
 
   // —— 运行时设置（AI 总结模型 / 场景测试题库开关；脱离环境变量）——
   if (req.method === "GET" && url.pathname === "/api/settings") {
-    // 令牌不回显：只回「已配置/未配置」。
-    const { newapiImportToken, ...rest } = getSettings();
-    sendJson(res, 200, { ...rest, newapiImportTokenSet: Boolean(newapiImportToken) });
+    // 令牌存于加密库、不在 settings.json：只回「已配置/未配置」（含环境变量兜底）。
+    sendJson(res, 200, { ...getSettings(), newapiImportTokenSet: Boolean(readNewapiConfig().token) });
     return;
   }
   if (req.method === "PUT" && url.pathname === "/api/settings") {
     const patch = await readJson(req);
-    if (!patch.newapiImportToken) delete patch.newapiImportToken; // 留空＝保留原令牌
-    const { newapiImportToken, ...rest } = await saveSettings(patch);
-    sendJson(res, 200, { ...rest, newapiImportTokenSet: Boolean(newapiImportToken) });
+    // 令牌走加密库、绝不入 settings.json：从 patch 摘出，非空才更新（留空＝保留原令牌）。
+    const tokenInput = typeof patch.newapiImportToken === "string" ? patch.newapiImportToken : "";
+    delete patch.newapiImportToken;
+    if (tokenInput.trim()) await saveNewapiToken(tokenInput);
+    const rest = await saveSettings(patch);
+    sendJson(res, 200, { ...rest, newapiImportTokenSet: Boolean(readNewapiConfig().token) });
     return;
   }
 

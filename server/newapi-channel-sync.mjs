@@ -68,7 +68,9 @@ function splitModels(s) {
 async function findChannelIdByName(cfg, name) {
   const body = await callNewapi(cfg, "GET", `/api/channel/search?keyword=${encodeURIComponent(name)}`);
   const items = Array.isArray(body?.data?.items) ? body.data.items : Array.isArray(body?.data) ? body.data : [];
-  const hit = items.find((c) => String(c.name) === String(name)) || items[0];
+  // 只认精确同名命中。search 是关键词模糊匹配，items[0] 可能是名字仅「包含」该词的别的渠道；
+  // 若回退 items[0]，会把那条生产渠道误记成本渠道的 newapiChannelId，后续模型推送/删除同步全作用到错渠道。
+  const hit = items.find((c) => String(c.name) === String(name));
   return hit ? hit.id : null;
 }
 
