@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-07-02
+
+### Changed
+- Maintenance re-release of 0.4.6 to publish a versioned container image. The earlier
+  `v0.4.7` tag did not trigger CI (pushed as a lightweight tag inside a multi-tag batch,
+  which GitHub suppresses); this release re-triggers the image build via a single
+  annotated `v0.4.8` tag. No functional changes beyond 0.4.6.
+
 ## [0.4.6] - 2026-07-02
 
 ### Removed
