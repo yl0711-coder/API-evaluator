@@ -11,8 +11,9 @@ import { api, cancelRemoteTask } from "./api-client.js";
 import { applyRoleVisibility, ensureAuthenticated, wireUnauthorizedRedirect } from "./auth-gate.js";
 import { createConfirmDialog } from "./confirm-dialog.js";
 import { openReportOverlay } from "./report-overlay.js";
-import { parseReportId, matchesReportFilter, computeDateBounds } from "./report-id.js";
+import { parseReportId, matchesReportFilter, computeDateBounds, reportChannelModelOptions } from "./report-id.js";
 import { createDeveloper } from "./developer.js";
+import { createAutoTestConfig } from "./auto-test-config.js";
 import {
   confirmExecution,
   estimateAdmissionBatchCost,
@@ -75,6 +76,7 @@ const state = {
   requests: [],
   testRuns: [],
   taskEvents: [],
+  highRiskAlerts: [], // 高危报告提示：未读高危报告清单（来自 /api/high-risk-alerts）
   scenarios: [],
   manualLoaded: false,
   latestReportCopies: {
@@ -120,6 +122,8 @@ const developer = createDeveloper({
   // 删除标签前的危险确认框（与模型管理删除同款）。confirmAction 在后文声明，删除点击在初始化之后，闭包取值时已就绪。
   confirm: (opts) => confirmAction(opts),
 });
+// 「自动测试配置」（仅超管）：定时自动测试作业的增删改查。confirmAction 在后文声明，闭包取值时已就绪。
+const autoTestConfig = createAutoTestConfig({ state, confirm: (opts) => confirmAction(opts) });
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
 requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
@@ -366,7 +370,8 @@ for (const dateInput of [rfFilterDateFrom, rfFilterDateTo]) {
 }
 REPORT_FILTERS.forEach((sel) =>
   sel.addEventListener("change", () => {
-    syncDateBounds(); // 选了起始/终止后即时收紧另一个日历的可选范围
+    // 渠道↔模型联动：重算两下拉可选项（保留仍有效的选中值）。内部亦会 syncDateBounds 收紧日历范围。
+    populateReportFilters();
     reportFilesPage = 0;
     renderReportFilesPage();
   }),
@@ -410,16 +415,18 @@ function filteredReportFiles() {
   return reportFiles.filter((f) => matchesReportFilter(f.parsed, filter));
 }
 // 据新格式报告去重值填充四个下拉（保留当前选中值）。
+// 渠道/模型互相联动：渠道选项据「当前所选模型」收窄、模型选项据「当前所选渠道」收窄（见 reportChannelModelOptions）。
 function populateReportFilters() {
-  const channels = new Set();
-  const models = new Set();
+  // 用「当前选中值」做交叉约束，故须在重填（改动 select 内容）之前先读取。
+  const { channels, models } = reportChannelModelOptions(
+    reportFiles.map((f) => f.parsed),
+    { channel: rfFilterChannel.value, model: rfFilterModel.value },
+  );
   const types = new Set();
   const dates = new Set();
   for (const f of reportFiles) {
     const p = f.parsed;
     if (!p.isNew) continue;
-    if (p.channel) channels.add(p.channel);
-    if (p.model) models.add(p.model);
     if (p.type) types.add(p.type);
     if (p.date) dates.add(p.date);
   }
@@ -429,8 +436,8 @@ function populateReportFilters() {
       `<option value="">${allLabel}</option>` +
       items.map((x) => `<option value="${escapeHtml(x)}"${x === cur ? " selected" : ""}>${escapeHtml(label(x))}</option>`).join("");
   };
-  fill(rfFilterChannel, "全部渠道", [...channels].sort());
-  fill(rfFilterModel, "全部模型", [...models].sort());
+  fill(rfFilterChannel, "全部渠道", channels);
+  fill(rfFilterModel, "全部模型", models);
   fill(rfFilterType, "全部种类", [...types].sort(), (t) => REPORT_TYPE_LABELS[t] || t);
   // 日期范围用原生日期控件：按报告实际日期范围设 min/max（不填充下拉项）。
   const ds = [...dates].sort();
@@ -1101,6 +1108,8 @@ wireUnauthorizedRedirect();
 try {
   await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), preloadSettings(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
   renderPageHelp("dashboard");
+  // 高危报告横幅：后台拉、吞掉任何异常——绝不阻塞首屏，也不让它拖垮整个启动。
+  loadHighRiskAlerts().catch(() => {});
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
   // 给非技术用户一个可读的兜底，而不是空白。
@@ -1142,6 +1151,9 @@ function showPage(page) {
   // 「测试场景维护」页（原开发者页）：与全站统一风格，保留侧边栏，进入时加载数据。
   if (page === "developer") {
     developer.load();
+  }
+  if (page === "auto-test-config") {
+    autoTestConfig.load();
   }
 }
 
@@ -1214,6 +1226,8 @@ const setAutoTag = requireElement("#set-auto-tag");
 const setNewapiBase = requireElement("#set-newapi-base");
 const setNewapiToken = requireElement("#set-newapi-token");
 const setNewapiUserid = requireElement("#set-newapi-userid");
+const setTestCycleDays = requireElement("#set-test-cycle-days");
+const setHighRiskAlert = requireElement("#set-high-risk-alert");
 // 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
 const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
 
@@ -1247,6 +1261,8 @@ async function loadSettings() {
     setHle.checked = Boolean(s.enableHle);
     setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
     setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
+    setTestCycleDays.value = Number(s.testCycleDays) > 0 ? String(Math.trunc(s.testCycleDays)) : ""; // 0/空 → 空框（占位符 0）
+    setHighRiskAlert.checked = s.enableHighRiskAlert === true;
     // new-api 网关：网址/用户ID 回填；令牌不回显，按已配置状态切占位符、清空输入值。
     setNewapiBase.value = s.newapiBaseUrl || "";
     setNewapiUserid.value = s.newapiUserId || "";
@@ -1276,6 +1292,8 @@ settingsForm.addEventListener("submit", async (event) => {
     enableHle: setHle.checked,
     enableHardcoreLogic: setHardcoreLogic.checked,
     enableAutoTag: setAutoTag.checked,
+    testCycleDays: Math.max(0, Math.trunc(Number(setTestCycleDays.value) || 0)),
+    enableHighRiskAlert: setHighRiskAlert.checked,
     newapiBaseUrl: setNewapiBase.value.trim(),
     newapiUserId: setNewapiUserid.value.trim(),
     newapiImportToken: setNewapiToken.value, // 空串→后端保留原令牌
@@ -1287,6 +1305,7 @@ settingsForm.addEventListener("submit", async (event) => {
     await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
     await loadSettings(); // 刷新令牌「已配置」占位符状态
     channelAdmin.renderTagOptions(); // 自定义标签变化 → 模型表单勾选项即时并入
+    await loadHighRiskAlerts(); // 高危报告提示开关变化 → 即时显示/收起横幅
     toast("设置已保存。");
   } catch (error) {
     toast(`保存设置失败：${error.message}`, true);
@@ -1356,7 +1375,77 @@ function renderResultsViews() {
   renderProfiles();
   renderDashboard();
   renderDeliveryViews();
+  void loadHighRiskAlerts(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
 }
+
+// —— 高危报告提示：网站顶部红底横幅，逐条列出未读高危报告，点开即消 ——
+const highRiskBanner = requireElement("#high-risk-banner");
+
+async function loadHighRiskAlerts() {
+  if (!state.settings?.enableHighRiskAlert) {
+    state.highRiskAlerts = [];
+    renderHighRiskBanner();
+    return;
+  }
+  try {
+    const r = await api("/api/high-risk-alerts");
+    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : [];
+  } catch {
+    /* 拉取失败不阻断；下次刷新再试 */
+  }
+  renderHighRiskBanner();
+}
+
+function renderHighRiskBanner() {
+  const alerts = state.settings?.enableHighRiskAlert ? state.highRiskAlerts || [] : [];
+  if (!alerts.length) {
+    highRiskBanner.classList.add("hidden");
+    highRiskBanner.innerHTML = "";
+    return;
+  }
+  const items = alerts
+    .map(
+      (a) =>
+        `<div class="high-risk-banner__item"><span>⚠ ${escapeHtml(a.label || "报告")}：${escapeHtml(a.reason || "高危")}</span><button type="button" data-hazard-open="${escapeHtml(a.reportId)}">查看</button></div>`,
+    )
+    .join("");
+  highRiskBanner.innerHTML =
+    `<div class="high-risk-banner__head"><span>高危报告提示（${alerts.length}）</span><button type="button" data-hazard-ack-all>全部忽略</button></div>` +
+    `<div class="high-risk-banner__list">${items}</div>`;
+  highRiskBanner.classList.remove("hidden");
+}
+
+async function ackHazard(reportId) {
+  try {
+    const r = await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ reportId }) });
+    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId);
+  } catch {
+    state.highRiskAlerts = (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId); // 本地兜底移除
+  }
+  renderHighRiskBanner();
+}
+
+highRiskBanner.addEventListener("click", async (event) => {
+  const openBtn = event.target.closest?.("[data-hazard-open]");
+  if (openBtn) {
+    const reportId = openBtn.dataset.hazardOpen;
+    openReportOverlay(reportId, { title: reportId }); // 点开即消
+    await ackHazard(reportId);
+    return;
+  }
+  if (event.target.closest?.("[data-hazard-ack-all]")) {
+    try {
+      await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ all: true }) });
+    } catch {
+      /* 忽略：本地也清空 */
+    }
+    state.highRiskAlerts = [];
+    renderHighRiskBanner();
+  }
+});
+
+// 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
+setInterval(() => void loadHighRiskAlerts(), 60_000);
 
 function renderPageHelp(page) {
   // 使用手册页、开发者页不显示「这个页面怎么用？」。
@@ -1680,6 +1769,8 @@ function renderProfileOptions() {
   scenarioPicker.refresh(data);
   // 客户端回放:仍沿用平铺单选列表
   renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] });
+  // 自动测试配置页的渠道→模型级联
+  autoTestConfig.refreshTargets(data);
 }
 
 function renderScenarioOptions() {

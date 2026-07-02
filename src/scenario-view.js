@@ -1,9 +1,10 @@
 import { escapeHtml } from "./client-utils.js";
 import { recommendationClass } from "./formatters.js";
+import { reportViewUrl } from "./report-overlay.js";
 
 // 场景测试「汇总结论」：场景测试是多 API × 多场景的矩阵，没有单一成功率，
 // 因此按被测 API 逐行出卡，每张卡是该 API 的成功率 / 平均质量分 / 慢请求 + 该 API 的结论建议，
-// 按平均质量分从高到低排序（与后端 selectScenarioAnalysisProfile 的择优口径一致）。
+// 按平均质量分从高到低排序（择优口径）。
 export function renderScenarioSummary(container, result) {
   // 优先用 profileDigest：任务通道会剥掉重字段 results/records，digest 是不被剥离的轻量副本。
   const source = result.profileDigest || result.results || [];
@@ -32,7 +33,21 @@ export function renderScenarioSummary(container, result) {
     `;
   });
 
-  const reportCard = `
+  // 每模型一篇：列出各模型报告链接（点开新标签查看）；无 reports 时回落单篇路径展示。
+  const reports = Array.isArray(result.reports) ? result.reports.filter((r) => r && r.id) : [];
+  const reportCard = reports.length
+    ? `
+    <article class="summary-card wide-summary">
+      <span>各模型报告（共 ${reports.length} 篇）</span>
+      ${reports
+        .map(
+          (r) =>
+            `<small><a class="report-overlay__link" href="${reportViewUrl(r.id)}" target="_blank" rel="noopener">${escapeHtml(r.label || r.model || "报告")}</a></small>`,
+        )
+        .join("")}
+    </article>
+  `
+    : `
     <article class="summary-card wide-summary">
       <span>报告位置</span>
       <small>报告文件：${escapeHtml(result.reportPath || "-")}</small>

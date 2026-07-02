@@ -29,6 +29,20 @@ export function matchesReportFilter(parsed, { channel = "", model = "", type = "
   return true;
 }
 
+// 渠道↔模型联动：给定各报告的 parse 结果与当前所选渠道/模型，算出两个下拉的可选项（已排序）。
+// 渠道候选 = 「未选模型 或 模型相符」的报告的渠道集；模型候选 = 「未选渠道 或 渠道相符」的报告的模型集。
+// 故：选了渠道 → 模型下拉只剩该渠道的模型；选了模型 → 渠道下拉只剩该模型所属渠道。老报告(!isNew)不参与。
+export function reportChannelModelOptions(parsedList, { channel = "", model = "" } = {}) {
+  const channels = new Set();
+  const models = new Set();
+  for (const p of parsedList || []) {
+    if (!p || !p.isNew) continue;
+    if (p.channel && (!model || p.model === model)) channels.add(p.channel);
+    if (p.model && (!channel || p.channel === channel)) models.add(p.model);
+  }
+  return { channels: [...channels].sort(), models: [...models].sort() };
+}
+
 // 日期范围联动边界：终止不早于起始、起始不晚于终止，且都夹在报告实际日期范围内。
 // 入参/返回均为 <input type=date> 的 YYYY-MM-DD 值；空串表示不限。
 export function computeDateBounds(fromVal, toVal, reportMin, reportMax) {

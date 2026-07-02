@@ -1,6 +1,7 @@
 import { api } from "./api-client.js";
 import { escapeHtml, protocolLabel, toast } from "./client-utils.js";
 import { unionTagVocabulary, distinctTargetTags, hasUntaggedTarget, filterTargetsByTag, NO_TAG_FILTER } from "./model-tags.js";
+import { formatLastTested, isRetestDue } from "./model-test-status.js";
 
 // v0.3.0 两区管理：渠道（超管，含 key）+ 模型目标（管理员，选渠道+填模型，不见 key）。
 export function createChannelAdmin({ state, els, onChange }) {
@@ -151,11 +152,20 @@ export function createChannelAdmin({ state, els, onChange }) {
     f.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   function modelTargetRow(target) {
+    // 需测：可测(enabled)模型「从未测过」或「超过测试周期未再测」→ 明黄徽章替换「可测」（见 model-test-status.js）。
+    const due = isRetestDue({
+      channelStatus: target.channelStatus,
+      lastTestedAt: target.lastTestedAt,
+      cycleDays: state.settings?.testCycleDays,
+      now: Date.now(),
+    });
     const badge = target.channelStatus === "disabled"
       ? `<span class="chan-pill bad">已禁用</span>`
       : target.channelStatus === "missing"
         ? `<span class="chan-pill bad">渠道缺失</span>`
-        : `<span class="chan-pill good">可测</span>`;
+        : due
+          ? `<span class="chan-pill due">需测</span>`
+          : `<span class="chan-pill good">可测</span>`;
     // 标签为纯本地概念（单一样式），× 本地移除。不再区分明黄/灰、不再与 new-api 联动。
     const tags = Array.isArray(target.tags) ? target.tags : [];
     const allChips = tags.map(
@@ -174,6 +184,7 @@ export function createChannelAdmin({ state, els, onChange }) {
         <div class="chan-who">
           <b>${escapeHtml(target.model)}</b>
           <small>${escapeHtml(protocolLabel(target.protocol))}${target.note ? " · " + escapeHtml(target.note) : ""}</small>
+          <small class="chan-lasttest">上次测试：${escapeHtml(formatLastTested(target.lastTestedAt))}</small>
           ${tagChips}
         </div>
         ${badge}

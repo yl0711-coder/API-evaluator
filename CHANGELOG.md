@@ -6,6 +6,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **自动测试配置（Auto-test scheduler）** — new super-admin page under 高级测试 to configure
+  recurring tests for a channel's model: pick model + test kind (快速/准入/稳定性/场景) + period
+  (hours); a new in-process scheduler runs each job on its cadence and produces a report. Config
+  persisted to `配置/auto-test-jobs.json`; CRUD via `/api/dev/auto-test-jobs`
+  (`server/auto-test-store.mjs`, `server/auto-test-scheduler.mjs`). Scheduler is in-process:
+  effective only while the server runs, catches up overdue jobs on restart via persisted
+  `nextRunAt`, does not resume a run interrupted mid-flight. Hardened: all job-file writes go
+  through a serialized `updateJobs` (no read-modify-write races between scheduler and CRUD
+  endpoints), and concurrent runs are capped by a semaphore (`EVALUATOR_AUTO_TEST_CONCURRENCY`,
+  default 2) so simultaneously-due jobs can't burst the upstream API.
+
+### Fixed / Hardened
+- **Atomic JSON writes** — settings, channels, model-targets, profiles, scenario-overrides and the
+  encrypted key-vault now write via a shared `writeJsonAtomic` (temp file + rename), so a crash
+  mid-write can no longer truncate a config into silent data loss (key-vault corruption would have
+  made all channel keys unreadable).
+- **`ensureDataDir` startup guard** — a read-only/permission-denied/full `/data` volume now exits
+  with an actionable operator message instead of an uncaught stack in a restart loop.
+- **SQLite history retention** — `test_requests`/`test_runs`/`regression_alerts`/`model_fingerprints`
+  now get the same retention (days + max-rows) as reports, so `evaluator.db` no longer grows
+  unbounded (`pruneHistory`, env `EVALUATOR_HISTORY_RETENTION_DAYS`).
+- **Scenario group rename no longer pins built-in scenarios** — renaming a group now records a
+  field-level group patch for built-in题 instead of freezing the whole scenario into the override
+  layer, so future image updates to those scenarios' prompt/scorer are no longer silently masked.
+
 ## [0.4.9] - 2026-07-02
 
 ### Fixed

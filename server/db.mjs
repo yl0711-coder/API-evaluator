@@ -415,6 +415,25 @@ export async function queryProfileRunSummaries(profileId, { limit = 200, path } 
   }
 }
 
+// 每个模型目标(=profile_id)的最后一次测试时间（覆盖所有测试种类：准入/快速/稳定/场景/批量）。
+// 用 test_requests（逐请求、按 profile_id 建索引）聚合 MAX(logged_at)。logged_at 为 ISO 文本，
+// MAX 按字典序即时间序。DB 不可用/无记录 → {}。供「模型管理」卡片显示「上次测试」+ 判定「需测」。
+export async function queryLastTestedByProfile({ path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return {};
+    const rows = db
+      .prepare("SELECT profile_id, MAX(logged_at) AS last FROM test_requests WHERE profile_id IS NOT NULL GROUP BY profile_id")
+      .all();
+    const out = {};
+    for (const r of rows) if (r.profile_id && r.last) out[r.profile_id] = r.last;
+    return out;
+  } catch (error) {
+    noteDbError("queryLastTestedByProfile", error);
+    return {};
+  }
+}
+
 // —— 基线回归告警 ——
 export async function recordRegressionAlert(alert, { path } = {}) {
   try {

@@ -36,6 +36,7 @@ import {
   getDbHealth,
   pruneHistory,
   pruneReports,
+  queryLastTestedByProfile,
   queryProfileRunSummaries,
   queryRecentReports,
   queryRegressionAlerts,
@@ -53,7 +54,10 @@ import {
   runScenarioTest,
   runStabilityTest,
 } from "./server/test-runner.mjs";
-import { openReportInBrowser, sanitizeReportBaseName } from "./server/report-files.mjs";
+import { openReportInBrowser, reportIdFromHtmlPath, sanitizeReportBaseName } from "./server/report-files.mjs";
+import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobValidationError } from "./server/auto-test-store.mjs";
+import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
+import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, requiredString, safeJson, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -105,6 +109,18 @@ const taskManager = createTaskManager({
   errorLogFile: ERROR_LOG_FILE,
   logTechnicalError,
   buildUserErrorMessage,
+  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：手动测试完成时按开关判危记录
+});
+
+// 自动测试调度器（平台唯一的周期性定时器）：按各作业的 nextRunAt 到点直接调 runner 跑测试并产出报告。
+const autoTestScheduler = createAutoTestScheduler({
+  loadJobs,
+  updateJobs,
+  runners: { runQuickVerify, runAdmissionTest, runStabilityTest, runScenarioTest },
+  reportIdFromHtmlPath,
+  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：自动测试完成时按开关判危记录
+  logError: (error, job) =>
+    logErrorSafely({ source: "auto-test-scheduler", error, context: { jobId: job?.id, kind: job?.kind, targetId: job?.targetId } }),
 });
 
 try {
@@ -168,6 +184,8 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, HOST, () => {
   console.log(`模型评测平台: http://${HOST}:${PORT}`);
+  autoTestScheduler.start(); // 启动自动测试调度器（首个 tick 追补停机期间到期的作业）
+  console.log("[auto-test] 自动测试调度器已启动");
   // 一次性迁移：老 profile → 渠道 + 模型目标（仅当渠道为空且有老配置时；best-effort，不阻塞启动）。
   migrateProfilesToChannelsIfEmpty()
     .then((r) => {
@@ -563,6 +581,66 @@ async function handleApi(req, res) {
     return;
   }
 
+  // —— 开发者接口：自动测试作业（列表 / 新建改 / 删除 / 立即运行；/api/dev 前缀 → 仅超管）——
+  if (req.method === "GET" && url.pathname === "/api/dev/auto-test-jobs") {
+    const [jobs, runnable] = await Promise.all([loadJobs(), loadRunnableProfiles()]);
+    const byId = new Map(runnable.map((p) => [p.id, p]));
+    const enriched = jobs.map((job) => {
+      const target = byId.get(job.targetId);
+      return { ...job, targetName: target?.name || "", targetRunnable: Boolean(target) };
+    });
+    sendJson(res, 200, { ok: true, jobs: enriched });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/dev/auto-test-jobs") {
+    const body = await readJson(req);
+    // 目标可运行性校验（异步、只读）先在锁外做，缩短持锁时间。
+    const runnable = await loadRunnableProfiles();
+    const runnableIds = new Set(runnable.map((p) => p.id));
+    try {
+      // 整个「找 existing → 规范化 → 校验 → 算 nextRunAt → upsert」在串行化的 updateJobs 里做，
+      // 与调度器回写、其它并发请求互不覆盖。校验失败抛 JobValidationError → 不落盘 → 下面兜 400。
+      const job = await updateJobs((jobs) => {
+        const existing = body.id ? jobs.find((j) => j.id === body.id) || null : null;
+        const next = normalizeJob(body, existing);
+        const err = validateJob(next);
+        if (err) throw new JobValidationError(err);
+        if (!runnableIds.has(next.targetId)) throw new JobValidationError("被测目标不存在或不可运行（渠道可能已删除/停用）。");
+        // 新建、或改动周期/由停用转启用后：重算 nextRunAt；已有且未改则沿用旧值。停用则清空。
+        const cadenceChanged = !existing || existing.periodHours !== next.periodHours || (!existing.enabled && next.enabled);
+        if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next.periodHours);
+        if (!next.enabled) next.nextRunAt = null;
+        const idx = jobs.findIndex((j) => j.id === next.id);
+        if (idx >= 0) jobs[idx] = next;
+        else jobs.push(next);
+        return next;
+      });
+      sendJson(res, 200, { ok: true, job });
+    } catch (error) {
+      if (error instanceof JobValidationError) {
+        sendJson(res, 400, { error: "invalid_job", userMessage: error.message });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+  if (req.method === "POST" && url.pathname.startsWith("/api/dev/auto-test-jobs/") && url.pathname.endsWith("/run")) {
+    const id = decodeURIComponent(url.pathname.slice("/api/dev/auto-test-jobs/".length, -"/run".length));
+    const result = await autoTestScheduler.runJobNow(id);
+    sendJson(res, result.ok ? 200 : 409, result);
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/dev/auto-test-jobs/")) {
+    const id = decodeURIComponent(url.pathname.slice("/api/dev/auto-test-jobs/".length));
+    await updateJobs((jobs) => {
+      const idx = jobs.findIndex((j) => j.id === id);
+      if (idx >= 0) jobs.splice(idx, 1);
+    });
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/profiles") {
     const body = await readJson(req);
     const profiles = await loadProfiles();
@@ -778,7 +856,7 @@ async function handleApi(req, res) {
 
   // —— v0.3.0 模型目标管理（选渠道 + 填模型，管理员维护、看不到 key）——
   if (req.method === "GET" && url.pathname === "/api/model-targets") {
-    const [targets, channels] = await Promise.all([loadModelTargets(), loadChannels()]);
+    const [targets, channels, lastByProfile] = await Promise.all([loadModelTargets(), loadChannels(), queryLastTestedByProfile()]);
     const byChannel = new Map(channels.map((item) => [item.id, item]));
     sendJson(
       res,
@@ -790,6 +868,7 @@ async function handleApi(req, res) {
           channelName: channel?.name || "(渠道已删除)",
           channelStatus: channel?.status || "missing",
           protocol: channel?.protocol || null,
+          lastTestedAt: lastByProfile[target.id] || null, // 上次测试时间（覆盖所有测试种类）；从未测→null
         };
       }),
     );
@@ -947,6 +1026,20 @@ async function handleApi(req, res) {
   // 报告中心元数据列表（全平台共享，登录可读）
   if (req.method === "GET" && url.pathname === "/api/reports") {
     sendJson(res, 200, await queryRecentReports(200));
+    return;
+  }
+
+  // 高危报告提示：未读高危报告清单（登录可读）。开关关时不记录，故一般为空。
+  if (req.method === "GET" && url.pathname === "/api/high-risk-alerts") {
+    sendJson(res, 200, { alerts: await listAlerts() });
+    return;
+  }
+  // 点掉某条（{ reportId }）或全部忽略（{ all: true }）；返回剩余清单。
+  if (req.method === "POST" && url.pathname === "/api/high-risk-alerts/ack") {
+    const body = await readJson(req);
+    if (body?.all === true) await ackAll();
+    else if (body?.reportId) await ackAlert(String(body.reportId));
+    sendJson(res, 200, { ok: true, alerts: await listAlerts() });
     return;
   }
 

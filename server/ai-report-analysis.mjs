@@ -71,9 +71,6 @@ function compactReportData(reportType, summary) {
   if (reportType === "admission") {
     return compactAdmissionSummary(summary);
   }
-  if (reportType === "batch-admission") {
-    return compactBatchAdmissionSummary(summary);
-  }
   return { reportType, summary: summarizeText(JSON.stringify(summary || {})) };
 }
 
@@ -105,29 +102,6 @@ function compactAdmissionSummary(summary) {
     recommendation: summary.recommendation?.title,
     nextAction: summary.nextAction,
     errorCounts: summary.errorCounts || {},
-  };
-}
-
-function compactBatchAdmissionSummary(summary) {
-  return {
-    reportType: "批量准入评测",
-    profileCount: summary.profileCount,
-    packageLevel: summary.packageLevel,
-    maxParallelProfiles: summary.maxParallelProfiles,
-    durationMs: summary.durationMs,
-    results: (summary.results || []).map((result) => ({
-      apiName: result.profileName,
-      model: result.model,
-      grade: result.grade,
-      score: result.score,
-      successRate: result.successRateText,
-      avgTotalMs: result.avgTotalMs,
-      p95TotalMs: result.p95TotalMs,
-      purityTitle: result.purityAssessment?.title || "",
-      recommendation: result.recommendation?.title || "",
-      error: result.error || "",
-      errorCounts: result.errorCounts || {},
-    })),
   };
 }
 

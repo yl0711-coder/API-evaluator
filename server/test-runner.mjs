@@ -46,7 +46,6 @@ import {
   countErrors,
   formatAdmissionReport,
   formatAiAnalysisDocument,
-  formatBatchAdmissionReport,
   formatBatchReport,
   formatQuickVerifyReport,
   formatScenarioReport,
@@ -464,7 +463,8 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
             profileId,
             packageLevel,
             predicted: null, // 预测记在批量总结里，不重复挂到每个子渠道
-            useAiReportAnalysis: false, // AI 分析在批次层只做一次（选最优渠道），不逐个渠道重复发
+            // 每模型一篇独立报告：AI 分析随各自报告生成（此前批量只在批次层做一次）。
+            useAiReportAnalysis: body.useAiReportAnalysis,
           },
           taskContext,
         ),
@@ -501,43 +501,35 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
   };
   summary = await attachRunArtifacts(batchId, summary, { results });
   summary.predictedConsumption = normalizePredicted(body.predicted);
-  const aiAnalysisProfile = selectBatchAnalysisProfile(profiles, summary, validProfileIds);
-  const aiAnalysis = await maybeBuildAiAnalysis({
-    enabled: body.useAiReportAnalysis,
-    reportType: "batch-admission",
-    profile: aiAnalysisProfile,
-    summary,
-    runId: batchId,
-    taskContext,
-  });
-  const reportMarkdown = formatBatchAdmissionReport(summary, { aiAnalysis });
-  const reportFiles = await saveReportFiles(batchId, reportMarkdown, "批量准入评测报告");
-  const aiAnalysisFiles = await saveAiAnalysisReport(
-    batchId,
-    formatAiAnalysisDocument(aiAnalysis, { title: "批量准入评测 · AI 辅助分析" }),
-    "批量准入评测 · AI 辅助分析",
-  );
 
-  await persistTestRun({
-    ...summary,
-    type: "batch-admission",
-    reportPath: reportFiles.markdownPath,
-    reportHtmlPath: reportFiles.htmlPath,
-    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
-    rawJsonPath: summary.rawJsonPath,
-    workspaceDir: summary.workspaceDir,
-    reportMarkdown: undefined,
-  });
+  // 不再出合并报告：每个模型的报告已由各自 runAdmissionTest 落盘（渠道_模型_admission_…）。
+  // 汇集各模型报告，作为本批任务的 reports[] 返回（供前端逐篇弹出 + 报告中心按渠道/模型筛选）。
+  const reports = results
+    .filter((r) => r && r.reportHtmlPath)
+    .map((r) => ({
+      runId: r.runId,
+      profileId: r.profileId,
+      profileName: r.profileName,
+      model: r.model,
+      grade: r.grade,
+      score: r.score,
+      successRateText: r.successRateText,
+      reportPath: r.reportPath,
+      reportHtmlPath: r.reportHtmlPath,
+      aiAnalysisHtmlPath: r.aiAnalysisHtmlPath || null,
+      rawJsonPath: r.rawJsonPath || null,
+    }));
 
+  const first = reports[0] || {};
   return {
     ...summary,
     type: "batch-admission",
-    reportPath: reportFiles.markdownPath,
-    reportHtmlPath: reportFiles.htmlPath,
-    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
-    rawJsonPath: summary.rawJsonPath,
-    workspaceDir: summary.workspaceDir,
-    reportMarkdown,
+    reports, // 每模型一篇（新契约）
+    // 兼容标量：结果面板/历史按单篇读取，取第一篇。
+    reportPath: first.reportPath || null,
+    reportHtmlPath: first.reportHtmlPath || null,
+    aiAnalysisHtmlPath: first.aiAnalysisHtmlPath || null,
+    rawJsonPath: first.rawJsonPath || summary.rawJsonPath || null,
   };
 }
 
@@ -1244,7 +1236,9 @@ export async function runScenarioTest(body, taskContext = {}) {
   }
 
   const endedAt = new Date();
-  let summary = buildScenarioSummary({
+
+  // 汇总对象（仅供前端「汇总结论」卡与返回聚合字段：profileDigest/计数/type）；不再据此出合并报告。
+  const aggregate = buildScenarioSummary({
     runId,
     profileResults,
     selectedScenarios,
@@ -1254,49 +1248,79 @@ export async function runScenarioTest(body, taskContext = {}) {
     startedAt,
     endedAt,
   });
-  summary = await attachRunArtifacts(runId, summary, { profileResults });
-  summary.predictedConsumption = normalizePredicted(body.predicted);
-  // 场景测验夺标：>=90 分给对应模型授予能力标签。best-effort，绝不影响出报告。
+  aggregate.predictedConsumption = normalizePredicted(body.predicted);
+  // 场景测验夺标：>=90 分给对应模型授予能力标签（对全体一次，标签本按 profile 归属）。best-effort。
   try {
-    await awardScenarioTags(summary, selectedScenarios);
+    await awardScenarioTags(aggregate, selectedScenarios);
   } catch {
     /* 夺标失败不影响场景测试主流程 */
   }
-  const aiAnalysisProfile = selectScenarioAnalysisProfile(profiles, summary, profileIds);
-  const aiAnalysis = await maybeBuildAiAnalysis({
-    enabled: body.useAiReportAnalysis,
-    reportType: "scenario",
-    profile: aiAnalysisProfile,
-    summary,
-    runId,
-    taskContext,
-  });
-  const reportMarkdown = formatScenarioReport(summary, { aiAnalysis });
-  const reportFiles = await saveReportFiles(runId, reportMarkdown, "场景测试报告");
-  const aiAnalysisFiles = await saveAiAnalysisReport(
-    runId,
-    formatAiAnalysisDocument(aiAnalysis, { title: "场景测试 · AI 辅助分析" }),
-    "场景测试 · AI 辅助分析",
-  );
 
-  await persistTestRun({
-    ...summary,
-    reportPath: reportFiles.markdownPath,
-    reportHtmlPath: reportFiles.htmlPath,
-    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
-    rawJsonPath: summary.rawJsonPath,
-    workspaceDir: summary.workspaceDir,
-    reportMarkdown: undefined,
-  });
+  // 每个模型各出一篇独立报告（渠道_模型_scenario_…），可被报告中心按渠道/模型筛选。
+  const reports = [];
+  for (const profileResult of profileResults) {
+    const profile = selectedProfiles.find((p) => p.id === profileResult.profileId) || null;
+    const slug = reportTargetSlug(profile || { name: profileResult.profileName, defaultModel: profileResult.model });
+    const perId = buildReportId("scenario", slug);
+    let one = buildScenarioSummary({
+      runId: perId,
+      profileResults: [profileResult],
+      selectedScenarios,
+      maxParallelProfiles,
+      requestConcurrency,
+      repeats,
+      startedAt,
+      endedAt,
+    });
+    one = await attachRunArtifacts(perId, one, { profileResults: [profileResult] });
+    one.predictedConsumption = normalizePredicted(body.predicted);
+    const aiAnalysis = await maybeBuildAiAnalysis({
+      enabled: body.useAiReportAnalysis,
+      reportType: "scenario",
+      profile,
+      summary: one,
+      runId: perId,
+      taskContext,
+    });
+    const reportMarkdown = formatScenarioReport(one, { aiAnalysis });
+    const reportFiles = await saveReportFiles(perId, reportMarkdown, "场景测试报告");
+    const aiAnalysisFiles = await saveAiAnalysisReport(
+      perId,
+      formatAiAnalysisDocument(aiAnalysis, { title: "场景测试 · AI 辅助分析" }),
+      "场景测试 · AI 辅助分析",
+    );
+    await persistTestRun({
+      ...one,
+      reportPath: reportFiles.markdownPath,
+      reportHtmlPath: reportFiles.htmlPath,
+      aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
+      rawJsonPath: one.rawJsonPath,
+      workspaceDir: one.workspaceDir,
+      reportMarkdown: undefined,
+    });
+    reports.push({
+      runId: perId,
+      profileId: profileResult.profileId,
+      profileName: profileResult.profileName,
+      model: profileResult.model,
+      successRateText: profileResult.successRateText,
+      avgQualityScore: profileResult.avgQualityScore,
+      reportPath: reportFiles.markdownPath,
+      reportHtmlPath: reportFiles.htmlPath,
+      aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
+      rawJsonPath: one.rawJsonPath,
+    });
+  }
 
+  const first = reports[0] || {};
   return {
-    ...summary,
-    reportPath: reportFiles.markdownPath,
-    reportHtmlPath: reportFiles.htmlPath,
-    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
-    rawJsonPath: summary.rawJsonPath,
-    workspaceDir: summary.workspaceDir,
-    reportMarkdown,
+    ...aggregate,
+    reports, // 每模型一篇（新契约）
+    // 兼容标量：视图/标准评测按单篇读取，取第一篇。
+    reportPath: first.reportPath || null,
+    reportHtmlPath: first.reportHtmlPath || null,
+    aiAnalysisHtmlPath: first.aiAnalysisHtmlPath || null,
+    rawJsonPath: first.rawJsonPath || aggregate.rawJsonPath || null,
   };
 }
 
@@ -1910,19 +1934,6 @@ function selectBatchAnalysisProfile(profiles, summary, fallbackProfileIds) {
   const ranked = [...(summary.results || [])]
     .filter((result) => !result.error)
     .sort((a, b) => b.successRate - a.successRate || (a.p95TotalMs ?? Infinity) - (b.p95TotalMs ?? Infinity));
-  const profileId = ranked[0]?.profileId || fallbackProfileIds[0];
-  return profiles.find((profile) => profile.id === profileId) || null;
-}
-
-function selectScenarioAnalysisProfile(profiles, summary, fallbackProfileIds) {
-  const ranked = [...(summary.results || [])]
-    .filter((result) => !result.error)
-    .sort(
-      (a, b) =>
-        b.avgQualityScore - a.avgQualityScore ||
-        b.successRate - a.successRate ||
-        (a.p95TotalMs ?? Infinity) - (b.p95TotalMs ?? Infinity),
-    );
   const profileId = ranked[0]?.profileId || fallbackProfileIds[0];
   return profiles.find((profile) => profile.id === profileId) || null;
 }

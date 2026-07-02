@@ -11,6 +11,7 @@ import {
   getDbHealth,
   importRequestsFromJsonl,
   isSqliteAvailable,
+  queryLastTestedByProfile,
   queryRecentRequests,
   queryRecentTestRuns,
   queryRequestsByRun,
@@ -216,6 +217,26 @@ test("queryRecentTestRuns and queryRunsByProfile read back runs", async () => {
     assert.equal(p1Runs.length, 2); // 重测信度可用：同 profile 的历次运行
     assert.equal(p1Runs[0].run_id, "r1");
     assert.equal(p1Runs[1].run_id, "r2");
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queryLastTestedByProfile：按 profile 取 MAX(logged_at)，多 profile 分别返回；无记录/无库 → {}", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "lasttest.db");
+  try {
+    // 空库 → 空对象
+    assert.deepEqual(await queryLastTestedByProfile({ path }), {});
+    // p1 两次（后者更晚，应胜出）、p2 一次
+    await recordRequest(makeRecord({ requestId: "p1a", profileId: "p1", loggedAt: "2026-06-01T00:00:00Z" }), { path });
+    await recordRequest(makeRecord({ requestId: "p1b", profileId: "p1", loggedAt: "2026-06-20T09:00:00Z" }), { path });
+    await recordRequest(makeRecord({ requestId: "p2a", profileId: "p2", loggedAt: "2026-06-10T00:00:00Z" }), { path });
+    const map = await queryLastTestedByProfile({ path });
+    assert.equal(map.p1, "2026-06-20T09:00:00Z", "p1 取最新一次");
+    assert.equal(map.p2, "2026-06-10T00:00:00Z");
+    assert.equal(Object.keys(map).length, 2);
   } finally {
     closeDatabase(path);
     await rm(dir, { recursive: true, force: true });

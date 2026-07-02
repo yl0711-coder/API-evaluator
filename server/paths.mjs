@@ -21,6 +21,10 @@ export const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
 // 场景编辑覆盖层：超管在「测试场景维护」页的增删改按 id 落到这里（持久卷 /data），
 // 启动时读回合并到内置 bank 之上。内置 server/scenarios/*.mjs 保持纯代码不被改写。
 export const SCENARIO_OVERRIDES_FILE = join(CONFIG_DIR, "scenario-overrides.json");
+// 自动测试作业配置：超管在「自动测试配置」页配置的定时测试作业，按 id 落到这里（持久卷 /data）。
+export const AUTO_TEST_JOBS_FILE = join(CONFIG_DIR, "auto-test-jobs.json");
+// 高危报告提示的未读集合：运行完成时判危记入，用户点掉后移除（持久卷 /data）。
+export const HIGH_RISK_ALERTS_FILE = join(CONFIG_DIR, "high-risk-alerts.json");
 export const SQLITE_DB_FILE = envCompat("SQLITE_DB") || join(DATA_DIR, "evaluator.db");
 export const REQUEST_LOG_FILE = join(LOGS_DIR, "requests.jsonl");
 export const TEST_RUNS_FILE = join(LOGS_DIR, "test-runs.jsonl");

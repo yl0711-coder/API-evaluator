@@ -18,6 +18,7 @@ export function createTaskManager({
   normalizeScenarioIds,
   logTechnicalError,
   buildUserErrorMessage,
+  onRunComplete, // (result) => void：任务完成回调（用于高危报告提示等），best-effort
 }) {
   const tasks = new Map();
   // 全局重测试并发上限，超出排队。避免多任务并发拖垮宿主或同机其它服务的资源。
@@ -159,11 +160,24 @@ export function createTaskManager({
         task.completedUnits = task.totalUnits || task.completedUnits;
         task.message = "任务已完成。";
         task.result = publicResult;
+        // 运行完成回调（高危报告提示按开关判危记录）：用 runner 原始 result（含 grade/recommendation）。best-effort。
+        try {
+          await onRunComplete?.(result);
+        } catch {
+          /* 回调失败不影响任务完成 */
+        }
         const resultSummary = summarizeTaskResult(publicResult);
-        // 任务级单点：一个任务只打开它的主报告（批量任务=只开总报告，不会一渠道一个标签页）。
-        openReportInBrowser(resultSummary.reportHtmlPath);
-        // AI 辅助分析独立成文，存在时一并打开（同受 EVALUATOR_OPEN_REPORT 开关控制）。
-        openReportInBrowser(resultSummary.aiAnalysisHtmlPath);
+        // 多模型「每模型一篇」：逐篇在桌面浏览器打开（各开一标签）；否则打开单篇主报告。
+        if (Array.isArray(resultSummary.reports) && resultSummary.reports.length) {
+          for (const r of resultSummary.reports) {
+            openReportInBrowser(r.reportHtmlPath);
+            openReportInBrowser(r.aiAnalysisHtmlPath);
+          }
+        } else {
+          openReportInBrowser(resultSummary.reportHtmlPath);
+          // AI 辅助分析独立成文，存在时一并打开（同受 EVALUATOR_OPEN_REPORT 开关控制）。
+          openReportInBrowser(resultSummary.aiAnalysisHtmlPath);
+        }
         await appendTaskEvent(taskEventsFile, task, "completed", { result: resultSummary });
       }
     } catch (error) {
@@ -277,12 +291,27 @@ function summarizePublicTaskResult(result) {
   if (!result || typeof result !== "object") {
     return result;
   }
-  const { reportMarkdown, results, records, ...safeResult } = result;
+  const { reportMarkdown, results, records, reports, ...safeResult } = result;
+  // 多模型「每模型一篇」：把每篇报告映射成 { id, aiAnalysisId, label, model } 供前端逐篇弹出。
+  const reportList = Array.isArray(reports)
+    ? reports
+        .filter((r) => r && r.reportHtmlPath)
+        .map((r) => ({
+          id: reportIdFromHtmlPath(r.reportHtmlPath),
+          aiAnalysisId: reportIdFromHtmlPath(r.aiAnalysisHtmlPath),
+          label: r.profileName || r.model || "报告",
+          model: r.model,
+          // 保留文件路径供任务完成时桌面端逐篇打开（前端浮层只用 id/aiAnalysisId）。
+          reportHtmlPath: r.reportHtmlPath,
+          aiAnalysisHtmlPath: r.aiAnalysisHtmlPath || null,
+        }))
+    : undefined;
   return {
     ...safeResult,
     // 报告 id：供前端拼 HTTP 查看 URL，在应用内浮层弹出报告（Docker/远程无桌面也能看）。
     reportId: reportIdFromHtmlPath(result.reportHtmlPath),
     aiAnalysisId: reportIdFromHtmlPath(result.aiAnalysisHtmlPath),
+    reports: reportList, // 新契约：多篇报告清单（单模型时长度 1）
     reportMarkdown: reportMarkdown ? "报告内容已写入本地报告文件，请在报告中心查看。" : "",
     resultCount: Array.isArray(results) ? results.length : undefined,
     recordCount: Array.isArray(records) ? records.length : undefined,
@@ -358,6 +387,7 @@ export function summarizeTaskResult(result) {
       reportPath: result.reportPath,
       reportHtmlPath: result.reportHtmlPath,
       aiAnalysisHtmlPath: result.aiAnalysisHtmlPath,
+      reports: result.reports, // 每模型一篇（供桌面逐篇打开）
     };
   }
   if (result.batchId) {
@@ -368,6 +398,7 @@ export function summarizeTaskResult(result) {
       reportPath: result.reportPath,
       reportHtmlPath: result.reportHtmlPath,
       aiAnalysisHtmlPath: result.aiAnalysisHtmlPath,
+      reports: result.reports, // 每模型一篇（供桌面逐篇打开）
     };
   }
   return {

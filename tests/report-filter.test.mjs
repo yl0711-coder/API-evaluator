@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseReportId, matchesReportFilter, computeDateBounds } from "../src/report-id.js";
+import { parseReportId, matchesReportFilter, computeDateBounds, reportChannelModelOptions } from "../src/report-id.js";
 
 const A = parseReportId("小侠_deepseek-v4-flash_quickverify_20260601_095752_3f2a");
 const B = parseReportId("Nexus-claude-6.3x_claude-opus-4-7_scenario_20260615_101010_ab12");
@@ -66,6 +66,46 @@ test("日期区间：起始+终止双闭区间", () => {
 test("多条件 AND 组合", () => {
   assert.equal(matchesReportFilter(B, { channel: "Nexus-claude-6.3x", type: "scenario", from: "20260610", to: "20260620" }), true);
   assert.equal(matchesReportFilter(B, { channel: "Nexus-claude-6.3x", type: "quickverify" }), false); // 种类不符
+});
+
+// —— 渠道↔模型联动（reportChannelModelOptions）——
+// 造一批报告：渠道 甲 挂 m1/m2；渠道 乙 挂 m2/m3。含一条多目标（无渠道/模型）与一条老报告，均应被忽略。
+const LINK_LIST = [
+  parseReportId("甲_m1_scenario_20260601_090000_a1"),
+  parseReportId("甲_m2_scenario_20260602_090000_a2"),
+  parseReportId("乙_m2_scenario_20260603_090000_b1"),
+  parseReportId("乙_m3_scenario_20260604_090000_b2"),
+  parseReportId("多目标_scenario_20260605_090000_cd"),
+  parseReportId("admission-20260606-090000-deadbeef"),
+];
+
+test("联动：未选任何项 → 渠道/模型各取全集（去重排序，忽略多目标/老报告）", () => {
+  const { channels, models } = reportChannelModelOptions(LINK_LIST, {});
+  assert.deepEqual(channels, ["甲", "乙"].sort());
+  assert.deepEqual(models, ["m1", "m2", "m3"].sort());
+});
+
+test("联动：选了渠道『甲』→ 模型只剩甲的 m1/m2；渠道选项不因此自减", () => {
+  const { channels, models } = reportChannelModelOptions(LINK_LIST, { channel: "甲" });
+  assert.deepEqual(models, ["m1", "m2"].sort());
+  assert.deepEqual(channels, ["甲", "乙"].sort(), "只约束模型，不约束渠道自身");
+});
+
+test("联动：选了模型『m2』→ 渠道只剩挂 m2 的 甲/乙；模型选项不因此自减", () => {
+  const { channels, models } = reportChannelModelOptions(LINK_LIST, { model: "m2" });
+  assert.deepEqual(channels, ["甲", "乙"].sort());
+  assert.deepEqual(models, ["m1", "m2", "m3"].sort(), "只约束渠道，不约束模型自身");
+});
+
+test("联动：选了模型『m3』→ 渠道只剩『乙』", () => {
+  const { channels } = reportChannelModelOptions(LINK_LIST, { model: "m3" });
+  assert.deepEqual(channels, ["乙"]);
+});
+
+test("联动：渠道『甲』+模型『m2』一致 → 两者互留", () => {
+  const { channels, models } = reportChannelModelOptions(LINK_LIST, { channel: "甲", model: "m2" });
+  assert.ok(channels.includes("甲"));
+  assert.ok(models.includes("m2"));
 });
 
 test("computeDateBounds：终止不早于起始、起始不晚于终止，空则退回报告范围", () => {

@@ -30,6 +30,7 @@
           <button class="nav-button" type="button" data-page="quick-test">快速测试</button>
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
           <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
+          <button class="nav-button" type="button" data-page="auto-test-config" data-requires-admin>自动测试配置</button>
         </div>
         <div class="nav-group">
           <span>总结与交付</span>
@@ -46,6 +47,7 @@
       </aside>
 
       <main class="main">
+        <div id="high-risk-banner" class="high-risk-banner hidden" role="alert"></div>
         <div id="edition-banner" class="edition-banner hidden"></div>
 
         <div id="demo-mode-banner" class="demo-banner hidden">
@@ -1167,6 +1169,27 @@
               </span>
             </label>
 
+            <div class="form-section-title">
+              <h3>测试周期</h3>
+              <p class="section-desc">「模型管理」里，可测模型若超过该天数未再测，会标为明黄「需测」；从未测过的模型始终标「需测」。0＝关闭「已测过」的催测（不影响「从未测过」）。</p>
+            </div>
+            <label class="wide">
+              测试周期（天，0=关闭催测）
+              <input id="set-test-cycle-days" type="number" min="0" step="1" inputmode="numeric" placeholder="0" />
+            </label>
+
+            <div class="form-section-title">
+              <h3>高危报告提示</h3>
+              <p class="section-desc">开启后，分数较低/高危的测验报告（含自动测试产生的）会在网站顶部以红底横幅逐条列出，点开即消除。仅提示开启之后新产生的报告。</p>
+            </div>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-high-risk-alert" />
+              <span>
+                高危报告提示
+                <small>判危口径：准入等级 D/E/F/X、稳定性/场景结论「不推荐」、快速验证「可疑」，或综合分/质量分 &lt; 60、成功率 &lt; 80% —— 任一命中即提示。</small>
+              </span>
+            </label>
+
             <div class="form-section-title" data-requires-admin>
               <h3>new-api 网关</h3>
               <p class="section-desc">配置后“从 new-api 导入 / 渠道同步”即可用；保存即生效、无需重启。令牌仅本机保存、不回显。</p>
@@ -1187,6 +1210,114 @@
 
             <div class="wide action-row">
               <button id="save-settings" class="primary" type="submit">保存设置</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="page" id="auto-test-config" data-requires-admin hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 自动化</span>自动测试配置</h2>
+              <p class="section-desc">仅超级管理员可见。为某渠道的某模型配置定时自动测试：到点后平台自动跑一次对应测试并生成报告。调度器为进程内运行——仅在服务器运行时生效，重启后按下次运行时间自动追补。</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="action-row atc-list-head">
+              <h3>已配置的自动测试作业</h3>
+              <button type="button" id="atc-reload" class="secondary">刷新</button>
+            </div>
+            <div id="atc-job-list">正在加载…</div>
+          </div>
+
+          <form id="atc-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3 id="atc-form-title">新建自动测试作业</h3>
+            </div>
+            <input type="hidden" id="atc-job-id" value="" />
+            <label class="wide">
+              作业名称（可选）
+              <input type="text" id="atc-name" placeholder="如：每日快检 GPT-4o" maxlength="120" />
+            </label>
+            <label>
+              被测渠道
+              <select id="atc-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select id="atc-model-select" disabled></select>
+            </label>
+            <label>
+              测试周期（小时）
+              <input type="number" id="atc-period" min="0.5" step="any" value="24" />
+              <small class="field-hint">支持小数，最短 0.5 小时（半小时）。</small>
+            </label>
+            <label>
+              测试种类
+              <select id="atc-kind">
+                <option value="" selected>请选择测试种类…</option>
+                <option value="quick">快速测试（连通性快检）</option>
+                <option value="admission">准入评测（计费/分词器审计）</option>
+                <option value="stability">稳定性测试（多轮成功率）</option>
+                <option value="scenario">场景测试（跑选定场景题）</option>
+              </select>
+            </label>
+
+            <div id="atc-opt-stability" class="atc-opt wide" hidden>
+              <label>
+                测试轮数
+                <select id="atc-rounds">
+                  <option value="1">1 轮：快速功能测试</option>
+                  <option value="3">3 轮：冒烟验证</option>
+                  <option value="10" selected>10 轮：基础稳定性</option>
+                  <option value="30">30 轮：较完整稳定性</option>
+                </select>
+              </label>
+              <label>
+                并发数
+                <select id="atc-concurrency">
+                  <option value="1" selected>1：顺序测试，最稳妥</option>
+                  <option value="2">2：轻并发</option>
+                  <option value="3">3：观察网关波动</option>
+                </select>
+              </label>
+              <label class="wide">
+                测试文案场景
+                <select id="atc-prompt-preset"></select>
+                <small class="field-hint">选择一个代表性场景，工具会自动填入测试 Prompt。也可以选择自定义后自己写。</small>
+              </label>
+              <label class="wide">
+                当前测试文案（选择“自定义”后可编辑）
+                <textarea id="atc-prompt" rows="4"></textarea>
+              </label>
+            </div>
+            <div id="atc-opt-admission" class="atc-opt wide" hidden>
+              <label>
+                测试包
+                <select id="atc-package-level">
+                  <option value="quick">快速准入：5 次请求</option>
+                  <option value="standard" selected>标准准入：11-12 次请求</option>
+                  <option value="deep">深度准入：12-13 次请求</option>
+                </select>
+                <small class="field-hint">新渠道首次建议选标准准入。快速准入用于低成本复核，深度准入会多做轻量长上下文。</small>
+              </label>
+            </div>
+            <div id="atc-opt-scenario" class="atc-opt wide" hidden>
+              <div class="wide" id="atc-scenario-picker"></div>
+              <select id="atc-scenario-select" multiple hidden></select>
+              <small class="wide field-hint">不选则默认「连通性：基础响应」。</small>
+            </div>
+
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="atc-enabled" checked />
+              <span>
+                启用
+                <small>保存后按周期自动运行；取消勾选则只保存不自动跑。</small>
+              </span>
+            </label>
+            <div class="wide action-row atc-form-actions">
+              <button type="submit" class="primary">保存作业</button>
+              <button type="button" id="atc-reset" class="secondary">清空表单</button>
             </div>
           </form>
         </section>

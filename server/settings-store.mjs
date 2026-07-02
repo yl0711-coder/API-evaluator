@@ -8,7 +8,7 @@ import { writeJsonAtomic } from "./utils.mjs";
 
 // 注意：new-api 系统访问令牌（敏感）不在此——它走加密库（secret-store），绝不入 settings.json。
 const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic"];
-const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableAutoTag: true, customTags: [], scenarioGroups: [...DEFAULT_SCENARIO_GROUPS], newapiBaseUrl: "", newapiUserId: "" };
+const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableAutoTag: true, customTags: [], scenarioGroups: [...DEFAULT_SCENARIO_GROUPS], newapiBaseUrl: "", newapiUserId: "", testCycleDays: 0, enableHighRiskAlert: false };
 
 let cache = null;
 
@@ -29,6 +29,10 @@ function normalize(raw) {
     // new-api 网关非密配置（脱离环境变量）；令牌不在此，走加密库（见 newapi-tag-writer / server.mjs）。
     newapiBaseUrl: typeof raw?.newapiBaseUrl === "string" ? raw.newapiBaseUrl : "",
     newapiUserId: typeof raw?.newapiUserId === "string" ? raw.newapiUserId : "",
+    // 测试周期（天）：模型「已测过但超过该天数未再测」→ 显示「需测」；0=关闭该催促（从未测过的仍恒为「需测」）。
+    testCycleDays: Number.isFinite(Number(raw?.testCycleDays)) ? Math.max(0, Math.trunc(Number(raw.testCycleDays))) : 0,
+    // 高危报告提示：开启后分数较低/高危的报告（含自动测试）在网站顶部红底列出。默认关，仅显式 true 开。
+    enableHighRiskAlert: raw?.enableHighRiskAlert === true,
   };
 }
 

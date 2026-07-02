@@ -46,14 +46,17 @@ export function formatTaskType(type) {
 }
 
 export function formatBatchAdmissionResult(result) {
+  const reports = Array.isArray(result.reports) ? result.reports.filter(Boolean) : [];
+  const reportLines = reports.length
+    ? [`每模型报告（共 ${reports.length} 篇，见报告中心/浮层）：`, ...reports.map((r) => `- ${r.label || r.model || "报告"}`)]
+    : [`报告文件：${result.reportPath || "-"}`];
   const lines = [
     `批次：${result.batchId}`,
     `被测 API：${result.profileCount}`,
     `同时测试 API 数：${result.maxParallelProfiles}`,
     `测试包：${result.packageLevel}`,
     `总耗时：${result.durationMs} ms`,
-    `报告文件：${result.reportPath || "-"}`,
-    ...(result.aiAnalysisHtmlPath ? [`AI 分析报告（独立 HTML）：${result.aiAnalysisHtmlPath}`] : []),
+    ...reportLines,
     `JSON 原始结果：${result.rawJsonPath || "-"}`,
   ];
   return lines.join("\n");
@@ -131,6 +134,13 @@ export function formatStabilityResult(result) {
 }
 
 export function formatScenarioResult(result) {
+  const reports = Array.isArray(result.reports) ? result.reports.filter(Boolean) : [];
+  const reportLines = reports.length
+    ? [`每模型报告（共 ${reports.length} 篇，见报告中心/浮层）：`, ...reports.map((r) => `- ${r.label || r.model || "报告"}`)]
+    : [
+        `报告文件：${result.reportPath || "-"}`,
+        ...(result.aiAnalysisHtmlPath ? [`AI 分析报告（独立 HTML）：${result.aiAnalysisHtmlPath}`] : []),
+      ];
   const lines = [
     `测试 ID：${result.runId}`,
     `被测 API：${result.profileCount}`,
@@ -138,8 +148,7 @@ export function formatScenarioResult(result) {
     `每个场景重复次数：${result.repeats}`,
     `总耗时：${result.durationMs} ms`,
     ...formatConsumptionLines(result),
-    `报告文件：${result.reportPath || "-"}`,
-    ...(result.aiAnalysisHtmlPath ? [`AI 分析报告（独立 HTML）：${result.aiAnalysisHtmlPath}`] : []),
+    ...reportLines,
     `JSON 原始结果：${result.rawJsonPath || "-"}`,
   ];
   return lines.join("\n");
