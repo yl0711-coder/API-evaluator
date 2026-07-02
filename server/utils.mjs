@@ -1,7 +1,8 @@
 // server/utils.mjs
 // 通用纯函数工具：JSON 安全解析、文本脱敏与摘要、JSONL 追加写与尾部读取（带大小封顶）、
 // 数值/百分比统计与格式化等，供各模块复用。
-import { appendFile, open, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { HttpRequestError } from "./http-request.mjs";
 
 export const DEFAULT_JSONL_MAX_BYTES = 8 * 1024 * 1024;
@@ -42,6 +43,16 @@ export function redactSensitiveText(text) {
     (value, pattern) => value.replace(pattern, "[redacted-secret]"),
     String(text || ""),
   );
+}
+
+// 原子写 JSON：建目录 → 写同目录临时文件 → rename 到位。rename 在同一文件系统上是原子的，
+// 写一半崩溃/断电时目标文件要么是旧内容完好、要么是新内容完好，绝不留下半截 JSON——
+// 否则加载器 try/catch 会把损坏文件静默回落成空/默认（密钥库损坏更会令全部渠道 Key 变不可读）。
+export async function writeJsonAtomic(file, value) {
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await writeFile(tmp, JSON.stringify(value, null, 2), "utf8");
+  await rename(tmp, file);
 }
 
 export async function appendJsonLine(file, value, { maxBytes = DEFAULT_JSONL_MAX_BYTES, tailBytes = DEFAULT_JSONL_TAIL_BYTES } = {}) {

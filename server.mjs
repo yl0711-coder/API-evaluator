@@ -3,7 +3,7 @@ import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
 import { getAllScenariosForAdmin, loadScenarioOverrides, upsertScenario, deleteScenario, renameScenarioGroup, clearScenarioGroup } from "./server/scenarios/index.mjs";
-import { ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
+import { DATA_DIR, ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
 import { ensureDataDir, readRecentErrors, readRecentRequests, readRecentTasks, readRecentTestRuns } from "./server/data-store.mjs";
 import {
   analyzeClientLogs,
@@ -34,6 +34,7 @@ import { createTaskManager } from "./server/task-manager.mjs";
 import { buildSupportBundle } from "./server/support-bundle.mjs";
 import {
   getDbHealth,
+  pruneHistory,
   pruneReports,
   queryProfileRunSummaries,
   queryRecentReports,
@@ -106,7 +107,16 @@ const taskManager = createTaskManager({
   buildUserErrorMessage,
 });
 
-await ensureDataDir();
+try {
+  await ensureDataDir();
+} catch (error) {
+  // 启动第一个碰 /data 卷的调用，且在 listen() 之前：卷只读挂载 / 属主 UID 不符 / 卷写满
+  // 都会在此抛错，进程在绑定端口前退出，容器只见一坨堆栈、连 /api/health 都起不来。
+  // 兜成可诊断的运维提示再退出，避免重启死循环时无从下手。
+  console.error(`[启动失败] 无法初始化数据目录 ${DATA_DIR}：${error?.message || error}`);
+  console.error("请检查 /data 卷是否已挂载、是否可写、属主 UID 是否匹配（常见：EACCES 权限不符 / EROFS 只读挂载 / ENOSPC 卷写满）。");
+  process.exit(1);
+}
 await loadSettings(); // 暖运行时设置缓存（AI 总结模型 / LiveBench / 安全题开关）
 await loadScenarioOverrides(); // 读回超管的场景编辑覆盖层（/data），合并到内置 bank 之上
 // new-api 系统令牌走加密库：启动解密一次缓存进内存（readConfig 同步读）。
@@ -1043,6 +1053,14 @@ async function pruneReportsOnStartup() {
     }
     if (removed.length) {
       console.log(`[reports] 已清理 ${removed.length} 份过期/超量报告`);
+    }
+    // 同步清理请求/运行/告警/指纹历史表，防 evaluator.db 只增不减吃满卷。
+    const history = await pruneHistory({
+      retentionDays: Number(process.env.EVALUATOR_HISTORY_RETENTION_DAYS || 90),
+    });
+    const historyTotal = Object.values(history).reduce((sum, n) => sum + (n || 0), 0);
+    if (historyTotal) {
+      console.log(`[history] 已清理 ${historyTotal} 条过期/超量历史记录（${JSON.stringify(history)}）`);
     }
   } catch {
     // 清理失败不应阻断启动

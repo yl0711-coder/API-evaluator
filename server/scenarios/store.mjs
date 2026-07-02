@@ -3,10 +3,10 @@
 // 编辑/新增/删除即时生效；并把改动写进「覆盖层」JSON（持久卷 /data 下的 CONFIG_DIR），
 // 启动时 loadScenarioOverrides() 读回、按 id 合并到内置 bank 之上，故重启/换镜像后仍在。
 // 内置 server/scenarios/*.mjs 保持纯代码不被改写；覆盖层只 JSON.stringify 纯数据，绝不拼接用户 JS。
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
 import { SCENARIO_OVERRIDES_FILE } from "../paths.mjs";
+import { writeJsonAtomic } from "../utils.mjs";
 
 import { BASIC_SCENARIOS } from "./basic.mjs";
 import { CODING_SCENARIOS } from "./coding.mjs";
@@ -105,9 +105,11 @@ const BANK_META = [
 const clone = (arr) => JSON.parse(JSON.stringify(Array.isArray(arr) ? arr : []));
 
 let BANKS = null;
-// 编辑覆盖层（按 id）：upserts=新建/改过的场景（含仅改 group），deletes=被删的【内置】场景 id 墓碑。
+// 编辑覆盖层（按 id）：upserts=新建/整题改过的场景，deletes=被删的【内置】场景 id 墓碑，
+// groups=【内置】场景的字段级分组补丁（id→组名）。分组补丁与整题 upsert 正交：仅改分组的内置题
+// 只落 groups 一个字段，绝不 pin 整题——否则日后镜像升级该内置题的 prompt/scorer 会被旧快照静默压住。
 // 不变量：同一 id 不同时在 upserts 与 deletes。写盘目标默认 SCENARIO_OVERRIDES_FILE，测试可覆盖。
-let overlay = { upserts: {}, deletes: [] };
+let overlay = { upserts: {}, deletes: [], groups: {} };
 let overridesFile = SCENARIO_OVERRIDES_FILE;
 // 内置场景 id 全集：删除内置项才需要墓碑；纯自定义 id 删除时从 upserts 移除即可。
 const builtinIds = new Set(Object.values(SOURCES).flatMap((arr) => (Array.isArray(arr) ? arr.map((s) => s.id) : [])));
@@ -131,6 +133,16 @@ function applyOverlay(bankList) {
     }
     if (!placed) bankList.find((b) => b.key === "custom").scenarios.push(next);
   }
+  // 分组补丁最后套：即便某内置题已被 upsert 整题替换，也再按 id 把 group 覆盖上去（字段级）。
+  for (const [id, group] of Object.entries(overlay.groups)) {
+    for (const b of bankList) {
+      const s = b.scenarios.find((x) => x.id === id);
+      if (s) {
+        s.group = group;
+        break;
+      }
+    }
+  }
 }
 
 function banks() {
@@ -151,10 +163,10 @@ export async function loadScenarioOverrides() {
       const raw = JSON.parse((await readFile(overridesFile, "utf8")) || "{}");
       overlay = normalizeOverlay(raw);
     } else {
-      overlay = { upserts: {}, deletes: [] };
+      overlay = { upserts: {}, deletes: [], groups: {} };
     }
   } catch {
-    overlay = { upserts: {}, deletes: [] };
+    overlay = { upserts: {}, deletes: [], groups: {} };
   }
   BANKS = null;
   return overlay;
@@ -169,13 +181,20 @@ function normalizeOverlay(raw) {
     }
   }
   const deletes = Array.isArray(raw?.deletes) ? [...new Set(raw.deletes.map((x) => String(x ?? "").trim()).filter(Boolean))] : [];
-  return { upserts, deletes };
+  const groups = {};
+  if (raw && typeof raw.groups === "object" && raw.groups) {
+    for (const [id, g] of Object.entries(raw.groups)) {
+      const name = String(g ?? "").trim();
+      if (name) groups[id] = name;
+    }
+  }
+  return { upserts, deletes, groups };
 }
 
-// 覆盖层落盘（建目录 + 写 JSON）。抛错由各调用方 try/catch 成 persistError。
+// 覆盖层落盘（原子写：建目录 → 临时文件 → rename）。抛错由各调用方 try/catch 成 persistError。
+// 写一半崩溃/断电时目标文件要么旧内容完好、要么新内容完好，绝不留半截 JSON 被启动时静默清空。
 async function persistOverlay() {
-  await mkdir(dirname(overridesFile), { recursive: true });
-  await writeFile(overridesFile, JSON.stringify({ version: 1, ...overlay }, null, 2), "utf8");
+  await writeJsonAtomic(overridesFile, { version: 1, ...overlay });
 }
 // 覆盖层记账小工具：记一次 upsert（顺带从墓碑移除）/ 记一次删除。
 function overlayUpsert(scn) {
@@ -184,6 +203,7 @@ function overlayUpsert(scn) {
 }
 function overlayDelete(id) {
   delete overlay.upserts[id];
+  delete overlay.groups[id]; // 场景没了，其分组补丁也随之作废，别留孤儿
   if (builtinIds.has(id) && !overlay.deletes.includes(id)) overlay.deletes.push(id);
 }
 
@@ -276,7 +296,13 @@ export async function renameScenarioGroup(oldName, newName, { persist = true } =
       }
     }
   }
-  const { persisted, persistError } = await persistChange(persist, () => changedScenarios.forEach(overlayUpsert));
+  // 内置题只记字段级分组补丁（不 pin 整题）；自定义题整题即真源，仍走 upsert。
+  const { persisted, persistError } = await persistChange(persist, () => {
+    for (const s of changedScenarios) {
+      if (builtinIds.has(s.id)) overlay.groups[s.id] = to;
+      else overlayUpsert(s);
+    }
+  });
   return { ok: true, changed: changedScenarios.length, persisted, persistError };
 }
 
@@ -293,7 +319,13 @@ export async function clearScenarioGroup(name, { persist = true } = {}) {
       }
     }
   }
-  const { persisted, persistError } = await persistChange(persist, () => changedScenarios.forEach(overlayUpsert));
+  // 内置题清掉其分组补丁（落回 bank 默认）；自定义题整题即真源，仍走 upsert（s.group 已删）。
+  const { persisted, persistError } = await persistChange(persist, () => {
+    for (const s of changedScenarios) {
+      if (builtinIds.has(s.id)) delete overlay.groups[s.id];
+      else overlayUpsert(s);
+    }
+  });
   return { ok: true, changed: changedScenarios.length, persisted, persistError };
 }
 
@@ -311,7 +343,7 @@ export const TEST_SCENARIOS = getTestScenarios();
 // —— 测试钩子 ——
 export function __resetStoreForTest() {
   BANKS = null;
-  overlay = { upserts: {}, deletes: [] };
+  overlay = { upserts: {}, deletes: [], groups: {} };
   overridesFile = SCENARIO_OVERRIDES_FILE;
 }
 export function __setScenarioOverridesFileForTest(file) {

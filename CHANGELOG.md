@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-02
+
 ### Removed
 - **new-api write operations** — removed pushing channels/models to new-api and delete-sync
   (including the `enableDeleteSync` setting and its UI). The only external write features were
@@ -119,7 +121,8 @@ Initial open-source release.
 ### Fixed
 - Concurrency-queue slot leak on the task-manager cancel path.
 
-[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.3.1...dev
+[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.4.6...dev
+[0.4.6]: https://github.com/yl0711-coder/API-evaluator/compare/v0.4.3...v0.4.6
 [0.3.1]: https://github.com/yl0711-coder/API-evaluator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yl0711-coder/API-evaluator/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yl0711-coder/API-evaluator/releases/tag/v0.2.0

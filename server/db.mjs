@@ -694,6 +694,38 @@ export async function pruneReports({ retentionDays = 30, maxTotal = 2000, now, p
   }
 }
 
+// 历史留存清理：给「只增不减」的历史表加与报告一致的「保留天数 + 上限（保留最新）」策略，
+// 防 evaluator.db 长期运行下把卷吃满。按各表的时间列判过期，按自增 id 判超量。
+// 表名/列名/上限均为下方硬编码常量（非用户输入），可安全内插进 SQL。
+const HISTORY_RETENTION = [
+  { table: "test_requests", tsColumn: "logged_at", maxTotal: 50000 },
+  { table: "test_runs", tsColumn: "logged_at", maxTotal: 10000 },
+  { table: "regression_alerts", tsColumn: "created_at", maxTotal: 5000 },
+  { table: "model_fingerprints", tsColumn: "created_at", maxTotal: 5000 },
+];
+
+export async function pruneHistory({ retentionDays = 90, now, path } = {}) {
+  const summary = {};
+  try {
+    const db = await getDatabase(path);
+    if (!db) return summary;
+    const cutoffIso = new Date((now ?? Date.now()) - retentionDays * 24 * 3600 * 1000).toISOString();
+    for (const { table, tsColumn, maxTotal } of HISTORY_RETENTION) {
+      // 过期：时间列早于 cutoff（NULL 时间不动，避免误删刚写入未落时间戳的行）。
+      const expired = db.prepare(`DELETE FROM ${table} WHERE ${tsColumn} IS NOT NULL AND ${tsColumn} < ?`).run(cutoffIso).changes;
+      // 超量：只保留 id 最大的 maxTotal 条（id 自增即时序），其余更旧的删掉。
+      const overflow = db
+        .prepare(`DELETE FROM ${table} WHERE id NOT IN (SELECT id FROM ${table} ORDER BY id DESC LIMIT ?)`)
+        .run(Math.max(0, Math.floor(maxTotal))).changes;
+      summary[table] = expired + overflow;
+    }
+    return summary;
+  } catch (error) {
+    noteDbError("pruneHistory", error);
+    return summary;
+  }
+}
+
 // 记账：评测完成后由 persistTestRun（test-runner.mjs）写入预估 + 真实成本（按 run_by）。
 // 供累计花费汇总 querySpendSummary 读取。
 export async function recordSpend(entry, { path } = {}) {

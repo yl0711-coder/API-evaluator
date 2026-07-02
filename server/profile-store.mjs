@@ -3,13 +3,12 @@
 // 判重按 url + model + key 哈希全等；Key 以哈希参与判重，明文不外泄。
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { PROFILES_FILE } from "./paths.mjs";
 import { loadModelConfigs, saveModelConfigs } from "./db.mjs";
 import { normalizePricePerMillion } from "./costing.mjs";
 import { buildApiKeyRef, getSecretStorageName, readProfileApiKey, saveProfileApiKey } from "./secret-store.mjs";
-import { requiredString } from "./utils.mjs";
+import { requiredString, writeJsonAtomic } from "./utils.mjs";
 
 // API Key 的单向指纹（sha256），用于"重复渠道"判定（url+模型+key 全一致即重复），不暴露 key。
 export function hashApiKey(key) {
@@ -197,8 +196,7 @@ export async function saveProfiles(profiles) {
   if (await saveModelConfigs(sanitized)) {
     return;
   }
-  await mkdir(dirname(PROFILES_FILE), { recursive: true });
-  await writeFile(PROFILES_FILE, JSON.stringify(sanitized, null, 2), "utf8");
+  await writeJsonAtomic(PROFILES_FILE, sanitized);
 }
 
 async function migrateProfileSecrets(profiles) {

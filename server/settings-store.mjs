@@ -1,10 +1,10 @@
 // server/settings-store.mjs
 // 运行时平台设置（完全脱离环境变量）：AI 总结模型、场景测试是否含 LiveBench / 安全红线题。
 // 真源是 配置/settings.json + 内存缓存；未保存过时一律默认全关（AI 分析默认用被测模型自己）。
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
 import { SETTINGS_FILE } from "./paths.mjs";
+import { writeJsonAtomic } from "./utils.mjs";
 
 // 注意：new-api 系统访问令牌（敏感）不在此——它走加密库（secret-store），绝不入 settings.json。
 const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic"];
@@ -50,8 +50,7 @@ export async function loadSettings() {
 // 合并写回（只认 patch 里的已知字段），更新缓存并落盘。
 export async function saveSettings(patch) {
   const next = normalize({ ...getSettings(), ...patch });
-  await mkdir(dirname(SETTINGS_FILE), { recursive: true });
-  await writeFile(SETTINGS_FILE, JSON.stringify(next, null, 2), "utf8");
+  await writeJsonAtomic(SETTINGS_FILE, next);
   cache = next;
   return next;
 }

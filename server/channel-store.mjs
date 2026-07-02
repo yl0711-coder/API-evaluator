@@ -2,9 +2,9 @@
 // 渠道存储：SQLite(channels 表) + JSON 兜底。明文 key 经 secret-store 加密落库，
 // 渠道记录只存 apiKeyRef + keyHash（单向指纹，判重用），明文绝不落库 / 不下发浏览器。
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { CHANNELS_FILE } from "./paths.mjs";
+import { writeJsonAtomic } from "./utils.mjs";
 import { loadChannels as dbLoadChannels, saveChannels as dbSaveChannels } from "./db.mjs";
 import { deleteProfileApiKey, readProfileApiKey, saveProfileApiKey } from "./secret-store.mjs";
 import { hashApiKey, loadProfiles } from "./profile-store.mjs";
@@ -20,8 +20,7 @@ export async function loadChannels() {
 
 export async function saveChannels(channels) {
   if (await dbSaveChannels(channels)) return;
-  await mkdir(dirname(CHANNELS_FILE), { recursive: true });
-  await writeFile(CHANNELS_FILE, JSON.stringify(channels, null, 2), "utf8");
+  await writeJsonAtomic(CHANNELS_FILE, channels);
 }
 
 // 把明文 key 存进加密库，返回带 apiKeyRef/keyStorage/hasKey/keyHash 的渠道（明文不落库）。

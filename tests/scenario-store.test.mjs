@@ -311,11 +311,17 @@ test("renameScenarioGroup persist=true：改动进覆盖层，重启（重载）
   const file = join(dir, "scenario-overrides.json");
   try {
     __setScenarioOverridesFileForTest(file);
-    const before = getAllScenariosForAdmin().filter((s) => s.resolvedGroup === "基础").length;
+    const renamedIds = getAllScenariosForAdmin().filter((s) => s.resolvedGroup === "基础").map((s) => s.id);
+    const before = renamedIds.length;
     const r = await renameScenarioGroup("基础", "入门", { persist: true });
     assert.equal(r.persisted, true);
     const saved = JSON.parse(await readFile(file, "utf8"));
-    assert.ok(Object.values(saved.upserts).length > 0 && Object.values(saved.upserts).every((s) => s.group === "入门"), "各 upsert 带显式 group=入门");
+    // 内置题走字段级分组补丁 groups，绝不 pin 整题（N5 修复）：这些 id 只出现在 saved.groups，且不进 saved.upserts。
+    assert.ok(renamedIds.length > 0);
+    for (const id of renamedIds) {
+      assert.equal(saved.groups[id], "入门", `${id} 的分组补丁记为「入门」`);
+      assert.equal(id in (saved.upserts || {}), false, `${id} 未被整题钉进 upserts`);
+    }
 
     // 模拟重启：清内存 → 读回覆盖层。
     __resetStoreForTest();
@@ -324,6 +330,31 @@ test("renameScenarioGroup persist=true：改动进覆盖层，重启（重载）
     const admin = getAllScenariosForAdmin();
     assert.equal(admin.some((s) => s.resolvedGroup === "基础"), false, "重载后无「基础」");
     assert.ok(admin.filter((s) => s.resolvedGroup === "入门").length >= before, "重载后原「基础」题解析为「入门」");
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+test("N5 守卫：内置题分组重命名不 pin 整题——镜像升级其 body 仍能透出", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scn-ovr-n5-"));
+  const file = join(dir, "scenario-overrides.json");
+  try {
+    __setScenarioOverridesFileForTest(file);
+    const builtin = getAllScenariosForAdmin().find((s) => s.bankKey === "basic");
+    await renameScenarioGroup("基础", "入门", { persist: true });
+
+    const saved = JSON.parse(await readFile(file, "utf8"));
+    // 关键不变量：内置题 id 只落 groups 补丁，绝不出现在 upserts（否则 body 被冻结，压住日后镜像更新）。
+    assert.equal(saved.groups[builtin.id], "入门");
+    assert.equal(builtin.id in (saved.upserts || {}), false, "内置题未被整题钉入 upserts");
+
+    // 重载后：分组=入门，但 prompt 仍来自实时 SOURCES（== 当前内置题 body），未被旧快照覆盖。
+    __resetStoreForTest();
+    __setScenarioOverridesFileForTest(file);
+    await loadScenarioOverrides();
+    const after = getAllScenariosForAdmin().find((s) => s.id === builtin.id);
+    assert.equal(after.resolvedGroup, "入门", "分组补丁生效");
+    assert.equal(after.prompt, builtin.prompt, "body 仍随实时内置源，未被冻结");
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }

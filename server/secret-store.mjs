@@ -9,6 +9,7 @@ import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { LOCAL_SECRET_FILE, LOCAL_VAULT_FILE } from "./paths.mjs";
 import { envCompat } from "./env-compat.mjs";
+import { writeJsonAtomic } from "./utils.mjs";
 
 const KEYCHAIN_SERVICE = "Model Evaluator";
 const execFileAsync = promisify(execFile);
@@ -113,8 +114,7 @@ async function writeLocalVaultSecret(ref, value) {
   const vault = await loadLocalVault();
   await ensureLocalSecretKey();
   vault[ref] = encryptLocalSecret(value);
-  await mkdir(dirname(LOCAL_VAULT_FILE), { recursive: true });
-  await writeFile(LOCAL_VAULT_FILE, JSON.stringify(vault, null, 2), "utf8");
+  await writeJsonAtomic(LOCAL_VAULT_FILE, vault);
 }
 
 async function deleteLocalVaultSecret(ref) {
@@ -126,7 +126,7 @@ async function deleteLocalVaultSecret(ref) {
     return;
   }
   delete vault[ref];
-  await writeFile(LOCAL_VAULT_FILE, JSON.stringify(vault, null, 2), "utf8");
+  await writeJsonAtomic(LOCAL_VAULT_FILE, vault);
 }
 
 async function loadLocalVault() {
