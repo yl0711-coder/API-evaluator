@@ -76,7 +76,7 @@ test("stability reports contain useful conclusions and no API key", async () => 
     assert.match(html, /模型评测平台本地生成/);
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -93,7 +93,7 @@ test("report filenames are sanitized before writing to report directory", async 
     assert.match(await readFile(files.markdownPath, "utf8"), /# Test/);
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 

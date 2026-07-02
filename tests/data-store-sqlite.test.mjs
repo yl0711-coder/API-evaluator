@@ -34,7 +34,7 @@ test("ensureDataDir backfills requests.jsonl into SQLite and reads prefer SQLite
 
     db.closeDatabase();
   } finally {
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
     delete process.env.EVALUATOR_DATA_DIR;
   }
 });

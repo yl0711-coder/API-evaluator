@@ -83,6 +83,6 @@ test("regression_alerts 往返 + queryProfileRunSummaries", async () => {
     assert.equal(alerts[0].severity, "high");
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });

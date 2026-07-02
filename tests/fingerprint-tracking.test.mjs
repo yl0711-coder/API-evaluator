@@ -180,6 +180,6 @@ test("DB 往返 + trackModelFingerprint 端到端：基线→偷换", async () =
     assert.equal(peerRows.length, 0); // 目前只有 chan-1 的数据
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });

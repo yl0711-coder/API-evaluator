@@ -49,7 +49,7 @@ test("profiles never persist or export real API keys", async () => {
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
     delete process.env.EVALUATOR_SECRET_STORE;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -113,7 +113,7 @@ test("imported profiles do not trust external api key references", async () => {
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
     delete process.env.EVALUATOR_SECRET_STORE;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -139,7 +139,7 @@ test("profiles support trusted baseline role", async () => {
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
     delete process.env.EVALUATOR_SECRET_STORE;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -192,6 +192,6 @@ test("profiles keep optional token unit prices for cost reports", async () => {
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
     delete process.env.EVALUATOR_SECRET_STORE;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
