@@ -5,8 +5,9 @@ node_modules/
 # Build output (the Docker image / CI builds this from source)
 dist/
 
-# Internal/dev docs — not published; public docs live in README only
-docs/
+# Internal/dev docs at repo root — not published; public docs live in README only.
+# Anchored with a leading slash so it does NOT match src/docs/ (bundled by the frontend via ?raw import).
+/docs/
 
 # Local environment & secrets — NEVER commit
 .env

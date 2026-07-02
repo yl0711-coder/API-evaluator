@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-07-02
+
+### Fixed
+- **CI Docker build failed since 0.4.5** — the frontend imports `src/docs/*.md` via Vite's
+  `?raw`, but the `.gitignore` rule `docs/` also matched `src/docs/`, so those Markdown files
+  were never committed. Local builds passed (files on disk); the CI build (fresh checkout) had
+  no such files and `vite build` exited 1. Anchored the ignore to `/docs/` and committed
+  `src/docs/category-field.md` and `src/docs/scorer-mechanism.md`.
+
 ## [0.4.8] - 2026-07-02
 
 ### Changed
