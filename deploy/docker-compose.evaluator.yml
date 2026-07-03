@@ -10,7 +10,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: api-evaluator:latest
+    image: api-evaluator:0.5.0
     container_name: api-evaluator
     restart: unless-stopped
     # autoheal 看门狗据此标签认领本容器：健康检查判 unhealthy 时自动 restart（compose 自身不会因 unhealthy 重启）。
