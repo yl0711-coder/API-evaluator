@@ -78,6 +78,19 @@ test("normalizeJob：existing 保留 id/createdAt/运行态字段", () => {
   assert.equal(job.lastReportId, "rep_1");
 });
 
+test("normalizeJob：保留熔断运行态（consecutiveFailures / autoDisabledAt），缺省清零", () => {
+  const fresh = normalizeJob({ targetId: "t", kind: "quick", periodHours: 1 });
+  assert.equal(fresh.consecutiveFailures, 0, "新建默认 0");
+  assert.equal(fresh.autoDisabledAt, null);
+  const existing = { id: "atj_x", consecutiveFailures: 4, autoDisabledAt: "2026-07-03T00:00:00.000Z" };
+  const kept = normalizeJob({ targetId: "t", kind: "quick", periodHours: 1 }, existing);
+  assert.equal(kept.consecutiveFailures, 4, "load 归一化不得丢失熔断计数，否则熔断永不触发");
+  assert.equal(kept.autoDisabledAt, "2026-07-03T00:00:00.000Z");
+  // 脏值（负数/NaN）归零，杜绝坏数据。
+  assert.equal(normalizeJob({ targetId: "t", kind: "quick", periodHours: 1 }, { consecutiveFailures: -3 }).consecutiveFailures, 0);
+  assert.equal(normalizeJob({ targetId: "t", kind: "quick", periodHours: 1 }, { consecutiveFailures: "abc" }).consecutiveFailures, 0);
+});
+
 test("validateJob：缺 targetId / 非法 kind / 周期<0.5 → 返回错误串", () => {
   assert.match(validateJob(normalizeJob({ kind: "quick", periodHours: 1 })), /渠道与模型/);
   assert.equal(validateJob(normalizeJob({ targetId: "t", kind: "quick", periodHours: 1.5 })), null, "小数合法 → null");

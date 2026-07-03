@@ -107,6 +107,9 @@ const modelTargetForm = requireElement("#model-target-form");
 const modelTargetList = requireElement("#model-target-list");
 const modelTargetChannelSelect = requireElement("#model-target-channel");
 const modelTagFilter = requireElement("#model-tag-filter");
+// 高危报告横幅元素：须在此顶部声明。启动流程（顶层 await 块）会调 loadHighRiskAlerts()→renderHighRiskBanner()，
+// 若声明留在文件下方，届时该 const 仍处暂时性死区（TDZ），renderHighRiskBanner 引用会抛错、横幅永不显示。
+const highRiskBanner = requireElement("#high-risk-banner");
 const channelAdmin = createChannelAdmin({
   state,
   els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect, modelTagFilter },
@@ -678,6 +681,7 @@ quickVerifySubmit.addEventListener("click", async () => {
     });
     quickVerifyResult.textContent = formatQuickVerify(result);
     await loadRequests();
+    void loadHighRiskAlerts(); // 快检若判高危（含连通失败），立即置顶横幅，不等 60 秒轮询
   } catch (error) {
     quickVerifyResult.textContent = `快检失败：${error.message}`;
     quickFailurePanel.render(error, profileId);
@@ -1108,8 +1112,9 @@ wireUnauthorizedRedirect();
 try {
   await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), preloadSettings(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
   renderPageHelp("dashboard");
-  // 高危报告横幅：后台拉、吞掉任何异常——绝不阻塞首屏，也不让它拖垮整个启动。
-  loadHighRiskAlerts().catch(() => {});
+  // 高危横幅 fire-and-forget：绝不阻塞首屏后续初始化（api() 无超时，端点卡住时不能拖住顶层 await），
+  // 且吞掉 renderHighRiskBanner 自身的异常，避免它冒泡进外层 catch 触发整页错误兜底。
+  loadHighRiskAlerts().catch(() => {}); // 按开关拉一次（此时 state.settings 已就绪）
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
   // 给非技术用户一个可读的兜底，而不是空白。
@@ -1379,7 +1384,7 @@ function renderResultsViews() {
 }
 
 // —— 高危报告提示：网站顶部红底横幅，逐条列出未读高危报告，点开即消 ——
-const highRiskBanner = requireElement("#high-risk-banner");
+// （元素引用 highRiskBanner 已在文件顶部声明，避免启动时的暂时性死区，见那里的注释。）
 
 async function loadHighRiskAlerts() {
   if (!state.settings?.enableHighRiskAlert) {

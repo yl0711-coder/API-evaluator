@@ -36,7 +36,12 @@ function testTypeOf(result) {
 
 // 单篇报告（admission/stability/quickverify）的高危原因，非高危返回 null。
 function riskReasonSingle(result, type) {
-  if (type === "quick-verify") return result.verdict?.level === "suspect" ? "快速验证：疑似可疑" : null;
+  if (type === "quick-verify") {
+    if (result.verdict?.level !== "suspect") return null;
+    // 连通失败单独点名（用户最关心"没能联通"）：判词以 verdict.reasons 为准，其余可疑归为通用可疑。
+    const connFailed = (result.verdict?.reasons || []).some((r) => typeof r === "string" && r.startsWith("连通失败"));
+    return connFailed ? "快速验证：连通失败" : "快速验证：疑似可疑";
+  }
   if (type === "admission") {
     if (result.grade && BAD_GRADES.has(result.grade)) return `准入 ${result.grade} 级`;
     if (result.recommendation?.level === "fail") return "结论：不推荐";

@@ -244,6 +244,9 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/health") {
+    // autoTest.stale=true 表示调度器心跳超时（进程活着但定时器僵死）——容器健康检查据此判 unhealthy，
+    // 交给外部看门狗（autoheal / 编排器）重启。HTTP 本身仍返回 200，反代据 ok 判存活不受影响。
+    const autoTest = autoTestScheduler.getStatus();
     sendJson(res, 200, {
       ok: true,
       service: "evaluator-api",
@@ -251,6 +254,7 @@ async function handleApi(req, res) {
       proxyEnvDetected: hasProxyEnv(),
       safetyScenariosEnabled: getTestScenarios().some((scenario) => scenario.category === "safety"),
       version: APP_VERSION,
+      autoTest,
     });
     return;
   }
@@ -607,9 +611,15 @@ async function handleApi(req, res) {
         if (err) throw new JobValidationError(err);
         if (!runnableIds.has(next.targetId)) throw new JobValidationError("被测目标不存在或不可运行（渠道可能已删除/停用）。");
         // 新建、或改动周期/由停用转启用后：重算 nextRunAt；已有且未改则沿用旧值。停用则清空。
-        const cadenceChanged = !existing || existing.periodHours !== next.periodHours || (!existing.enabled && next.enabled);
+        const reEnabled = existing && !existing.enabled && next.enabled;
+        const cadenceChanged = !existing || existing.periodHours !== next.periodHours || reEnabled;
         if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next.periodHours);
         if (!next.enabled) next.nextRunAt = null;
+        // 手动重新启用（含熔断自动停用后的恢复）：清零连续失败计数与自动停用标记，给作业一次干净的重试。
+        if (reEnabled) {
+          next.consecutiveFailures = 0;
+          next.autoDisabledAt = null;
+        }
         const idx = jobs.findIndex((j) => j.id === next.id);
         if (idx >= 0) jobs[idx] = next;
         else jobs.push(next);
@@ -936,6 +946,7 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/tests/quick-verify") {
     const body = await readJson(req);
     const result = await runQuickVerify(body);
+    await noteRunIfEnabled(result); // 高危报告提示：手动快检（含连通失败→suspect）也按开关判危置顶
     openReportInBrowser(result.reportHtmlPath);
     sendJson(res, 200, result);
     return;

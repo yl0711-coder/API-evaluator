@@ -95,7 +95,15 @@ export function normalizeJob(raw, existing = null) {
     lastStatus: existing?.lastStatus ?? raw.lastStatus ?? null,
     lastReportId: existing?.lastReportId ?? raw.lastReportId ?? null,
     lastError: existing?.lastError ?? raw.lastError ?? null,
+    // 连续失败计数 + 自动停用时刻（熔断用）：同为运行态，须在此保留，否则每次 load 归一化会丢失、熔断永不生效。
+    consecutiveFailures: clampFailures(existing?.consecutiveFailures ?? raw.consecutiveFailures),
+    autoDisabledAt: existing?.autoDisabledAt ?? raw.autoDisabledAt ?? null,
   };
+}
+
+function clampFailures(v) {
+  const n = Math.trunc(Number(v));
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function normalizeOptions(raw) {

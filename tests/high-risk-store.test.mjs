@@ -90,6 +90,17 @@ test("quickverify：verdict suspect 命中；ok/ watch 不报", () => {
   assert.equal(collectHighRiskReports({ type: "quick-verify", verdict: { level: "watch" }, reportHtmlPath: html("q_quickverify_20260101_000000_h3") }).length, 0);
 });
 
+test("quickverify：连通失败（suspect + reasons 含连通失败）→ 判词点名连通失败", () => {
+  const items = collectHighRiskReports({
+    type: "quick-verify",
+    verdict: { level: "suspect", reasons: ["连通失败：无响应"] },
+    model: "m1",
+    reportHtmlPath: html("q_m1_quickverify_20260101_000000_c1"),
+  });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].reason, "快速验证：连通失败");
+});
+
 test("无 reportHtmlPath / 空结果 → 不产出", () => {
   assert.deepEqual(collectHighRiskReports(null), []);
   assert.deepEqual(collectHighRiskReports({ type: "admission", grade: "F" }), [], "无 reportHtmlPath → 空 id 跳过");
