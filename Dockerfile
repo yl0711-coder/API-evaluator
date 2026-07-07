@@ -29,6 +29,10 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 COPY --from=build /app/server.mjs ./server.mjs
 COPY --from=build /app/server ./server
 COPY --from=build /app/dist ./dist
+# 运行时数据文件：server/ 会按 ../scripts/*.json 相对路径读取 Claude 分词基线
+# (tokenizer-fingerprint-audit.mjs) 与档位判别参考 (tier-admission.mjs)。漏拷会导致
+# 上线后报「未找到本地分词基线」，故必须随镜像带上 scripts/。
+COPY --from=build /app/scripts ./scripts
 RUN mkdir -p /data
 EXPOSE 5180
 VOLUME ["/data"]

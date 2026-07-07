@@ -67,6 +67,16 @@ function riskReasonReport(rep, type, digestByProfile) {
   return null;
 }
 
+// 展示用「渠道 / 模型」：渠道名按约定藏在 profileName（"渠道 / 模型"）首段，取不到再回退 channelCode；
+// 模型取 model。两者都在→拼「渠道 / 模型」，缺一显示另一个，都缺回退整个 profileName。只有模型名不够直观，故补渠道。
+function subjectOf(src) {
+  const model = String(src?.model || "").trim();
+  const head = String(src?.profileName || "").split(" / ")[0].trim();
+  const channel = head && head !== model ? head : String(src?.channelCode || "").trim();
+  if (channel && model) return `${channel} / ${model}`;
+  return model || channel || String(src?.profileName || "").trim();
+}
+
 // 从一次运行结果枚举出所有高危报告 { reportId, testType, label, reason }。
 // scenario / batch-admission 逐模型判（每模型一篇报告）；其余整篇判。空 reportId / 非高危跳过。
 export function collectHighRiskReports(result) {
@@ -84,7 +94,7 @@ export function collectHighRiskReports(result) {
   if (Array.isArray(result.reports) && result.reports.length) {
     const digestByProfile = new Map((result.profileDigest || []).map((d) => [d.profileId, d]));
     for (const rep of result.reports) {
-      push(rep.reportHtmlPath, rep.model || rep.profileName || "", riskReasonReport(rep, type, digestByProfile));
+      push(rep.reportHtmlPath, subjectOf(rep), riskReasonReport(rep, type, digestByProfile));
     }
     return out;
   }
@@ -98,7 +108,7 @@ export function collectHighRiskReports(result) {
   } else {
     reason = riskReasonSingle(result, type);
   }
-  push(result.reportHtmlPath, result.model || result.profileName || "", reason);
+  push(result.reportHtmlPath, subjectOf(result), reason);
   return out;
 }
 

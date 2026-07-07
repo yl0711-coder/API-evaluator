@@ -101,6 +101,35 @@ test("quickverify：连通失败（suspect + reasons 含连通失败）→ 判�
   assert.equal(items[0].reason, "快速验证：连通失败");
 });
 
+test("label 含渠道名：profileName「渠道 / 模型」→ 标签拼渠道+模型；channelCode 兜底", () => {
+  // 单篇：profileName 含渠道，label 应出现「小侠 / m1」而非仅 m1
+  const [single] = collectHighRiskReports({
+    type: "admission",
+    grade: "F",
+    model: "m1",
+    profileName: "小侠 / m1",
+    reportHtmlPath: html("x_m1_admission_20260101_000000_l1"),
+  });
+  assert.equal(single.label, "准入 · 小侠 / m1");
+
+  // profileName 无「/」约定时，用 channelCode 兜底补渠道
+  const [fallback] = collectHighRiskReports({
+    type: "admission",
+    grade: "F",
+    model: "m2",
+    channelCode: "ch_test",
+    reportHtmlPath: html("x_m2_admission_20260101_000000_l2"),
+  });
+  assert.equal(fallback.label, "准入 · ch_test / m2");
+
+  // 逐模型 reports[] 项同样带渠道
+  const [rep] = collectHighRiskReports({
+    type: "batch-admission",
+    reports: [{ model: "m3", profileName: "大侠 / m3", grade: "F", score: 10, reportHtmlPath: html("x_m3_admission_20260101_000000_l3") }],
+  });
+  assert.equal(rep.label, "准入 · 大侠 / m3");
+});
+
 test("无 reportHtmlPath / 空结果 → 不产出", () => {
   assert.deepEqual(collectHighRiskReports(null), []);
   assert.deepEqual(collectHighRiskReports({ type: "admission", grade: "F" }), [], "无 reportHtmlPath → 空 id 跳过");
