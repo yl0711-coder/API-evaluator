@@ -89,7 +89,9 @@ test("report filenames are sanitized before writing to report directory", async 
     const files = await reporting.saveReportFiles("../bad/name", "# Test", "测试报告");
 
     assert.equal(files.markdownPath.includes(".."), false);
-    assert.match(files.markdownPath, /bad-name\.md$/);
+    // sanitizeReportBaseName 把路径分隔符 `/` 与父目录 `..` 一律转成 `_`（防目录穿越），
+    // 故 "../bad/name" → "bad_name"（不是连字符）。此处校验穿越被挡且落到安全基名。
+    assert.match(files.markdownPath, /bad_name\.md$/);
     assert.match(await readFile(files.markdownPath, "utf8"), /# Test/);
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;

@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { assertTaskNotCancelled, createTaskManager } from "../server/task-manager.mjs";
 
@@ -199,36 +200,45 @@ test("task manager separates user-facing task errors from technical logs", async
 
 test("recent task recovery marks previous running tasks as interrupted", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "evaluator-recovery-test-"));
-  const oldDataDir = process.env.EVALUATOR_DATA_DIR;
-  process.env.EVALUATOR_DATA_DIR = dataDir;
   try {
-    const dataStore = await import(`../server/data-store.mjs?case=${Date.now()}`);
-    const paths = await import(`../server/paths.mjs?case=${Date.now()}`);
-    await dataStore.ensureDataDir();
-    await writeFile(
-      paths.TASK_EVENTS_FILE,
-      `${JSON.stringify({
+    // 在【独立子进程】里跑：EVALUATOR_DATA_DIR 经子进程环境在任何模块加载前注入，
+    // 保证 data-store 内部 import 的 paths 与写事件文件用的 paths 是同一份、都指向本 tmpdir。
+    // （若在测试进程内 import：data-store 内部 import 的是无 query 的 paths 实例，其顶层常量
+    // DATA_DIR 可能已被前序用例以别的目录冻结，与测试直接 import 的 ?case= 新实例分叉 → 写读错位 ENOENT。）
+    const serverDir = fileURLToPath(new URL("../server/", import.meta.url));
+    const dataStoreUrl = pathToFileURL(join(serverDir, "data-store.mjs")).href;
+    const pathsUrl = pathToFileURL(join(serverDir, "paths.mjs")).href;
+    const runningEventLine =
+      JSON.stringify({
         taskId: "task-running-before-crash",
         type: "stability",
         event: "started",
         status: "running",
         message: "任务已开始。",
         loggedAt: "2026-05-20T10:00:00.000Z",
-      })}\n`,
-      "utf8",
-    );
+      }) + "\n";
+    const MARKER = "__RECOVERY_RESULT__";
+    const childScript = [
+      `import { ensureDataDir, readRecentTasks } from ${JSON.stringify(dataStoreUrl)};`,
+      `import { TASK_EVENTS_FILE } from ${JSON.stringify(pathsUrl)};`,
+      `import { writeFile } from "node:fs/promises";`,
+      `await ensureDataDir();`,
+      `await writeFile(TASK_EVENTS_FILE, ${JSON.stringify(runningEventLine)}, "utf8");`,
+      `const recent = await readRecentTasks(new Map(), (task) => task);`,
+      `process.stdout.write(${JSON.stringify(MARKER)} + JSON.stringify(recent[0] ?? null));`,
+    ].join("\n");
 
-    const recentTasks = await dataStore.readRecentTasks(new Map(), (task) => task);
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "--eval", childScript], {
+      env: { ...process.env, EVALUATOR_DATA_DIR: dataDir },
+    });
+    const idx = stdout.lastIndexOf(MARKER);
+    assert.notEqual(idx, -1, `子进程未产出结果标记，stdout=${stdout}`);
+    const first = JSON.parse(stdout.slice(idx + MARKER.length));
 
-    assert.equal(recentTasks[0].status, "interrupted");
-    assert.equal(recentTasks[0].recoverable, false);
-    assert.match(recentTasks[0].message, /任务已中断/);
+    assert.equal(first.status, "interrupted");
+    assert.equal(first.recoverable, false);
+    assert.match(first.message, /任务已中断/);
   } finally {
-    if (oldDataDir === undefined) {
-      delete process.env.EVALUATOR_DATA_DIR;
-    } else {
-      process.env.EVALUATOR_DATA_DIR = oldDataDir;
-    }
     await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
