@@ -1,7 +1,7 @@
 // src/auto-test-config.js
-// 「自动测试配置」（仅超管）：为某渠道的某模型配置定时自动测试作业（种类 + 周期），
+// 「自动测试配置」：为某渠道的某模型配置定时自动测试作业（种类 + 周期），
 // 到点由后端调度器自动跑一次并产出报告。表单沿用「高级测试」各页的 .panel.form-grid 观感（两列网格 + .wide 跨行 + .checkbox-option）。
-// 渠道→模型用共享级联选择器；场景题用简单勾选列表。CRUD 走 /api/dev/auto-test-jobs（仅超管）。
+// 渠道→模型用共享级联选择器；场景题用简单勾选列表。CRUD 走 /api/auto-test-jobs（登录即可用，普通管理员 role 10 也可）。
 import { escapeHtml, toast } from "./client-utils.js";
 import { api } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
@@ -146,7 +146,7 @@ export function createAutoTestConfig({ state, confirm }) {
       return;
     }
     try {
-      await api("/api/dev/auto-test-jobs", { method: "POST", body: JSON.stringify(body) });
+      await api("/api/auto-test-jobs", { method: "POST", body: JSON.stringify(body) });
       toast(body.id ? "作业已更新。" : "作业已创建。");
       resetForm();
       await loadJobs();
@@ -179,7 +179,7 @@ export function createAutoTestConfig({ state, confirm }) {
 
   async function toggleEnabled(job) {
     try {
-      await api("/api/dev/auto-test-jobs", {
+      await api("/api/auto-test-jobs", {
         method: "POST",
         body: JSON.stringify({ ...job, enabled: !job.enabled }),
       });
@@ -191,7 +191,7 @@ export function createAutoTestConfig({ state, confirm }) {
 
   async function runNow(job) {
     try {
-      const r = await api(`/api/dev/auto-test-jobs/${encodeURIComponent(job.id)}/run`, { method: "POST" });
+      const r = await api(`/api/auto-test-jobs/${encodeURIComponent(job.id)}/run`, { method: "POST" });
       toast(r.ok ? "已触发一次运行，测试在后台进行，稍后刷新查看结果。" : r.message || "无法运行。", !r.ok);
       if (r.ok) setTimeout(loadJobs, 1500);
     } catch (error) {
@@ -210,7 +210,7 @@ export function createAutoTestConfig({ state, confirm }) {
     });
     if (!ok) return;
     try {
-      await api(`/api/dev/auto-test-jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
+      await api(`/api/auto-test-jobs/${encodeURIComponent(job.id)}`, { method: "DELETE" });
       toast("作业已删除。");
       await loadJobs();
     } catch (error) {
@@ -262,7 +262,7 @@ export function createAutoTestConfig({ state, confirm }) {
   async function loadJobs() {
     listBox.textContent = "正在加载…";
     try {
-      const r = await api("/api/dev/auto-test-jobs");
+      const r = await api("/api/auto-test-jobs");
       const jobs = Array.isArray(r.jobs) ? r.jobs : [];
       listBox.innerHTML = "";
       if (!jobs.length) {

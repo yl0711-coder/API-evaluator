@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **自动测试配置（Auto-test scheduler）** — new super-admin page under 高级测试 to configure
+- **自动测试配置（Auto-test scheduler）** — new page under 高级测试 to configure
   recurring tests for a channel's model: pick model + test kind (快速/准入/稳定性/场景) + period
   (hours); a new in-process scheduler runs each job on its cadence and produces a report. Config
-  persisted to `配置/auto-test-jobs.json`; CRUD via `/api/dev/auto-test-jobs`
+  persisted to `配置/auto-test-jobs.json`; CRUD via `/api/auto-test-jobs` — login-required and
+  usable by ordinary admins (role 10), same tier as running tests manually (not `/api/dev/*`)
   (`server/auto-test-store.mjs`, `server/auto-test-scheduler.mjs`). Scheduler is in-process:
   effective only while the server runs, catches up overdue jobs on restart via persisted
   `nextRunAt`, does not resume a run interrupted mid-flight. Hardened: all job-file writes go
