@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
@@ -44,6 +45,7 @@ import {
 } from "./server/db.mjs";
 import { buildTrendSeries, detectRegression } from "./server/regression.mjs";
 import {
+  executeTestRequest,
   normalizeProfileIds,
   normalizeScenarioIds,
   runAdmissionTest,
@@ -54,6 +56,15 @@ import {
   runScenarioTest,
   runStabilityTest,
 } from "./server/test-runner.mjs";
+import { buildAiAnalysisResult } from "./server/ai-report-analysis.mjs";
+import {
+  aggregateSubject,
+  buildComparison,
+  buildCompareAnalysisPrompt,
+  formatCompareReportMarkdown,
+  parseReportBaseName,
+  pickRecentReports,
+} from "./server/report-compare.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath, sanitizeReportBaseName } from "./server/report-files.mjs";
 import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobValidationError } from "./server/auto-test-store.mjs";
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
@@ -1066,6 +1077,108 @@ async function handleApi(req, res) {
       /* 目录不存在/读失败 → 空列表 */
     }
     sendJson(res, 200, files);
+    return;
+  }
+
+  // 「模型比对」：依据两个模型各自在报告中心里「最近」的报告（1 份稳定性 run、1 份准入 admission、
+  // 每个场景最新一份 scenario）做统计对比，产出一份「模型对比报告」并落盘（登录即可用，只读既有报告、不发起测试）。
+  if (req.method === "POST" && url.pathname === "/api/reports/compare") {
+    const body = await readJson(req);
+    const A = body?.a || {};
+    const B = body?.b || {};
+    if (!A.channel || !A.model || !B.channel || !B.model) {
+      sendJson(res, 400, { error: "invalid_target", userMessage: "请选择两个模型（渠道 + 模型）。" });
+      return;
+    }
+    let names = [];
+    try {
+      names = (await readdir(REPORTS_DIR)).filter((n) => n.toLowerCase().endsWith(".md"));
+    } catch {
+      /* 报告目录不存在 → 空 */
+    }
+    // 收集某对象的匹配报告：文件名前缀 = sanitize(渠道_模型)_，类型取 run/admission/scenario。
+    async function collectReports(subject) {
+      const head = sanitizeReportBaseName(`${subject.channel}_${subject.model}`);
+      const prefix = `${head}_`;
+      const metas = [];
+      for (const name of names) {
+        if (!name.startsWith(prefix)) continue;
+        const base = name.replace(/\.md$/i, "");
+        const type = parseReportBaseName(base).type;
+        if (type !== "run" && type !== "admission" && type !== "scenario") continue;
+        try {
+          const st = await stat(join(REPORTS_DIR, name));
+          metas.push({ base, type, mtimeMs: st.mtimeMs });
+        } catch {
+          /* 读不到 → 跳过 */
+        }
+      }
+      metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
+      // 限流：稳定性/准入各取最近几份，场景最多取最近 60 份读盘（pickRecentReports 再按场景名去重取最新）。
+      const chosen = [
+        ...metas.filter((m) => m.type !== "scenario").slice(0, 6),
+        ...metas.filter((m) => m.type === "scenario").slice(0, 60),
+      ];
+      const files = [];
+      for (const m of chosen) {
+        try {
+          files.push({ name: m.base, md: await readFile(join(REPORTS_DIR, `${m.base}.md`), "utf8"), mtimeMs: m.mtimeMs });
+        } catch {
+          /* 读失败 → 跳过 */
+        }
+      }
+      return files;
+    }
+    const [filesA, filesB] = await Promise.all([collectReports(A), collectReports(B)]);
+    if (!filesA.length || !filesB.length) {
+      const missing = [!filesA.length ? `${A.channel} / ${A.model}` : null, !filesB.length ? `${B.channel} / ${B.model}` : null].filter(Boolean);
+      sendJson(res, 400, { error: "no_reports", userMessage: `以下模型暂无可用于对比的报告：${missing.join("、")}。请先为其跑一次准入 / 稳定性 / 场景测试。` });
+      return;
+    }
+    const aggA = aggregateSubject({ files: pickRecentReports(filesA), label: `${A.channel} / ${A.model}` });
+    const aggB = aggregateSubject({ files: pickRecentReports(filesB), label: `${B.channel} / ${B.model}` });
+    const cmp = buildComparison(aggA, aggB);
+
+    // 可选 AI 叙述：复用「设置」里指定的 AI 总结模型；未配置/失败则优雅跳过（记 note）。
+    let aiNarrative = null;
+    let aiNote = null;
+    if (body?.aiNarrative) {
+      try {
+        const settings = getSettings();
+        let profile = null;
+        if (settings.aiAnalysisModelTargetId) {
+          const profiles = await loadRunnableProfiles();
+          profile = profiles.find((p) => p.id === settings.aiAnalysisModelTargetId) || null;
+        }
+        if (!profile) {
+          aiNote = "未在「设置」里指定 AI 总结模型，已跳过 AI 叙述。";
+        } else {
+          const record = await executeTestRequest(
+            { ...profile, maxTokens: Math.max(Number(profile.maxTokens || 0), 1200), timeoutMs: Math.max(Number(profile.timeoutMs || 0), 90000) },
+            buildCompareAnalysisPrompt(cmp),
+            { runId: "model-compare", caseId: "compare-analysis", writeLog: true },
+          );
+          const r = buildAiAnalysisResult(record);
+          if (r?.success && r.text) aiNarrative = r.text;
+          else aiNote = `AI 叙述生成失败：${r?.error || "未知错误"}`;
+        }
+      } catch (error) {
+        aiNote = `AI 叙述生成异常：${error.message}`;
+      }
+    }
+
+    const markdown = formatCompareReportMarkdown(cmp, { aiNarrative });
+    const stamp = compactDate(new Date()).replace("-", "_");
+    const slug = (s) => sanitizeReportBaseName(`${s.channel}_${s.model}`);
+    const baseName = `${slug(A)}_vs_${slug(B)}_compare_${stamp}_${randomUUID().slice(0, 4)}`;
+    await saveReportFiles(baseName, markdown, "模型对比报告");
+    const reportId = sanitizeReportBaseName(baseName);
+    const usedNote = (agg) => `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入`;
+    sendJson(res, 200, {
+      reportId,
+      markdown,
+      notes: { a: usedNote(aggA), b: usedNote(aggB), ai: aiNote, aiApplied: Boolean(aiNarrative) },
+    });
     return;
   }
 

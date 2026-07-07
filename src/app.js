@@ -14,6 +14,7 @@ import { openReportOverlay } from "./report-overlay.js";
 import { parseReportId, matchesReportFilter, computeDateBounds, reportChannelModelOptions } from "./report-id.js";
 import { createDeveloper } from "./developer.js";
 import { createAutoTestConfig } from "./auto-test-config.js";
+import { createModelCompare } from "./model-compare.js";
 import {
   confirmExecution,
   estimateAdmissionBatchCost,
@@ -128,6 +129,8 @@ const developer = createDeveloper({
 });
 // 「自动测试配置」（仅超管）：定时自动测试作业的增删改查。confirmAction 在后文声明，闭包取值时已就绪。
 const autoTestConfig = createAutoTestConfig({ state, confirm: (opts) => confirmAction(opts) });
+// 「模型比对」（登录即可用）：依据两个模型各自最近的报告做统计对比，产出对比报告。
+const modelCompare = createModelCompare({ state });
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
 requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
@@ -339,6 +342,7 @@ const REPORT_TYPE_LABELS = {
   "admission-batch": "批量准入",
   scenario: "场景测试",
   run: "稳定性测试",
+  compare: "模型对比",
   batch: "批量稳定性",
   quickverify: "快速验证",
   supplier: "上游证据包",
@@ -1158,6 +1162,9 @@ function showPage(page) {
   if (page === "auto-test-config") {
     autoTestConfig.load();
   }
+  if (page === "model-compare") {
+    modelCompare.load();
+  }
 }
 
 async function loadProfiles() {
@@ -1774,6 +1781,7 @@ function renderProfileOptions() {
   renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] });
   // 自动测试配置页的渠道→模型级联
   autoTestConfig.refreshTargets(data);
+  modelCompare.refreshTargets(data);
 }
 
 function renderScenarioOptions() {

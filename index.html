@@ -31,6 +31,7 @@
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
           <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
           <button class="nav-button" type="button" data-page="auto-test-config" data-requires-admin>自动测试配置</button>
+          <button class="nav-button" type="button" data-page="model-compare">模型比对</button>
         </div>
         <div class="nav-group">
           <span>总结与交付</span>
@@ -1319,6 +1320,43 @@
               <button type="submit" class="primary">保存作业</button>
               <button type="button" id="atc-reset" class="secondary">清空表单</button>
             </div>
+          </form>
+        </section>
+
+        <section class="page" id="model-compare" hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 分析</span>模型比对</h2>
+              <p class="section-desc">选「所用模型」和「要对比的模型」，依据两者在报告中心里各自最近的报告（1 份稳定性、1 份准入、若干份相同场景）做统计对比，产出一份对比报告。只读既有报告、不发起新测试。</p>
+            </div>
+          </div>
+
+          <form id="mc-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3>选择两个模型</h3>
+              <p class="section-desc">先选渠道再选模型；两者需不同。若某模型还没有报告，请先为它跑一次准入 / 稳定性 / 场景测试。</p>
+            </div>
+            <label class="wide">
+              所用模型（对象 A · 基准）
+              <select id="mc-a-channel"></select>
+              <select id="mc-a-model" disabled></select>
+            </label>
+            <label class="wide">
+              要对比的模型（对象 B）
+              <select id="mc-b-channel"></select>
+              <select id="mc-b-model" disabled></select>
+            </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="mc-ai" />
+              <span>
+                加入 AI 叙述分析
+                <small>额外用「设置」里配置的 AI 总结模型写一段对比叙述；未配置时自动跳过，仅出机械统计报告。会消耗额度、生成更慢。</small>
+              </span>
+            </label>
+            <div class="wide action-row">
+              <button type="submit" id="mc-generate" class="primary">生成对比报告</button>
+            </div>
+            <div id="mc-result" class="wide"></div>
           </form>
         </section>
 

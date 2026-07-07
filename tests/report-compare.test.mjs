@@ -15,6 +15,8 @@ import {
   aggregateSubject,
   buildComparison,
   formatCompareReportMarkdown,
+  pickRecentReports,
+  buildCompareAnalysisPrompt,
 } from "../server/report-compare.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -108,25 +110,32 @@ test("formatCompareReportMarkdown 含各对比小节", async () => {
   const a = aggregateSubject({ files: await readFolder(DIR_A) });
   const b = aggregateSubject({ files: await readFolder(DIR_B) });
   const md = formatCompareReportMarkdown(buildComparison(a, b), { generatedAt: "2026-07-07T00:00:00.000Z" });
+  // 新顺序：结论速览 → 可用性 → 延迟 → 准入身份 → 档位 → 逐场景 → 总结。
   for (const heading of [
     "# 模型对比报告",
     "## 结论速览",
     "## 1. 可用性与通过率",
-    "## 2. 按难度档位拆解",
-    "## 3. 逐场景诊断",
-    "## 4. 延迟",
-    "## 5. 计费与 Token 诚实度",
-    "## 6. 准入分项与身份纯度",
-    "## 7. 总体结论",
+    "## 2. 延迟",
+    "## 3. 准入分项与身份纯度",
+    "## 4. 按难度档位拆解",
+    "## 5. 逐场景诊断",
+    "## 6. 总结",
   ]) {
     assert.ok(md.includes(heading), `缺少小节：${heading}`);
   }
+  // 小节按新顺序排列（延迟在档位之前、准入在档位之前）。
+  const order = ["## 1. 可用性与通过率", "## 2. 延迟", "## 3. 准入分项与身份纯度", "## 4. 按难度档位拆解", "## 5. 逐场景诊断", "## 6. 总结"];
+  const positions = order.map((h) => md.indexOf(h));
+  for (let i = 1; i < positions.length; i++) assert.ok(positions[i] > positions[i - 1], `小节顺序错误：${order[i]} 应在 ${order[i - 1]} 之后`);
+  // 已删除/精简：不再出现「计费与 Token 诚实度」小节、口语「挂羊头」、token 虚报话题。
+  assert.ok(!md.includes("计费与 Token 诚实度"), "「计费与 Token 诚实度」小节应已删除");
+  assert.ok(!md.includes("挂羊头"), "不应再出现口语「挂羊头」");
+  assert.ok(!/token\s*虚报/i.test(md), "不应再出现 token 虚报话题");
   assert.ok(md.includes("test / claude-opus-4-8"));
   assert.ok(md.includes("Claude-1.3x / claude-opus-4-8"));
-  // 深度内容：档位、失败原因、token 虚报、横向指纹应出现。
+  // 深度内容：档位、失败原因、横向指纹应出现。
   assert.ok(md.includes("HardcoreLogic"), "缺少难度档位拆解");
   assert.ok(md.includes("HLE 化学") || md.includes("rate_limited"), "缺少逐场景失败原因");
-  assert.ok(md.includes("×"), "缺少计费/token 膨胀信号");
   // 统计学深度：配对差值/CI、Cliff's δ、McNemar、bootstrap。
   assert.ok(/95% CI/.test(md), "缺少置信区间");
   assert.ok(/Cliff's δ/.test(md), "缺少效果量");
@@ -166,4 +175,33 @@ test("enriched 解析：错误分布 / 基线回归 / token 虚报 / 横向指�
   const a = aggregateSubject({ files: await readFolder(DIR_A) });
   assert.ok(a.tiers.some((t) => t.tier.startsWith("HardcoreLogic")));
   assert.equal(a.integrity.baselineRegressed, true);
+});
+
+test("pickRecentReports：取最新 run/admission，场景按名保留最新一份", async () => {
+  const files = await readFolder(DIR_A); // 12 份：10 场景（含一个同名重复）+ 1 run + 1 admission
+  // 造 mtime：文件名里的日期时间 token 越大越新（用下标兜底）。
+  const withMtime = files.map((f, i) => ({ ...f, mtimeMs: i + 1 }));
+  const picked = pickRecentReports(withMtime);
+  const types = picked.map((p) => detectReportType(p.name, p.md));
+  assert.equal(types.filter((t) => t === "run").length, 1, "只保留 1 份 run");
+  assert.equal(types.filter((t) => t === "admission").length, 1, "只保留 1 份 admission");
+  // 场景去重后每个场景名唯一（A 有 10 份场景报告但仅 9 个不同场景）。
+  const scenPicked = picked.filter((p) => detectReportType(p.name, p.md) === "scenario");
+  const names = scenPicked.map((p) => parseScenarioReport(p.md).scenarios[0]?.name);
+  assert.equal(new Set(names).size, names.length, "场景名唯一（已去重）");
+  assert.equal(new Set(names).size, 9);
+});
+
+test("buildCompareAnalysisPrompt + formatCompareReportMarkdown(aiNarrative)", async () => {
+  const a = aggregateSubject({ files: await readFolder(DIR_A) });
+  const b = aggregateSubject({ files: await readFolder(DIR_B) });
+  const cmp = buildComparison(a, b);
+  const prompt = buildCompareAnalysisPrompt(cmp);
+  assert.ok(prompt.includes("对比数据") && prompt.includes("难度档位"), "提示词含对比数据");
+  const md = formatCompareReportMarkdown(cmp, { generatedAt: "2026-07-07T00:00:00.000Z", aiNarrative: "这是一段测试用 AI 叙述。" });
+  assert.ok(md.includes("## AI 叙述分析"), "含 AI 叙述节");
+  assert.ok(md.includes("这是一段测试用 AI 叙述。"));
+  // 不传 aiNarrative 时不应出现该节。
+  const md2 = formatCompareReportMarkdown(cmp, { generatedAt: "2026-07-07T00:00:00.000Z" });
+  assert.ok(!md2.includes("## AI 叙述分析"));
 });

@@ -4,8 +4,8 @@
 // 第一阶段（POC）只被 scripts/compare-eval-reports.mjs 调用、对比 Evaluation Report/ 下两个文件夹；
 // 第二阶段可直接复用本内核，换数据源（报告中心）+ 加前端/AI 叙述。
 //
-// 解析目标不止表面数字，还挖出报告里的诊断信息：错误分布、基线回归、计费/ token 虚报疑似、
-// 指纹横向对照（挂羊头卖狗肉）、准入分项、逐场景失败原因、按难度档位拆解，以支撑有深度的对比。
+// 解析目标不止表面数字，还挖出报告里的诊断信息：错误分布、基线回归、
+// 指纹横向对照（与同模型其它渠道是否一致）、准入分项、逐场景失败原因、按难度档位拆解，以支撑有深度的对比。
 // 缺失值 `-` 一律解析为 null（不当 0）。
 import { compareProportions, mcnemarTest, pairedTTest, wilcoxonSignedRank, wilsonInterval } from "./stats.mjs";
 
@@ -13,7 +13,7 @@ import { compareProportions, mcnemarTest, pairedTTest, wilcoxonSignedRank, wilso
 // 依据 Miller 2024《Adding Error Bars to Evals》：同名场景是「配对」样本，应用配对差值（含相关项）
 // 降方差、并报效果量与置信区间，而非只比两条独立置信区间是否重叠（过于保守、太笼统）。
 
-// Pearson 相关：配对越正相关，配对法「白捡」的方差下降越多（Miller 建议一并报告）。
+// Pearson 相关：配对越正相关，配对法降低的方差越多（Miller 建议一并报告）。
 function pearson(a, b) {
   const xs = [];
   const ys = [];
@@ -356,7 +356,7 @@ export function parseAdmissionReport(md) {
     if (k) items[k] = cell(cells, iRes);
   }
 
-  // 横向对照（同模型多渠道）：疑似挂羊头卖狗肉。
+  // 横向对照（同模型多渠道）：与同模型其它渠道是否一致。
   const crossLine = (s8.split(/\r?\n/).find((l) => l.includes("横向对照（同模型多渠道）")) || "").trim();
   const fam = s8.match(/标称家族[:：]\s*([^；;]+)[；;]\s*模型自述家族[:：]\s*(\S+)/);
 
@@ -400,6 +400,32 @@ function parseOne(name, md) {
   if (type === "scenario") return { name, type, data: parseScenarioReport(md) };
   if (type === "admission") return { name, type, data: parseAdmissionReport(md) };
   return { name, type, data: null };
+}
+
+// —— 选取「最近」报告 ——
+// 入参 files: [{ name, md, mtimeMs }]（某一对象的全部匹配报告）。
+// 取最新 1 份 run、最新 1 份 admission；scenario 按「场景名」去重、每个场景保留最新一份。
+// 返回给 aggregateSubject 用的 [{ name, md }]。纯函数（不读盘），便于离线单测。
+export function pickRecentReports(files) {
+  const withMeta = (files || []).map((f) => ({ ...f, type: detectReportType(f.name, f.md), mtimeMs: Number(f.mtimeMs) || 0 }));
+  const byRecency = (a, b) => b.mtimeMs - a.mtimeMs;
+  const picked = [];
+
+  const latestRun = withMeta.filter((f) => f.type === "run").sort(byRecency)[0];
+  if (latestRun) picked.push(latestRun);
+  const latestAdm = withMeta.filter((f) => f.type === "admission").sort(byRecency)[0];
+  if (latestAdm) picked.push(latestAdm);
+
+  // scenario：按场景名保留最新一份（每份场景报告只测一个场景）。
+  const scen = withMeta.filter((f) => f.type === "scenario").sort(byRecency);
+  const seen = new Set();
+  for (const f of scen) {
+    const name = parseScenarioReport(f.md).scenarios[0]?.name || f.name; // 无法解析场景名时按文件名兜底去重
+    if (seen.has(name)) continue;
+    seen.add(name);
+    picked.push(f);
+  }
+  return picked.map((f) => ({ name: f.name, md: f.md }));
 }
 
 // —— 对象画像聚合（全部聚合）——
@@ -654,7 +680,7 @@ const shortText = (s, n = 36) => {
 const stabCell = (s) => (s.stability ? `${pct(s.stability.rate)}（${s.stability.succ}/${s.stability.total}）` : "-");
 const passCell = (s) => (s.scenarioPass.total ? `${pct(s.scenarioPass.rate)}（${s.scenarioPass.succ}/${s.scenarioPass.total}）` : "-");
 
-export function formatCompareReportMarkdown(cmp, { generatedAt } = {}) {
+export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative } = {}) {
   const { a, b } = cmp;
   const L = [];
   L.push("# 模型对比报告", "");
@@ -677,14 +703,59 @@ export function formatCompareReportMarkdown(cmp, { generatedAt } = {}) {
   L.push("");
   const pp = cmp.pairedPass;
   L.push(`- 配对通过率检验（McNemar，同名场景 n=${cmp.scenarioQuality.matched.length}）：不一致对 b(A过/B不过)=${pp.b}、c(A不过/B过)=${pp.c}，${pp.method === "none" ? "无不一致对→无法判定" : `p=${fmtP(pp.pValue)} → ${pp.pValue < 0.05 ? "**差异显著**" : "差异不显著（不一致对太少，功效不足）"}`}`);
-  L.push("> 同名场景是配对样本，通过率的头对头判定用 McNemar（只看两边结果不一致的场景），比「两条独立置信区间是否重叠」更有功效（Miller 2024）。");
+  L.push("> 同名场景为配对样本，通过率头对头用 McNemar（只看两边结果不一致的场景），比独立置信区间是否重叠更有功效（Miller 2024）。");
   const ea = errSummary(a);
   const eb = errSummary(b);
   if (ea || eb) L.push(`- 稳定性错误分布：A ${ea || "无"} · B ${eb || "无"}`);
   L.push("");
 
-  // 2. 按难度档位拆解
-  L.push("## 2. 按难度档位拆解（档位降级视角）", "");
+  // 2. 延迟
+  L.push("## 2. 延迟（稳定性轮次，重尾/样本有限，仅供参考）", "");
+  L.push("| 指标 | A | B | A−B |", "|---|---:|---:|---:|");
+  for (const [label, key] of [["平均总耗时", "avgTotalMs"], ["平均首包", "avgFirstByteMs"], ["P50 总耗时", "p50TotalMs"], ["慢请求 P95", "p95TotalMs"], ["尾部 P99", "p99TotalMs"]]) {
+    const va = a.stability?.[key];
+    const vb = b.stability?.[key];
+    L.push(`| ${label} | ${fmt(va, " ms")} | ${fmt(vb, " ms")} | ${signed(diff(va, vb), " ms")} |`);
+  }
+  L.push("");
+  const lat = cmp.latency;
+  L.push(`- 成功轮次延迟样本量：A n=${lat.aN} · B n=${lat.bN}`);
+  if (lat.median.point != null) L.push(`- 中位总耗时差 A−B = ${sgn(lat.median.point, " ms")}，bootstrap 95% CI ${fmtCI([lat.median.lower, lat.median.upper], " ms")}（A 中位 ${fmt(lat.median.statA, " ms")} / B 中位 ${fmt(lat.median.statB, " ms")}）→ ${ciExcludesZero([lat.median.lower, lat.median.upper]) ? "**中位延迟差异显著**" : "中位延迟差异不显著（CI 含 0）"}`);
+  if (lat.p95.point != null) L.push(`- P95 总耗时差 A−B = ${sgn(lat.p95.point, " ms")}，bootstrap 95% CI ${fmtCI([lat.p95.lower, lat.p95.upper], " ms")}`);
+  L.push("> 延迟重尾，用中位/尾部而非均值；两组独立、用两样本 bootstrap 百分位 CI（种子固定，可复现）。");
+  L.push("");
+
+  // 3. 准入分项与身份纯度
+  L.push("## 3. 准入分项与身份纯度", "");
+  if (a.admission || b.admission) {
+    L.push("| 指标 | A | B |", "|---|---:|---:|");
+    L.push(`| 准入等级 | ${a.admission?.grade ?? "-"} | ${b.admission?.grade ?? "-"} |`);
+    L.push(`| 综合分 | ${fmt(a.admission?.composite)} | ${fmt(b.admission?.composite)} |`);
+    L.push(`| 纯度分 | ${fmt(a.admission?.purityScore)} | ${fmt(b.admission?.purityScore)} |`);
+    L.push(`| 分词器 slope（应≈1） | ${fmt(a.admission?.tokenizerSlope)} | ${fmt(b.admission?.tokenizerSlope)} |`);
+    L.push(`| 分词器 R² | ${fmt(a.admission?.tokenizerR2)} | ${fmt(b.admission?.tokenizerR2)} |`);
+    L.push(`| 标称/自述家族 | ${escapeCell(famCell(a.admission))} | ${escapeCell(famCell(b.admission))} |`);
+    L.push(`| 横向指纹对照 | ${escapeCell(a.admission?.crossChannelMismatch ? "⚠️ 与同模型其它渠道显著不同" : a.admission?.crossChannelText || "-")} | ${escapeCell(b.admission?.crossChannelMismatch ? "⚠️ 与同模型其它渠道显著不同" : b.admission?.crossChannelText || "-")} |`);
+    // 分项通过/失败
+    const items = [...new Set([...(a.admission ? Object.keys(a.admission.items) : []), ...(b.admission ? Object.keys(b.admission.items) : [])])];
+    if (items.length) {
+      L.push("");
+      L.push("准入分项结果：", "");
+      L.push("| 分项 | A | B |", "|---|---|---|");
+      for (const it of items) L.push(`| ${escapeCell(it)} | ${a.admission?.items?.[it] ?? "-"} | ${b.admission?.items?.[it] ?? "-"} |`);
+    }
+    L.push("");
+    for (const subj of [a, b]) {
+      if (subj.admission?.crossChannelMismatch) L.push(`- ⚠️ ${subj.label}：疑似非标称模型——该渠道与同模型其它渠道指纹显著不同（需上游解释）。`);
+    }
+    L.push("> 分词器 slope 明显偏离 1（且 R² 不高）= 疑似非标称家族/换代；均为黑盒概率判断，仅作「疑似」信号。", "");
+  } else {
+    L.push("> 两个对象都没有准入报告，跳过身份/纯度对比。", "");
+  }
+  L.push("");
+
+  // 4. 按难度档位拆解
+  L.push("## 4. 按难度档位拆解", "");
   L.push("| 档位 | A 通过率 | A 均分 | B 通过率 | B 均分 | 均分差(A−B) |", "|---|---:|---:|---:|---:|---:|");
   for (const r of cmp.tierRows) {
     const qa = r.a?.quality;
@@ -696,16 +767,16 @@ export function formatCompareReportMarkdown(cmp, { generatedAt } = {}) {
   const ena = errNote(a);
   const enb = errNote(b);
   if (ena || enb) L.push(`- 含错误型失败（限流/超时，属可用性问题、非能力低分）的档位：A: ${ena || "无"} · B: ${enb || "无"}`);
-  L.push("> HardcoreLogic / HLE / LiveBench 属抗污染/专家难档。判「档位降级」须先剔除限流/超时等错误轮：只有**双方都成功作答**、某方在难档质量分仍系统性更低，才是降级（如声称高价档却按低价档跑）的信号——详见「结论速览」的难档能力判断。", "");
+  L.push("> HardcoreLogic / HLE / LiveBench 属抗污染/专家难档。判断档位降级须先剔除限流/超时的错误轮：仅当双方都成功作答、某方在难档质量分仍系统性更低时，才是降级信号（详见结论速览）。", "");
 
-  // 3. 逐场景诊断
-  L.push("## 3. 逐场景诊断（配对场景，含失败原因）", "");
+  // 5. 逐场景诊断
+  L.push("## 5. 逐场景诊断（配对场景，含失败原因）", "");
   L.push(`- 总体平均质量分：A ${fmt(a.quality.mean)}（${a.quality.n} 个场景） · B ${fmt(b.quality.mean)}（${b.quality.n} 个场景） · A−B ${signed(diff(a.quality.mean, b.quality.mean))}`);
   const pq = cmp.pairedQuality;
   if (pq.n >= 1) {
     L.push(`- **配对差值分析**（同名场景 n=${pq.n}，Miller 2024 配对法；比独立均值差更有功效）：`);
     L.push(`  - 质量分平均差 A−B = ${sgn(pq.meanDiff)}${pq.ci ? `，95% CI ${fmtCI(pq.ci)}` : "（样本不足，无 CI）"} → ${pq.ci ? (ciExcludesZero(pq.ci) ? "**差异显著（CI 不含 0）**" : "**未达显著（CI 含 0）**") : "样本不足"}`);
-    if (pq.corr != null) L.push(`  - 配对相关 r=${r2(pq.corr)}（越正相关→配对法「白捡」的方差下降越多）；Wilcoxon 符号秩 p=${fmtP(pq.pWilcoxon)}；配对 t p=${fmtP(pq.pT)}`);
+    if (pq.corr != null) L.push(`  - 配对相关 r=${r2(pq.corr)}（正相关时配对法可降低方差）；Wilcoxon 符号秩 p=${fmtP(pq.pWilcoxon)}；配对 t p=${fmtP(pq.pT)}`);
     L.push(`  - 效果量 Cliff's δ=${pq.cliff.delta != null ? r2(pq.cliff.delta) : "-"}（${pq.cliff.magnitude}，阈值 0.15/0.33/0.47=小/中/大）；胜/平/负（A 视角）= ${pq.win}/${pq.tie}/${pq.loss}，符号检验 p=${fmtP(pq.signP)}`);
   }
   L.push("");
@@ -733,75 +804,23 @@ export function formatCompareReportMarkdown(cmp, { generatedAt } = {}) {
   if (cmp.scenarioQuality.onlyB.length) L.push(`- 仅 B 测过：${cmp.scenarioQuality.onlyB.map(escapeCell).join("、")}`);
   L.push("");
 
-  // 4. 延迟
-  L.push("## 4. 延迟（稳定性轮次，重尾/样本有限，仅供参考）", "");
-  L.push("| 指标 | A | B | A−B |", "|---|---:|---:|---:|");
-  for (const [label, key] of [["平均总耗时", "avgTotalMs"], ["平均首包", "avgFirstByteMs"], ["P50 总耗时", "p50TotalMs"], ["慢请求 P95", "p95TotalMs"], ["尾部 P99", "p99TotalMs"]]) {
-    const va = a.stability?.[key];
-    const vb = b.stability?.[key];
-    L.push(`| ${label} | ${fmt(va, " ms")} | ${fmt(vb, " ms")} | ${signed(diff(va, vb), " ms")} |`);
-  }
-  L.push("");
-  const lat = cmp.latency;
-  L.push(`- 成功轮次延迟样本量：A n=${lat.aN} · B n=${lat.bN}`);
-  if (lat.median.point != null) L.push(`- 中位总耗时差 A−B = ${sgn(lat.median.point, " ms")}，bootstrap 95% CI ${fmtCI([lat.median.lower, lat.median.upper], " ms")}（A 中位 ${fmt(lat.median.statA, " ms")} / B 中位 ${fmt(lat.median.statB, " ms")}）→ ${ciExcludesZero([lat.median.lower, lat.median.upper]) ? "**中位延迟差异显著**" : "中位延迟差异不显著（CI 含 0）"}`);
-  if (lat.p95.point != null) L.push(`- P95 总耗时差 A−B = ${sgn(lat.p95.point, " ms")}，bootstrap 95% CI ${fmtCI([lat.p95.lower, lat.p95.upper], " ms")}`);
-  L.push("> 延迟重尾，用中位/尾部而非均值；两组独立、用两样本 bootstrap 百分位 CI（种子固定，可复现）。");
-  L.push("");
-
-  // 5. 计费与 Token 诚实度
-  L.push("## 5. 计费与 Token 诚实度", "");
-  L.push("| 指标 | A | B |", "|---|---:|---:|");
-  L.push(`| 输入 tokens | ${fmt(a.tokens.input)} | ${fmt(b.tokens.input)} |`);
-  L.push(`| 输出 tokens | ${fmt(a.tokens.output)} | ${fmt(b.tokens.output)} |`);
-  L.push(`| 上游请求膨胀（计费/逻辑） | ${a.admission?.upstreamMultiplier ? `×${round(a.admission.upstreamMultiplier)}` : "-"} | ${b.admission?.upstreamMultiplier ? `×${round(b.admission.upstreamMultiplier)}` : "-"} |`);
-  L.push(`| Token 虚报疑似（输入偏高倍数） | ${a.integrity.tokenInflation ? `×${round(a.integrity.tokenInflation)}` : "-"} | ${b.integrity.tokenInflation ? `×${round(b.integrity.tokenInflation)}` : "-"} |`);
-  L.push("");
-  for (const [subj] of [[a], [b]]) {
-    if (subj.integrity.tokenInflation) L.push(`- ⚠️ ${subj.label}：整轮输入 token 系统性偏高 ×${round(subj.integrity.tokenInflation)}，疑似多计/重复计费，需上游解释。`);
-  }
-  L.push("> 成本 = 0 通常表示未在 API 配置里填上游/售卖单价，仅统计 token；膨胀/虚报为黑盒概率信号，仅「疑似」。", "");
-
-  // 6. 准入分项与身份纯度
-  L.push("## 6. 准入分项与身份纯度", "");
-  if (a.admission || b.admission) {
-    L.push("| 指标 | A | B |", "|---|---:|---:|");
-    L.push(`| 准入等级 | ${a.admission?.grade ?? "-"} | ${b.admission?.grade ?? "-"} |`);
-    L.push(`| 综合分 | ${fmt(a.admission?.composite)} | ${fmt(b.admission?.composite)} |`);
-    L.push(`| 纯度分 | ${fmt(a.admission?.purityScore)} | ${fmt(b.admission?.purityScore)} |`);
-    L.push(`| 分词器 slope（应≈1） | ${fmt(a.admission?.tokenizerSlope)} | ${fmt(b.admission?.tokenizerSlope)} |`);
-    L.push(`| 分词器 R² | ${fmt(a.admission?.tokenizerR2)} | ${fmt(b.admission?.tokenizerR2)} |`);
-    L.push(`| 标称/自述家族 | ${escapeCell(famCell(a.admission))} | ${escapeCell(famCell(b.admission))} |`);
-    L.push(`| 横向指纹对照 | ${escapeCell(a.admission?.crossChannelMismatch ? "⚠️ 与同模型其它渠道显著不同" : a.admission?.crossChannelText || "-")} | ${escapeCell(b.admission?.crossChannelMismatch ? "⚠️ 与同模型其它渠道显著不同" : b.admission?.crossChannelText || "-")} |`);
-    // 分项通过/失败
-    const items = [...new Set([...(a.admission ? Object.keys(a.admission.items) : []), ...(b.admission ? Object.keys(b.admission.items) : [])])];
-    if (items.length) {
-      L.push("");
-      L.push("准入分项结果：", "");
-      L.push("| 分项 | A | B |", "|---|---|---|");
-      for (const it of items) L.push(`| ${escapeCell(it)} | ${a.admission?.items?.[it] ?? "-"} | ${b.admission?.items?.[it] ?? "-"} |`);
-    }
-    L.push("");
-    for (const subj of [a, b]) {
-      if (subj.admission?.crossChannelMismatch) L.push(`- ⚠️ ${subj.label}：横向对照疑似「挂羊头卖狗肉」——本渠道与同模型其它渠道显著不同（需上游解释）。`);
-    }
-    L.push("> 分词器 slope 明显偏离 1（且 R² 不高）= 疑似非标称家族/换代；均为黑盒概率判断，仅作「疑似」信号。", "");
-  } else {
-    L.push("> 两个对象都没有准入报告，跳过身份/纯度对比。", "");
-  }
-  L.push("");
-
-  // 7. 总体结论
-  L.push("## 7. 总体结论", "");
+  // 6. 总结
+  L.push("## 6. 总结", "");
   for (const line of overallConclusions(cmp)) L.push(`- ${line}`);
   L.push("");
+
+  if (aiNarrative && String(aiNarrative).trim()) {
+    L.push("## AI 叙述分析", "");
+    L.push(String(aiNarrative).trim(), "");
+    L.push("> 以上由「设置」里配置的 AI 总结模型基于本报告的结构化数据生成，仅供参考，不覆盖上面的统计判定。", "");
+  }
 
   L.push("## 方法学与免责", "");
   L.push("- 同名场景为**配对样本**：质量分用配对差值 + 95% CI（Miller 2024《Adding Error Bars to Evals》），通过率头对头用 **McNemar**（只看结果不一致的场景），比「两条独立置信区间是否重叠」更有功效。");
   L.push("- 效果量用 **Cliff's δ**（非参数；阈值 0.147/0.33/0.474 = 小/中/大）+ 胜平负符号检验，回答「差多少」而不只是「差不差」。");
   L.push("- 单对象成功率仍给 Wilson 置信区间；延迟重尾，用中位/P95 的两样本 bootstrap 百分位 CI（种子固定、可复现），不用均值。");
   L.push("- 显著性判据：差值的 95% CI 是否含 0（含 0 = 未达显著）。小样本功效不足时明确标注，不据此下优劣定论。");
-  L.push("- 质量分为规则化评分，非人工质量评审；身份/纯度/计费判断均为黑盒概率结论，仅「疑似 / 需上游解释」。");
+  L.push("- 质量分为规则化评分，非人工质量评审；身份/纯度判断均为黑盒概率结论，仅「疑似 / 需上游解释」。");
   L.push("- 本报告依据既有评测报告聚合，未重新发起请求；标注 |Δ|≥40 的场景建议人工复核原始回答。");
   return L.join("\n");
 }
@@ -822,7 +841,7 @@ function synthesize(cmp) {
   const out = [];
   const sv = cmp.verdicts.stability;
   const pv = cmp.verdicts.scenarioPass;
-  out.push(`可用性：稳定性成功率 A ${stabCell(a)} vs B ${stabCell(b)} → ${sv.significant ? `**${sv.verdict}**` : "差异不显著（样本小，勿武断）"}；场景通过率判定 ${pv.significant ? `**${pv.verdict}**` : "差异不显著"}。`);
+  out.push(`可用性：稳定性成功率 A ${stabCell(a)} vs B ${stabCell(b)} → ${sv.significant ? `**${sv.verdict}**` : "差异不显著（样本小，暂不下定论）"}；场景通过率判定 ${pv.significant ? `**${pv.verdict}**` : "差异不显著"}。`);
 
   // 难档能力对比（HardcoreLogic/HLE/LiveBench）——用配对同名难档场景，并区分「错误型失败」与「能力型低分」。
   // 因超时/限流得 0 分是可用性问题，不等于档位降级；故 apples-to-apples 只比双方都成功作答的难档场景。
@@ -853,15 +872,14 @@ function synthesize(cmp) {
   if (pq && pq.n >= 2 && pq.ci) {
     const sig = ciExcludesZero(pq.ci);
     const better = pq.meanDiff > 0 ? a.label : b.label;
-    out.push(`质量分（配对 n=${pq.n}）：${sig ? `**${better} 显著更高**` : "**两者无显著差异**"}，A−B=${sgn(pq.meanDiff)} 分（95% CI ${fmtCI(pq.ci)}），效果量 Cliff's δ=${r2(pq.cliff.delta)}（${pq.cliff.magnitude}），胜/平/负=${pq.win}/${pq.tie}/${pq.loss}${sig ? "" : "；样本太少、功效不足，勿据此下优劣定论"}。`);
+    out.push(`质量分（配对 n=${pq.n}）：${sig ? `**${better} 显著更高**` : "**两者无显著差异**"}，A−B=${sgn(pq.meanDiff)} 分（95% CI ${fmtCI(pq.ci)}），效果量 Cliff's δ=${r2(pq.cliff.delta)}（${pq.cliff.magnitude}），胜/平/负=${pq.win}/${pq.tie}/${pq.loss}${sig ? "" : "；样本少、功效不足，暂不下优劣定论"}。`);
   }
 
   // 风险信号汇总。
   for (const subj of [a, b]) {
     const risks = [];
     if (subj.integrity.baselineRegressed) risks.push("稳定性相比基线明显退化");
-    if (subj.integrity.tokenInflation) risks.push(`输入 token 疑似虚报 ×${round(subj.integrity.tokenInflation)}`);
-    if (subj.admission?.crossChannelMismatch) risks.push("横向指纹疑似挂羊头卖狗肉");
+    if (subj.admission?.crossChannelMismatch) risks.push("指纹与同模型其它渠道不一致");
     const err = errSummary(subj);
     if (err) risks.push(`稳定性错误 ${err}`);
     if (risks.length) out.push(`⚠️ ${subj.label} 风险：${risks.join("；")}。`);
@@ -895,6 +913,39 @@ function overallConclusions(cmp) {
     if (adm && Number.isFinite(adm.tokenizerSlope) && Math.abs(adm.tokenizerSlope - 1) > 0.5) out.push(`⚠️ ${subj.label}：分词器 slope=${round(adm.tokenizerSlope)} 明显偏离 1，疑似非标称家族/换代（需上游解释）。`);
   }
   return out;
+}
+
+// —— 可选 AI 叙述：把结构化对比拼成一段中文提示词（纯函数，供端点喂给已配置的 AI 总结模型）——
+export function buildCompareAnalysisPrompt(cmp) {
+  const { a, b } = cmp;
+  const facts = [];
+  facts.push(`A(所用模型)=${a.label}；B(要对比的模型)=${b.label}`);
+  facts.push(`稳定性成功率：A ${stabCell(a)}，B ${stabCell(b)}；场景通过率：A ${passCell(a)}，B ${passCell(b)}（McNemar p=${fmtP(cmp.pairedPass.pValue)}）`);
+  facts.push(
+    "按难度档位(通过率/均分)：" +
+      cmp.tierRows.map((r) => `${r.tier}: A ${r.a ? pct(r.a.passRate) : "-"}/${fmt(r.a?.quality)}，B ${r.b ? pct(r.b.passRate) : "-"}/${fmt(r.b?.quality)}`).join("；"),
+  );
+  const pq = cmp.pairedQuality;
+  if (pq.n) facts.push(`配对质量差 A−B=${sgn(pq.meanDiff)}（95%CI ${pq.ci ? fmtCI(pq.ci) : "样本不足"}），Cliff's δ=${pq.cliff.delta != null ? r2(pq.cliff.delta) : "-"}(${pq.cliff.magnitude})，胜/平/负=${pq.win}/${pq.tie}/${pq.loss}`);
+  if (cmp.latency.median.point != null) facts.push(`中位延迟差 A−B=${sgn(cmp.latency.median.point, " ms")}（95%CI ${fmtCI([cmp.latency.median.lower, cmp.latency.median.upper], " ms")}）`);
+  for (const s of [a, b]) {
+    const risks = [];
+    if (s.integrity.baselineRegressed) risks.push("稳定性退化");
+    if (s.admission?.crossChannelMismatch) risks.push("指纹与同模型其它渠道不一致");
+    const err = errSummary(s);
+    if (err) risks.push(`稳定性错误 ${err}`);
+    if (risks.length) facts.push(`${s.label} 风险：${risks.join("、")}`);
+  }
+  return [
+    "你是资深 AI 评测分析师。下面是对两个模型（A=所用模型，B=要对比的模型）依据既有评测报告做的结构化对比（已含统计显著性判定）。",
+    "请用中文写一段 150–300 字的对比叙述，要求：",
+    "1) 分别就可用性、难档能力、延迟谁更好给出判断，但务必尊重显著性——置信区间含 0 或样本不足时不要断言优劣；",
+    "2) 指出最值得关注的风险；3) 给出一句使用建议。",
+    "不要编造数据中没有的数字，不要输出 Markdown 标题或表格，只写正文段落。",
+    "",
+    "对比数据：",
+    ...facts.map((f) => `- ${f}`),
+  ].join("\n");
 }
 
 export { wilsonInterval };
