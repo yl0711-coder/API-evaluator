@@ -2,7 +2,7 @@
 # 运行时数据（配置/报告/SQLite/.vault）全部落在挂载卷 /data 上，不进镜像。
 
 # ---- 构建阶段：装依赖 + 构建前端 ----
-FROM node:24-bookworm-slim AS build
+FROM node:24.11.0-bookworm-slim AS build
 WORKDIR /app
 RUN corepack enable
 # pnpm-workspace.yaml carries the esbuild build approval (allowBuilds) — needed at install
@@ -15,7 +15,7 @@ COPY . .
 RUN pnpm rebuild esbuild && node_modules/.bin/vite build
 
 # ---- 运行阶段：只带运行所需 ----
-FROM node:24-bookworm-slim AS runtime
+FROM node:24.11.0-bookworm-slim AS runtime
 WORKDIR /app
 RUN corepack enable
 ENV NODE_ENV=production \

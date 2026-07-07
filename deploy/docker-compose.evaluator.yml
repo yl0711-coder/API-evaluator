@@ -10,7 +10,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: api-evaluator:0.5.1
+    image: api-evaluator:0.5.3
     container_name: api-evaluator
     restart: unless-stopped
     # autoheal 看门狗据此标签认领本容器：健康检查判 unhealthy 时自动 restart（compose 自身不会因 unhealthy 重启）。
@@ -52,7 +52,7 @@ services:
   # autoheal 监听 docker 事件，把带 autoheal=true 标签且转为 unhealthy 的容器 restart 掉——
   # 这才补上「进程活着但健康检查失败（含调度器僵死）」这一层的自动恢复。只读挂载 docker.sock。
   autoheal:
-    image: willfarrell/autoheal:latest
+    image: willfarrell/autoheal:1.2.0
     container_name: api-evaluator-autoheal
     restart: unless-stopped
     environment:
