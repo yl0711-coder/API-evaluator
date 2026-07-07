@@ -4,12 +4,11 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { LOCAL_SECRET_FILE, LOCAL_VAULT_FILE } from "./paths.mjs";
 import { envCompat } from "./env-compat.mjs";
-import { writeJsonAtomic } from "./utils.mjs";
+import { writeFileAtomic, writeJsonAtomic } from "./utils.mjs";
 
 const KEYCHAIN_SERVICE = "Model Evaluator";
 const execFileAsync = promisify(execFile);
@@ -140,8 +139,8 @@ async function loadLocalVault() {
 async function ensureLocalSecretKey() {
   if (existsSync(LOCAL_SECRET_FILE)) return;
   const value = crypto.randomBytes(32).toString("hex");
-  await mkdir(dirname(LOCAL_SECRET_FILE), { recursive: true });
-  await writeFile(LOCAL_SECRET_FILE, value, { encoding: "utf8", mode: 0o600 });
+  // 主加密密钥也原子写（写坏＝整个密钥库不可解密）；保留 0o600 权限。
+  await writeFileAtomic(LOCAL_SECRET_FILE, value, { encoding: "utf8", mode: 0o600 });
 }
 
 function deriveLocalEncryptionKey(secret, salt) {
