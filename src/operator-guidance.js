@@ -101,63 +101,6 @@ export const PROFILE_TEMPLATES = {
   },
 };
 
-export const SCENARIO_PACKS = {
-  "scenario-small": {
-    label: "低成本初筛包",
-    categories: ["connectivity", "speed", "structured"],
-    limit: 3,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合第一次验证，只确认连通、速度和结构化输出。",
-  },
-  "scenario-coding": {
-    label: "编程能力包",
-    categories: ["coding", "reasoning"],
-    limit: 4,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合测试代码排错、工程分析和复杂决策。",
-  },
-  "scenario-long-context": {
-    label: "长上下文包",
-    categories: ["long_context", "reasoning", "writing"],
-    limit: 4,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合验证大输入、资料归纳和业务说明能力，token 消耗较高。",
-  },
-  "scenario-safety": {
-    label: "内容安全合规包",
-    categories: ["safety"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "用于低风险探测色情、暴力、血腥、政治谣言等内容是否被安全拒绝或改写。不会发送露骨细节。",
-  },
-  "scenario-basic": {
-    label: "基础能力全量包",
-    categories: ["connectivity", "speed", "structured", "coding", "long_context", "reasoning", "writing"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "2",
-    requestConcurrency: "1",
-    note: "适合稳定性已通过后的基础能力评估。",
-  },
-  "scenario-deep": {
-    label: "候选深度复测包",
-    categories: ["connectivity", "speed", "structured", "coding", "long_context", "reasoning", "writing"],
-    limit: Infinity,
-    repeats: "2",
-    maxParallelProfiles: "2",
-    requestConcurrency: "1",
-    note: "适合准备推荐某个候选渠道前复测，成本更高。",
-  },
-};
-
 const ERROR_ADVICES = {
   auth_failed: {
     title: "认证失败",
@@ -331,18 +274,6 @@ export function validateProfileConfig(payload) {
     hasBlockers: issues.some((issue) => issue.level === "blocker"),
     hasWarnings: issues.some((issue) => issue.level === "warning"),
   };
-}
-
-export function getScenarioPack(templateKey) {
-  return SCENARIO_PACKS[templateKey] || SCENARIO_PACKS["scenario-basic"];
-}
-
-export function pickScenarioIdsForPack(scenarios, templateKey) {
-  const pack = getScenarioPack(templateKey);
-  const source = pack.categories.length
-    ? scenarios.filter((scenario) => pack.categories.includes(scenario.category))
-    : scenarios;
-  return source.slice(0, pack.limit).map((scenario) => scenario.id);
 }
 
 export function normalizeErrorKey(errorLike) {

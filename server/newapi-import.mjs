@@ -52,6 +52,12 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
   const channels = existingChannels.map((c) => ({ ...c }));
   const targets = existingTargets.map((t) => ({ ...t }));
   const indexById = new Map(channels.map((c, i) => [c.id, i]));
+  // 也按 newapiChannelId 建索引：识别「已推送到 new-api 的本地渠道」（其本地 id 是 UUID、非 newapi-<id>），
+  // 避免导入时把同一渠道当成新渠道再建一份 → 重复渠道 + 重复模型。
+  const indexByNewapiId = new Map();
+  channels.forEach((c, i) => {
+    if (c.newapiChannelId != null) indexByNewapiId.set(Number(c.newapiChannelId), i);
+  });
   const targetKeys = new Set(targets.map((t) => `${t.channelId}|${t.model}`));
   const keys = {};
   const now = new Date().toISOString();
@@ -63,25 +69,32 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
   for (const row of rows) {
     const mapped = mapNewapiChannel(row);
     if (mapped.status === "disabled") disabled += 1;
-    if (row.key) keys[mapped.id] = String(row.key); // A2(DB) 带 key；A1(API) 不带
 
-    const idx = indexById.get(mapped.id);
+    // 命中已存在渠道：优先按 newapiChannelId（含已推送的本地渠道），其次按派生 id（已导入过的）。
+    const idx = indexByNewapiId.has(Number(row.id)) ? indexByNewapiId.get(Number(row.id)) : indexById.get(mapped.id);
+    let channelId; // 实际使用的本地渠道 id（命中时保留已存在渠道的 id，别改成 newapi-<id> 否则其下模型目标成孤儿）。
     if (idx === undefined) {
       channels.push({ ...mapped, createdAt: now, updatedAt: now });
-      indexById.set(mapped.id, channels.length - 1);
+      const i = channels.length - 1;
+      indexById.set(mapped.id, i);
+      indexByNewapiId.set(Number(row.id), i);
+      channelId = mapped.id;
       imported += 1;
     } else {
-      // 同步元信息/状态/模型清单；保留已有凭证(apiKeyRef/keyHash/hasKey)与创建时间。
+      // 同步元信息/状态/模型清单；保留已存在渠道的 id、凭证(apiKeyRef/keyHash/hasKey)与创建时间。
       const prev = channels[idx];
-      channels[idx] = { ...prev, ...mapped, createdAt: prev.createdAt || now, updatedAt: now };
+      channels[idx] = { ...prev, ...mapped, id: prev.id, createdAt: prev.createdAt || now, updatedAt: now };
+      channelId = prev.id;
       updated += 1;
     }
 
+    if (row.key) keys[channelId] = String(row.key); // A2(DB) 带 key；A1(API) 不带。用实际 channelId 存。
+
     if (syncModels) {
       for (const model of mapped.models) {
-        const key = `${mapped.id}|${model}`;
+        const key = `${channelId}|${model}`;
         if (!targetKeys.has(key)) {
-          targets.push({ id: deterministicModelTargetId(mapped.id, model), channelId: mapped.id, model, note: "", source: "newapi", createdAt: now, updatedAt: now });
+          targets.push({ id: deterministicModelTargetId(channelId, model), channelId, model, note: "", source: "newapi", createdAt: now, updatedAt: now });
           targetKeys.add(key);
           newTargets += 1;
         }

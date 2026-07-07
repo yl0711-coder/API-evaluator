@@ -1,4 +1,5 @@
 import { sleep, toast } from "./client-utils.js";
+import { maybeAutoOpenReport } from "./report-overlay.js";
 
 export class ApiClientError extends Error {
   constructor(message, { errorId = "", technicalMessage = "" } = {}) {
@@ -60,6 +61,8 @@ export async function runRemoteTask(state, slot, type, payload, progressElement)
     renderTaskProgress(progressElement, current);
     if (current.status === "completed") {
       delete state.activeTasks[slot];
+      // 任务完成自动弹报告（Web/Docker 无桌面也能看；受客户端开关控制）。
+      maybeAutoOpenReport(current.result);
       return current.result;
     }
     if (current.status === "cancelled") {

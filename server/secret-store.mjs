@@ -4,11 +4,11 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { LOCAL_SECRET_FILE, LOCAL_VAULT_FILE } from "./paths.mjs";
 import { envCompat } from "./env-compat.mjs";
+import { writeFileAtomic, writeJsonAtomic } from "./utils.mjs";
 
 const KEYCHAIN_SERVICE = "Model Evaluator";
 const execFileAsync = promisify(execFile);
@@ -25,59 +25,48 @@ export function getSecretStorageName() {
   return process.platform === "darwin" ? "macos-keychain" : "local-encrypted-vault";
 }
 
-export async function saveProfileApiKey(profileId, apiKey) {
-  const ref = buildApiKeyRef(profileId);
+// 通用 ref 读写：profile API Key 与 new-api 系统令牌等共用同一套钥匙串 / 本地加密库。
+export async function saveSecret(ref, value) {
   if (isTestSecretStore()) {
-    TEST_SECRETS.set(ref, apiKey);
+    TEST_SECRETS.set(ref, value);
     return { ref, storage: "test-memory-vault" };
   }
   if (process.platform === "darwin") {
     try {
-      await execFileAsync("security", ["add-generic-password", "-a", ref, "-s", KEYCHAIN_SERVICE, "-w", apiKey, "-U"]);
+      await execFileAsync("security", ["add-generic-password", "-a", ref, "-s", KEYCHAIN_SERVICE, "-w", value, "-U"]);
       return { ref, storage: "macos-keychain" };
     } catch {
       // Development shells may not have Keychain access; keep a local encrypted fallback.
     }
   }
-  await writeLocalVaultSecret(ref, apiKey);
+  await writeLocalVaultSecret(ref, value);
   return { ref, storage: "local-encrypted-vault" };
 }
 
-export async function readProfileApiKey(profile) {
-  if (!profile?.apiKeyRef) {
-    return "";
-  }
+// storage 为可选的存储后端提示（"macos-keychain" 时只查钥匙串、查不到即空；否则 darwin 先试钥匙串再回落本地库）。
+export async function readSecret(ref, storage) {
+  if (!ref) return "";
   if (isTestSecretStore()) {
-    return TEST_SECRETS.get(profile.apiKeyRef) || "";
+    return TEST_SECRETS.get(ref) || "";
   }
-  if (profile.keyStorage === "macos-keychain" || process.platform === "darwin") {
+  if (storage === "macos-keychain" || process.platform === "darwin") {
     try {
-      const { stdout } = await execFileAsync("security", [
-        "find-generic-password",
-        "-a",
-        profile.apiKeyRef,
-        "-s",
-        KEYCHAIN_SERVICE,
-        "-w",
-      ]);
+      const { stdout } = await execFileAsync("security", ["find-generic-password", "-a", ref, "-s", KEYCHAIN_SERVICE, "-w"]);
       return String(stdout || "").trim();
     } catch {
-      if (profile.keyStorage === "macos-keychain") {
-        return "";
-      }
+      if (storage === "macos-keychain") return "";
     }
   }
-  return readLocalVaultSecret(profile.apiKeyRef);
+  return readLocalVaultSecret(ref);
 }
 
-export async function deleteProfileApiKey(profile) {
-  const ref = profile?.apiKeyRef || buildApiKeyRef(profile?.id || "");
+export async function deleteSecret(ref, storage) {
   if (!ref) return;
   if (isTestSecretStore()) {
     TEST_SECRETS.delete(ref);
     return;
   }
-  if (profile?.keyStorage === "macos-keychain" || process.platform === "darwin") {
+  if (storage === "macos-keychain" || process.platform === "darwin") {
     try {
       await execFileAsync("security", ["delete-generic-password", "-a", ref, "-s", KEYCHAIN_SERVICE]);
     } catch {
@@ -85,6 +74,23 @@ export async function deleteProfileApiKey(profile) {
     }
   }
   await deleteLocalVaultSecret(ref);
+}
+
+export async function saveProfileApiKey(profileId, apiKey) {
+  return saveSecret(buildApiKeyRef(profileId), apiKey);
+}
+
+export async function readProfileApiKey(profile) {
+  // 若 profile 直接带明文 key 则优先用它；真实渠道走 apiKeyRef 从密钥库取，不带明文，行为不变。
+  if (profile?.apiKey) {
+    return profile.apiKey;
+  }
+  return readSecret(profile?.apiKeyRef, profile?.keyStorage);
+}
+
+export async function deleteProfileApiKey(profile) {
+  const ref = profile?.apiKeyRef || buildApiKeyRef(profile?.id || "");
+  return deleteSecret(ref, profile?.keyStorage);
 }
 
 async function readLocalVaultSecret(ref) {
@@ -107,8 +113,7 @@ async function writeLocalVaultSecret(ref, value) {
   const vault = await loadLocalVault();
   await ensureLocalSecretKey();
   vault[ref] = encryptLocalSecret(value);
-  await mkdir(dirname(LOCAL_VAULT_FILE), { recursive: true });
-  await writeFile(LOCAL_VAULT_FILE, JSON.stringify(vault, null, 2), "utf8");
+  await writeJsonAtomic(LOCAL_VAULT_FILE, vault);
 }
 
 async function deleteLocalVaultSecret(ref) {
@@ -120,7 +125,7 @@ async function deleteLocalVaultSecret(ref) {
     return;
   }
   delete vault[ref];
-  await writeFile(LOCAL_VAULT_FILE, JSON.stringify(vault, null, 2), "utf8");
+  await writeJsonAtomic(LOCAL_VAULT_FILE, vault);
 }
 
 async function loadLocalVault() {
@@ -134,8 +139,8 @@ async function loadLocalVault() {
 async function ensureLocalSecretKey() {
   if (existsSync(LOCAL_SECRET_FILE)) return;
   const value = crypto.randomBytes(32).toString("hex");
-  await mkdir(dirname(LOCAL_SECRET_FILE), { recursive: true });
-  await writeFile(LOCAL_SECRET_FILE, value, { encoding: "utf8", mode: 0o600 });
+  // 主加密密钥也原子写（写坏＝整个密钥库不可解密）；保留 0o600 权限。
+  await writeFileAtomic(LOCAL_SECRET_FILE, value, { encoding: "utf8", mode: 0o600 });
 }
 
 function deriveLocalEncryptionKey(secret, salt) {

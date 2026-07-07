@@ -16,9 +16,11 @@ async function withMockNewapi(handler, run) {
 
 test("api 模式：调 new-api /api/channel/ 取渠道（透传 token、翻页到空停）", async () => {
   let seenAuth = null;
+  let seenUser = null;
   await withMockNewapi(
     (req, res) => {
       seenAuth = req.headers.authorization;
+      seenUser = req.headers["new-api-user"];
       const page = Number(new URL(req.url, "http://x").searchParams.get("p") || 0);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(page === 0
@@ -38,6 +40,7 @@ test("api 模式：调 new-api /api/channel/ 取渠道（透传 token、翻页�
         assert.equal(rows[0].name, "A");
         assert.equal(rows[1].type, 14);
         assert.equal(seenAuth, "tok-123");
+        assert.equal(seenUser, "1", "需带 New-Api-User 头（默认管理员 1），否则 new-api 返回 401");
       } finally {
         delete process.env.EVALUATOR_IMPORT_SOURCE;
         delete process.env.EVALUATOR_NEWAPI_BASE_URL;
@@ -57,7 +60,7 @@ test("api 模式缺 token → 报错", async () => {
   process.env.EVALUATOR_NEWAPI_BASE_URL = "https://x.test";
   delete process.env.EVALUATOR_NEWAPI_IMPORT_TOKEN;
   try {
-    await assert.rejects(() => fetchNewapiChannels(), /NEWAPI_IMPORT_TOKEN/);
+    await assert.rejects(() => fetchNewapiChannels(), /系统访问令牌/);
   } finally {
     delete process.env.EVALUATOR_IMPORT_SOURCE;
     delete process.env.EVALUATOR_NEWAPI_BASE_URL;

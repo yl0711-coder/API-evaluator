@@ -52,7 +52,7 @@ test("task manager records completed tasks without leaking full payloads", async
     assert.match(raw, /"event":"completed"/);
     assert.doesNotMatch(raw, /sk-should-not-be-written-in-full/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -89,7 +89,7 @@ test("满槽时第二个任务进入排队(queued)，带位置与 ETA，前一�
     assert.equal(b.status, "completed");
   } finally {
     delete process.env.EVALUATOR_MAX_CONCURRENT_TASKS;
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -121,7 +121,7 @@ test("task manager cancels running tasks through the task context", async () => 
     assert.match(raw, /"event":"cancel_requested"/);
     assert.match(raw, /"event":"cancelled"/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -156,7 +156,7 @@ test("task manager runs batch admission tasks", async () => {
     assert.match(raw, /"type":"batch-admission"/);
     assert.match(raw, /"profileCount":2/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -193,7 +193,7 @@ test("task manager separates user-facing task errors from technical logs", async
     assert.match(taskEvents, /用户提示 err-test/);
     assert.doesNotMatch(taskEvents, /technical stack detail/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -229,7 +229,7 @@ test("recent task recovery marks previous running tasks as interrupted", async (
     } else {
       process.env.EVALUATOR_DATA_DIR = oldDataDir;
     }
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 

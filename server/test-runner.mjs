@@ -7,9 +7,12 @@ import {
   buildAiReportAnalysisPrompt,
   isAiReportAnalysisEnabled,
 } from "./ai-report-analysis.mjs";
-import { TEST_SCENARIOS } from "./scenarios/index.mjs";
+import { getSettings } from "./settings-store.mjs";
+import { getTestScenarios } from "./scenarios/index.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
 import { loadRunnableProfiles } from "./run-targets.mjs";
+import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
+import { computeEarnedTags, applyEarnedTags } from "./scenario-tag-award.mjs";
 import { evaluateScenarioOutput } from "./scenario-evaluator.mjs";
 import { readProfileApiKey } from "./secret-store.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
@@ -27,6 +30,7 @@ import {
   buildProtocolRequest,
   buildProtocolStreamRequest,
   buildProtocolToolRequest,
+  extractFinishReason,
   extractOutputText,
   extractToolCall,
   extractUsage,
@@ -36,18 +40,22 @@ import {
 } from "./protocols.mjs";
 import { buildRunConsumption, estimateProfileRunEconomics } from "./costing.mjs";
 import { auditAbsoluteTokens, auditBillingDimensions } from "./token-auditor.mjs";
+import { auditTokenizerFingerprint, resolveBaselineModel } from "./tokenizer-fingerprint-audit.mjs";
+import { TOKENIZER_PROBES } from "./tokenizer-probes.mjs";
 import {
   countErrors,
   formatAdmissionReport,
-  formatBatchAdmissionReport,
+  formatAiAnalysisDocument,
   formatBatchReport,
   formatQuickVerifyReport,
   formatScenarioReport,
   formatStabilityReport,
+  saveAiAnalysisReport,
   saveReportFiles,
 } from "./reporting.mjs";
 import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary } from "./summaries.mjs";
 import { buildFingerprintSnapshot, trackModelFingerprint } from "./fingerprint-tracking.mjs";
+import { buildTierProbeCases, classifyTierFromRecords, evaluateTierCase, loadTierContext } from "./tier-admission.mjs";
 import { buildTrendSeries, detectRegression, toTrendPoint } from "./regression.mjs";
 import { queryProfileRunSummaries, recordRegressionAlert, recordRequest, recordSpend, recordTestRun } from "./db.mjs";
 import { isLiveJudgeEnabled, runLiveJudgeAudit } from "./live-adapters.mjs";
@@ -80,6 +88,21 @@ async function attachRunArtifacts(runId, summary, artifacts = {}) {
   };
 }
 
+// 报告命名：渠道_模型；取不到渠道/模型则返回空串（→ 多目标）。profile.name = "渠道 / 模型"。
+function reportTargetSlug(profile) {
+  const channel = String(profile?.name || "").split(" / ")[0].trim();
+  const model = String(profile?.defaultModel || profile?.model || "").trim();
+  if (!channel) return model;
+  return model ? `${channel}_${model}` : channel;
+}
+// 报告 id：渠道_模型_测试_YYYYMMDD_HHMMSS_短哈希；headSlug 为空（多目标）时用「多目标」。
+function buildReportId(type, headSlug) {
+  const stamp = compactDate(new Date()).replace("-", "_"); // YYYYMMDD_HHMMSS
+  const hash = crypto.randomUUID().slice(0, 4);
+  const head = (headSlug || "").trim() || "多目标";
+  return `${head}_${type}_${stamp}_${hash}`;
+}
+
 export async function runQuickTest(profileId, prompt) {
   const profiles = await loadRunnableProfiles();
   const profile = profiles.find((item) => item.id === profileId);
@@ -102,6 +125,10 @@ export async function runQuickTest(profileId, prompt) {
 // 【真伪 + token 虚报 + 真实消耗】速报。最大化复用准入引擎。
 const QUICK_VERIFY_MAX_OUTPUT = 96;
 
+// 场景测试统一输出窗口。答案纪律后缀已把 LiveBench 输出压到几百 token，更大的窗口在中转侧
+// 也未生效；统一 4096 既够任何场景输出又可预期。对场景测试覆盖渠道配置（只作用于场景路径）。
+const SCENARIO_MAX_OUTPUT_TOKENS = 4096;
+
 export async function runQuickVerify(body, taskContext = {}) {
   const profiles = await loadRunnableProfiles();
   const profile = profiles.find((item) => item.id === body.profileId);
@@ -109,7 +136,7 @@ export async function runQuickVerify(body, taskContext = {}) {
     throw new Error("没有找到被测 API 配置。");
   }
 
-  const runId = `quickverify-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = buildReportId("quickverify", reportTargetSlug(profile));
   const startedAt = new Date();
   // token 高效：探针输出封顶（指纹/身份只需短 JSON），单次成本可预估、可控。
   const leanProfile = { ...profile, maxTokens: Math.min(Number(profile.maxTokens) || QUICK_VERIFY_MAX_OUTPUT, QUICK_VERIFY_MAX_OUTPUT) };
@@ -282,9 +309,12 @@ export async function runAdmissionTest(body, taskContext = {}) {
   const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel)
     ? body.packageLevel
     : "standard";
-  const runId = `admission-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = buildReportId("admission", reportTargetSlug(profile));
   const startedAt = new Date();
   const cases = buildAdmissionCases(packageLevel, profile.defaultModel);
+  // 档位降级判别：仅 standard/deep + Claude + 有匹配档位参考时，追加"多跑几次的判别题"。
+  const tierContext = packageLevel === "standard" || packageLevel === "deep" ? loadTierContext(profile.defaultModel) : null;
+  if (tierContext) cases.push(...buildTierProbeCases(tierContext.reference));
   const records = [];
 
   for (const testCase of cases) {
@@ -306,6 +336,7 @@ export async function runAdmissionTest(body, taskContext = {}) {
     packageLevel,
     startedAt,
     endedAt,
+    tierContext,
   });
   summary = await attachRunArtifacts(runId, summary, { records });
   summary.predictedConsumption = normalizePredicted(body.predicted);
@@ -333,15 +364,53 @@ export async function runAdmissionTest(body, taskContext = {}) {
   } catch {
     // best-effort：绝对 token 审计失败不影响准入主流程
   }
+  const tokenizerProbeRecords = []; // 分词器探针虽 writeLog:false，但真实打到上游，需计入"实际上游消耗"口径
+  try {
+    // 分词器指纹核验：仅当声称 Claude 家族。有该代本地基线才发探针(避免无谓请求)。
+    if (inferModelFamily(profile.defaultModel) === "claude") {
+      if (resolveBaselineModel(profile.defaultModel)) {
+        const points = [];
+        for (const probe of TOKENIZER_PROBES) {
+          assertTaskNotCancelled(taskContext);
+          const probeRecord = await measureProbeInputTokens(profile, probe.text, { runId });
+          tokenizerProbeRecords.push(probeRecord);
+          if (Number(probeRecord.inputTokens) > 0) points.push({ id: probe.id, reportedTokens: probeRecord.inputTokens });
+        }
+        summary.tokenizerFingerprint = auditTokenizerFingerprint({ model: profile.defaultModel, points });
+      } else {
+        // 声称 Claude 但本地没有该代基线 → 标 applicable:false（附原因），不发探针。
+        summary.tokenizerFingerprint = auditTokenizerFingerprint({ model: profile.defaultModel, points: [] });
+      }
+    }
+  } catch {
+    // best-effort：分词器指纹失败不影响准入主流程
+  }
+  // 实际上游口径（仅报告体现，不进 UI 卡）：报告"请求数/合计 token"按逻辑用例计（重试合并、静默探针不计），
+  // 与中转后台对账会偏小。这里另算一份真实打到上游的口径——含每个用例的重试次数 + 14 个分词器探针。
+  summary.upstreamUsage = buildUpstreamUsage(records, tokenizerProbeRecords);
   summary.regression = await assessRunRegression(summary);
-  const reportMarkdown = formatAdmissionReport(summary, records);
+  const aiAnalysis = await maybeBuildAiAnalysis({
+    enabled: body.useAiReportAnalysis,
+    reportType: "admission",
+    profile,
+    summary,
+    runId,
+    taskContext,
+  });
+  const reportMarkdown = formatAdmissionReport(summary, records, { aiAnalysis });
   const reportFiles = await saveReportFiles(runId, reportMarkdown, "模型准入评测报告");
+  const aiAnalysisFiles = await saveAiAnalysisReport(
+    runId,
+    formatAiAnalysisDocument(aiAnalysis, { title: "模型准入评测 · AI 辅助分析" }),
+    "模型准入评测 · AI 辅助分析",
+  );
 
   await persistTestRun({
     ...summary,
     type: "admission",
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown: undefined,
@@ -352,6 +421,7 @@ export async function runAdmissionTest(body, taskContext = {}) {
     type: "admission",
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown,
@@ -375,7 +445,10 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
     ? body.packageLevel
     : "standard";
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 3, 1);
-  const batchId = `admission-batch-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const batchId = buildReportId(
+    "admission-batch",
+    validProfileIds.length === 1 ? reportTargetSlug(profiles.find((p) => p.id === validProfileIds[0])) : "",
+  );
   const startedAt = new Date();
   const results = [];
 
@@ -390,6 +463,8 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
             profileId,
             packageLevel,
             predicted: null, // 预测记在批量总结里，不重复挂到每个子渠道
+            // 每模型一篇独立报告：AI 分析随各自报告生成（此前批量只在批次层做一次）。
+            useAiReportAnalysis: body.useAiReportAnalysis,
           },
           taskContext,
         ),
@@ -426,27 +501,35 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
   };
   summary = await attachRunArtifacts(batchId, summary, { results });
   summary.predictedConsumption = normalizePredicted(body.predicted);
-  const reportMarkdown = formatBatchAdmissionReport(summary);
-  const reportFiles = await saveReportFiles(batchId, reportMarkdown, "批量准入评测报告");
 
-  await persistTestRun({
-    ...summary,
-    type: "batch-admission",
-    reportPath: reportFiles.markdownPath,
-    reportHtmlPath: reportFiles.htmlPath,
-    rawJsonPath: summary.rawJsonPath,
-    workspaceDir: summary.workspaceDir,
-    reportMarkdown: undefined,
-  });
+  // 不再出合并报告：每个模型的报告已由各自 runAdmissionTest 落盘（渠道_模型_admission_…）。
+  // 汇集各模型报告，作为本批任务的 reports[] 返回（供前端逐篇弹出 + 报告中心按渠道/模型筛选）。
+  const reports = results
+    .filter((r) => r && r.reportHtmlPath)
+    .map((r) => ({
+      runId: r.runId,
+      profileId: r.profileId,
+      profileName: r.profileName,
+      model: r.model,
+      grade: r.grade,
+      score: r.score,
+      successRateText: r.successRateText,
+      reportPath: r.reportPath,
+      reportHtmlPath: r.reportHtmlPath,
+      aiAnalysisHtmlPath: r.aiAnalysisHtmlPath || null,
+      rawJsonPath: r.rawJsonPath || null,
+    }));
 
+  const first = reports[0] || {};
   return {
     ...summary,
     type: "batch-admission",
-    reportPath: reportFiles.markdownPath,
-    reportHtmlPath: reportFiles.htmlPath,
-    rawJsonPath: summary.rawJsonPath,
-    workspaceDir: summary.workspaceDir,
-    reportMarkdown,
+    reports, // 每模型一篇（新契约）
+    // 兼容标量：结果面板/历史按单篇读取，取第一篇。
+    reportPath: first.reportPath || null,
+    reportHtmlPath: first.reportHtmlPath || null,
+    aiAnalysisHtmlPath: first.aiAnalysisHtmlPath || null,
+    rawJsonPath: first.rawJsonPath || summary.rawJsonPath || null,
   };
 }
 
@@ -555,13 +638,19 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
     abortSignal: taskContext?.task?.abortController?.signal,
   };
 
+  // 用例可声明自身输出上限（如档位判别题校准时限 256 token）。只下调、不上调：
+  //   取 min(渠道配置, 用例上限)，既复现校准运行参数，又不会把硬推理题放成超时重请求。
+  const effectiveProfile = testCase.maxTokens
+    ? { ...profile, maxTokens: Math.min(Number(profile.maxTokens) || 512, testCase.maxTokens) }
+    : profile;
+
   if (testCase.kind === "tool") {
-    return executeToolCallTestRequest(profile, baseOptions);
+    return executeToolCallTestRequest(effectiveProfile, baseOptions);
   }
   if (testCase.kind === "stream") {
-    return executeStreamStructureTestRequest(profile, testCase.prompt, baseOptions);
+    return executeStreamStructureTestRequest(effectiveProfile, testCase.prompt, baseOptions);
   }
-  return executeTestRequest(profile, testCase.prompt, baseOptions);
+  return executeTestRequest(effectiveProfile, testCase.prompt, baseOptions);
 }
 
 function evaluateAdmissionCase(testCase, record) {
@@ -631,6 +720,9 @@ function evaluateAdmissionCase(testCase, record) {
   if (testCase.id.startsWith("fingerprint_")) {
     return evaluateFingerprintProbe(testCase, record.responseText || record.responseSummary);
   }
+  if (testCase.id.startsWith("tier_")) {
+    return evaluateTierCase(testCase, record.responseText || record.responseSummary);
+  }
 
   return {
     passed: true,
@@ -696,7 +788,25 @@ function identityIssueText(identityCheck) {
   return `模型没有明确自述家族，标称 ${identityCheck.expectedFamily}，需结合后续测试判断。`;
 }
 
-function buildAdmissionSummary({ runId, profile, records, packageLevel, startedAt, endedAt }) {
+// 实际上游/计费口径：把每个用例的真实请求次数（含重试，record.attempts）与静默分词器探针都算进去，
+// token 同理（含探针；重试的失败尝试不返回 usage，自然不计；流式无 usage，也不计——符合"不算流式"）。
+function buildUpstreamUsage(records, probeRecords = []) {
+  const attemptsOf = (r) => (Number(r?.attempts) > 0 ? Number(r.attempts) : 1);
+  const sumAttempts = (list) => list.reduce((sum, r) => sum + attemptsOf(r), 0);
+  const caseHits = sumAttempts(records);
+  const probeHits = sumAttempts(probeRecords);
+  const all = [...records, ...probeRecords];
+  return {
+    logicalRequestCount: records.length,
+    billedRequestCount: caseHits + probeHits,
+    probeRequestCount: probeHits,
+    retryCount: caseHits - records.length + (probeHits - probeRecords.length),
+    inputTokens: sumNullable(all.map((r) => r.inputTokens)),
+    outputTokens: sumNullable(all.map((r) => r.outputTokens)),
+  };
+}
+
+function buildAdmissionSummary({ runId, profile, records, packageLevel, startedAt, endedAt, tierContext = null }) {
   const requestCount = records.length;
   const successCount = records.filter((record) => record.success).length;
   const passedCount = records.filter((record) => record.admission?.passed).length;
@@ -725,6 +835,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
   const tokenAudit = buildTokenAudit(records);
   const billingAudit = auditBillingDimensions(records, { model: profile.defaultModel });
   const fingerprintSummary = buildFingerprintProbeSummary(records);
+  const tierDiscrimination = classifyTierFromRecords(records, tierContext);
   const economics = estimateProfileRunEconomics(profile, { inputTokens, outputTokens });
   const purityAssessment = buildPurityAssessment({
     modelName: profile.defaultModel,
@@ -738,6 +849,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     errorCounts,
     tokenAudit,
     fingerprintSummary,
+    tierDiscrimination,
   });
   const score = Math.max(
     0,
@@ -793,6 +905,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     identityPassed,
     identityCheck,
     purityAssessment,
+    tierDiscrimination,
     tokenAudit,
     billingAudit,
     actualConsumption: buildRunConsumption(profile, records),
@@ -879,7 +992,7 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
   const rounds = clampNumber(body.rounds, 1, 100, 10);
   const concurrency = clampNumber(body.concurrency, 1, 5, 1);
   const prompt = String(body.prompt || "").trim() || "请用两句话说明你可以正常工作，并返回当前测试编号。";
-  const runId = `run-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = buildReportId("run", reportTargetSlug(profile));
   const startedAt = new Date();
   const records = [];
 
@@ -923,11 +1036,17 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
   });
   const reportMarkdown = formatStabilityReport(summary, records, { aiAnalysis });
   const reportFiles = await saveReportFiles(runId, reportMarkdown, "稳定性测试报告");
+  const aiAnalysisFiles = await saveAiAnalysisReport(
+    runId,
+    formatAiAnalysisDocument(aiAnalysis, { title: "稳定性测试 · AI 辅助分析" }),
+    "稳定性测试 · AI 辅助分析",
+  );
 
   await persistTestRun({
     ...summary,
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown: undefined,
@@ -937,6 +1056,7 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
     ...summary,
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown,
@@ -956,7 +1076,10 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
     throw new Error("没有找到可用的被测 API 配置。");
   }
 
-  const batchId = `batch-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const batchId = buildReportId(
+    "batch",
+    validProfileIds.length === 1 ? reportTargetSlug(profiles.find((p) => p.id === validProfileIds[0])) : "",
+  );
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const startedAt = new Date();
   const results = [];
@@ -1022,12 +1145,18 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
   });
   const reportMarkdown = formatBatchReport(summary, { aiAnalysis });
   const reportFiles = await saveReportFiles(batchId, reportMarkdown, "批量稳定性测试总报告");
+  const aiAnalysisFiles = await saveAiAnalysisReport(
+    batchId,
+    formatAiAnalysisDocument(aiAnalysis, { title: "批量稳定性测试 · AI 辅助分析" }),
+    "批量稳定性测试 · AI 辅助分析",
+  );
 
   await persistTestRun({
     ...summary,
     type: "batch-stability",
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown: undefined,
@@ -1037,10 +1166,25 @@ export async function runBatchStabilityTest(body, taskContext = {}) {
     ...summary,
     reportPath: reportFiles.markdownPath,
     reportHtmlPath: reportFiles.htmlPath,
+    aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
     rawJsonPath: summary.rawJsonPath,
     workspaceDir: summary.workspaceDir,
     reportMarkdown,
   };
+}
+
+// 场景测验夺标：某模型在某场景 avgQualityScore >= 90 → 授予该场景的能力标签（并集去重、只增不撤）。
+// profile.id === 模型目标 id，故按 result.profileId 直接回写模型目标。best-effort。
+// 纯逻辑（推导应得标签 / 合并去重）抽到 scenario-tag-award.mjs 单测；此处只做开关门禁与读写编排。
+async function awardScenarioTags(summary, selectedScenarios) {
+  // 设置「为高分通过场景测试的模型添加对应标签」关闭时，即使 >=90 分也不授标签。
+  if (!getSettings().enableAutoTag) return;
+  const earnedByProfile = computeEarnedTags(summary, selectedScenarios);
+  if (!earnedByProfile.size) return;
+  const targets = await loadModelTargets();
+  if (applyEarnedTags(targets, earnedByProfile, new Date().toISOString())) {
+    await saveModelTargets(targets);
+  }
 }
 
 export async function runScenarioTest(body, taskContext = {}) {
@@ -1048,7 +1192,7 @@ export async function runScenarioTest(body, taskContext = {}) {
   const profileIds = normalizeProfileIds(body.profileIds);
   const scenarioIds = normalizeScenarioIds(body.scenarioIds);
   const selectedProfiles = profiles.filter((profile) => profileIds.includes(profile.id));
-  const selectedScenarios = TEST_SCENARIOS.filter((scenario) => scenarioIds.includes(scenario.id));
+  const selectedScenarios = getTestScenarios().filter((scenario) => scenarioIds.includes(scenario.id));
 
   if (selectedProfiles.length === 0) {
     throw new Error("请至少选择一个被测 API。");
@@ -1057,7 +1201,7 @@ export async function runScenarioTest(body, taskContext = {}) {
     throw new Error("请至少选择一个测试场景。");
   }
 
-  const runId = `scenario-${compactDate(new Date())}-${crypto.randomUUID().slice(0, 8)}`;
+  const runId = buildReportId("scenario", selectedProfiles.length === 1 ? reportTargetSlug(selectedProfiles[0]) : "");
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const requestConcurrency = clampNumber(body.requestConcurrency || body.concurrency, 1, 3, 1);
   const repeats = clampNumber(body.repeats, 1, 5, 1);
@@ -1092,7 +1236,9 @@ export async function runScenarioTest(body, taskContext = {}) {
   }
 
   const endedAt = new Date();
-  let summary = buildScenarioSummary({
+
+  // 汇总对象（仅供前端「汇总结论」卡与返回聚合字段：profileDigest/计数/type）；不再据此出合并报告。
+  const aggregate = buildScenarioSummary({
     runId,
     profileResults,
     selectedScenarios,
@@ -1102,36 +1248,79 @@ export async function runScenarioTest(body, taskContext = {}) {
     startedAt,
     endedAt,
   });
-  summary = await attachRunArtifacts(runId, summary, { profileResults });
-  summary.predictedConsumption = normalizePredicted(body.predicted);
-  const aiAnalysisProfile = selectScenarioAnalysisProfile(profiles, summary, profileIds);
-  const aiAnalysis = await maybeBuildAiAnalysis({
-    enabled: body.useAiReportAnalysis,
-    reportType: "scenario",
-    profile: aiAnalysisProfile,
-    summary,
-    runId,
-    taskContext,
-  });
-  const reportMarkdown = formatScenarioReport(summary, { aiAnalysis });
-  const reportFiles = await saveReportFiles(runId, reportMarkdown, "场景测试报告");
+  aggregate.predictedConsumption = normalizePredicted(body.predicted);
+  // 场景测验夺标：>=90 分给对应模型授予能力标签（对全体一次，标签本按 profile 归属）。best-effort。
+  try {
+    await awardScenarioTags(aggregate, selectedScenarios);
+  } catch {
+    /* 夺标失败不影响场景测试主流程 */
+  }
 
-  await persistTestRun({
-    ...summary,
-    reportPath: reportFiles.markdownPath,
-    reportHtmlPath: reportFiles.htmlPath,
-    rawJsonPath: summary.rawJsonPath,
-    workspaceDir: summary.workspaceDir,
-    reportMarkdown: undefined,
-  });
+  // 每个模型各出一篇独立报告（渠道_模型_scenario_…），可被报告中心按渠道/模型筛选。
+  const reports = [];
+  for (const profileResult of profileResults) {
+    const profile = selectedProfiles.find((p) => p.id === profileResult.profileId) || null;
+    const slug = reportTargetSlug(profile || { name: profileResult.profileName, defaultModel: profileResult.model });
+    const perId = buildReportId("scenario", slug);
+    let one = buildScenarioSummary({
+      runId: perId,
+      profileResults: [profileResult],
+      selectedScenarios,
+      maxParallelProfiles,
+      requestConcurrency,
+      repeats,
+      startedAt,
+      endedAt,
+    });
+    one = await attachRunArtifacts(perId, one, { profileResults: [profileResult] });
+    one.predictedConsumption = normalizePredicted(body.predicted);
+    const aiAnalysis = await maybeBuildAiAnalysis({
+      enabled: body.useAiReportAnalysis,
+      reportType: "scenario",
+      profile,
+      summary: one,
+      runId: perId,
+      taskContext,
+    });
+    const reportMarkdown = formatScenarioReport(one, { aiAnalysis });
+    const reportFiles = await saveReportFiles(perId, reportMarkdown, "场景测试报告");
+    const aiAnalysisFiles = await saveAiAnalysisReport(
+      perId,
+      formatAiAnalysisDocument(aiAnalysis, { title: "场景测试 · AI 辅助分析" }),
+      "场景测试 · AI 辅助分析",
+    );
+    await persistTestRun({
+      ...one,
+      reportPath: reportFiles.markdownPath,
+      reportHtmlPath: reportFiles.htmlPath,
+      aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
+      rawJsonPath: one.rawJsonPath,
+      workspaceDir: one.workspaceDir,
+      reportMarkdown: undefined,
+    });
+    reports.push({
+      runId: perId,
+      profileId: profileResult.profileId,
+      profileName: profileResult.profileName,
+      model: profileResult.model,
+      successRateText: profileResult.successRateText,
+      avgQualityScore: profileResult.avgQualityScore,
+      reportPath: reportFiles.markdownPath,
+      reportHtmlPath: reportFiles.htmlPath,
+      aiAnalysisHtmlPath: aiAnalysisFiles?.htmlPath || null,
+      rawJsonPath: one.rawJsonPath,
+    });
+  }
 
+  const first = reports[0] || {};
   return {
-    ...summary,
-    reportPath: reportFiles.markdownPath,
-    reportHtmlPath: reportFiles.htmlPath,
-    rawJsonPath: summary.rawJsonPath,
-    workspaceDir: summary.workspaceDir,
-    reportMarkdown,
+    ...aggregate,
+    reports, // 每模型一篇（新契约）
+    // 兼容标量：视图/标准评测按单篇读取，取第一篇。
+    reportPath: first.reportPath || null,
+    reportHtmlPath: first.reportHtmlPath || null,
+    aiAnalysisHtmlPath: first.aiAnalysisHtmlPath || null,
+    rawJsonPath: first.rawJsonPath || aggregate.rawJsonPath || null,
   };
 }
 
@@ -1152,7 +1341,7 @@ export function normalizeScenarioIds(value) {
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean);
-  return ids.length > 0 ? ids : TEST_SCENARIOS.map((scenario) => scenario.id);
+  return ids.length > 0 ? ids : getTestScenarios().map((scenario) => scenario.id);
 }
 
 async function runScenarioProfile({ runId, profile, scenarios, repeats, requestConcurrency, taskContext }) {
@@ -1172,7 +1361,9 @@ async function runScenarioProfile({ runId, profile, scenarios, repeats, requestC
     const batch = jobs.slice(index, index + requestConcurrency);
     const batchRecords = await Promise.all(
       batch.map(async ({ scenario, repeat }) => {
-        const record = await executeTestRequest(profile, buildScenarioPrompt(scenario, repeat, repeats), {
+        // 所有场景测试统一用 4096 输出窗口（覆盖渠道配置与 scenario.maxTokens）。
+        const caseProfile = { ...profile, maxTokens: SCENARIO_MAX_OUTPUT_TOKENS };
+        const record = await executeTestRequest(caseProfile, buildScenarioPrompt(scenario, repeat, repeats), {
           runId,
           caseId: scenario.id,
           writeLog: true,
@@ -1252,14 +1443,46 @@ export function linkExternalAbort(controller, signal) {
 // 上游探测的统一骨架：三类探测（普通生成 / 工具调用 / 流式结构）只在
 //   ① buildRequest 构造请求 ② interpret 解释成功响应 ③ computeSuccess 成功判定 三处不同；
 // 其余（超时 / 外部中止 / 截断保护 / 计时 / auth-fail / finalize 落库）完全一致。
+// 瞬时失败退避重试参数：限流型中转最常见的就是 429，单次不重试会整轮判 F。
+const RETRY_MAX_ATTEMPTS = 3; // 含首次：最多 1 + 2 次重试
+const RETRY_BASE_DELAY_MS = 600; // 指数退避基数
+const RETRY_MAX_DELAY_MS = 20000; // 单次退避上限（同时钳制 Retry-After，避免被上游要求长睡）
+
+// Retry-After（秒数或 HTTP 日期）→ 毫秒。无法解析 → null。
+function parseRetryAfter(value) {
+  if (!value) return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return Math.max(0, Math.round(secs * 1000));
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
+}
+
+// 退避睡眠，可被外部取消打断。返回 true=被取消，false=正常睡完。
+function sleepUnlessAborted(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(true);
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, ms);
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
+}
+
 // API key 仅请求时读取，绝不进日志/报告（finalizeTestRecord 只写脱敏元数据）。
+// 429 / 5xx / 瞬时网络错误会指数退避重试；超时与用户取消止损不重试。
 async function runUpstreamProbe(profile, options, { buildRequest, interpret, computeSuccess, captureFirstToken = false }) {
   const requestId = crypto.randomUUID();
   const startedAt = new Date();
   const timeoutMs = Number(profile.timeoutMs || 60000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
 
   // 贯穿各 finalize 分支的可变结果（含变体特有字段 toolCall / streamValidation / firstTokenMs）。
   const r = {
@@ -1269,11 +1492,13 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
     statusCode: null,
     responseText: "",
     usage: null,
+    finishReason: null,
     rawError: "",
     normalizedError: "",
     toolCall: null,
     streamValidation: null,
   };
+  let attempts = 0; // 实际发出的请求次数（含重试），写进记录便于诊断
   const finalize = () =>
     finalizeTestRecord({
       options,
@@ -1286,61 +1511,106 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       statusCode: r.statusCode,
       responseText: r.responseText,
       usage: r.usage,
+      finishReason: r.finishReason,
       rawError: r.rawError,
       normalizedError: r.normalizedError,
       toolCall: r.toolCall,
       streamValidation: r.streamValidation,
+      attempts,
       successOverride: computeSuccess(r),
     });
 
+  const apiKey = await readProfileApiKey(profile);
+  if (!apiKey) {
+    r.rawError = "API Key 未配置或无法从密钥存储读取。";
+    r.normalizedError = "auth_failed";
+    r.totalMs = 0;
+    return finalize();
+  }
+  let request;
   try {
-    const apiKey = await readProfileApiKey(profile);
-    if (!apiKey) {
-      r.rawError = "API Key 未配置或无法从密钥存储读取。";
-      r.normalizedError = "auth_failed";
-      r.totalMs = 0;
-      return await finalize();
-    }
-
-    const request = buildRequest({ ...profile, apiKey });
-    const started = performance.now();
-    await assertPublicTarget(request.url);
-    const response = await fetch(request.url, {
-      method: "POST",
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal: controller.signal,
-      redirect: "error",
-    });
-    r.firstByteMs = Math.round(performance.now() - started);
-    r.statusCode = response.status;
-    const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
-    r.totalMs = Math.round(performance.now() - started);
-    // 真 TTFT：首个流式分片到达时刻（≈首 token）。仅流式可测；非流式 JSON 整体返回、
-    // 无 token 级时序，故 captureFirstToken=false 时保持 null。
-    if (captureFirstToken && rawResult.firstChunkAt != null) {
-      r.firstTokenMs = Math.max(0, Math.round(rawResult.firstChunkAt - started));
-    }
-    if (rawResult.truncated) {
-      r.rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
-      r.normalizedError = "response_too_large";
-      return await finalize();
-    }
-
-    const raw = rawResult.text;
-    if (!response.ok) {
-      r.rawError = summarizeText(raw);
-      r.normalizedError = normalizeHttpError(response.status, raw);
-    } else {
-      interpret(r, raw);
-    }
+    request = buildRequest({ ...profile, apiKey });
+    await assertPublicTarget(request.url); // egress 阻断等确定性失败：不重试
   } catch (error) {
-    r.totalMs = r.totalMs ?? timeoutMs;
+    r.totalMs = 0;
     r.rawError = error instanceof Error ? error.message : String(error);
-    r.normalizedError = /abort|timeout|timed out/i.test(r.rawError) ? "timeout" : "network_error";
-  } finally {
-    clearTimeout(timer);
-    unlinkAbort();
+    r.normalizedError = "network_error";
+    return finalize();
+  }
+
+  for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
+    attempts = attempt;
+    // 每次尝试独立的超时控制器；外部取消（options.abortSignal）贯穿所有尝试。
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
+    // 重置本次尝试的瞬时字段，避免上次失败残留泄漏到下一次。
+    r.firstByteMs = null;
+    r.firstTokenMs = null;
+    r.statusCode = null;
+    r.responseText = "";
+    r.usage = null;
+    r.finishReason = null;
+    r.rawError = "";
+    r.normalizedError = "";
+    r.toolCall = null;
+    r.streamValidation = null;
+    let retryable = false;
+    let retryAfterMs = null;
+    try {
+      const started = performance.now();
+      const response = await fetch(request.url, {
+        method: "POST",
+        headers: request.headers,
+        body: JSON.stringify(request.body),
+        signal: controller.signal,
+        redirect: "error",
+      });
+      r.firstByteMs = Math.round(performance.now() - started);
+      r.statusCode = response.status;
+      const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
+      r.totalMs = Math.round(performance.now() - started);
+      // 真 TTFT：首个流式分片到达时刻（≈首 token）。仅流式可测；非流式 JSON 整体返回、
+      // 无 token 级时序，故 captureFirstToken=false 时保持 null。
+      if (captureFirstToken && rawResult.firstChunkAt != null) {
+        r.firstTokenMs = Math.max(0, Math.round(rawResult.firstChunkAt - started));
+      }
+      if (rawResult.truncated) {
+        r.rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
+        r.normalizedError = "response_too_large";
+        break; // finally 会清理；不重试
+      }
+      const raw = rawResult.text;
+      if (!response.ok) {
+        r.rawError = summarizeText(raw);
+        r.normalizedError = normalizeHttpError(response.status, raw);
+        if (response.status === 429 || response.status >= 500) {
+          retryable = true; // 限流 / 上游 5xx：可重试
+          retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
+        }
+      } else {
+        interpret(r, raw);
+      }
+    } catch (error) {
+      r.totalMs = r.totalMs ?? timeoutMs;
+      r.rawError = error instanceof Error ? error.message : String(error);
+      if (/abort|timeout|timed out/i.test(r.rawError)) {
+        r.normalizedError = "timeout"; // 超时或用户取消：止损，不重试
+      } else {
+        r.normalizedError = "network_error";
+        retryable = true; // 瞬时网络错误：可重试
+      }
+    } finally {
+      clearTimeout(timer);
+      unlinkAbort();
+    }
+
+    if (!retryable || attempt >= RETRY_MAX_ATTEMPTS) break;
+    const backoffMs =
+      retryAfterMs != null
+        ? Math.min(retryAfterMs, RETRY_MAX_DELAY_MS)
+        : Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS);
+    if (await sleepUnlessAborted(backoffMs, options.abortSignal)) break; // 退避中被取消则立刻收手
   }
 
   return finalize();
@@ -1354,12 +1624,41 @@ export async function executeTestRequest(profile, prompt, options = {}) {
       const parsed = safeJson(raw);
       r.responseText = extractOutputText(profile.protocol, parsed);
       r.usage = extractUsage(parsed);
+      r.finishReason = extractFinishReason(profile.protocol, parsed);
       if (!r.responseText) {
         r.rawError = summarizeText(raw);
         r.normalizedError = normalizeEmptyResponse(raw);
       }
     },
     computeSuccess: () => undefined, // 走 finalize 默认：2xx + 有输出
+  });
+}
+
+// 分词器指纹探针：只为读取输入 token 数。max_tokens=1、不带 temperature（Opus 4.7+ 拒绝采样参数），
+// 把产出成本压到最小；不写请求日志，避免污染准入分项明细。
+function buildProbeTokenRequest(profile, text) {
+  const baseUrl = profile.baseUrl.replace(/\/+$/, "");
+  if (profile.protocol === "claude_messages") {
+    return {
+      url: `${baseUrl}/v1/messages`,
+      headers: { "content-type": "application/json", "x-api-key": profile.apiKey, "anthropic-version": profile.anthropicVersion || "2023-06-01" },
+      body: { model: profile.defaultModel, max_tokens: 1, messages: [{ role: "user", content: text }] },
+    };
+  }
+  return {
+    url: `${baseUrl}/v1/chat/completions`,
+    headers: { "content-type": "application/json", authorization: `Bearer ${profile.apiKey}` },
+    body: { model: profile.defaultModel, max_tokens: 1, stream: false, messages: [{ role: "user", content: text }] },
+  };
+}
+
+async function measureProbeInputTokens(profile, text, options = {}) {
+  return runUpstreamProbe(profile, { writeLog: false, ...options }, {
+    buildRequest: (p) => buildProbeTokenRequest(p, text),
+    interpret: (r, raw) => {
+      r.usage = extractUsage(safeJson(raw));
+    },
+    computeSuccess: (r) => Number(r.usage?.inputTokens) > 0,
   });
 }
 
@@ -1514,10 +1813,12 @@ async function finalizeTestRecord({
   statusCode,
   responseText,
   usage,
+  finishReason = null,
   rawError,
   normalizedError,
   toolCall = null,
   streamValidation = null,
+  attempts = 1,
   successOverride = undefined,
 }) {
   const record = {
@@ -1530,12 +1831,16 @@ async function finalizeTestRecord({
     provider: profile.provider,
     model: profile.defaultModel,
     protocol: profile.protocol,
+    // 实际发出的输出窗口（场景题会把它抬到 scenario.maxTokens）。落进 requests.jsonl 便于
+    // 直接核对"发的是不是 8192"，不必靠输出长度反推。
+    requestMaxTokens: Number(profile.maxTokens) || null,
     startedAt: startedAt.toISOString(),
     firstByteMs,
     firstTokenMs,
     totalMs,
     statusCode,
     success: successOverride ?? Boolean(statusCode && statusCode >= 200 && statusCode < 300 && responseText),
+    attempts,
     normalizedError,
     inputTokens: usage?.inputTokens ?? null,
     outputTokens: usage?.outputTokens ?? null,
@@ -1544,6 +1849,7 @@ async function finalizeTestRecord({
     reasoningTokens: usage?.reasoningTokens ?? null,
     tokenSource: usage ? "upstream" : "unknown",
     outputChars: responseText.length,
+    finishReason,
     responseSummary: summarizeText(responseText),
     responseText,
     toolCall,
@@ -1590,7 +1896,15 @@ async function maybeBuildAiAnalysis({ enabled, reportType, profile, summary, run
     return { enabled: false };
   }
   assertTaskNotCancelled(taskContext);
-  if (!profile) {
+  // 优先用「设置」里指定的 AI 总结模型（一个已配置的模型目标）；未指定/失效则用被测渠道自己。
+  const settings = getSettings();
+  let analysisProfile = null;
+  if (settings.aiAnalysisModelTargetId) {
+    const profiles = await loadRunnableProfiles();
+    analysisProfile = profiles.find((p) => p.id === settings.aiAnalysisModelTargetId) || null;
+  }
+  analysisProfile = analysisProfile || profile;
+  if (!analysisProfile) {
     return {
       enabled: true,
       success: false,
@@ -1601,9 +1915,9 @@ async function maybeBuildAiAnalysis({ enabled, reportType, profile, summary, run
   const prompt = buildAiReportAnalysisPrompt({ reportType, summary });
   const record = await executeTestRequest(
     {
-      ...profile,
-      maxTokens: Math.max(Number(profile.maxTokens || 0), 1200),
-      timeoutMs: Math.max(Number(profile.timeoutMs || 0), 90000),
+      ...analysisProfile,
+      maxTokens: Math.max(Number(analysisProfile.maxTokens || 0), 1200),
+      timeoutMs: Math.max(Number(analysisProfile.timeoutMs || 0), 90000),
     },
     prompt,
     {
@@ -1620,19 +1934,6 @@ function selectBatchAnalysisProfile(profiles, summary, fallbackProfileIds) {
   const ranked = [...(summary.results || [])]
     .filter((result) => !result.error)
     .sort((a, b) => b.successRate - a.successRate || (a.p95TotalMs ?? Infinity) - (b.p95TotalMs ?? Infinity));
-  const profileId = ranked[0]?.profileId || fallbackProfileIds[0];
-  return profiles.find((profile) => profile.id === profileId) || null;
-}
-
-function selectScenarioAnalysisProfile(profiles, summary, fallbackProfileIds) {
-  const ranked = [...(summary.results || [])]
-    .filter((result) => !result.error)
-    .sort(
-      (a, b) =>
-        b.avgQualityScore - a.avgQualityScore ||
-        b.successRate - a.successRate ||
-        (a.p95TotalMs ?? Infinity) - (b.p95TotalMs ?? Infinity),
-    );
   const profileId = ranked[0]?.profileId || fallbackProfileIds[0];
   return profiles.find((profile) => profile.id === profileId) || null;
 }

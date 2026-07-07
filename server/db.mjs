@@ -415,6 +415,25 @@ export async function queryProfileRunSummaries(profileId, { limit = 200, path } 
   }
 }
 
+// 每个模型目标(=profile_id)的最后一次测试时间（覆盖所有测试种类：准入/快速/稳定/场景/批量）。
+// 用 test_requests（逐请求、按 profile_id 建索引）聚合 MAX(logged_at)。logged_at 为 ISO 文本，
+// MAX 按字典序即时间序。DB 不可用/无记录 → {}。供「模型管理」卡片显示「上次测试」+ 判定「需测」。
+export async function queryLastTestedByProfile({ path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return {};
+    const rows = db
+      .prepare("SELECT profile_id, MAX(logged_at) AS last FROM test_requests WHERE profile_id IS NOT NULL GROUP BY profile_id")
+      .all();
+    const out = {};
+    for (const r of rows) if (r.profile_id && r.last) out[r.profile_id] = r.last;
+    return out;
+  } catch (error) {
+    noteDbError("queryLastTestedByProfile", error);
+    return {};
+  }
+}
+
 // —— 基线回归告警 ——
 export async function recordRegressionAlert(alert, { path } = {}) {
   try {
@@ -694,6 +713,38 @@ export async function pruneReports({ retentionDays = 30, maxTotal = 2000, now, p
   }
 }
 
+// 历史留存清理：给「只增不减」的历史表加与报告一致的「保留天数 + 上限（保留最新）」策略，
+// 防 evaluator.db 长期运行下把卷吃满。按各表的时间列判过期，按自增 id 判超量。
+// 表名/列名/上限均为下方硬编码常量（非用户输入），可安全内插进 SQL。
+const HISTORY_RETENTION = [
+  { table: "test_requests", tsColumn: "logged_at", maxTotal: 50000 },
+  { table: "test_runs", tsColumn: "logged_at", maxTotal: 10000 },
+  { table: "regression_alerts", tsColumn: "created_at", maxTotal: 5000 },
+  { table: "model_fingerprints", tsColumn: "created_at", maxTotal: 5000 },
+];
+
+export async function pruneHistory({ retentionDays = 90, now, path } = {}) {
+  const summary = {};
+  try {
+    const db = await getDatabase(path);
+    if (!db) return summary;
+    const cutoffIso = new Date((now ?? Date.now()) - retentionDays * 24 * 3600 * 1000).toISOString();
+    for (const { table, tsColumn, maxTotal } of HISTORY_RETENTION) {
+      // 过期：时间列早于 cutoff（NULL 时间不动，避免误删刚写入未落时间戳的行）。
+      const expired = db.prepare(`DELETE FROM ${table} WHERE ${tsColumn} IS NOT NULL AND ${tsColumn} < ?`).run(cutoffIso).changes;
+      // 超量：只保留 id 最大的 maxTotal 条（id 自增即时序），其余更旧的删掉。
+      const overflow = db
+        .prepare(`DELETE FROM ${table} WHERE id NOT IN (SELECT id FROM ${table} ORDER BY id DESC LIMIT ?)`)
+        .run(Math.max(0, Math.floor(maxTotal))).changes;
+      summary[table] = expired + overflow;
+    }
+    return summary;
+  } catch (error) {
+    noteDbError("pruneHistory", error);
+    return summary;
+  }
+}
+
 // 记账：评测完成后由 persistTestRun（test-runner.mjs）写入预估 + 真实成本（按 run_by）。
 // 供累计花费汇总 querySpendSummary 读取。
 export async function recordSpend(entry, { path } = {}) {
@@ -832,14 +883,22 @@ function safeParse(raw) {
   }
 }
 
-// test_runs.raw_json 只需汇总级字段；场景/批量 summary 里嵌的 records/results/cases/
-// reportMarkdown 可达数 MB，逐请求明细已在 test_requests 表，这里剥掉只留计数，
-// 避免单行膨胀拖慢 queryRecentTestRuns（一次 parse 20 行）。
+// test_runs.raw_json 只需汇总级字段；reportMarkdown / 顶层 records / cases 可达数 MB，
+// 逐请求明细已在 test_requests 表，这里剥掉只留计数，避免单行膨胀拖慢 queryRecentTestRuns。
+// results（场景/批量的每渠道汇总）要保留：报告中心卡片/排行榜靠它取 successRate、
+// avgQualityScore 等——但剥掉每个 result 内部的逐请求 records（大头），只留汇总级字段。
 function slimSummaryForStorage(summary) {
   if (!summary || typeof summary !== "object") return summary;
   const { reportMarkdown, records, results, cases, ...rest } = summary;
   if (Array.isArray(records)) rest.recordCount = records.length;
-  if (Array.isArray(results)) rest.resultCount = results.length;
   if (Array.isArray(cases)) rest.caseCount = rest.caseCount ?? cases.length;
+  if (Array.isArray(results)) {
+    rest.resultCount = results.length;
+    rest.results = results.map((item) => {
+      if (!item || typeof item !== "object") return item;
+      const { records: _itemRecords, ...keep } = item;
+      return keep;
+    });
+  }
   return rest;
 }

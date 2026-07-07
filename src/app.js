@@ -10,6 +10,10 @@ import { copyText } from "./clipboard.js";
 import { api, cancelRemoteTask } from "./api-client.js";
 import { applyRoleVisibility, ensureAuthenticated, wireUnauthorizedRedirect } from "./auth-gate.js";
 import { createConfirmDialog } from "./confirm-dialog.js";
+import { openReportOverlay } from "./report-overlay.js";
+import { parseReportId, matchesReportFilter, computeDateBounds, reportChannelModelOptions } from "./report-id.js";
+import { createDeveloper } from "./developer.js";
+import { createAutoTestConfig } from "./auto-test-config.js";
 import {
   confirmExecution,
   estimateAdmissionBatchCost,
@@ -39,22 +43,22 @@ import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions 
 import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createBatchTargetPicker } from "./batch-target-picker.js";
+import { createScenarioCasePicker } from "./scenario-case-picker.js";
 import {
   applyPromptPresetToForm,
   renderPromptPresetOptions,
 } from "./prompt-presets.js";
 import { createProfileController } from "./profile-controller.js";
 import { createChannelAdmin } from "./channel-admin.js";
-import { createQuickTestController } from "./quick-test-controller.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
 import { renderStabilitySummary as renderStabilitySummaryPanel } from "./stability-view.js";
+import { renderScenarioSummary as renderScenarioSummaryPanel } from "./scenario-view.js";
 import { updateEstimateLabels } from "./test-estimates.js";
 import { createTaskFormController, requireSelectedValues } from "./test-form-controller.js";
 import {
   applyBatchTemplate as applyBatchTemplateToForm,
   applyProfileTemplate as applyProfileTemplateToForm,
-  applyScenarioTemplate as applyScenarioTemplateToForm,
   applyStabilityTemplate as applyStabilityTemplateToForm,
 } from "./test-templates.js";
 import {
@@ -72,6 +76,7 @@ const state = {
   requests: [],
   testRuns: [],
   taskEvents: [],
+  highRiskAlerts: [], // 高危报告提示：未读高危报告清单（来自 /api/high-risk-alerts）
   scenarios: [],
   manualLoaded: false,
   latestReportCopies: {
@@ -87,6 +92,9 @@ const state = {
 
 const pages = requireElements(".page");
 const navButtons = requireElements(".nav-button");
+// 设置页「未保存改动」追踪：早声明，避免在启动期（顶层 await 暂停）被 showPage 引用时命中 TDZ。
+let settingsDirty = false;
+let currentPage = "dashboard";
 const projectInfoForm = requireElement("#project-info-form");
 const projectInfoSummary = requireElement("#project-info-summary");
 const profileForm = requireElement("#profile-form");
@@ -98,19 +106,30 @@ const channelList = requireElement("#channel-list");
 const modelTargetForm = requireElement("#model-target-form");
 const modelTargetList = requireElement("#model-target-list");
 const modelTargetChannelSelect = requireElement("#model-target-channel");
+const modelTagFilter = requireElement("#model-tag-filter");
+// 高危报告横幅元素：须在此顶部声明。启动流程（顶层 await 块）会调 loadHighRiskAlerts()→renderHighRiskBanner()，
+// 若声明留在文件下方，届时该 const 仍处暂时性死区（TDZ），renderHighRiskBanner 引用会抛错、横幅永不显示。
+const highRiskBanner = requireElement("#high-risk-banner");
 const channelAdmin = createChannelAdmin({
   state,
-  els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect },
+  els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect, modelTagFilter },
   onChange: () => renderProfileOptions(),
 });
 channelForm.addEventListener("submit", channelAdmin.saveChannel);
 modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
+
+// 「开发者界面」（仅超管）：场景测试源数据增删改 + 自定义能力标签。标签保存后刷新模型表单勾选项。
+const developer = createDeveloper({
+  state,
+  onTagsSaved: () => channelAdmin.renderTagOptions(),
+  // 删除标签前的危险确认框（与模型管理删除同款）。confirmAction 在后文声明，删除点击在初始化之后，闭包取值时已就绪。
+  confirm: (opts) => confirmAction(opts),
+});
+// 「自动测试配置」（仅超管）：定时自动测试作业的增删改查。confirmAction 在后文声明，闭包取值时已就绪。
+const autoTestConfig = createAutoTestConfig({ state, confirm: (opts) => confirmAction(opts) });
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
-requireElement("#reload-model-targets").addEventListener("click", () => channelAdmin.loadModelTargets());
-const quickTestForm = requireElement("#quick-test-form");
-const quickProfileSelect = requireElement("#quick-profile-select");
-const quickTestResult = requireElement("#quick-test-result");
+requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
 const quickVerifyProfileSelect = requireElement("#quickverify-profile-select");
 const quickVerifySubmit = requireElement("#quickverify-submit");
 const quickVerifyResult = requireElement("#quickverify-result");
@@ -119,8 +138,6 @@ const trendChart = requireElement("#trend-chart");
 const trendRegression = requireElement("#trend-regression");
 const trendTable = requireElement("#trend-table");
 const trendAlerts = requireElement("#trend-alerts");
-const quickPromptPreset = requireElement("#quick-prompt-preset");
-const quickPromptHint = requireElement("#quick-prompt-hint");
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
@@ -156,6 +173,7 @@ const scenarioTestForm = requireElement("#scenario-test-form");
 const scenarioProfileSelect = requireElement("#scenario-profile-select");
 const scenarioCaseSelect = requireElement("#scenario-case-select");
 const scenarioSubmit = requireElement("#scenario-submit");
+const scenarioSummary = requireElement("#scenario-summary");
 const scenarioTestResult = requireElement("#scenario-test-result");
 const testRunList = requireElement("#test-run-list");
 const clientLogForm = requireElement("#client-log-form");
@@ -175,14 +193,13 @@ const clientReplayBatch = requireElement("#client-replay-batch");
 // 模型下拉沿用原 *-profile-select(仍 name="profileId"),所以表单提交与后端不变。
 const admissionCascade = createCascadeTargetPicker(requireElement("#admission-channel-select"), admissionProfileSelect);
 const standardCascade = createCascadeTargetPicker(requireElement("#standard-channel-select"), standardProfileSelect);
-const quickCascade = createCascadeTargetPicker(requireElement("#quick-channel-select"), quickProfileSelect);
 const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
 const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
 const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-select"), trendProfileSelect);
 
 // 程序化跳转回填代理:控制器里 `xxxProfileSelect.value = id` 时,写入走级联(同步渠道+模型下拉),
 // 读取仍取模型选中值。传给会做跳转回填的控制器(profile / standard-eval)。
-const quickProfileTarget = { get value() { return quickProfileSelect.value; }, set value(v) { quickCascade.setValue(v); } };
+const quickVerifyProfileTarget = { get value() { return quickVerifyProfileSelect.value; }, set value(v) { quickVerifyCascade.setValue(v); } };
 const stabilityProfileTarget = { get value() { return stabilityProfileSelect.value; }, set value(v) { stabilityCascade.setValue(v); } };
 
 // 批量两维度选择器(渠道体检 A / 渠道选优 B),3 个批量页各一个。选中项同步到隐藏的
@@ -190,6 +207,8 @@ const stabilityProfileTarget = { get value() { return stabilityProfileSelect.val
 const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-batch-picker"), { hiddenSelect: admissionBatchProfileSelect });
 const batchPicker = createBatchTargetPicker(requireElement("#batch-picker"), { hiddenSelect: batchProfileSelect });
 const scenarioPicker = createBatchTargetPicker(requireElement("#scenario-picker"), { hiddenSelect: scenarioProfileSelect });
+// 「选择测试场景」复用 .batch-picker 勾选样式,真值写回隐藏的 scenarioCaseSelect。
+const scenarioCasePicker = createScenarioCasePicker(requireElement("#scenario-case-picker"), scenarioCaseSelect);
 
 const taskEventList = requireElement("#task-event-list");
 const stabilityTemplate = requireElement("#stability-template");
@@ -198,8 +217,6 @@ const stabilityPromptPreset = requireElement("#stability-prompt-preset");
 const stabilityPromptHint = requireElement("#stability-prompt-hint");
 const batchPromptPreset = requireElement("#batch-prompt-preset");
 const batchPromptHint = requireElement("#batch-prompt-hint");
-const scenarioTemplate = requireElement("#scenario-template");
-const scenarioTemplateHint = requireElement("#scenario-template-hint");
 const stabilityEstimate = requireElement("#stability-estimate");
 const batchEstimate = requireElement("#batch-estimate");
 const scenarioEstimate = requireElement("#scenario-estimate");
@@ -207,11 +224,11 @@ const stabilityProgress = requireElement("#stability-progress");
 const batchProgress = requireElement("#batch-progress");
 const scenarioProgress = requireElement("#scenario-progress");
 const reportInsights = requireElement("#report-insights");
-const plainConclusion = requireElement("#plain-conclusion");
 const rankingList = requireElement("#ranking-list");
 const modelComparisonList = requireElement("#model-comparison-list");
 const handoffSummary = requireElement("#handoff-summary");
 const handoffTemplate = requireElement("#handoff-template");
+const pageHelp = requireElement("#page-help");
 const pageHelpContent = requireElement("#page-help-content");
 const manualContent = requireElement("#manual-content");
 const dashboardEmpty = requireElement("#dashboard-empty");
@@ -240,6 +257,7 @@ const confirmAction = createConfirmDialog({
   messageElement: requireElement("#confirm-modal-message"),
   confirmButton: requireElement("#confirm-modal-ok"),
   cancelButton: requireElement("#confirm-modal-cancel"),
+  closeButton: requireElement("#confirm-modal-close"),
 });
 const keyPrompt = createKeyModal({
   modal: keyModal,
@@ -249,9 +267,9 @@ const keyPrompt = createKeyModal({
 });
 const quickFailurePanel = createQuickFailurePanel({
   container: quickFailureActions,
-  getDefaultProfileId: () => quickProfileSelect.value,
+  getDefaultProfileId: () => quickVerifyProfileSelect.value,
   updateProfileKey,
-  retryQuickTest: () => quickTestForm.requestSubmit(),
+  retryQuickTest: () => quickVerifySubmit.click(),
   openProfiles: () => showPage("profiles"),
   openStandardEval: (profileId) => {
     if (profileId) standardCascade.setValue(profileId);
@@ -273,8 +291,8 @@ const profileController = createProfileController({
   renderProfileConfigCheck,
   loadProfiles,
   loadRequests,
-  quickProfileSelect: quickProfileTarget,
-  quickTestResult,
+  quickProfileSelect: quickVerifyProfileTarget,
+  quickTestResult: quickVerifyResult,
   quickFailurePanel,
   showPage,
   confirmAction,
@@ -301,13 +319,178 @@ requireElement("#reload-profiles").addEventListener("click", loadProfiles);
 requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
 });
-requireElement("#copy-stability-report").addEventListener("click", () => copyReportText("stability"));
-requireElement("#copy-scenario-report").addEventListener("click", () => copyReportText("scenario"));
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
-requireElement("#reload-manual").addEventListener("click", loadManual);
 requireElement("#export-profiles").addEventListener("click", exportProfiles);
 requireElement("#export-support-bundle").addEventListener("click", exportSupportBundle);
+
+// 「查看报告」：列出「评测数据/报告」里的报告文件（每页 10 个，分页 + 新格式按渠道/模型/种类/日期筛选）。
+const reportFilesPanel = requireElement("#report-files-panel");
+const reportFilesList = requireElement("#report-files-list");
+const rfFilterChannel = requireElement("#rf-filter-channel");
+const rfFilterModel = requireElement("#rf-filter-model");
+const rfFilterType = requireElement("#rf-filter-type");
+const rfFilterDateFrom = requireElement("#rf-filter-date-from");
+const rfFilterDateTo = requireElement("#rf-filter-date-to");
+const REPORT_FILTERS = [rfFilterChannel, rfFilterModel, rfFilterType, rfFilterDateFrom, rfFilterDateTo];
+const REPORT_TYPE_LABELS = {
+  admission: "准入评测",
+  "admission-batch": "批量准入",
+  scenario: "场景测试",
+  run: "稳定性测试",
+  batch: "批量稳定性",
+  quickverify: "快速验证",
+  supplier: "上游证据包",
+  client: "客户端回放",
+  replay: "客户端回放",
+};
+const REPORT_PAGE_SIZE = 10;
+let reportFiles = []; // 每条已附 parsed = parseReportId(id)
+let reportFilesPage = 0;
+let reportDateMin = ""; // 报告实际日期范围（YYYY-MM-DD），给日期框设 min/max 用
+let reportDateMax = "";
+
+// 令「终止」日历不早于「起始」、「起始」不晚于「终止」（同时夹在报告日期范围内）。
+function syncDateBounds() {
+  const { toMin, fromMax } = computeDateBounds(rfFilterDateFrom.value, rfFilterDateTo.value, reportDateMin, reportDateMax);
+  rfFilterDateTo.min = toMin;
+  rfFilterDateFrom.max = fromMax;
+}
+
+// 展开「全部报告文件」面板时自动加载（已无独立「查看报告」按钮）。
+reportFilesPanel.addEventListener("toggle", () => {
+  if (reportFilesPanel.open) loadReportFiles();
+});
+// 点日期框即弹出原生日历选择器（不必只点小图标）。
+for (const dateInput of [rfFilterDateFrom, rfFilterDateTo]) {
+  dateInput.addEventListener("click", () => {
+    try {
+      dateInput.showPicker?.();
+    } catch {
+      /* 未由用户手势激活 / 不支持 → 忽略，仍可用默认日历图标 */
+    }
+  });
+}
+REPORT_FILTERS.forEach((sel) =>
+  sel.addEventListener("change", () => {
+    // 渠道↔模型联动：重算两下拉可选项（保留仍有效的选中值）。内部亦会 syncDateBounds 收紧日历范围。
+    populateReportFilters();
+    reportFilesPage = 0;
+    renderReportFilesPage();
+  }),
+);
+reportFilesList.addEventListener("click", (event) => {
+  const pager = event.target.closest?.("[data-report-page]");
+  if (pager) {
+    const totalPages = Math.max(1, Math.ceil(filteredReportFiles().length / REPORT_PAGE_SIZE));
+    reportFilesPage =
+      pager.dataset.reportPage === "next"
+        ? Math.min(reportFilesPage + 1, totalPages - 1)
+        : Math.max(reportFilesPage - 1, 0);
+    renderReportFilesPage();
+    return;
+  }
+  const btn = event.target.closest?.("[data-report-id]");
+  if (btn) openReportOverlay(btn.dataset.reportId, { title: btn.dataset.reportId });
+});
+
+function reportKindLabel(id) {
+  if (/[-_]ai-analysis$/i.test(id)) return "AI 分析";
+  const parsed = parseReportId(id);
+  const token = parsed.isNew ? parsed.type : String(id).split("-")[0];
+  return REPORT_TYPE_LABELS[token] || "报告";
+}
+function formatBytes(bytes) {
+  return bytes >= 1024 ? `${Math.round(bytes / 1024)} KB` : `${bytes} B`;
+}
+function formatReportDate(yyyymmdd) {
+  return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
+}
+// 任一筛选生效 → 只留 isNew 且四项都匹配；无任何筛选 → 全部（新+老）。老报告不参与筛选。
+function filteredReportFiles() {
+  const filter = {
+    channel: rfFilterChannel.value,
+    model: rfFilterModel.value,
+    type: rfFilterType.value,
+    from: rfFilterDateFrom.value.replace(/-/g, ""), // YYYY-MM-DD → YYYYMMDD
+    to: rfFilterDateTo.value.replace(/-/g, ""),
+  };
+  return reportFiles.filter((f) => matchesReportFilter(f.parsed, filter));
+}
+// 据新格式报告去重值填充四个下拉（保留当前选中值）。
+// 渠道/模型互相联动：渠道选项据「当前所选模型」收窄、模型选项据「当前所选渠道」收窄（见 reportChannelModelOptions）。
+function populateReportFilters() {
+  // 用「当前选中值」做交叉约束，故须在重填（改动 select 内容）之前先读取。
+  const { channels, models } = reportChannelModelOptions(
+    reportFiles.map((f) => f.parsed),
+    { channel: rfFilterChannel.value, model: rfFilterModel.value },
+  );
+  const types = new Set();
+  const dates = new Set();
+  for (const f of reportFiles) {
+    const p = f.parsed;
+    if (!p.isNew) continue;
+    if (p.type) types.add(p.type);
+    if (p.date) dates.add(p.date);
+  }
+  const fill = (sel, allLabel, items, label = (x) => x) => {
+    const cur = sel.value;
+    sel.innerHTML =
+      `<option value="">${allLabel}</option>` +
+      items.map((x) => `<option value="${escapeHtml(x)}"${x === cur ? " selected" : ""}>${escapeHtml(label(x))}</option>`).join("");
+  };
+  fill(rfFilterChannel, "全部渠道", channels);
+  fill(rfFilterModel, "全部模型", models);
+  fill(rfFilterType, "全部种类", [...types].sort(), (t) => REPORT_TYPE_LABELS[t] || t);
+  // 日期范围用原生日期控件：按报告实际日期范围设 min/max（不填充下拉项）。
+  const ds = [...dates].sort();
+  reportDateMin = ds.length ? formatReportDate(ds[0]) : "";
+  reportDateMax = ds.length ? formatReportDate(ds[ds.length - 1]) : "";
+  syncDateBounds();
+}
+function renderReportFilesPage() {
+  const list = filteredReportFiles();
+  if (!list.length) {
+    reportFilesList.innerHTML = reportFiles.length
+      ? `<p class="muted">没有符合筛选条件的报告。</p>`
+      : `<p class="muted">暂无报告（「评测数据/报告」为空）。</p>`;
+    return;
+  }
+  const totalPages = Math.max(1, Math.ceil(list.length / REPORT_PAGE_SIZE));
+  reportFilesPage = Math.min(Math.max(reportFilesPage, 0), totalPages - 1);
+  const start = reportFilesPage * REPORT_PAGE_SIZE;
+  const rows = list
+    .slice(start, start + REPORT_PAGE_SIZE)
+    .map(
+      (f) => `
+        <div class="row report-file-row">
+          <div><strong>${escapeHtml(reportKindLabel(f.id))}</strong><br /><small>${escapeHtml(f.id)}</small></div>
+          <small>${escapeHtml(new Date(f.mtimeMs).toLocaleString("zh-CN"))}</small>
+          <small>${formatBytes(f.sizeBytes)}</small>
+          <button class="secondary" type="button" data-report-id="${escapeHtml(f.id)}">查看</button>
+        </div>`,
+    )
+    .join("");
+  const pager = `
+    <div class="report-files-pager">
+      <button class="secondary" type="button" data-report-page="prev"${reportFilesPage === 0 ? " disabled" : ""}>上一页</button>
+      <span class="muted">第 ${reportFilesPage + 1} / ${totalPages} 页 · 共 ${list.length} 个</span>
+      <button class="secondary" type="button" data-report-page="next"${reportFilesPage >= totalPages - 1 ? " disabled" : ""}>下一页</button>
+    </div>`;
+  reportFilesList.innerHTML = rows + pager;
+}
+async function loadReportFiles() {
+  reportFilesList.innerHTML = `<p class="muted">加载中…</p>`;
+  try {
+    const files = await api("/api/reports/files");
+    reportFiles = files.map((f) => ({ ...f, parsed: parseReportId(f.id) }));
+    reportFilesPage = 0;
+    populateReportFilters();
+    renderReportFilesPage();
+  } catch (error) {
+    reportFilesList.innerHTML = `<p class="muted">加载报告列表失败：${escapeHtml(error.message)}</p>`;
+  }
+}
 requireElement("#save-profile-only").addEventListener("click", saveProfileOnly);
 requireElement("#import-profiles-button").addEventListener("click", () => {
   if (assertNotDemo("导入配置")) return;
@@ -321,11 +504,9 @@ requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRe
 requireElement("#cancel-standard-task").addEventListener("click", () => cancelRemoteTask(state, "standard"));
 stabilityTemplate.addEventListener("change", applyStabilityTemplate);
 batchTemplate.addEventListener("change", applyBatchTemplate);
-quickPromptPreset.addEventListener("change", applyQuickPromptPreset);
 standardPromptPreset.addEventListener("change", applyStandardPromptPreset);
 stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
-scenarioTemplate.addEventListener("change", applyScenarioTemplate);
 profileTemplate.addEventListener("change", applyProfileTemplate);
 clientLogForm.addEventListener("submit", analyzeClientLogs);
 clientEvidenceSubmit.addEventListener("click", generateSupplierEvidence);
@@ -382,13 +563,6 @@ async function saveProfileOnly() {
     toast(error.message, true);
   }
 }
-
-createQuickTestController({
-  form: quickTestForm,
-  resultElement: quickTestResult,
-  quickFailurePanel,
-  afterRequest: loadRequests,
-});
 
 function formatQuickVerify(result) {
   const verdict = result.verdict || {};
@@ -499,6 +673,7 @@ quickVerifySubmit.addEventListener("click", async () => {
   }
   quickVerifySubmit.disabled = true;
   quickVerifyResult.textContent = "快检中，请稍候...";
+  quickFailurePanel.clear();
   try {
     const result = await api("/api/tests/quick-verify", {
       method: "POST",
@@ -506,8 +681,10 @@ quickVerifySubmit.addEventListener("click", async () => {
     });
     quickVerifyResult.textContent = formatQuickVerify(result);
     await loadRequests();
+    void loadHighRiskAlerts(); // 快检若判高危（含连通失败），立即置顶横幅，不等 60 秒轮询
   } catch (error) {
     quickVerifyResult.textContent = `快检失败：${error.message}`;
+    quickFailurePanel.render(error, profileId);
   } finally {
     quickVerifySubmit.disabled = false;
   }
@@ -526,12 +703,10 @@ createStandardEvalController({
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),
   refreshResults: () => loadResultsBundle(),
   showPage,
-  quickProfileSelect: quickProfileTarget,
+  quickProfileSelect: quickVerifyProfileTarget,
   stabilityProfileSelect: stabilityProfileTarget,
   stabilityTemplate,
   applyStabilityTemplate,
-  scenarioTemplate,
-  applyScenarioTemplate,
   scenarioProfileSelect,
   updateEstimates,
 });
@@ -657,7 +832,7 @@ createTaskFormController({
 createTaskFormController({
   form: scenarioTestForm,
   submitButton: scenarioSubmit,
-  resultElement: scenarioTestResult,
+  resultElement: scenarioSummary,
   progressElement: scenarioProgress,
   state,
   slot: "scenario",
@@ -671,12 +846,14 @@ createTaskFormController({
     return scenarioIds ? { ...payload, profileIds, scenarioIds } : null;
   },
   beforeStart: (payload) => {
-    scenarioTestResult.textContent = `正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。`;
+    scenarioSummary.innerHTML = `<p class="muted">正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。</p>`;
+    scenarioTestResult.textContent = "测试完成后会在这里显示摘要和本地报告文件路径。";
     state.latestReportCopies.scenario = "";
   },
   onSuccess: async (result) => {
     const copyableSummary = getCopyableReportText(result, formatScenarioResult(result));
     state.latestReportCopies.scenario = copyableSummary;
+    renderScenarioSummary(result);
     scenarioTestResult.textContent = copyableSummary;
     await loadResultsBundle();
     toast("场景测试完成。");
@@ -933,8 +1110,11 @@ applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
 try {
-  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
+  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), preloadSettings(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
   renderPageHelp("dashboard");
+  // 高危横幅 fire-and-forget：绝不阻塞首屏后续初始化（api() 无超时，端点卡住时不能拖住顶层 await），
+  // 且吞掉 renderHighRiskBanner 自身的异常，避免它冒泡进外层 catch 触发整页错误兜底。
+  loadHighRiskAlerts().catch(() => {}); // 按开关拉一次（此时 state.settings 已就绪）
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
   // 给非技术用户一个可读的兜底，而不是空白。
@@ -958,11 +1138,27 @@ function renderStartupError(error) {
 }
 
 function showPage(page) {
+  // 离开设置页且有未保存改动 → 提示。loadSettings 会在重新进入时重置 dirty（丢弃未保存改动）。
+  if (currentPage === "settings" && page !== "settings" && settingsDirty) {
+    toast("设置未保存。", true);
+    settingsDirty = false;
+  }
+  currentPage = page;
   navButtons.forEach((item) => item.classList.toggle("active", item.dataset.page === page));
   pages.forEach((item) => item.classList.toggle("active", item.id === page));
   renderPageHelp(page);
   if (page === "manual" && !state.manualLoaded) {
     loadManual();
+  }
+  if (page === "settings") {
+    loadSettings();
+  }
+  // 「测试场景维护」页（原开发者页）：与全站统一风格，保留侧边栏，进入时加载数据。
+  if (page === "developer") {
+    developer.load();
+  }
+  if (page === "auto-test-config") {
+    autoTestConfig.load();
   }
 }
 
@@ -984,7 +1180,7 @@ async function loadProfiles() {
 async function loadScenarios() {
   state.scenarios = await api("/api/scenarios");
   renderScenarioOptions();
-  applyScenarioTemplate();
+  channelAdmin.renderTagOptions(); // 场景库就绪后渲染「配置模型」的标签勾选项。
   updateEstimates();
 }
 
@@ -1021,6 +1217,105 @@ function loadManual() {
   manualContent.innerHTML = renderMarkdown(guide);
   state.manualLoaded = true;
 }
+
+// —— 设置页：AI 总结模型 / 场景题库开关（脱离环境变量，存本机）——
+const settingsForm = requireElement("#settings-form");
+const setAiSpecified = requireElement("#set-ai-specified");
+const setAiChannel = requireElement("#set-ai-channel");
+const setAiModel = requireElement("#set-ai-model");
+const setLivebench = requireElement("#set-livebench");
+const setSafety = requireElement("#set-safety");
+const setHle = requireElement("#set-hle");
+const setHardcoreLogic = requireElement("#set-hardcore-logic");
+const setAutoTag = requireElement("#set-auto-tag");
+const setNewapiBase = requireElement("#set-newapi-base");
+const setNewapiToken = requireElement("#set-newapi-token");
+const setNewapiUserid = requireElement("#set-newapi-userid");
+const setTestCycleDays = requireElement("#set-test-cycle-days");
+const setHighRiskAlert = requireElement("#set-high-risk-alert");
+// 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
+const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
+
+// 自定义能力标签已迁至「开发者界面」（src/developer.js），设置页不再承载。
+
+// 「指定模型」勾选门控两级下拉：未勾=都禁用（AI 用被测模型）；勾上=渠道可选，模型随级联。
+function applyAiSpecifiedGate() {
+  const on = setAiSpecified.checked;
+  setAiChannel.disabled = !on;
+  if (!on) setAiModel.disabled = true;
+  else if (setAiChannel.value) setAiModel.disabled = false;
+}
+setAiSpecified.addEventListener("change", applyAiSpecifiedGate);
+
+// 启动预载：只把设置塞进 state（供各处读设置开关），不碰下面才声明的 set-* 元素，避免 TDZ。
+// 函数声明会提升，可在上方启动 Promise.all 里调用。
+async function preloadSettings() {
+  try {
+    state.settings = await api("/api/settings");
+  } catch {
+    /* 启动期设置加载失败不阻断首屏；进设置页会再试 */
+  }
+}
+
+async function loadSettings() {
+  try {
+    const s = await api("/api/settings");
+    state.settings = s; // 缓存设置供各处读取开关
+    setLivebench.checked = Boolean(s.enableLivebench);
+    setSafety.checked = Boolean(s.enableSafety);
+    setHle.checked = Boolean(s.enableHle);
+    setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
+    setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
+    setTestCycleDays.value = Number(s.testCycleDays) > 0 ? String(Math.trunc(s.testCycleDays)) : ""; // 0/空 → 空框（占位符 0）
+    setHighRiskAlert.checked = s.enableHighRiskAlert === true;
+    // new-api 网关：网址/用户ID 回填；令牌不回显，按已配置状态切占位符、清空输入值。
+    setNewapiBase.value = s.newapiBaseUrl || "";
+    setNewapiUserid.value = s.newapiUserId || "";
+    setNewapiToken.value = "";
+    setNewapiToken.placeholder = s.newapiImportTokenSet ? "已配置（留空不改）" : "未配置";
+    settingsAiCascade.refresh({ channels: state.channels, modelTargets: state.modelTargets, profiles: state.profiles });
+    settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
+    setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
+    applyAiSpecifiedGate();
+    settingsDirty = false; // 刚载入官方值，不算「未保存改动」
+  } catch (error) {
+    toast(`加载设置失败：${error.message}`, true);
+  }
+}
+
+// 用户改动任一设置项（复选框/AI 模型选择等）→ 标记未保存。程序化赋值（loadSettings）不触发 change，故不会误标。
+settingsForm.addEventListener("change", () => {
+  settingsDirty = true;
+});
+
+settingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = {
+    aiAnalysisModelTargetId: setAiSpecified.checked ? settingsAiCascade.value || "" : "",
+    enableLivebench: setLivebench.checked,
+    enableSafety: setSafety.checked,
+    enableHle: setHle.checked,
+    enableHardcoreLogic: setHardcoreLogic.checked,
+    enableAutoTag: setAutoTag.checked,
+    testCycleDays: Math.max(0, Math.trunc(Number(setTestCycleDays.value) || 0)),
+    enableHighRiskAlert: setHighRiskAlert.checked,
+    newapiBaseUrl: setNewapiBase.value.trim(),
+    newapiUserId: setNewapiUserid.value.trim(),
+    newapiImportToken: setNewapiToken.value, // 空串→后端保留原令牌
+  };
+  try {
+    const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+    state.settings = saved; // 即时生效：删除流随即按新开关走
+    settingsDirty = false; // 已保存，清除未保存标记
+    await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
+    await loadSettings(); // 刷新令牌「已配置」占位符状态
+    channelAdmin.renderTagOptions(); // 自定义标签变化 → 模型表单勾选项即时并入
+    await loadHighRiskAlerts(); // 高危报告提示开关变化 → 即时显示/收起横幅
+    toast("设置已保存。");
+  } catch (error) {
+    toast(`保存设置失败：${error.message}`, true);
+  }
+});
 
 async function loadRequests() {
   if (state.demoMode) {
@@ -1085,9 +1380,83 @@ function renderResultsViews() {
   renderProfiles();
   renderDashboard();
   renderDeliveryViews();
+  void loadHighRiskAlerts(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
 }
 
+// —— 高危报告提示：网站顶部红底横幅，逐条列出未读高危报告，点开即消 ——
+// （元素引用 highRiskBanner 已在文件顶部声明，避免启动时的暂时性死区，见那里的注释。）
+
+async function loadHighRiskAlerts() {
+  if (!state.settings?.enableHighRiskAlert) {
+    state.highRiskAlerts = [];
+    renderHighRiskBanner();
+    return;
+  }
+  try {
+    const r = await api("/api/high-risk-alerts");
+    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : [];
+  } catch {
+    /* 拉取失败不阻断；下次刷新再试 */
+  }
+  renderHighRiskBanner();
+}
+
+function renderHighRiskBanner() {
+  const alerts = state.settings?.enableHighRiskAlert ? state.highRiskAlerts || [] : [];
+  if (!alerts.length) {
+    highRiskBanner.classList.add("hidden");
+    highRiskBanner.innerHTML = "";
+    return;
+  }
+  const items = alerts
+    .map(
+      (a) =>
+        `<div class="high-risk-banner__item"><span>⚠ ${escapeHtml(a.label || "报告")}：${escapeHtml(a.reason || "高危")}</span><button type="button" data-hazard-open="${escapeHtml(a.reportId)}">查看</button></div>`,
+    )
+    .join("");
+  highRiskBanner.innerHTML =
+    `<div class="high-risk-banner__head"><span>高危报告提示（${alerts.length}）</span><button type="button" data-hazard-ack-all>全部忽略</button></div>` +
+    `<div class="high-risk-banner__list">${items}</div>`;
+  highRiskBanner.classList.remove("hidden");
+}
+
+async function ackHazard(reportId) {
+  try {
+    const r = await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ reportId }) });
+    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId);
+  } catch {
+    state.highRiskAlerts = (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId); // 本地兜底移除
+  }
+  renderHighRiskBanner();
+}
+
+highRiskBanner.addEventListener("click", async (event) => {
+  const openBtn = event.target.closest?.("[data-hazard-open]");
+  if (openBtn) {
+    const reportId = openBtn.dataset.hazardOpen;
+    openReportOverlay(reportId, { title: reportId }); // 点开即消
+    await ackHazard(reportId);
+    return;
+  }
+  if (event.target.closest?.("[data-hazard-ack-all]")) {
+    try {
+      await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ all: true }) });
+    } catch {
+      /* 忽略：本地也清空 */
+    }
+    state.highRiskAlerts = [];
+    renderHighRiskBanner();
+  }
+});
+
+// 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
+setInterval(() => void loadHighRiskAlerts(), 60_000);
+
 function renderPageHelp(page) {
+  // 使用手册页、开发者页不显示「这个页面怎么用？」。
+  const noHelp = page === "manual" || page === "developer";
+  pageHelp.classList.toggle("hidden", noHelp);
+  if (noHelp) return;
   renderPageHelpPanel(pageHelpContent, page);
 }
 
@@ -1396,7 +1765,6 @@ function renderProfileOptions() {
   // 单选运行页:级联(渠道 → 模型)
   admissionCascade.refresh(data);
   standardCascade.refresh(data);
-  quickCascade.refresh(data);
   quickVerifyCascade.refresh(data);
   stabilityCascade.refresh(data);
   trendCascade.refresh(data);
@@ -1406,32 +1774,28 @@ function renderProfileOptions() {
   scenarioPicker.refresh(data);
   // 客户端回放:仍沿用平铺单选列表
   renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] });
+  // 自动测试配置页的渠道→模型级联
+  autoTestConfig.refreshTargets(data);
 }
 
 function renderScenarioOptions() {
-  syncScenarioTemplateAvailability();
   if (state.scenarios.length === 0) {
     scenarioCaseSelect.innerHTML = `<option value="">暂无测试场景</option>`;
+    scenarioCasePicker.refresh();
     return;
   }
 
+  // 默认只勾选「连通性：基础响应」这一个场景；缺失时回落到第一个场景，避免默认零选。
+  const defaultScenarioId = state.scenarios.some((scenario) => scenario.id === "connectivity-basic")
+    ? "connectivity-basic"
+    : state.scenarios[0].id;
   scenarioCaseSelect.innerHTML = state.scenarios
     .map(
       (scenario) =>
-        `<option value="${scenario.id}" selected>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
+        `<option value="${scenario.id}" data-name="${escapeHtml(scenario.name)}" data-difficulty="${escapeHtml(scenario.difficulty)}" data-tag="${escapeHtml(scenario.tag || "")}" data-group="${escapeHtml(scenario.group || "")}"${scenario.id === defaultScenarioId ? " selected" : ""}>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
     )
     .join("");
-}
-
-function syncScenarioTemplateAvailability() {
-  const hasSafetyScenarios = state.scenarios.some((scenario) => scenario.category === "safety");
-  const safetyOption = scenarioTemplate.querySelector('option[value="scenario-safety"]');
-  if (!safetyOption) return;
-  safetyOption.hidden = !hasSafetyScenarios;
-  safetyOption.disabled = !hasSafetyScenarios;
-  if (!hasSafetyScenarios && scenarioTemplate.value === "scenario-safety") {
-    scenarioTemplate.value = "scenario-basic";
-  }
+  scenarioCasePicker.refresh();
 }
 
 function renderRequests() {
@@ -1450,7 +1814,6 @@ function renderTaskEvents() {
 function renderDeliveryViews() {
   renderDeliveryPanels({
     state,
-    plainConclusion,
     projectInfoSummary,
     reportInsights,
     rankingList,
@@ -1462,6 +1825,10 @@ function renderDeliveryViews() {
 
 function renderStabilitySummary(result) {
   renderStabilitySummaryPanel(stabilitySummary, result);
+}
+
+function renderScenarioSummary(result) {
+  renderScenarioSummaryPanel(scenarioSummary, result);
 }
 
 function renderProfileConfigCheck(validation = null) {
@@ -1517,15 +1884,6 @@ function applyBatchTemplate() {
   });
 }
 
-function applyQuickPromptPreset() {
-  applyPromptPresetToForm({
-    kind: "quick",
-    form: quickTestForm,
-    select: quickPromptPreset,
-    hint: quickPromptHint,
-  });
-}
-
 function applyStandardPromptPreset() {
   applyPromptPresetToForm({
     kind: "standard",
@@ -1556,17 +1914,6 @@ function applyBatchPromptPreset() {
   });
 }
 
-function applyScenarioTemplate() {
-  applyScenarioTemplateToForm({
-    form: scenarioTestForm,
-    template: scenarioTemplate,
-    scenarios: state.scenarios,
-    scenarioSelect: scenarioCaseSelect,
-    hint: scenarioTemplateHint,
-    updateEstimates,
-  });
-}
-
 function applyProfileTemplate() {
   applyProfileTemplateToForm({
     form: profileForm,
@@ -1584,11 +1931,9 @@ function hydrateProjectInfoForm() {
 }
 
 function hydratePromptPresetSelects() {
-  quickPromptPreset.innerHTML = renderPromptPresetOptions("quick", "connectivity");
   standardPromptPreset.innerHTML = renderPromptPresetOptions("standard", "default");
   stabilityPromptPreset.innerHTML = renderPromptPresetOptions("stability", "basic");
   batchPromptPreset.innerHTML = renderPromptPresetOptions("batch", "fair-basic");
-  applyQuickPromptPreset();
   applyStandardPromptPreset();
   applyStabilityPromptPreset();
   applyBatchPromptPreset();

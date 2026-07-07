@@ -68,15 +68,33 @@ export function normalizeChannel(body, existing = null) {
   };
 }
 
+// 标签数组去空白、去重、保序。
+function dedupeTags(input) {
+  const seen = new Set();
+  const out = [];
+  for (const item of Array.isArray(input) ? input : []) {
+    const v = String(item || "").trim();
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
+  }
+  return out;
+}
+
 // 规范化一个测试模型目标：引用渠道 + 模型名。
+// 标签为纯本地概念（单一状态）：tags=该模型在本渠道下被授予的能力标签，不再与 new-api 联动、不再跨渠道统一。
 export function normalizeModelTarget(body, existing = null) {
   const now = new Date().toISOString();
+  // 场景测验夺标得到的能力标签：编辑模型目标（POST 全量覆盖）时保留，别被清空。
+  const tags = dedupeTags(Array.isArray(body.tags) ? body.tags : existing?.tags);
   return {
     id: String(body.id || existing?.id || crypto.randomUUID()),
     channelId: requiredString(body.channelId ?? existing?.channelId, "渠道"),
     model: requiredString(body.model ?? existing?.model, "模型名"),
     note: String(body.note ?? existing?.note ?? "").trim(),
     source: body.source || existing?.source || "manual",
+    tags,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };

@@ -6,18 +6,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-06-16
-
 ### Added
-- Two-dimension batch target picker for channel health-check (渠道体检) and channel
-  optimization (渠道选优) run pages.
-- Cascade channel → model picker on single-target run pages.
-- new-api DB (A2) import now bundles `mysql2` and accepts Go-style DSNs.
+- **自动测试配置（Auto-test scheduler）** — new super-admin page under 高级测试 to configure
+  recurring tests for a channel's model: pick model + test kind (快速/准入/稳定性/场景) + period
+  (hours); a new in-process scheduler runs each job on its cadence and produces a report. Config
+  persisted to `配置/auto-test-jobs.json`; CRUD via `/api/dev/auto-test-jobs`
+  (`server/auto-test-store.mjs`, `server/auto-test-scheduler.mjs`). Scheduler is in-process:
+  effective only while the server runs, catches up overdue jobs on restart via persisted
+  `nextRunAt`, does not resume a run interrupted mid-flight. Hardened: all job-file writes go
+  through a serialized `updateJobs` (no read-modify-write races between scheduler and CRUD
+  endpoints), and concurrent runs are capped by a semaphore (`EVALUATOR_AUTO_TEST_CONCURRENCY`,
+  default 2) so simultaneously-due jobs can't burst the upstream API.
+
+### Fixed / Hardened
+- **Atomic JSON writes** — settings, channels, model-targets, profiles, scenario-overrides and the
+  encrypted key-vault now write via a shared `writeJsonAtomic` (temp file + rename), so a crash
+  mid-write can no longer truncate a config into silent data loss (key-vault corruption would have
+  made all channel keys unreadable).
+- **`ensureDataDir` startup guard** — a read-only/permission-denied/full `/data` volume now exits
+  with an actionable operator message instead of an uncaught stack in a restart loop.
+- **SQLite history retention** — `test_requests`/`test_runs`/`regression_alerts`/`model_fingerprints`
+  now get the same retention (days + max-rows) as reports, so `evaluator.db` no longer grows
+  unbounded (`pruneHistory`, env `EVALUATOR_HISTORY_RETENTION_DAYS`).
+- **Scenario group rename no longer pins built-in scenarios** — renaming a group now records a
+  field-level group patch for built-in题 instead of freezing the whole scenario into the override
+  layer, so future image updates to those scenarios' prompt/scorer are no longer silently masked.
+
+## [0.4.9] - 2026-07-02
 
 ### Fixed
+- **CI Docker build failed since 0.4.5** — the frontend imports `src/docs/*.md` via Vite's
+  `?raw`, but the `.gitignore` rule `docs/` also matched `src/docs/`, so those Markdown files
+  were never committed. Local builds passed (files on disk); the CI build (fresh checkout) had
+  no such files and `vite build` exited 1. Anchored the ignore to `/docs/` and committed
+  `src/docs/category-field.md` and `src/docs/scorer-mechanism.md`.
+
+## [0.4.8] - 2026-07-02
+
+### Changed
+- Maintenance re-release of 0.4.6 to publish a versioned container image. The earlier
+  `v0.4.7` tag did not trigger CI (pushed as a lightweight tag inside a multi-tag batch,
+  which GitHub suppresses); this release re-triggers the image build via a single
+  annotated `v0.4.8` tag. No functional changes beyond 0.4.6.
+
+## [0.4.6] - 2026-07-02
+
+### Removed
+- **new-api write operations** — removed pushing channels/models to new-api and delete-sync
+  (including the `enableDeleteSync` setting and its UI). The only external write features were
+  these; new-api integration is now read-only (import + sync-models). Deleted
+  `server/newapi-channel-sync.mjs` and its live script/tests; delete of a channel/model is now
+  local-only.
+
+## [0.4.3] - 2026-06-29
+
+### Added
+- **Push channels & models to new-api** — sync configured channels and their test models
+  back to a new-api gateway, with a live channel-sync endpoint and tests
+  (`server/newapi-channel-sync.mjs`, import scripts under `scripts/`).
+- **New scenario packs** — hardcore-logic and HLE (harder objective probes) added alongside
+  the existing livebench pack (`server/scenarios/hardcore-logic.mjs`, `server/scenarios/hle.mjs`).
+
+### Changed
+- Benchmark scorers, scenario evaluator, new-api import/source handling, and the
+  confirm-dialog refined; accompanying test updates.
+
+## [0.4.2] - 2026-06-24
+
+### Added
+- **In-app report popup** — when a long task (stability / scenario / batch) finishes, the
+  report now opens automatically in an in-app overlay (iframe), so it works on headless
+  Docker / remote deployments where the desktop browser auto-open (`EVALUATOR_OPEN_REPORT`)
+  cannot. Toolbar link to open in a new tab; a client toggle (default on) disables it.
+- New auth-gated route `GET /api/reports/:id/view` serves a report's HTML over HTTP
+  (filename sanitized via `sanitizeReportBaseName`; `nosniff` + script-free CSP). Public
+  task results now carry `reportId` / `aiAnalysisId` for the frontend to build the URL.
+
+## [0.4.1] - 2026-06-24
+
+### Added
+- **Push model tags to new-api** — aggregate the capability tags granted to model
+  targets and write them back to the new-api model marketplace (read-modify-write the
+  `tags` field). New endpoint `POST /api/model-targets/push-tags`
+  (`server/newapi-tag-writer.mjs`) and a "推送标签到 new-api" button on the model page.
+- **LiveBench-style anti-contamination probe pack** for scenario tests (objective
+  capability probes resistant to benchmark leakage).
+- **Claude tokenizer fingerprint** baseline tool (probe + `count_tokens` / chat dual
+  mode); admission tests now cross-check the tokenizer fingerprint.
+- **Two-dimension batch target picker** (channel health-check / channel selection) and
+  a cascading channel→model picker for single-target run pages.
+- Report-center conclusion cards reworked; reports gained a "model return" column; AI
+  analysis split into its own HTML; AI summary can read an API from the environment.
+
+### Fixed
+- `styles.css`: resolve the undefined `--border` custom property (use `--line`).
 - Channel / model-target / profile validation failures now return HTTP 400 with a
   user-facing message instead of being swallowed as a 500.
-- Stopped credential autofill, double-submit, and dialog / polling hangs in the UI.
 
 ### Changed
 - Removed internal codenames from code comments and report output (neutral wording).
@@ -80,7 +164,8 @@ Initial open-source release.
 ### Fixed
 - Concurrency-queue slot leak on the task-manager cancel path.
 
-[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.3.1...dev
+[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.4.6...dev
+[0.4.6]: https://github.com/yl0711-coder/API-evaluator/compare/v0.4.3...v0.4.6
 [0.3.1]: https://github.com/yl0711-coder/API-evaluator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yl0711-coder/API-evaluator/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yl0711-coder/API-evaluator/releases/tag/v0.2.0

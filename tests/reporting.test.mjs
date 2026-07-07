@@ -76,7 +76,7 @@ test("stability reports contain useful conclusions and no API key", async () => 
     assert.match(html, /模型评测平台本地生成/);
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -93,7 +93,7 @@ test("report filenames are sanitized before writing to report directory", async 
     assert.match(await readFile(files.markdownPath, "utf8"), /# Test/);
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -129,21 +129,30 @@ test("reports can include optional AI analysis without replacing local conclusio
     recommendation: reporting.buildRecommendation(1, 200, {}),
     promptPreview: "hello",
   };
-  const markdown = reporting.formatStabilityReport(summary, [], {
-    aiAnalysis: {
-      enabled: true,
-      success: true,
-      text: "## AI 人话结论\n建议继续测试。",
-      inputTokens: 100,
-      outputTokens: 50,
-    },
-  });
+  const aiAnalysis = {
+    enabled: true,
+    success: true,
+    text: "## AI 人话结论\n建议继续测试。",
+    inputTokens: 100,
+    outputTokens: 50,
+  };
+  const markdown = reporting.formatStabilityReport(summary, [], { aiAnalysis });
 
+  // 主报告：只保留指引小节（标题 + 用量 + 指向单独 HTML），不再内联 AI 正文。
   assert.match(markdown, /给业务人员看的结论/);
   assert.match(markdown, /AI 辅助分析（可选）/);
   assert.match(markdown, /额外消耗：输入 100 tokens，输出 50 tokens/);
-  assert.match(markdown, /最终判断仍要结合本地规则结论/);
-  assert.match(markdown, /AI 人话结论/);
+  assert.match(markdown, /-ai-analysis\.html/);
+  assert.doesNotMatch(markdown, /AI 人话结论/);
+
+  // 单独文档：承载完整 AI 分析正文与免责说明，渲染成单独 HTML。
+  const aiDoc = reporting.formatAiAnalysisDocument(aiAnalysis, { title: "稳定性测试 · AI 辅助分析" });
+  assert.match(aiDoc, /# 稳定性测试 · AI 辅助分析/);
+  assert.match(aiDoc, /额外消耗：输入 100 tokens，输出 50 tokens/);
+  assert.match(aiDoc, /最终判断仍要结合本地规则结论/);
+  assert.match(aiDoc, /AI 人话结论/);
+  // 未启用时不产出文档（调用方据此跳过落盘）。
+  assert.equal(reporting.formatAiAnalysisDocument({ enabled: false }), "");
 });
 
 test("admission reports contain grade, evidence, and no API key", async () => {
@@ -368,43 +377,4 @@ test("batch reports include readable comparison data and next steps", async () =
   assert.match(markdown, /失败或低成功率配置/);
   assert.match(markdown, /使用建议/);
   assert.match(markdown, /低延迟场景/);
-});
-
-test("batch admission reports summarize candidate ranking", async () => {
-  const reporting = await import(`../server/reporting.mjs?case=batch-admission-${Date.now()}`);
-  const markdown = reporting.formatBatchAdmissionReport({
-    batchId: "admission-batch-test",
-    profileCount: 2,
-    packageLevel: "standard",
-    maxParallelProfiles: 1,
-    startedAt: "2026-01-01T00:00:00.000Z",
-    endedAt: "2026-01-01T00:00:10.000Z",
-    durationMs: 10000,
-    results: [
-      {
-        profileName: "Candidate A",
-        model: "claude-opus-test",
-        grade: "A",
-        score: 92,
-        successRateText: "100%",
-        purityAssessment: { score: 88 },
-        fingerprintSummary: { passRateText: "100%" },
-        recommendation: { title: "可继续复测" },
-      },
-      {
-        profileName: "Candidate B",
-        model: "claude-opus-test",
-        grade: "D",
-        score: 50,
-        successRateText: "60%",
-        fingerprintSummary: { passRateText: "50%" },
-        recommendation: { title: "先排查" },
-      },
-    ],
-  });
-
-  assert.match(markdown, /批量准入评测报告/);
-  assert.match(markdown, /Candidate A/);
-  assert.match(markdown, /综合分 92/);
-  assert.match(markdown, /批量准入只负责初筛/);
 });

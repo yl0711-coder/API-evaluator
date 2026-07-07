@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
-import { readFile, rm } from "node:fs/promises";
-import { extname } from "node:path";
-import { MIME_TYPES, TEST_SCENARIOS } from "./server/constants.mjs";
-import { ERROR_LOG_FILE, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
+import { readFile, readdir, rm, stat } from "node:fs/promises";
+import { extname, join } from "node:path";
+import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
+import { getAllScenariosForAdmin, loadScenarioOverrides, upsertScenario, deleteScenario, renameScenarioGroup, clearScenarioGroup } from "./server/scenarios/index.mjs";
+import { DATA_DIR, ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
 import { ensureDataDir, readRecentErrors, readRecentRequests, readRecentTasks, readRecentTestRuns } from "./server/data-store.mjs";
 import {
   analyzeClientLogs,
@@ -33,7 +34,9 @@ import { createTaskManager } from "./server/task-manager.mjs";
 import { buildSupportBundle } from "./server/support-bundle.mjs";
 import {
   getDbHealth,
+  pruneHistory,
   pruneReports,
+  queryLastTestedByProfile,
   queryProfileRunSummaries,
   queryRecentReports,
   queryRegressionAlerts,
@@ -51,6 +54,10 @@ import {
   runScenarioTest,
   runStabilityTest,
 } from "./server/test-runner.mjs";
+import { openReportInBrowser, reportIdFromHtmlPath, sanitizeReportBaseName } from "./server/report-files.mjs";
+import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobValidationError } from "./server/auto-test-store.mjs";
+import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
+import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, requiredString, safeJson, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -83,6 +90,8 @@ import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./s
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
+import { readConfig as readNewapiConfig, loadNewapiToken, saveNewapiToken } from "./server/newapi-tag-writer.mjs";
+import { getSettings, loadSettings, saveSettings, peekLegacyNewapiToken, stripLegacyNewapiToken } from "./server/settings-store.mjs";
 import { withRunBy } from "./server/run-context.mjs";
 import { APP_VERSION } from "./server/version.mjs";
 
@@ -100,9 +109,37 @@ const taskManager = createTaskManager({
   errorLogFile: ERROR_LOG_FILE,
   logTechnicalError,
   buildUserErrorMessage,
+  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：手动测试完成时按开关判危记录
 });
 
-await ensureDataDir();
+// 自动测试调度器（平台唯一的周期性定时器）：按各作业的 nextRunAt 到点直接调 runner 跑测试并产出报告。
+const autoTestScheduler = createAutoTestScheduler({
+  loadJobs,
+  updateJobs,
+  runners: { runQuickVerify, runAdmissionTest, runStabilityTest, runScenarioTest },
+  reportIdFromHtmlPath,
+  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：自动测试完成时按开关判危记录
+  logError: (error, job) =>
+    logErrorSafely({ source: "auto-test-scheduler", error, context: { jobId: job?.id, kind: job?.kind, targetId: job?.targetId } }),
+});
+
+try {
+  await ensureDataDir();
+} catch (error) {
+  // 启动第一个碰 /data 卷的调用，且在 listen() 之前：卷只读挂载 / 属主 UID 不符 / 卷写满
+  // 都会在此抛错，进程在绑定端口前退出，容器只见一坨堆栈、连 /api/health 都起不来。
+  // 兜成可诊断的运维提示再退出，避免重启死循环时无从下手。
+  console.error(`[启动失败] 无法初始化数据目录 ${DATA_DIR}：${error?.message || error}`);
+  console.error("请检查 /data 卷是否已挂载、是否可写、属主 UID 是否匹配（常见：EACCES 权限不符 / EROFS 只读挂载 / ENOSPC 卷写满）。");
+  process.exit(1);
+}
+await loadSettings(); // 暖运行时设置缓存（AI 总结模型 / LiveBench / 安全题开关）
+await loadScenarioOverrides(); // 读回超管的场景编辑覆盖层（/data），合并到内置 bank 之上
+// new-api 系统令牌走加密库：启动解密一次缓存进内存（readConfig 同步读）。
+// 迁移旧版明文令牌：先写进加密库，再从 settings.json 抹除（顺序保证不丢令牌）。
+const legacyNewapiToken = await peekLegacyNewapiToken();
+await loadNewapiToken(legacyNewapiToken);
+if (legacyNewapiToken) await stripLegacyNewapiToken();
 await pruneReportsOnStartup();
 
 createServer(async (req, res) => {
@@ -147,6 +184,8 @@ createServer(async (req, res) => {
   }
 }).listen(PORT, HOST, () => {
   console.log(`模型评测平台: http://${HOST}:${PORT}`);
+  autoTestScheduler.start(); // 启动自动测试调度器（首个 tick 追补停机期间到期的作业）
+  console.log("[auto-test] 自动测试调度器已启动");
   // 一次性迁移：老 profile → 渠道 + 模型目标（仅当渠道为空且有老配置时；best-effort，不阻塞启动）。
   migrateProfilesToChannelsIfEmpty()
     .then((r) => {
@@ -205,13 +244,17 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/health") {
+    // autoTest.stale=true 表示调度器心跳超时（进程活着但定时器僵死）——容器健康检查据此判 unhealthy，
+    // 交给外部看门狗（autoheal / 编排器）重启。HTTP 本身仍返回 200，反代据 ok 判存活不受影响。
+    const autoTest = autoTestScheduler.getStatus();
     sendJson(res, 200, {
       ok: true,
       service: "evaluator-api",
       pid: process.pid,
       proxyEnvDetected: hasProxyEnv(),
-      safetyScenariosEnabled: TEST_SCENARIOS.some((scenario) => scenario.category === "safety"),
+      safetyScenariosEnabled: getTestScenarios().some((scenario) => scenario.category === "safety"),
       version: APP_VERSION,
+      autoTest,
     });
     return;
   }
@@ -464,7 +507,147 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/scenarios") {
-    sendJson(res, 200, TEST_SCENARIOS.map(maskScenario));
+    sendJson(res, 200, getTestScenarios().map(maskScenario));
+    return;
+  }
+
+  // —— 开发者接口（仅超管，见 api-access.requiresAdmin）：场景测试的完整数据 + 增删改 ——
+  if (req.method === "GET" && url.pathname === "/api/dev/scenarios") {
+    sendJson(res, 200, getAllScenariosForAdmin());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/dev/scenarios") {
+    const result = await upsertScenario(await readJson(req));
+    if (!result.ok) {
+      sendJson(res, 400, { error: "invalid_scenario", userMessage: result.userMessage });
+      return;
+    }
+    sendJson(res, 200, result);
+    return;
+  }
+  if (req.method === "PUT" && url.pathname.startsWith("/api/dev/scenarios/")) {
+    const id = decodeURIComponent(url.pathname.slice("/api/dev/scenarios/".length));
+    const body = await readJson(req);
+    const result = await upsertScenario({ ...body, id });
+    if (!result.ok) {
+      sendJson(res, 400, { error: "invalid_scenario", userMessage: result.userMessage });
+      return;
+    }
+    sendJson(res, 200, result);
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/dev/scenarios/")) {
+    const id = decodeURIComponent(url.pathname.slice("/api/dev/scenarios/".length));
+    const result = await deleteScenario(id);
+    if (!result.ok) {
+      sendJson(res, 404, { error: "not_found", userMessage: result.userMessage });
+      return;
+    }
+    sendJson(res, 200, result);
+    return;
+  }
+
+  // —— 开发者接口：场景分组清单（新建 / 重命名 / 删除；仅超管）——
+  if (req.method === "POST" && url.pathname === "/api/dev/scenario-groups") {
+    const name = String((await readJson(req)).name ?? "").trim();
+    if (!name) {
+      sendJson(res, 400, { error: "invalid_group", userMessage: "分组名不能为空。" });
+      return;
+    }
+    const next = await saveSettings({ scenarioGroups: [...(getSettings().scenarioGroups || []), name] }); // normalize 去重保序
+    sendJson(res, 200, { ok: true, scenarioGroups: next.scenarioGroups });
+    return;
+  }
+  if (req.method === "PUT" && url.pathname === "/api/dev/scenario-groups") {
+    const body = await readJson(req);
+    const from = String(body.name ?? "").trim();
+    const to = String(body.newName ?? "").trim();
+    if (!from || !to) {
+      sendJson(res, 400, { error: "invalid_group", userMessage: "分组名不能为空。" });
+      return;
+    }
+    const groups = (getSettings().scenarioGroups || []).map((x) => (x === from ? to : x));
+    const next = await saveSettings({ scenarioGroups: groups });
+    const cascade = await renameScenarioGroup(from, to); // 级联改题 + 改写源文件
+    sendJson(res, 200, { ok: true, scenarioGroups: next.scenarioGroups, changed: cascade.changed, persistError: cascade.persistError });
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/dev/scenario-groups") {
+    const name = String((await readJson(req)).name ?? "").trim();
+    if (!name) {
+      sendJson(res, 400, { error: "invalid_group", userMessage: "分组名不能为空。" });
+      return;
+    }
+    const groups = (getSettings().scenarioGroups || []).filter((x) => x !== name);
+    const next = await saveSettings({ scenarioGroups: groups });
+    const cascade = await clearScenarioGroup(name); // 成员落回 bank 默认组 + 改写源文件
+    sendJson(res, 200, { ok: true, scenarioGroups: next.scenarioGroups, changed: cascade.changed, persistError: cascade.persistError });
+    return;
+  }
+
+  // —— 开发者接口：自动测试作业（列表 / 新建改 / 删除 / 立即运行；/api/dev 前缀 → 仅超管）——
+  if (req.method === "GET" && url.pathname === "/api/dev/auto-test-jobs") {
+    const [jobs, runnable] = await Promise.all([loadJobs(), loadRunnableProfiles()]);
+    const byId = new Map(runnable.map((p) => [p.id, p]));
+    const enriched = jobs.map((job) => {
+      const target = byId.get(job.targetId);
+      return { ...job, targetName: target?.name || "", targetRunnable: Boolean(target) };
+    });
+    sendJson(res, 200, { ok: true, jobs: enriched });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/dev/auto-test-jobs") {
+    const body = await readJson(req);
+    // 目标可运行性校验（异步、只读）先在锁外做，缩短持锁时间。
+    const runnable = await loadRunnableProfiles();
+    const runnableIds = new Set(runnable.map((p) => p.id));
+    try {
+      // 整个「找 existing → 规范化 → 校验 → 算 nextRunAt → upsert」在串行化的 updateJobs 里做，
+      // 与调度器回写、其它并发请求互不覆盖。校验失败抛 JobValidationError → 不落盘 → 下面兜 400。
+      const job = await updateJobs((jobs) => {
+        const existing = body.id ? jobs.find((j) => j.id === body.id) || null : null;
+        const next = normalizeJob(body, existing);
+        const err = validateJob(next);
+        if (err) throw new JobValidationError(err);
+        if (!runnableIds.has(next.targetId)) throw new JobValidationError("被测目标不存在或不可运行（渠道可能已删除/停用）。");
+        // 新建、或改动周期/由停用转启用后：重算 nextRunAt；已有且未改则沿用旧值。停用则清空。
+        const reEnabled = existing && !existing.enabled && next.enabled;
+        const cadenceChanged = !existing || existing.periodHours !== next.periodHours || reEnabled;
+        if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next.periodHours);
+        if (!next.enabled) next.nextRunAt = null;
+        // 手动重新启用（含熔断自动停用后的恢复）：清零连续失败计数与自动停用标记，给作业一次干净的重试。
+        if (reEnabled) {
+          next.consecutiveFailures = 0;
+          next.autoDisabledAt = null;
+        }
+        const idx = jobs.findIndex((j) => j.id === next.id);
+        if (idx >= 0) jobs[idx] = next;
+        else jobs.push(next);
+        return next;
+      });
+      sendJson(res, 200, { ok: true, job });
+    } catch (error) {
+      if (error instanceof JobValidationError) {
+        sendJson(res, 400, { error: "invalid_job", userMessage: error.message });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
+  if (req.method === "POST" && url.pathname.startsWith("/api/dev/auto-test-jobs/") && url.pathname.endsWith("/run")) {
+    const id = decodeURIComponent(url.pathname.slice("/api/dev/auto-test-jobs/".length, -"/run".length));
+    const result = await autoTestScheduler.runJobNow(id);
+    sendJson(res, result.ok ? 200 : 409, result);
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname.startsWith("/api/dev/auto-test-jobs/")) {
+    const id = decodeURIComponent(url.pathname.slice("/api/dev/auto-test-jobs/".length));
+    await updateJobs((jobs) => {
+      const idx = jobs.findIndex((j) => j.id === id);
+      if (idx >= 0) jobs.splice(idx, 1);
+    });
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -659,9 +842,31 @@ async function handleApi(req, res) {
     return;
   }
 
+  // —— 运行时设置（AI 总结模型 / 场景测试题库开关；脱离环境变量）——
+  if (req.method === "GET" && url.pathname === "/api/settings") {
+    // 令牌存于加密库、不在 settings.json：只回「已配置/未配置」（含环境变量兜底）。
+    sendJson(res, 200, { ...getSettings(), newapiImportTokenSet: Boolean(readNewapiConfig().token) });
+    return;
+  }
+  if (req.method === "PUT" && url.pathname === "/api/settings") {
+    const patch = await readJson(req);
+    // 影响 new-api 的设置仅超管可改：网关配置(网址/用户ID/令牌)。
+    // 普通管理员(role 10)的 patch 剔除这些字段，既防越权、也防其表单里的空值误清空网关配置。
+    if (!canWriteConfig(req.session.role)) {
+      for (const k of ["newapiBaseUrl", "newapiUserId", "newapiImportToken"]) delete patch[k];
+    }
+    // 令牌走加密库、绝不入 settings.json：从 patch 摘出，非空才更新（留空＝保留原令牌）。
+    const tokenInput = typeof patch.newapiImportToken === "string" ? patch.newapiImportToken : "";
+    delete patch.newapiImportToken;
+    if (tokenInput.trim()) await saveNewapiToken(tokenInput);
+    const rest = await saveSettings(patch);
+    sendJson(res, 200, { ...rest, newapiImportTokenSet: Boolean(readNewapiConfig().token) });
+    return;
+  }
+
   // —— v0.3.0 模型目标管理（选渠道 + 填模型，管理员维护、看不到 key）——
   if (req.method === "GET" && url.pathname === "/api/model-targets") {
-    const [targets, channels] = await Promise.all([loadModelTargets(), loadChannels()]);
+    const [targets, channels, lastByProfile] = await Promise.all([loadModelTargets(), loadChannels(), queryLastTestedByProfile()]);
     const byChannel = new Map(channels.map((item) => [item.id, item]));
     sendJson(
       res,
@@ -673,9 +878,30 @@ async function handleApi(req, res) {
           channelName: channel?.name || "(渠道已删除)",
           channelStatus: channel?.status || "missing",
           protocol: channel?.protocol || null,
+          lastTestedAt: lastByProfile[target.id] || null, // 上次测试时间（覆盖所有测试种类）；从未测→null
         };
       }),
     );
+    return;
+  }
+  if (req.method === "POST" && /^\/api\/model-targets\/[^/]+\/remove-tag$/.test(url.pathname)) {
+    // 纯本地移除：从该模型目标的 tags 里删掉指定标签（标签已降级为纯本地概念，不再联动 new-api）。
+    const id = decodeURIComponent(url.pathname.split("/")[3]);
+    const { tag } = await readJson(req);
+    const targets = await loadModelTargets();
+    const target = targets.find((item) => item.id === id);
+    if (!target) {
+      sendJson(res, 404, { error: "not_found", userMessage: "模型目标不存在。" });
+      return;
+    }
+    const before = Array.isArray(target.tags) ? target.tags : [];
+    const next = before.filter((t) => t !== tag);
+    if (next.length !== before.length) {
+      target.tags = next;
+      target.updatedAt = new Date().toISOString();
+      await saveModelTargets(targets);
+    }
+    sendJson(res, 200, { ok: true, tags: target.tags });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/model-targets") {
@@ -720,6 +946,8 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/tests/quick-verify") {
     const body = await readJson(req);
     const result = await runQuickVerify(body);
+    await noteRunIfEnabled(result); // 高危报告提示：手动快检（含连通失败→suspect）也按开关判危置顶
+    openReportInBrowser(result.reportHtmlPath);
     sendJson(res, 200, result);
     return;
   }
@@ -727,6 +955,8 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/tests/admission") {
     const body = await readJson(req);
     const result = await runAdmissionTest(body);
+    openReportInBrowser(result.reportHtmlPath);
+    openReportInBrowser(result.aiAnalysisHtmlPath); // AI 辅助分析独立成文，存在时一并打开
     sendJson(res, 200, result);
     return;
   }
@@ -810,6 +1040,64 @@ async function handleApi(req, res) {
     return;
   }
 
+  // 高危报告提示：未读高危报告清单（登录可读）。开关关时不记录，故一般为空。
+  if (req.method === "GET" && url.pathname === "/api/high-risk-alerts") {
+    sendJson(res, 200, { alerts: await listAlerts() });
+    return;
+  }
+  // 点掉某条（{ reportId }）或全部忽略（{ all: true }）；返回剩余清单。
+  if (req.method === "POST" && url.pathname === "/api/high-risk-alerts/ack") {
+    const body = await readJson(req);
+    if (body?.all === true) await ackAll();
+    else if (body?.reportId) await ackAlert(String(body.reportId));
+    sendJson(res, 200, { ok: true, alerts: await listAlerts() });
+    return;
+  }
+
+  // 列出报告目录（评测数据/报告）里的全部 .html 报告文件，供「查看报告」浏览。
+  // best-effort：目录不存在/读失败 → 返回 []。每项 id 与 /view 路由一致（基名去 .html）。
+  if (req.method === "GET" && url.pathname === "/api/reports/files") {
+    let files = [];
+    try {
+      const names = (await readdir(REPORTS_DIR)).filter((n) => n.toLowerCase().endsWith(".html"));
+      const stats = await Promise.all(
+        names.map(async (name) => {
+          try {
+            const st = await stat(join(REPORTS_DIR, name));
+            return { id: name.replace(/\.html$/i, ""), mtimeMs: st.mtimeMs, sizeBytes: st.size };
+          } catch {
+            return null;
+          }
+        }),
+      );
+      files = stats.filter(Boolean).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 500);
+    } catch {
+      /* 目录不存在/读失败 → 空列表 */
+    }
+    sendJson(res, 200, files);
+    return;
+  }
+
+  // 在浏览器里查看一份报告 HTML（Docker/远程部署看报告的正路：应用内浮层 iframe 或新标签页打开）。
+  // 鉴权同其它 /api/*（已登录即可读）。文件名经 sanitizeReportBaseName 防目录穿越；报告为纯静态
+  // HTML+CSS、无脚本，再叠加 nosniff + 禁脚本 CSP，直开标签页也无 XSS 面。
+  if (req.method === "GET" && /^\/api\/reports\/[^/]+\/view$/.test(url.pathname)) {
+    const id = sanitizeReportBaseName(decodeURIComponent(url.pathname.split("/")[3]));
+    try {
+      const html = await readFile(join(REPORTS_DIR, `${id}.html`), "utf8");
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'",
+        "Cache-Control": "no-store",
+      });
+      res.end(html);
+    } catch {
+      sendJson(res, 404, { error: "report_not_found", userMessage: "报告不存在或已被清理。" });
+    }
+    return;
+  }
+
   // 单渠道趋势 + 基线回归 + 告警（?profileId=...）
   if (req.method === "GET" && url.pathname === "/api/trend") {
     const profileId = url.searchParams.get("profileId") || "";
@@ -869,6 +1157,14 @@ async function pruneReportsOnStartup() {
     }
     if (removed.length) {
       console.log(`[reports] 已清理 ${removed.length} 份过期/超量报告`);
+    }
+    // 同步清理请求/运行/告警/指纹历史表，防 evaluator.db 只增不减吃满卷。
+    const history = await pruneHistory({
+      retentionDays: Number(process.env.EVALUATOR_HISTORY_RETENTION_DAYS || 90),
+    });
+    const historyTotal = Object.values(history).reduce((sum, n) => sum + (n || 0), 0);
+    if (historyTotal) {
+      console.log(`[history] 已清理 ${historyTotal} 条过期/超量历史记录（${JSON.stringify(history)}）`);
     }
   } catch {
     // 清理失败不应阻断启动
