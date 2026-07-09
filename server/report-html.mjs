@@ -15,7 +15,7 @@ export function renderReportHtml(markdown, title) {
     "h1{margin-top:0;font-size:30px}h2{margin-top:32px;border-top:1px solid #e5e7eb;padding-top:18px}h3{margin-top:24px}",
     "table{width:100%;border-collapse:collapse;margin:12px 0;display:block;overflow-x:auto}th,td{border:1px solid #d7dde8;padding:9px 11px;text-align:left;vertical-align:top}th{background:#f1f5f9}",
     "pre{background:#0f172a;color:#e5e7eb;border-radius:14px;padding:14px;overflow:auto}code{font-family:'SFMono-Regular',Consolas,monospace}",
-    "p,li{color:#334155}.meta{color:#64748b;font-size:13px;margin-bottom:20px}",
+    "p,li{color:#334155}.meta{color:#64748b;font-size:13px;margin-bottom:20px}small{font-size:.85em;color:#64748b}",
     "</style>",
     "</head>",
     "<body><main>",
@@ -109,6 +109,9 @@ function renderReportTable(lines) {
 
 function formatReportInline(text) {
   return escapeHtmlText(text)
+    // 白名单：仅放行 <small>…</small>（报告里用于「小字」次要说明），其余 HTML 仍被转义。
+    .replace(/&lt;small&gt;/g, "<small>")
+    .replace(/&lt;\/small&gt;/g, "</small>")
     // 多反引号代码段（如模型把 JSON 包进 ```json ... ```）：先按成对的反引号串收口，
     // 否则单反引号规则只吃掉中间一对，留下散落的 `` 看起来像渲染坏了。
     .replace(/(`{2,})\s*([\s\S]*?)\s*\1/g, (_, _ticks, inner) => `<code>${inner}</code>`)

@@ -84,6 +84,7 @@ export function inferReportType(baseName) {
   const dateIdx = parts.findIndex((p) => /^\d{8}$/.test(p));
   const probe = dateIdx > 0 ? parts[dateIdx - 1] : name;
   if (probe.includes("compare")) return "compare"; // 模型对比报告
+  if (probe.includes("load")) return "load-test"; // 压力测试报告（buildReportId("load", ...)）
   if (probe.includes("scenario")) return "scenario";
   if (probe.includes("stability") || probe === "run") return "stability";
   if (probe.includes("admission")) return "admission"; // 先于 batch：admission-batch 归 admission（同旧行为）

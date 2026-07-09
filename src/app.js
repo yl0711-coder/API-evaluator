@@ -23,6 +23,7 @@ import {
   estimateBatchCost,
   estimateScenarioCost,
   estimateStabilityCost,
+  estimateLoadTestCost,
 } from "./cost-estimates.js";
 import { renderDeliveryPanels } from "./delivery-panel.js";
 import {
@@ -34,6 +35,7 @@ import {
   formatStabilityResult,
 } from "./formatters.js";
 import { renderRequestList, renderTaskEventList, renderTestRunList } from "./history-view.js";
+import { renderTrendChart } from "./trend-chart.js";
 import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "./workflow-guide.js";
 import { buildDemoData } from "./demo-data.js";
 import { requireElement, requireElements } from "./dom-utils.js";
@@ -138,10 +140,16 @@ const quickVerifyProfileSelect = requireElement("#quickverify-profile-select");
 const quickVerifySubmit = requireElement("#quickverify-submit");
 const quickVerifyResult = requireElement("#quickverify-result");
 const trendProfileSelect = requireElement("#trend-profile-select");
+const trendXModeSelect = requireElement("#trend-xmode");
+const trendWindowSelect = requireElement("#trend-window");
+const trendWindowField = requireElement("#trend-window-field");
 const trendChart = requireElement("#trend-chart");
 const trendRegression = requireElement("#trend-regression");
 const trendTable = requireElement("#trend-table");
 const trendAlerts = requireElement("#trend-alerts");
+let trendXMode = "count"; // 趋势图 x 轴：'count'(按轮次) | 'hour'(按小时聚合)
+let trendWindowHours = 0; // 按时间模式的时间范围：0=全部，或 3/6/12/24/48/168 小时
+let trendLastRounds = []; // 最近一次拉到的逐轮数据，切换 x 轴时复用、不重复请求
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
@@ -169,6 +177,12 @@ const stabilityProfileSelect = requireElement("#stability-profile-select");
 const stabilitySubmit = requireElement("#stability-submit");
 const stabilitySummary = requireElement("#stability-summary");
 const stabilityReport = requireElement("#stability-report");
+const loadTestForm = requireElement("#load-test-form");
+const loadTestProfileSelect = requireElement("#load-test-profile-select");
+const loadTestSubmit = requireElement("#load-test-submit");
+const loadTestSummary = requireElement("#load-test-summary");
+const loadTestReport = requireElement("#load-test-report");
+const loadTestEstimate = requireElement("#load-test-estimate");
 const batchTestForm = requireElement("#batch-test-form");
 const batchProfileSelect = requireElement("#batch-profile-select");
 const batchSubmit = requireElement("#batch-submit");
@@ -199,6 +213,7 @@ const admissionCascade = createCascadeTargetPicker(requireElement("#admission-ch
 const standardCascade = createCascadeTargetPicker(requireElement("#standard-channel-select"), standardProfileSelect);
 const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
 const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
+const loadTestCascade = createCascadeTargetPicker(requireElement("#load-test-channel-select"), loadTestProfileSelect);
 const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-select"), trendProfileSelect);
 
 // 程序化跳转回填代理:控制器里 `xxxProfileSelect.value = id` 时,写入走级联(同步渠道+模型下拉),
@@ -225,6 +240,7 @@ const stabilityEstimate = requireElement("#stability-estimate");
 const batchEstimate = requireElement("#batch-estimate");
 const scenarioEstimate = requireElement("#scenario-estimate");
 const stabilityProgress = requireElement("#stability-progress");
+const loadTestProgress = requireElement("#load-test-progress");
 const batchProgress = requireElement("#batch-progress");
 const scenarioProgress = requireElement("#scenario-progress");
 const reportInsights = requireElement("#report-insights");
@@ -343,6 +359,8 @@ const REPORT_TYPE_LABELS = {
   scenario: "场景测试",
   run: "稳定性测试",
   compare: "模型对比",
+  load: "压力测试", // runId 前缀 buildReportId("load", ...)
+  "load-test": "压力测试",
   batch: "批量稳定性",
   quickverify: "快速验证",
   supplier: "上游证据包",
@@ -352,6 +370,7 @@ const REPORT_TYPE_LABELS = {
 const REPORT_PAGE_SIZE = 10;
 let reportFiles = []; // 每条已附 parsed = parseReportId(id)
 let reportFilesPage = 0;
+let currentUserCanConfig = false; // 是否超级管理员（role≥100）：仅其可见/可用报告删除按钮（安全另在服务端强制）
 let reportDateMin = ""; // 报告实际日期范围（YYYY-MM-DD），给日期框设 min/max 用
 let reportDateMax = "";
 
@@ -393,6 +412,15 @@ reportFilesList.addEventListener("click", (event) => {
         ? Math.min(reportFilesPage + 1, totalPages - 1)
         : Math.max(reportFilesPage - 1, 0);
     renderReportFilesPage();
+    return;
+  }
+  const del = event.target.closest?.("[data-report-del]");
+  if (del) {
+    const id = del.dataset.reportDel;
+    if (!confirm(`确认删除报告「${id}」？此操作不可撤销。`)) return;
+    api(`/api/reports/files/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(() => loadReportFiles())
+      .catch((error) => alert(`删除失败：${error.message}`));
     return;
   }
   const btn = event.target.closest?.("[data-report-id]");
@@ -472,7 +500,10 @@ function renderReportFilesPage() {
           <div><strong>${escapeHtml(reportKindLabel(f.id))}</strong><br /><small>${escapeHtml(f.id)}</small></div>
           <small>${escapeHtml(new Date(f.mtimeMs).toLocaleString("zh-CN"))}</small>
           <small>${formatBytes(f.sizeBytes)}</small>
-          <button class="secondary" type="button" data-report-id="${escapeHtml(f.id)}">查看</button>
+          <div class="report-file-actions">
+            <button class="secondary" type="button" data-report-id="${escapeHtml(f.id)}">查看</button>
+            ${currentUserCanConfig ? `<button class="danger" type="button" data-report-del="${escapeHtml(f.id)}">删除</button>` : ""}
+          </div>
         </div>`,
     )
     .join("");
@@ -503,6 +534,7 @@ requireElement("#import-profiles-button").addEventListener("click", () => {
 });
 requireElement("#import-profiles-file").addEventListener("change", profileController.importProfiles);
 requireElement("#cancel-stability-task").addEventListener("click", () => cancelRemoteTask(state, "stability"));
+requireElement("#cancel-load-test-task").addEventListener("click", () => cancelRemoteTask(state, "loadTest"));
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
@@ -601,35 +633,6 @@ function formatQuickVerify(result) {
   return lines.join("\n");
 }
 
-function renderTrendChart(series) {
-  const pts = (series || []).filter((p) => p.successRate !== null);
-  if (pts.length < 1) return "暂无历史数据。";
-  const W = 640;
-  const H = 200;
-  const pad = { l: 42, r: 16, t: 16, b: 24 };
-  const innerW = W - pad.l - pad.r;
-  const innerH = H - pad.t - pad.b;
-  const n = pts.length;
-  const px = (i) => pad.l + (n === 1 ? innerW / 2 : (innerW * i) / (n - 1));
-  const py = (sr) => pad.t + innerH * (1 - sr);
-  const grid = [0, 0.5, 1]
-    .map(
-      (v) =>
-        `<line x1="${pad.l}" y1="${py(v).toFixed(1)}" x2="${W - pad.r}" y2="${py(v).toFixed(1)}" stroke="#25334a"/>` +
-        `<text x="${pad.l - 6}" y="${(py(v) + 4).toFixed(1)}" fill="#91a0b7" font-size="11" text-anchor="end">${v * 100}%</text>`,
-    )
-    .join("");
-  const line = `<polyline points="${pts.map((p, i) => `${px(i).toFixed(1)},${py(p.successRate).toFixed(1)}`).join(" ")}" fill="none" stroke="#f6b56b" stroke-width="2"/>`;
-  const dots = pts
-    .map((p, i) => {
-      const color = p.successRate >= 0.95 ? "#7bd88f" : p.successRate >= 0.8 ? "#f6b56b" : "#ff8a8a";
-      const tip = `${String(p.at || "").replace("T", " ").slice(0, 19)} · ${Math.round(p.successRate * 100)}% · P95 ${p.p95Ms ?? "-"}ms${p.grade ? " · " + p.grade : ""}`;
-      return `<circle cx="${px(i).toFixed(1)}" cy="${py(p.successRate).toFixed(1)}" r="3.5" fill="${color}"><title>${escapeHtml(tip)}</title></circle>`;
-    })
-    .join("");
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="成功率趋势">${grid}${line}${dots}</svg>`;
-}
-
 async function updateTrendView(profileId) {
   if (!profileId) return;
   trendChart.innerHTML = "加载中...";
@@ -639,7 +642,8 @@ async function updateTrendView(profileId) {
   try {
     const data = await api(`/api/trend?profileId=${encodeURIComponent(profileId)}`);
     const series = data.series || [];
-    trendChart.innerHTML = renderTrendChart(series);
+    trendLastRounds = data.rounds || [];
+    redrawTrendChart();
     const reg = data.regression;
     if (reg && reg.status === "regressed") {
       trendRegression.classList.remove("hidden");
@@ -667,8 +671,26 @@ async function updateTrendView(profileId) {
   }
 }
 
+// 用当前 x 轴 / 时间范围重绘（复用最近一次逐轮数据，不重复请求）。时间范围只在按时间模式生效。
+function redrawTrendChart() {
+  trendChart.innerHTML = renderTrendChart(trendLastRounds, trendXMode, {
+    windowHours: trendXMode === "hour" ? trendWindowHours : 0,
+  });
+}
+
 trendProfileSelect.addEventListener("change", () => updateTrendView(trendProfileSelect.value));
 document.querySelector('.nav-button[data-page="trend"]')?.addEventListener("click", () => updateTrendView(trendProfileSelect.value));
+// 切换 x 轴（按轮次 / 按小时）：时间范围选择器仅在「按时间」时显示；切换即重绘。
+trendXModeSelect.addEventListener("change", () => {
+  trendXMode = trendXModeSelect.value === "hour" ? "hour" : "count";
+  trendWindowField.classList.toggle("hidden", trendXMode !== "hour");
+  redrawTrendChart();
+});
+// 切换时间范围（3/6/12/24/48/168 小时或全部）：仅重绘。
+trendWindowSelect.addEventListener("change", () => {
+  trendWindowHours = Number(trendWindowSelect.value) || 0;
+  redrawTrendChart();
+});
 
 quickVerifySubmit.addEventListener("click", async () => {
   const profileId = quickVerifyProfileSelect.value;
@@ -804,6 +826,185 @@ createTaskFormController({
   },
   failurePrefix: "稳定性测试失败",
   idleButtonText: "开始稳定性测试",
+});
+
+// —— 压力测试：闭环/开环 + 负载扫描，走 task-manager 后台 + 进度轮询 + 可取消（仅超管，入口 data-requires-admin）——
+const LOAD_PROFILE_LABEL = { simple: "简单", think: "轻思考", coding: "编程" };
+const loadTestModeSelect = requireElement("#load-test-mode");
+const loadTestLoadsInput = requireElement("#load-test-loads");
+const loadTestLoadLabel = requireElement("#load-test-load-label");
+const loadTestMaxInFlightField = requireElement("#load-test-maxinflight-field");
+const loadTestBurstField = requireElement("#load-test-burst-field");
+const loadTestIntervalField = requireElement("#load-test-interval-field");
+const lms = (v) => (Number.isFinite(v) ? `${(v / 1000).toFixed(2)}s` : "—");
+
+// 负载值文本 → 数字数组（逗号分隔，去空去非法）。多个即为扫描。
+function parseLoads(raw) {
+  return String(raw || "")
+    .split(/[,，\s]+/)
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+// 模式变化：切换负载值标签（并发/速率）、显隐开环在飞上限与闭环测试间隔。
+function syncLoadTestMode() {
+  const open = loadTestModeSelect.value === "open";
+  loadTestLoadLabel.textContent = open ? "负载值（速率 req/s）" : "负载值（并发数，可逗号扫描）";
+  loadTestMaxInFlightField.classList.toggle("hidden", !open); // 在飞上限仅开环
+  loadTestBurstField.classList.toggle("hidden", !open); // 发送周期（突发）仅开环
+  loadTestIntervalField.classList.toggle("hidden", open); // 测试间隔（思考时间）仅闭环
+}
+loadTestModeSelect.addEventListener("change", syncLoadTestMode);
+syncLoadTestMode();
+
+const loadTestErrText = (e) =>
+  `429×${e.http_429 || 0}　5xx×${e.http_5xx || 0}　超时×${e.timeout || 0}　网络×${e.network_error || 0}　发生器受限×${e.gen_saturated || 0}`;
+// 单点结果卡片。
+function renderLoadTestSingle(result) {
+  const L = result.latency || {};
+  const e = result.errors || {};
+  const okRate = result.successRate || 0;
+  const rateCls = okRate >= 0.99 ? "" : "fail";
+  const errBad = (e.http_429 || 0) + (e.http_5xx || 0) + (e.timeout || 0) + (e.gen_saturated || 0) > 0 ? "fail" : "";
+  const modeLabel = result.mode === "open" ? `开环 · 速率 ${result.offered} req/s` : `闭环 · 并发 ${result.offered}`;
+  const sent = result.sentRequests || 0;
+  const notReturned = (e.timeout || 0) + (e.http_5xx || 0) + (e.network_error || 0) + (e.other || 0);
+  const biasNote = notReturned > 0 ? `<small class="fail">⚠️ 另有 ${notReturned} 条（${Math.round(sent ? (notReturned / sent) * 100 : 0)}%）超时/失败未返回、未计入延迟，真实尾延迟更差</small>` : "";
+  loadTestSummary.innerHTML = `
+    <article class="summary-card">
+      <span>吞吐 QPS</span>
+      <strong>${escapeHtml(String(result.qps ?? "—"))} req/s</strong>
+      <small>稳态完成 ${result.sentRequests ?? "—"}（预热 ${result.warmupRequests ?? 0} 不计）</small>
+      ${result.outputTokens > 0 ? `<small>输出吞吐 ${escapeHtml(String(result.tokensPerSecond ?? "—"))} tok/s（单请求均速 ${escapeHtml(String(result.perReqTokensPerSec ?? "—"))} tok/s）</small>` : ""}
+    </article>
+    <article class="summary-card">
+      <span>成功率</span>
+      <strong class="${rateCls}">${Math.round(okRate * 100)}%</strong>
+      <small>成功 ${result.successCount ?? "—"} / ${result.sentRequests ?? "—"}</small>
+    </article>
+    <article class="summary-card">
+      <span>延迟分位（成功）</span>
+      <strong>p95 ${lms(L.p95)}</strong>
+      <small>p50 ${lms(L.p50)}　p90 ${lms(L.p90)}　p99 ${lms(L.p99)}　max ${lms(L.max)}</small>
+      ${biasNote}
+    </article>
+    <article class="summary-card wide-summary">
+      <span>错误构成</span>
+      <strong class="${errBad}">${escapeHtml(loadTestErrText(e))}</strong>
+      <small>${escapeHtml(modeLabel)} · 负载档 ${escapeHtml(result.promptProfile || "-")} · 稳态 ${result.durationSec}s · ramp-up ${result.warmupSec}s</small>
+      <small>HTML 报告：${escapeHtml(result.reportHtmlPath || "-")}</small>
+    </article>
+  `;
+}
+// 扫描结果：曲线表格 + 拐点(D)。
+function renderLoadTestSweep(result) {
+  const unit = result.mode === "open" ? "速率(req/s)" : "并发";
+  const rows = (result.sweep || [])
+    .map((p, i) => {
+      const hit = i === result.knee?.index ? ' class="fail"' : "";
+      return `<tr${hit}><td>${p.offered}</td><td>${p.qps}</td><td>${Math.round((p.successRate || 0) * 100)}%</td><td>${lms(p.latency.p95)}</td><td>${lms(p.latency.p99)}</td><td>${p.errors.http_429}</td><td>${(p.errors.timeout || 0) + (p.errors.http_5xx || 0)}</td><td>${p.genSaturated || 0}</td></tr>`;
+    })
+    .join("");
+  const knee = result.knee || {};
+  const kneePoint = (result.sweep || [])[knee.index] || {};
+  loadTestSummary.innerHTML = `
+    <article class="summary-card wide-summary">
+      <span>饱和拐点（推荐可用容量）</span>
+      <strong>${unit} = ${kneePoint.offered ?? "—"}</strong>
+      <small>${escapeHtml(knee.reason || "")}</small>
+      <small>该点：QPS ${kneePoint.qps ?? "—"}　成功率 ${Math.round((kneePoint.successRate || 0) * 100)}%　p99 ${lms(kneePoint.latency?.p99)}</small>
+      <small>HTML 报告：${escapeHtml(result.reportHtmlPath || "-")}</small>
+    </article>
+    <article class="summary-card wide-summary" style="overflow-x:auto;">
+      <span>负载 → 吞吐 / 尾延迟曲线</span>
+      <table class="mini-table">
+        <thead><tr><th>${unit}</th><th>QPS</th><th>成功率</th><th>p95</th><th>p99</th><th>429</th><th>超时+5xx</th><th>发生器受限</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </article>
+  `;
+}
+function formatLoadTestResult(result) {
+  const lines = [
+    `测试 ID：${result.runId || "-"}`,
+    `被测 API：${result.profileName || "-"}（模型 ${result.model || "-"}）`,
+    `模式：${result.mode === "open" ? "开环（固定速率，含 CO 纠正）" : "闭环（固定并发）"} · 负载档 ${result.promptProfile || "-"} · 稳态 ${result.durationSec}s · ramp-up ${result.warmupSec}s`,
+  ];
+  if (result.sweep) {
+    lines.push(`负载序列：${result.sweep.map((p) => p.offered).join(", ")}`);
+    lines.push(`饱和拐点：${result.mode === "open" ? "速率" : "并发"} = ${result.knee?.offered}（${result.knee?.reason || ""}）`);
+    for (const p of result.sweep) {
+      lines.push(`  · 负载 ${p.offered}：QPS ${p.qps}，成功率 ${Math.round((p.successRate || 0) * 100)}%，p95 ${lms(p.latency.p95)}，p99 ${lms(p.latency.p99)}，429×${p.errors.http_429}，超时×${p.errors.timeout}，发生器受限×${p.genSaturated}`);
+    }
+  } else {
+    const L = result.latency || {};
+    const e = result.errors || {};
+    lines.push(`负载：${result.offered}　稳态完成 ${result.sentRequests}（预热 ${result.warmupRequests} 不计）`);
+    lines.push(`成功率：${Math.round((result.successRate || 0) * 100)}%　吞吐：${result.qps} req/s`);
+    lines.push(`延迟（成功）：p50 ${lms(L.p50)}　p90 ${lms(L.p90)}　p95 ${lms(L.p95)}　p99 ${lms(L.p99)}　max ${lms(L.max)}`);
+    lines.push(`错误：429×${e.http_429 || 0}　5xx×${e.http_5xx || 0}　超时×${e.timeout || 0}　网络×${e.network_error || 0}　发生器受限×${e.gen_saturated || 0}`);
+  }
+  lines.push(`Markdown 报告：${result.reportPath || "-"}`, `HTML 报告：${result.reportHtmlPath || "-"}`);
+  return lines.join("\n");
+}
+// 表单参数变化时更新预估框（选完参数即知这一轮大概发多少请求）。
+function updateLoadTestEstimate() {
+  const raw = Object.fromEntries(new FormData(loadTestForm).entries());
+  const loads = parseLoads(raw.loads);
+  const est = estimateLoadTestCost({ ...raw, loads });
+  const sweepNote = loads.length > 1 ? `扫描 ${loads.length} 个负载点，` : "";
+  loadTestEstimate.textContent = `${sweepNote}预计约发出 ${est.requests} 个真实请求（${LOAD_PROFILE_LABEL[raw.promptProfile] || "简单"}档）。全部真实计费，请谨慎。`;
+}
+loadTestForm.addEventListener("change", updateLoadTestEstimate);
+loadTestForm.addEventListener("input", updateLoadTestEstimate);
+updateLoadTestEstimate();
+
+createTaskFormController({
+  form: loadTestForm,
+  submitButton: loadTestSubmit,
+  resultElement: loadTestSummary,
+  progressElement: loadTestProgress,
+  state,
+  slot: "loadTest",
+  taskType: "load-test",
+  confirmRun: (payload) => confirmAction(confirmExecution("压力测试", estimateLoadTestCost(payload))),
+  predict: (payload) => estimateLoadTestCost(payload),
+  preparePayload: (raw) => {
+    if (!raw.profileId) {
+      toast("请先选择被测渠道与模型。", true);
+      return null;
+    }
+    const loads = parseLoads(raw.loads);
+    if (!loads.length) {
+      toast("请填写负载值（并发数或速率），扫描用逗号分隔多个。", true);
+      return null;
+    }
+    return {
+      target: { profileId: raw.profileId },
+      mode: raw.mode === "open" ? "open" : "closed",
+      loads,
+      promptProfile: raw.promptProfile || "simple",
+      durationSec: Number(raw.durationSec) || 60,
+      warmupSec: Number(raw.warmupSec) || 0,
+      timeoutSec: Number(raw.timeoutSec) || 30,
+      maxInFlight: Number(raw.maxInFlight) || 300,
+      intervalSec: raw.mode === "open" ? 0 : Number(raw.intervalSec) || 0, // 思考时间仅闭环
+      burstPeriodSec: raw.mode === "open" ? Number(raw.burstPeriodSec) || 1 : 1, // 发送周期仅开环
+    };
+  },
+  beforeStart: (payload) => {
+    const what = payload.loads.length > 1 ? `扫描 ${payload.loads.length} 个负载点` : `${payload.mode === "open" ? "速率" : "并发"} ${payload.loads[0]}`;
+    loadTestSummary.innerHTML = `<p class="muted">正在压测：${what}，每点稳态 ${payload.durationSec}s。测试期间请不要关闭窗口。</p>`;
+    loadTestReport.textContent = "测试完成后会自动生成压测报告。";
+  },
+  onSuccess: async (result) => {
+    if (result.sweep) renderLoadTestSweep(result);
+    else renderLoadTestSingle(result);
+    loadTestReport.textContent = formatLoadTestResult(result);
+    await loadResultsBundle();
+    toast("压力测试完成。");
+  },
+  failurePrefix: "压力测试失败",
+  idleButtonText: "开始压力测试",
 });
 
 createTaskFormController({
@@ -1110,6 +1311,7 @@ async function replayClientRequestsFromLogs() {
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
+currentUserCanConfig = Boolean(authUser?.canConfig); // 报告删除按钮的可见性依据（服务端另有强制鉴权）
 applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
@@ -1533,6 +1735,7 @@ function dashTypeLabel(type) {
     "batch-stability": "批量稳定性",
     scenario: "场景测试",
     stability: "稳定性测试",
+    "load-test": "压力测试",
   };
   return map[type] || "稳定性测试";
 }
@@ -1772,6 +1975,7 @@ function renderProfileOptions() {
   standardCascade.refresh(data);
   quickVerifyCascade.refresh(data);
   stabilityCascade.refresh(data);
+  loadTestCascade.refresh(data);
   trendCascade.refresh(data);
   // 批量页:两维度选择器(渠道体检 / 渠道选优)
   admissionBatchPicker.refresh(data);

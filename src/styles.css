@@ -614,6 +614,12 @@ code {
   align-items: start;
 }
 
+/* 压测表单：「开环在飞上限」列带 field-hint 更高，默认 align-items: stretch 会把同行的
+   「稳态时长」列一起拉高、其下拉随之下移错位。改顶端对齐，使两列下拉同高对齐（同 #admission-batch-form）。 */
+#load-test-form {
+  align-items: start;
+}
+
 /* 分区标题块（h3 + 说明）在两列网格里跨整行，否则说明只占左半列、观感割裂。 */
 .form-grid > .form-section-title {
   grid-column: 1 / -1;
@@ -667,6 +673,61 @@ label {
   font-size: 12px;
   font-weight: 500;
   line-height: 1.55;
+}
+
+/* 模型比对 · 自选场景复选清单 */
+.mc-scenarios {
+  margin-top: 10px;
+  border: 1px solid #25334a;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.mc-scenario-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.mc-scenario-actions {
+  display: inline-flex;
+  gap: 12px;
+}
+.mc-scenario-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px 14px;
+  max-height: 260px;
+  overflow: auto;
+}
+.mc-scenario-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.mc-scenario-item input {
+  width: auto;
+  margin: 0;
+  flex: none;
+}
+.mc-scenario-item em {
+  color: #91a0b7;
+  font-style: normal;
+  font-size: 11px;
+}
+.link-button {
+  background: none;
+  border: none;
+  color: #6aa0e0;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+}
+.link-button:hover {
+  text-decoration: underline;
 }
 
 .wide {
@@ -804,10 +865,16 @@ button.quiet-action {
   background: rgba(8, 17, 31, 0.44);
   min-width: 860px;
 }
-/* 「查看报告」文件列表行：类型/文件名 + 时间 + 大小 + 查看按钮 */
+/* 「查看报告」文件列表行：类型/文件名 + 时间 + 大小 + 操作（查看/删除） */
 .report-file-row {
   grid-template-columns: 1fr auto auto auto;
   min-width: 0;
+}
+/* 行内操作按钮容器（查看 + 仅超管可见的删除），占第 4 列不随角色改变列数 */
+.report-file-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 /* 「查看报告」筛选：渠道 / 模型 / 种类 / 日期，两两并排（2 列网格），拉长占满面板宽度 */
 .report-files-filters {
@@ -1427,6 +1494,29 @@ button.danger {
   padding: 16px;
 }
 
+/* 压测负载扫描表：紧凑表格，负载→吞吐/尾延迟曲线。饱和拐点行套 .fail 高亮。 */
+.mini-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.mini-table th,
+.mini-table td {
+  border: 1px solid var(--line);
+  padding: 5px 9px;
+  text-align: right;
+  white-space: nowrap;
+}
+.mini-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.mini-table tr.fail td {
+  color: #f06d7d;
+  font-weight: 600;
+}
+
 .summary-card span,
 .summary-card small {
   display: block;
@@ -1470,6 +1560,35 @@ button.danger {
   margin: 0;
   color: var(--text);
   line-height: 1.7;
+}
+
+/* 稳定性趋势：图标题 + 横轴切换 一行排布 */
+.trend-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.trend-chart-head h3 {
+  margin: 0;
+}
+.trend-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.trend-xmode {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted, #91a0b7);
+}
+.trend-xmode select {
+  width: auto;
 }
 
 .report-box {

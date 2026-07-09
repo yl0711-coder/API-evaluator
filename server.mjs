@@ -34,6 +34,7 @@ import { deleteProfileApiKey, saveProfileApiKey } from "./server/secret-store.mj
 import { createTaskManager } from "./server/task-manager.mjs";
 import { buildSupportBundle } from "./server/support-bundle.mjs";
 import {
+  deleteReport,
   getDbHealth,
   pruneHistory,
   pruneReports,
@@ -41,9 +42,10 @@ import {
   queryProfileRunSummaries,
   queryRecentReports,
   queryRegressionAlerts,
+  queryRoundSeriesByRunIds,
   querySpendSummary,
 } from "./server/db.mjs";
-import { buildTrendSeries, detectRegression } from "./server/regression.mjs";
+import { buildTrendSeries, collectBasicScenarioCaseIds, detectRegression, summarizeRoundStats } from "./server/regression.mjs";
 import {
   executeTestRequest,
   normalizeProfileIds,
@@ -56,11 +58,14 @@ import {
   runScenarioTest,
   runStabilityTest,
 } from "./server/test-runner.mjs";
+import { runLoadTest } from "./server/load-test.mjs";
 import { buildAiAnalysisResult } from "./server/ai-report-analysis.mjs";
 import {
   aggregateSubject,
+  balanceCommonReports,
   buildComparison,
   buildCompareAnalysisPrompt,
+  commonScenarioNames,
   formatCompareReportMarkdown,
   parseReportBaseName,
   pickRecentReports,
@@ -115,6 +120,7 @@ const taskManager = createTaskManager({
   runBatchAdmissionTest,
   runBatchStabilityTest,
   runScenarioTest,
+  runLoadTest,
   normalizeProfileIds,
   normalizeScenarioIds,
   errorLogFile: ERROR_LOG_FILE,
@@ -152,6 +158,57 @@ const legacyNewapiToken = await peekLegacyNewapiToken();
 await loadNewapiToken(legacyNewapiToken);
 if (legacyNewapiToken) await stripLegacyNewapiToken();
 await pruneReportsOnStartup();
+
+// 「模型比对」共用：按文件名前缀收集两方在报告中心的报告，取最近若干份，再平衡为「双方共有」的报告集。
+// 返回 { balA, balB }（已平衡的报告文件），或 { error, userMessage }（无报告 / 无共有报告）。
+// 供 /api/reports/compare（生成对比）与 /api/reports/compare/scenarios（列出可选场景）共用。
+async function loadBalancedCompareFiles(A, B) {
+  let names = [];
+  try {
+    names = (await readdir(REPORTS_DIR)).filter((n) => n.toLowerCase().endsWith(".md"));
+  } catch {
+    /* 报告目录不存在 → 空 */
+  }
+  const collect = async (subject) => {
+    const head = sanitizeReportBaseName(`${subject.channel}_${subject.model}`);
+    const prefix = `${head}_`;
+    const metas = [];
+    for (const name of names) {
+      if (!name.startsWith(prefix)) continue;
+      const base = name.replace(/\.md$/i, "");
+      const type = parseReportBaseName(base).type;
+      if (type !== "run" && type !== "admission" && type !== "scenario") continue;
+      try {
+        const st = await stat(join(REPORTS_DIR, name));
+        metas.push({ base, type, mtimeMs: st.mtimeMs });
+      } catch {
+        /* 读不到 → 跳过 */
+      }
+    }
+    metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
+    // 限流：稳定性/准入各取最近几份，场景最多取最近 60 份读盘（pickRecentReports 再按场景名去重取最新）。
+    const chosen = [...metas.filter((m) => m.type !== "scenario").slice(0, 6), ...metas.filter((m) => m.type === "scenario").slice(0, 60)];
+    const files = [];
+    for (const m of chosen) {
+      try {
+        files.push({ name: m.base, md: await readFile(join(REPORTS_DIR, `${m.base}.md`), "utf8"), mtimeMs: m.mtimeMs });
+      } catch {
+        /* 读失败 → 跳过 */
+      }
+    }
+    return files;
+  };
+  const [filesA, filesB] = await Promise.all([collect(A), collect(B)]);
+  if (!filesA.length || !filesB.length) {
+    const missing = [!filesA.length ? `${A.channel} / ${A.model}` : null, !filesB.length ? `${B.channel} / ${B.model}` : null].filter(Boolean);
+    return { error: "no_reports", userMessage: `以下模型暂无可用于对比的报告：${missing.join("、")}。请先为其跑一次准入 / 稳定性 / 场景测试。` };
+  }
+  const [balA, balB] = balanceCommonReports(pickRecentReports(filesA), pickRecentReports(filesB));
+  if (!balA.length || !balB.length) {
+    return { error: "no_common_reports", userMessage: "两个对象没有可对比的共同报告：没有同名场景，稳定性 / 准入也未双方都有。请让两者至少跑一个相同的场景，或同一类测试。" };
+  }
+  return { balA, balB };
+}
 
 createServer(async (req, res) => {
   try {
@@ -993,6 +1050,11 @@ async function handleApi(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/tasks") {
     const body = await readJson(req);
+    // 压力测试：真实计费且重负载，仅超级管理员可发起（普通管理员连入口都看不到，见前端 data-requires-admin）。
+    if (body.type === "load-test" && !canWriteConfig(req.session.role)) {
+      sendJson(res, 403, { error: "forbidden_admin", userMessage: "仅超级管理员可发起压力测试。" });
+      return;
+    }
     const task = await taskManager.createTask(body.type, body.payload || {});
     sendJson(res, 202, taskManager.publicTask(task));
     return;
@@ -1080,8 +1142,38 @@ async function handleApi(req, res) {
     return;
   }
 
+  // 删除一份报告文件（仅超级管理员，鉴权在 api-access 的 requiresAdmin 已强制）。
+  // 只删该 id 自身的 .md + .html 与其元数据行，不牵连 -ai-analysis 兄弟（各行独立）。
+  if (req.method === "DELETE" && /^\/api\/reports\/files\/[^/]+$/.test(url.pathname)) {
+    const id = sanitizeReportBaseName(decodeURIComponent(url.pathname.split("/")[4]));
+    for (const ext of [".md", ".html"]) {
+      await rm(join(REPORTS_DIR, `${id}${ext}`), { force: true }).catch(() => {});
+    }
+    await deleteReport(id).catch(() => {}); // db 行清理，best-effort
+    sendJson(res, 200, { ok: true, id });
+    return;
+  }
+
   // 「模型比对」：依据两个模型各自在报告中心里「最近」的报告（1 份稳定性 run、1 份准入 admission、
   // 每个场景最新一份 scenario）做统计对比，产出一份「模型对比报告」并落盘（登录即可用，只读既有报告、不发起测试）。
+  // 「模型比对 · 可选场景」：给定两个模型，返回两方【共有】的场景列表（名 + 档位），供前端勾选要纳入对比的场景。
+  if (req.method === "POST" && url.pathname === "/api/reports/compare/scenarios") {
+    const body = await readJson(req);
+    const A = body?.a || {};
+    const B = body?.b || {};
+    if (!A.channel || !A.model || !B.channel || !B.model) {
+      sendJson(res, 400, { error: "invalid_target", userMessage: "请选择两个模型（渠道 + 模型）。" });
+      return;
+    }
+    const prep = await loadBalancedCompareFiles(A, B);
+    if (prep.error) {
+      sendJson(res, 400, { error: prep.error, userMessage: prep.userMessage });
+      return;
+    }
+    sendJson(res, 200, { scenarios: commonScenarioNames(prep.balA, prep.balB) });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/reports/compare") {
     const body = await readJson(req);
     const A = body?.a || {};
@@ -1090,53 +1182,19 @@ async function handleApi(req, res) {
       sendJson(res, 400, { error: "invalid_target", userMessage: "请选择两个模型（渠道 + 模型）。" });
       return;
     }
-    let names = [];
-    try {
-      names = (await readdir(REPORTS_DIR)).filter((n) => n.toLowerCase().endsWith(".md"));
-    } catch {
-      /* 报告目录不存在 → 空 */
-    }
-    // 收集某对象的匹配报告：文件名前缀 = sanitize(渠道_模型)_，类型取 run/admission/scenario。
-    async function collectReports(subject) {
-      const head = sanitizeReportBaseName(`${subject.channel}_${subject.model}`);
-      const prefix = `${head}_`;
-      const metas = [];
-      for (const name of names) {
-        if (!name.startsWith(prefix)) continue;
-        const base = name.replace(/\.md$/i, "");
-        const type = parseReportBaseName(base).type;
-        if (type !== "run" && type !== "admission" && type !== "scenario") continue;
-        try {
-          const st = await stat(join(REPORTS_DIR, name));
-          metas.push({ base, type, mtimeMs: st.mtimeMs });
-        } catch {
-          /* 读不到 → 跳过 */
-        }
-      }
-      metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
-      // 限流：稳定性/准入各取最近几份，场景最多取最近 60 份读盘（pickRecentReports 再按场景名去重取最新）。
-      const chosen = [
-        ...metas.filter((m) => m.type !== "scenario").slice(0, 6),
-        ...metas.filter((m) => m.type === "scenario").slice(0, 60),
-      ];
-      const files = [];
-      for (const m of chosen) {
-        try {
-          files.push({ name: m.base, md: await readFile(join(REPORTS_DIR, `${m.base}.md`), "utf8"), mtimeMs: m.mtimeMs });
-        } catch {
-          /* 读失败 → 跳过 */
-        }
-      }
-      return files;
-    }
-    const [filesA, filesB] = await Promise.all([collectReports(A), collectReports(B)]);
-    if (!filesA.length || !filesB.length) {
-      const missing = [!filesA.length ? `${A.channel} / ${A.model}` : null, !filesB.length ? `${B.channel} / ${B.model}` : null].filter(Boolean);
-      sendJson(res, 400, { error: "no_reports", userMessage: `以下模型暂无可用于对比的报告：${missing.join("、")}。请先为其跑一次准入 / 稳定性 / 场景测试。` });
+    const prep = await loadBalancedCompareFiles(A, B);
+    if (prep.error) {
+      sendJson(res, 400, { error: prep.error, userMessage: prep.userMessage });
       return;
     }
-    const aggA = aggregateSubject({ files: pickRecentReports(filesA), label: `${A.channel} / ${A.model}` });
-    const aggB = aggregateSubject({ files: pickRecentReports(filesB), label: `${B.channel} / ${B.model}` });
+    const { balA, balB } = prep;
+    // 用户自选场景：body.scenarios 为场景名数组时，只保留勾选的场景（行级过滤，稳定性/准入不受影响）。
+    // 不传该字段 → 沿用全部共有场景（向后兼容）。
+    const scenarioFilter = Array.isArray(body?.scenarios) ? new Set(body.scenarios.map((s) => String(s))) : undefined;
+    // 可选：用户为本次报告给两个对象取的显示名；留空则回退「渠道 / 模型」。
+    const labelOf = (name, subj) => (typeof name === "string" && name.trim() ? name.trim().slice(0, 40) : `${subj.channel} / ${subj.model}`);
+    const aggA = aggregateSubject({ files: balA, label: labelOf(body?.aName, A), scenarioFilter });
+    const aggB = aggregateSubject({ files: balB, label: labelOf(body?.bName, B), scenarioFilter });
     const cmp = buildComparison(aggA, aggB);
 
     // 可选 AI 叙述：复用「设置」里指定的 AI 总结模型；未配置/失败则优雅跳过（记 note）。
@@ -1167,7 +1225,7 @@ async function handleApi(req, res) {
       }
     }
 
-    const markdown = formatCompareReportMarkdown(cmp, { aiNarrative });
+    const markdown = formatCompareReportMarkdown(cmp, { aiNarrative, balancedToCommon: true });
     const stamp = compactDate(new Date()).replace("-", "_");
     const slug = (s) => sanitizeReportBaseName(`${s.channel}_${s.model}`);
     const baseName = `${slug(A)}_vs_${slug(B)}_compare_${stamp}_${randomUUID().slice(0, 4)}`;
@@ -1211,10 +1269,55 @@ async function handleApi(req, res) {
     }
     const history = await queryProfileRunSummaries(profileId, { limit: 200 });
     const series = buildTrendSeries(history);
+    // 稳定性类点：非场景、且有成功率（现有语义，行为不变）。
+    const stabilityRateByRun = new Map(
+      series.filter((p) => p.runId && p.type !== "scenario" && p.successRate !== null).map((p) => [p.runId, p.successRate]),
+    );
+    // 基础场景运行 → 其「基础」组 case id 集合（用于把逐轮明细过滤到基础组）。
+    const basicIdsByRun = collectBasicScenarioCaseIds(history);
+    // 一次查询取回两类运行的逐轮明细（含 caseId）。
+    const allRunIds = [...new Set([...stabilityRateByRun.keys(), ...basicIdsByRun.keys()])];
+    const rawRounds = allRunIds.length ? await queryRoundSeriesByRunIds(allRunIds) : [];
+    // 基础场景轮次：按 case 过滤到「基础」组并分运行归拢，现算基础成功率/P95 回填 series 点
+    //（→ 场景运行在「历次测试」表显示基础成功率、并按 type=scenario 自成回归基线）。
+    const basicRoundsByRun = new Map();
+    for (const r of rawRounds) {
+      const ids = basicIdsByRun.get(r.runId);
+      if (ids && r.caseId && ids.has(r.caseId)) {
+        if (!basicRoundsByRun.has(r.runId)) basicRoundsByRun.set(r.runId, []);
+        basicRoundsByRun.get(r.runId).push(r);
+      }
+    }
+    const basicRateByRun = new Map();
+    for (const [runId, rs] of basicRoundsByRun) {
+      const { successRate, p95Ms } = summarizeRoundStats(rs);
+      basicRateByRun.set(runId, successRate);
+      const pt = series.find((p) => p.runId === runId);
+      if (pt) {
+        pt.successRate = successRate;
+        pt.p95Ms = p95Ms;
+      }
+    }
+    // 回归判定：此刻 series 里的基础场景点已带 successRate（按 type 分组自成基线，不碰稳定性）。
     const latest = series[series.length - 1] || null;
     const regression = latest ? detectRegression({ current: latest, history: series }) : null;
     const alerts = await queryRegressionAlerts({ profileId, limit: 50 });
-    sendJson(res, 200, { profileId, series, regression, alerts });
+    // 图表逐轮数据：稳定性运行（全轮）+ 基础场景运行（仅基础轮），融合显示、按时间排序。
+    // 每轮附上其所属运行的成功率（rate 曲线在「按次数」模式呈逐运行阶梯）。
+    const rounds = [];
+    for (const r of rawRounds) {
+      if (!r.startedAt) continue;
+      const base = { at: r.startedAt, ms: r.totalMs, ok: r.success, err: r.normalizedError || "" };
+      if (basicIdsByRun.has(r.runId)) {
+        const ids = basicIdsByRun.get(r.runId);
+        if (!(r.caseId && ids.has(r.caseId))) continue; // 丢弃非基础组的场景轮次
+        rounds.push({ ...base, runRate: basicRateByRun.get(r.runId) ?? null });
+      } else if (stabilityRateByRun.has(r.runId)) {
+        rounds.push({ ...base, runRate: stabilityRateByRun.get(r.runId) ?? null });
+      }
+    }
+    rounds.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    sendJson(res, 200, { profileId, series, regression, alerts, rounds });
     return;
   }
 

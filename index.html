@@ -31,6 +31,7 @@
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
           <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
           <button class="nav-button" type="button" data-page="auto-test-config" data-requires-admin>自动测试配置</button>
+          <button class="nav-button" type="button" data-page="load-test" data-requires-admin>压力测试</button>
           <button class="nav-button" type="button" data-page="model-compare">模型比对</button>
         </div>
         <div class="nav-group">
@@ -888,7 +889,30 @@
               <select id="trend-profile-select" disabled></select>
             </label>
             <div id="trend-regression" class="next-step-panel hidden"></div>
-            <h3>成功率趋势</h3>
+            <div class="trend-chart-head">
+              <h3>成功率 / 耗时趋势</h3>
+              <div class="trend-controls">
+                <label class="trend-xmode">
+                  横轴
+                  <select id="trend-xmode">
+                    <option value="count">按测试次数（每轮 1 点）</option>
+                    <option value="hour">按时间 · 小时</option>
+                  </select>
+                </label>
+                <label class="trend-xmode hidden" id="trend-window-field">
+                  时间范围
+                  <select id="trend-window">
+                    <option value="0">全部</option>
+                    <option value="3">最近 3 小时</option>
+                    <option value="6">最近 6 小时</option>
+                    <option value="12">最近 12 小时</option>
+                    <option value="24">最近 24 小时</option>
+                    <option value="48">最近 48 小时</option>
+                    <option value="168">最近一周</option>
+                  </select>
+                </label>
+              </div>
+            </div>
             <div id="trend-chart" class="trend-chart">选择测试目标后显示历次测试曲线。</div>
             <h3>历次测试</h3>
             <div id="trend-table" class="result-box">—</div>
@@ -1323,6 +1347,140 @@
           </form>
         </section>
 
+        <section class="page" id="load-test" data-requires-admin hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 压测</span>压力测试</h2>
+              <p class="section-desc">以持续并发向目标模型/上游中转施加恒定负载，测吞吐(QPS)、延迟分位(p50–p99)、成功率与错误构成。用于判断上游能否支撑规模化团队使用。</p>
+            </div>
+          </div>
+
+          <div class="panel" style="border-left: 3px solid #f06d7d;">
+            <strong>开始前请注意</strong>
+            <p class="field-hint">压测会发出大量<strong>真实请求、产生真实计费</strong>；建议先用廉价模型验证链路，再压目标模型。请在<strong>本机等有余量的机器</strong>上跑，<strong>不要在对外服务的生产机</strong>上压测。压测与其它测试<strong>共用同一进程</strong>，其高并发会拉高同时在跑任务的延迟（反之亦然）：请<strong>在压测期间不要并行发起其它测试</strong>，以免两边结果互相污染、都不可信。</p>
+          </div>
+
+          <form id="load-test-form" class="panel form-grid">
+            <label>
+              被测渠道
+              <select id="load-test-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="load-test-profile-select" disabled></select>
+            </label>
+            <label>
+              负载档
+              <select name="promptProfile">
+                <option value="simple" selected>简单：一句话连通（max_tokens 64）</option>
+                <option value="think">轻思考：小推理题（max_tokens 256）</option>
+                <option value="coding">编程：代码排错（max_tokens 800）</option>
+              </select>
+            </label>
+            <label>
+              工作负载模型
+              <select name="mode" id="load-test-mode">
+                <option value="closed" selected>闭环：固定并发（稳定性/持续吞吐）</option>
+                <option value="open">开环：固定速率 req/s（找容量上限/断点，推荐）</option>
+              </select>
+            </label>
+            <label class="wide">
+              <span id="load-test-load-label">负载值（并发数）</span>
+              <input type="text" name="loads" id="load-test-loads" value="30" />
+              <small class="field-hint">单点填一个数；<strong>扫描找拐点</strong>填多个逗号分隔（如 <code>10,30,50,100</code>），会依次跑并画「负载→吞吐/尾延迟」曲线、自动定位饱和拐点。闭环填并发数，开环填速率 req/s。</small>
+            </label>
+            <label id="load-test-maxinflight-field" class="hidden">
+              开环在飞上限
+              <select name="maxInFlight">
+                <option value="100">100</option>
+                <option value="300" selected>300</option>
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+              </select>
+              <small class="field-hint">开环下同时在飞的请求上限（≈速率×延迟）。打满即记「发生器受限」，是客户端侧饱和信号。</small>
+            </label>
+            <label id="load-test-burst-field" class="hidden">
+              发送周期（秒）
+              <select name="burstPeriodSec">
+                <option value="1" selected>1：每秒连续发送</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+                <option value="8">8</option>
+                <option value="10">10</option>
+              </select>
+              <small class="field-hint">开环下每隔几秒才发送一次；发送的那 1 秒内仍按速率匀速发满（模拟周期性突发流量）。选 1＝一直连续发。</small>
+            </label>
+            <label id="load-test-interval-field">
+              测试间隔（思考时间，秒）
+              <select name="intervalSec">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3" selected>3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+                <option value="7">7</option>
+                <option value="8">8</option>
+                <option value="9">9</option>
+                <option value="10">10</option>
+              </select>
+              <small class="field-hint">闭环下每个并发「用户」收到响应后停顿几秒再发下一条，模拟真实使用节奏。间隔越大，实际 QPS 越低、越贴近真人。</small>
+            </label>
+            <label>
+              稳态时长（秒）
+              <select name="durationSec">
+                <option value="10">10：先看手感</option>
+                <option value="30">30</option>
+                <option value="60" selected>60：常规单轮</option>
+                <option value="120">120：更稳的 p99</option>
+              </select>
+            </label>
+            <label>
+              ramp-up（秒）
+              <select name="warmupSec">
+                <option value="0">0：不预热</option>
+                <option value="5" selected>5：错开启动</option>
+                <option value="10">10</option>
+              </select>
+            </label>
+            <label>
+              每请求超时（秒）
+              <select name="timeoutSec">
+                <option value="30" selected>30</option>
+                <option value="60">60</option>
+                <option value="90">90</option>
+                <option value="120">120：长输出/慢上游</option>
+              </select>
+            </label>
+            <button id="load-test-submit" class="primary wide" type="submit">开始压力测试</button>
+          </form>
+
+          <div class="panel">
+            <h3>执行前预估</h3>
+            <div id="load-test-estimate" class="estimate-box">选择参数后会显示这一轮大概会发出多少请求。</div>
+            <div id="load-test-progress" class="progress-panel hidden">
+              <div class="progress-bar"><span></span></div>
+              <p class="muted">等待任务开始。</p>
+              <button id="cancel-load-test-task" class="secondary" type="button">取消当前任务</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>压测结果</h3>
+            <div id="load-test-summary" class="summary-grid">
+              <p class="muted">等待测试。</p>
+            </div>
+          </div>
+
+          <details class="helper-details">
+            <summary>查看压测摘要和报告位置</summary>
+            <pre id="load-test-report" class="result-box report-box">测试完成后会在这里显示摘要和本地报告文件路径。</pre>
+          </details>
+        </section>
+
         <section class="page" id="model-compare" hidden>
           <div class="section-header">
             <div>
@@ -1340,12 +1498,21 @@
               所用模型（对象 A · 基准）
               <select id="mc-a-channel"></select>
               <select id="mc-a-model" disabled></select>
+              <input type="text" id="mc-a-name" maxlength="40" placeholder="本次报告显示名（可选，默认 渠道 / 模型）" />
             </label>
             <label class="wide">
               要对比的模型（对象 B）
               <select id="mc-b-channel"></select>
               <select id="mc-b-model" disabled></select>
+              <input type="text" id="mc-b-name" maxlength="40" placeholder="本次报告显示名（可选，默认 渠道 / 模型）" />
             </label>
+            <div class="wide" id="mc-scenario-section">
+              <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px">
+                <button type="button" id="mc-load-scenarios" class="secondary">加载可选场景</button>
+                <span class="field-hint" id="mc-scenario-hint">选好两个模型后，加载两方<strong>共有</strong>的场景，勾选要纳入对比的场景（默认全选）。不加载则用全部共有场景。</span>
+              </div>
+              <div id="mc-scenarios" class="mc-scenarios hidden"></div>
+            </div>
             <label class="wide checkbox-option">
               <input type="checkbox" id="mc-ai" />
               <span>

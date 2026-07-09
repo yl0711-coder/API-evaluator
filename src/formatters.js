@@ -42,6 +42,7 @@ export function formatTaskType(type) {
     "batch-admission": "批量准入评测",
     "batch-stability": "批量稳定性测试",
     scenario: "场景测试",
+    "load-test": "压力测试",
   }[type] || type || "-";
 }
 

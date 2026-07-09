@@ -290,6 +290,20 @@ export function normalizeHttpError(status, raw) {
   return "invalid_response";
 }
 
+// 部分 OpenAI 系模型（推理模型 o 系、GPT-5 系）不再接受自定义 temperature，只允许默认值，
+// 收到 temperature≠默认会返回 400（如 "Unsupported value: 'temperature' does not support 0.2 ...
+// Only the default (1) value is supported."）。识别这类错误，以便去掉 temperature 后重试。
+export function isTemperatureUnsupportedError(raw) {
+  const text = String(raw || "").toLowerCase();
+  if (!text.includes("temperature")) return false;
+  return (
+    text.includes("unsupported") || // Unsupported value/parameter: 'temperature'
+    text.includes("does not support") || // does not support 0.2 with this model
+    text.includes("only the default") || // Only the default (1) value is supported
+    text.includes("not supported") // 'temperature' is not supported with this model
+  );
+}
+
 export function normalizeEmptyResponse(raw) {
   const text = String(raw || "").toLowerCase();
   if (text.includes("content block not found")) return "content_block_not_found";

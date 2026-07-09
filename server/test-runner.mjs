@@ -34,6 +34,7 @@ import {
   extractOutputText,
   extractToolCall,
   extractUsage,
+  isTemperatureUnsupportedError,
   normalizeEmptyResponse,
   normalizeHttpError,
   summarizeStreamStructure,
@@ -89,14 +90,15 @@ async function attachRunArtifacts(runId, summary, artifacts = {}) {
 }
 
 // 报告命名：渠道_模型；取不到渠道/模型则返回空串（→ 多目标）。profile.name = "渠道 / 模型"。
-function reportTargetSlug(profile) {
+// 导出：压测模块（load-test.mjs）复用同一套报告命名，避免重复实现。
+export function reportTargetSlug(profile) {
   const channel = String(profile?.name || "").split(" / ")[0].trim();
   const model = String(profile?.defaultModel || profile?.model || "").trim();
   if (!channel) return model;
   return model ? `${channel}_${model}` : channel;
 }
 // 报告 id：渠道_模型_测试_YYYYMMDD_HHMMSS_短哈希；headSlug 为空（多目标）时用「多目标」。
-function buildReportId(type, headSlug) {
+export function buildReportId(type, headSlug) {
   const stamp = compactDate(new Date()).replace("-", "_"); // YYYYMMDD_HHMMSS
   const hash = crypto.randomUUID().slice(0, 4);
   const head = (headSlug || "").trim() || "多目标";
@@ -200,6 +202,10 @@ export async function runQuickVerify(body, taskContext = {}) {
 
   const verdict = buildQuickVerifyVerdict({ records, identityCheck, fingerprintSummary, absoluteTokenAudit, fingerprintTracking });
 
+  // 成功率 + 延迟：让快检也进「稳定性趋势」与基线回归（可用性/耗时退化都能被看见、被告警）。
+  const successCount = records.filter((r) => r.success).length;
+  const okTotalTimes = records.filter((r) => r.success).map((r) => r.totalMs).filter(Number.isFinite);
+
   const summary = {
     runId,
     type: "quick-verify",
@@ -212,7 +218,10 @@ export async function runQuickVerify(body, taskContext = {}) {
     endedAt: endedAt.toISOString(),
     durationMs: endedAt.getTime() - startedAt.getTime(),
     requestCount: records.length,
-    successCount: records.filter((r) => r.success).length,
+    successCount,
+    successRate: records.length ? successCount / records.length : null,
+    avgTotalMs: Math.round(mean(okTotalTimes) || 0),
+    p95TotalMs: percentile(okTotalTimes, 0.95),
     verdict,
     identityCheck,
     fingerprintSummary,
@@ -1447,6 +1456,9 @@ export function linkExternalAbort(controller, signal) {
 const RETRY_MAX_ATTEMPTS = 3; // 含首次：最多 1 + 2 次重试
 const RETRY_BASE_DELAY_MS = 600; // 指数退避基数
 const RETRY_MAX_DELAY_MS = 20000; // 单次退避上限（同时钳制 Retry-After，避免被上游要求长睡）
+// 本进程内记住哪些模型（baseUrl|model）拒绝自定义 temperature，后续同模型请求首发就不带，
+// 省掉那次注定 400 的往返。仅内存态：模型不会中途改变是否支持，重启后从头学习即可。
+const TEMPERATURE_UNSUPPORTED_MODELS = new Set();
 
 // Retry-After（秒数或 HTTP 日期）→ 毫秒。无法解析 → null。
 function parseRetryAfter(value) {
@@ -1490,6 +1502,7 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
     firstTokenMs: null,
     totalMs: null,
     statusCode: null,
+    statusText: "", // HTTP reason phrase（原因短语）；HTTP/1.1 可自定义，HTTP/2 无、为空
     responseText: "",
     usage: null,
     finishReason: null,
@@ -1509,6 +1522,7 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       firstTokenMs: r.firstTokenMs,
       totalMs: r.totalMs,
       statusCode: r.statusCode,
+      statusText: r.statusText,
       responseText: r.responseText,
       usage: r.usage,
       finishReason: r.finishReason,
@@ -1537,6 +1551,11 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
     r.normalizedError = "network_error";
     return finalize();
   }
+  // 已知拒绝自定义 temperature 的模型（本进程内曾被 400 过）：首发就不带，省掉那次注定失败的往返。
+  const tempKey = `${profile.baseUrl}|${profile.defaultModel}`;
+  if (request.body?.temperature !== undefined && TEMPERATURE_UNSUPPORTED_MODELS.has(tempKey)) {
+    delete request.body.temperature;
+  }
 
   for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
     attempts = attempt;
@@ -1548,6 +1567,7 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
     r.firstByteMs = null;
     r.firstTokenMs = null;
     r.statusCode = null;
+    r.statusText = "";
     r.responseText = "";
     r.usage = null;
     r.finishReason = null;
@@ -1568,6 +1588,8 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       });
       r.firstByteMs = Math.round(performance.now() - started);
       r.statusCode = response.status;
+      // 原因短语：直接取上游实际返回的 statusText（HTTP/1.1 可被上游自定义），不套用标准短语。
+      r.statusText = typeof response.statusText === "string" ? response.statusText : "";
       const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
       r.totalMs = Math.round(performance.now() - started);
       // 真 TTFT：首个流式分片到达时刻（≈首 token）。仅流式可测；非流式 JSON 整体返回、
@@ -1587,13 +1609,28 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
         if (response.status === 429 || response.status >= 500) {
           retryable = true; // 限流 / 上游 5xx：可重试
           retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
+        } else if (
+          response.status === 400 &&
+          request.body?.temperature !== undefined &&
+          isTemperatureUnsupportedError(raw)
+        ) {
+          // 部分 OpenAI 系模型（o 系 / GPT-5 系）拒绝自定义 temperature：去掉后立即原样重试。
+          // 就地删掉，本次调用后续尝试都不再带 temperature（guard 保证只触发一次，不会死循环）；
+          // 并记住该模型，让后续请求首发就不带。
+          TEMPERATURE_UNSUPPORTED_MODELS.add(tempKey);
+          delete request.body.temperature;
+          retryable = true;
+          retryAfterMs = 0; // 确定性重配，不退避
         }
       } else {
         interpret(r, raw);
       }
     } catch (error) {
       r.totalMs = r.totalMs ?? timeoutMs;
-      r.rawError = error instanceof Error ? error.message : String(error);
+      // undici 的 fetch reject 常是 "fetch failed"，真正的 errno 在 error.cause.code（如 ECONNRESET）。
+      // 附到 rawError，供压测区分网络错误是本机侧还是上游侧。
+      const errno = error?.cause?.code || error?.code || "";
+      r.rawError = [error instanceof Error ? error.message : String(error), errno].filter(Boolean).join(" ");
       if (/abort|timeout|timed out/i.test(r.rawError)) {
         r.normalizedError = "timeout"; // 超时或用户取消：止损，不重试
       } else {
@@ -1605,7 +1642,9 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       unlinkAbort();
     }
 
-    if (!retryable || attempt >= RETRY_MAX_ATTEMPTS) break;
+    // options.noRetry：压测模式下每请求只测一次——重试会吞掉 429/5xx（正是要测的限流/不稳信号）、
+    // 并把退避 sleep 混进延迟，污染 QPS / 尾延迟 / 错误分类。见 server/load-test.mjs。
+    if (!retryable || options.noRetry || attempt >= RETRY_MAX_ATTEMPTS) break;
     const backoffMs =
       retryAfterMs != null
         ? Math.min(retryAfterMs, RETRY_MAX_DELAY_MS)
@@ -1811,6 +1850,7 @@ async function finalizeTestRecord({
   firstTokenMs = null,
   totalMs,
   statusCode,
+  statusText = "",
   responseText,
   usage,
   finishReason = null,
@@ -1839,6 +1879,7 @@ async function finalizeTestRecord({
     firstTokenMs,
     totalMs,
     statusCode,
+    statusText, // 上游返回的原因短语（reason phrase），供压测报告逐码展示
     success: successOverride ?? Boolean(statusCode && statusCode >= 200 && statusCode < 300 && responseText),
     attempts,
     normalizedError,

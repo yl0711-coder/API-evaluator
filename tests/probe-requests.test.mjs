@@ -75,6 +75,54 @@ test("executeTestRequest：5xx → success=false，normalizedError=upstream_5xx"
   );
 });
 
+test("executeTestRequest：模型拒绝自定义 temperature（400）→ 去掉后重试成功，且同模型后续首发即不带", async () => {
+  // 模拟 OpenAI 推理 / GPT-5 系模型：带 temperature 一律 400，去掉后正常返回。
+  let temperatureRejections = 0; // 携带 temperature 被拒的次数
+  await withMockUpstream(
+    (req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        let json = null;
+        try {
+          json = JSON.parse(body);
+        } catch {
+          json = null;
+        }
+        const hasTemperature = json && Object.prototype.hasOwnProperty.call(json, "temperature");
+        if (hasTemperature) {
+          temperatureRejections += 1;
+          sendJson(res, 400, {
+            error: {
+              message: "Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported.",
+              param: "temperature",
+              code: "unsupported_value",
+            },
+          });
+        } else {
+          sendJson(res, 200, { choices: [{ message: { content: "工作正常。" } }], usage: { prompt_tokens: 4, completion_tokens: 2 } });
+        }
+      });
+    },
+    async (baseUrl) => {
+      // 用固定 model/baseUrl 保证两次调用命中同一 memo key。
+      const profile = await probeProfile(baseUrl, { defaultModel: "gpt-5-temp-test" });
+      const first = await executeTestRequest(profile, "hi", { writeLog: false });
+      assert.equal(first.success, true, "去掉 temperature 后应重试成功");
+      assert.equal(first.responseText, "工作正常。");
+      assert.equal(first.statusCode, 200);
+      assert.ok(first.attempts >= 2, "首次应经历一次去 temperature 的重试");
+      assert.equal(temperatureRejections, 1, "只应有一次携带 temperature 被拒");
+
+      // 第二次同模型：memo 生效，首发即不带 temperature，无额外拒绝、单次成功。
+      const second = await executeTestRequest(profile, "hi", { writeLog: false });
+      assert.equal(second.success, true);
+      assert.equal(second.attempts, 1, "同模型后续应首发成功、不再多一次往返");
+      assert.equal(temperatureRejections, 1, "后续请求不应再携带 temperature 被拒");
+    },
+  );
+});
+
 test("executeTestRequest：2xx 但空回复 → success=false（空回复归一）", async () => {
   await withMockUpstream(
     (req, res) => sendJson(res, 200, { choices: [{ message: { content: "" } }] }),
