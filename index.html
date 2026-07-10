@@ -50,7 +50,6 @@
 
       <main class="main">
         <div id="high-risk-banner" class="high-risk-banner hidden" role="alert"></div>
-        <div id="edition-banner" class="edition-banner hidden"></div>
 
         <div id="demo-mode-banner" class="demo-banner hidden">
           <div>
@@ -58,11 +57,6 @@
             <span>这些数据只用于熟悉界面，不会发起真实请求，也不会写入本机配置。</span>
           </div>
           <button id="exit-demo-mode" class="secondary" type="button">退出演示模式</button>
-        </div>
-
-        <div id="page-help" class="page-help">
-          <button id="toggle-page-help" class="secondary help-toggle" type="button">这个页面怎么用？</button>
-          <div id="page-help-content" class="page-help-content hidden"></div>
         </div>
 
         <section class="page active" id="dashboard">
@@ -708,11 +702,6 @@
           </div>
 
           <details class="helper-details">
-            <summary>查看测试摘要和报告位置</summary>
-            <pre id="stability-report" class="result-box report-box">测试完成后会在这里显示摘要和本地报告文件路径。</pre>
-          </details>
-
-          <details class="helper-details">
             <summary>批量并发测试</summary>
             <p class="field-hint">用于多个模型或渠道横向对比。建议先选 2-3 个 API 小轮数筛查。</p>
             <form id="batch-test-form" class="form-grid">
@@ -865,16 +854,12 @@
             </div>
           </div>
 
-          <details class="helper-details">
-            <summary>查看场景测试摘要和报告位置</summary>
-            <pre id="scenario-test-result" class="result-box report-box">等待测试。</pre>
-          </details>
         </section>
 
         <section class="page" id="trend">
           <div class="section-header">
             <div>
-              <h2><span class="step">高级 · 趋势</span>稳定性趋势与基线回归</h2>
+              <h2><span class="step">运营 · 趋势</span>稳定性趋势与基线回归</h2>
               <p class="section-desc">同一供应商 / 同一渠道的历次测试随时间的变化。掉级会与历史基线对比并告警，方便观察稳定性。</p>
             </div>
           </div>
@@ -924,7 +909,7 @@
         <section class="page" id="reports">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 5 步 · 报告中心</span>所有结论、排行与日志</h2>
+              <h2><span class="step">结论 · 报告中心</span>所有结论、排行与日志</h2>
               <p class="section-desc">先看报告结论卡片，再看排行榜和记录。给负责人汇报时优先用交付模板。</p>
             </div>
             <div class="action-row">
@@ -1051,7 +1036,7 @@
         <section class="page" id="handoff">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 6 步 · 测试交付</span>测试交付模板</h2>
+              <h2><span class="step">汇报 · 测试交付</span>测试交付模板</h2>
             </div>
             <button id="copy-handoff-template" class="secondary" type="button">复制交付模板</button>
           </div>
@@ -1116,10 +1101,16 @@
             </div>
           </div>
 
-          <div class="panel manual-panel">
-            <div id="manual-content" class="manual-content">
-              <p class="muted">正在加载使用手册...</p>
+          <div class="panel manual-panel doc-layout">
+            <div class="doc-body">
+              <div id="manual-content" class="manual-content">
+                <p class="muted">正在加载使用手册...</p>
+              </div>
             </div>
+            <aside class="doc-toc">
+              <strong>本页目录</strong>
+              <nav id="manual-toc"></nav>
+            </aside>
           </div>
         </section>
 
@@ -1345,6 +1336,22 @@
               <button type="button" id="atc-reset" class="secondary">清空表单</button>
             </div>
           </form>
+
+          <div class="panel">
+            <div class="action-row atc-list-head">
+              <h3>巡检报告</h3>
+            </div>
+            <p class="section-desc">跨全部自动测试作业出一份周期性汇总巡检报告，对单个模型出报告见上方测试卡片。</p>
+            <div id="atc-digest-result"></div>
+            <div class="action-row" style="justify-content:flex-end;flex-wrap:wrap;gap:10px;align-items:center">
+              <select id="atc-digest-window">
+                <option value="24">最近 24 小时</option>
+                <option value="168" selected>最近 7 天</option>
+                <option value="720">最近 30 天</option>
+              </select>
+              <button type="button" id="atc-digest-generate" class="primary">生成全部巡检报告</button>
+            </div>
+          </div>
         </section>
 
         <section class="page" id="load-test" data-requires-admin hidden>
@@ -1475,10 +1482,6 @@
             </div>
           </div>
 
-          <details class="helper-details">
-            <summary>查看压测摘要和报告位置</summary>
-            <pre id="load-test-report" class="result-box report-box">测试完成后会在这里显示摘要和本地报告文件路径。</pre>
-          </details>
         </section>
 
         <section class="page" id="model-compare" hidden>
@@ -1507,7 +1510,7 @@
               <input type="text" id="mc-b-name" maxlength="40" placeholder="本次报告显示名（可选，默认 渠道 / 模型）" />
             </label>
             <div class="wide" id="mc-scenario-section">
-              <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px">
+              <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
                 <button type="button" id="mc-load-scenarios" class="secondary">加载可选场景</button>
                 <span class="field-hint" id="mc-scenario-hint">选好两个模型后，加载两方<strong>共有</strong>的场景，勾选要纳入对比的场景（默认全选）。不加载则用全部共有场景。</span>
               </div>

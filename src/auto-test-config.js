@@ -2,12 +2,13 @@
 // 「自动测试配置」：为某渠道的某模型配置定时自动测试作业（种类 + 周期），
 // 到点由后端调度器自动跑一次并产出报告。表单沿用「高级测试」各页的 .panel.form-grid 观感（两列网格 + .wide 跨行 + .checkbox-option）。
 // 渠道→模型用共享级联选择器；场景题用简单勾选列表。CRUD 走 /api/auto-test-jobs（登录即可用，普通管理员 role 10 也可）。
-import { escapeHtml, toast } from "./client-utils.js";
+import { escapeHtml, toast, downloadText } from "./client-utils.js";
 import { api } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
 import { renderPromptPresetOptions, getPromptPreset } from "./prompt-presets.js";
+import { openReportOverlay } from "./report-overlay.js";
 
 const KIND_LABEL = {
   quick: "快速测试",
@@ -46,6 +47,9 @@ export function createAutoTestConfig({ state, confirm }) {
   const resetBtn = requireElement("#atc-reset");
   const reloadBtn = requireElement("#atc-reload");
   const listBox = requireElement("#atc-job-list");
+  const digestWindow = requireElement("#atc-digest-window");
+  const digestGenerate = requireElement("#atc-digest-generate");
+  const digestResult = requireElement("#atc-digest-result");
 
   const cascade = createCascadeTargetPicker(channelSelect, modelSelect);
   // 场景多选：复用「场景测试」页的同款选择器（勾选列表 + 分组筛选 + 全选/清空 + chips），
@@ -218,6 +222,48 @@ export function createAutoTestConfig({ state, confirm }) {
     }
   }
 
+  // 巡检报告：不传 profileId → 跨全部作业的汇总；传 profileId → 单个模型单独出报告。
+  // trigger 为触发按钮（作业卡片的「出报告」传自己，好显示「生成中…」并禁用）。
+  async function generateDigest({ profileId = null, trigger = null } = {}) {
+    const windowHours = Number(digestWindow.value) || 168;
+    const btn = trigger || digestGenerate;
+    const prevLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "生成中…";
+    try {
+      const r = await api("/api/reports/auto-test-digest", {
+        method: "POST",
+        body: JSON.stringify({ windowHours, ...(profileId ? { profileId } : {}) }),
+      });
+      renderDigestResult(r);
+      openReportOverlay(r.reportId, { title: "自动测试巡检报告" });
+      toast("巡检报告已生成。");
+    } catch (error) {
+      toast(`生成失败：${error.message}`, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prevLabel;
+    }
+  }
+
+  function renderDigestResult({ reportId, markdown, summary, profileId }) {
+    const s = summary || {};
+    digestResult.innerHTML = `
+      <div class="panel" style="margin-top:12px">
+        <div class="action-row" style="justify-content:flex-start">
+          <button type="button" class="secondary" data-atd-view>查看报告</button>
+          <button type="button" class="secondary" data-atd-download>下载 Markdown</button>
+        </div>
+        <p class="field-hint" style="margin-top:10px">
+          ${profileId ? "单模型报告：" : "汇总报告："}覆盖作业 ${s.jobs ?? 0} 个 · 模型 ${s.targets ?? 0} 个 · 回归告警 ${s.regressions ?? 0} 条 · 高危 ${s.highRisk ?? 0} 条。
+        </p>
+      </div>`;
+    digestResult.querySelector("[data-atd-view]").addEventListener("click", () => openReportOverlay(reportId, { title: "自动测试巡检报告" }));
+    digestResult.querySelector("[data-atd-download]").addEventListener("click", () => downloadText(`${reportId}.md`, markdown));
+  }
+
+  digestGenerate.addEventListener("click", () => generateDigest());
+
   function jobCard(job) {
     const card = document.createElement("div");
     card.className = "atc-job-card";
@@ -252,6 +298,7 @@ export function createAutoTestConfig({ state, confirm }) {
     };
     actions.append(
       mkBtn("立即运行", "secondary", () => runNow(job)),
+      mkBtn("出报告", "secondary", (event) => generateDigest({ profileId: job.targetId, trigger: event.currentTarget })),
       mkBtn(job.enabled ? "停用" : "启用", "secondary", () => toggleEnabled(job)),
       mkBtn("编辑", "secondary", () => editJob(job)),
       mkBtn("删除", "danger", () => deleteJob(job)),

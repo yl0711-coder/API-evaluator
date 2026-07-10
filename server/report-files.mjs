@@ -83,6 +83,7 @@ export function inferReportType(baseName) {
   const parts = name.split("_");
   const dateIdx = parts.findIndex((p) => /^\d{8}$/.test(p));
   const probe = dateIdx > 0 ? parts[dateIdx - 1] : name;
+  if (probe.includes("digest")) return "auto-digest"; // 自动测试巡检报告（autodigest_…）
   if (probe.includes("compare")) return "compare"; // 模型对比报告
   if (probe.includes("load")) return "load-test"; // 压力测试报告（buildReportId("load", ...)）
   if (probe.includes("scenario")) return "scenario";

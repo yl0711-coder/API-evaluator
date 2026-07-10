@@ -29,6 +29,7 @@ function renderMarkdownForReport(markdown) {
   const lines = String(markdown || "").split(/\r?\n/);
   const html = [];
   let inCode = false;
+  let inRawSvg = false; // ```chart-svg 围栏内：内容原样输出（可信 SVG，由本平台 renderTrendChart 生成）
   let table = [];
   const flushTable = () => {
     if (!table.length) return;
@@ -36,8 +37,22 @@ function renderMarkdownForReport(markdown) {
     table = [];
   };
   for (const line of lines) {
+    // 可信 SVG 穿透：图表由数字生成、内部文本已转义，安全内联；不走 escapeHtmlText 以免 <svg> 被转成字面量。
+    if (inRawSvg) {
+      if (line.startsWith("```")) {
+        inRawSvg = false;
+        continue;
+      }
+      html.push(line);
+      continue;
+    }
     if (line.startsWith("```")) {
       flushTable();
+      const info = line.slice(3).trim().toLowerCase();
+      if (!inCode && (info === "chart-svg" || info === "svg")) {
+        inRawSvg = true;
+        continue;
+      }
       html.push(inCode ? "</code></pre>" : "<pre><code>");
       inCode = !inCode;
       continue;

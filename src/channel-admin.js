@@ -27,18 +27,8 @@ export function createChannelAdmin({ state, els, onChange }) {
       : `<div class="empty-state"><strong>还没有渠道</strong><p>在左侧填 Base URL + Key 添加，或从 new-api 一键导入。</p></div>`;
     els.channelList.querySelectorAll("[data-del-channel]").forEach((b) => b.addEventListener("click", () => deleteChannel(b.dataset.delChannel)));
     els.channelList.querySelectorAll("[data-edit-channel]").forEach((b) => b.addEventListener("click", () => editChannel(b.dataset.editChannel)));
-    els.channelList.querySelectorAll("[data-sync-channel]").forEach((b) => b.addEventListener("click", () => syncChannelModels(b.dataset.syncChannel)));
   }
 
-  async function syncChannelModels(id) {
-    try {
-      const r = await api(`/api/channels/${encodeURIComponent(id)}/sync-models`, { method: "POST", body: "{}" });
-      await Promise.all([loadChannels(), loadModelTargets()]);
-      toast(`已同步该渠道模型：新增 ${r.newTargets} 个。`);
-    } catch (error) {
-      toast(`同步失败：${error.message}`, true);
-    }
-  }
   function channelRow(channel) {
     // 未配置 Key 的渠道无法调用，状态显示「未配置」；配好 Key 后才按 enabled/disabled 显示启用/已禁用。
     const status = !channel.hasKey
@@ -55,8 +45,7 @@ export function createChannelAdmin({ state, els, onChange }) {
           <small>${escapeHtml(protocolLabel(channel.protocol))} · ${models} 个模型 · ${channel.hasKey ? "已存 Key" : "缺 Key"}${source}</small>
         </div>
         ${status}
-        <div class="row-actions${channel.source === "newapi" ? " actions-grid" : ""}">
-          ${channel.source === "newapi" ? `<button class="secondary" data-sync-channel="${channel.id}">同步模型</button>` : ""}
+        <div class="row-actions">
           <button class="secondary" data-edit-channel="${channel.id}">编辑</button>
           <button class="secondary" data-del-channel="${channel.id}">删除</button>
         </div>

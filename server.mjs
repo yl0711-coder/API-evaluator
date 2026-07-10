@@ -39,13 +39,12 @@ import {
   pruneHistory,
   pruneReports,
   queryLastTestedByProfile,
-  queryProfileRunSummaries,
   queryRecentReports,
   queryRegressionAlerts,
-  queryRoundSeriesByRunIds,
   querySpendSummary,
 } from "./server/db.mjs";
-import { buildTrendSeries, collectBasicScenarioCaseIds, detectRegression, summarizeRoundStats } from "./server/regression.mjs";
+import { buildProfileTrend } from "./server/trend-service.mjs";
+import { formatAutoTestDigestReport } from "./server/auto-test-digest.mjs";
 import {
   executeTestRequest,
   normalizeProfileIds,
@@ -57,6 +56,7 @@ import {
   runQuickVerify,
   runScenarioTest,
   runStabilityTest,
+  reportTargetSlug,
 } from "./server/test-runner.mjs";
 import { runLoadTest } from "./server/load-test.mjs";
 import { buildAiAnalysisResult } from "./server/ai-report-analysis.mjs";
@@ -1240,6 +1240,110 @@ async function handleApi(req, res) {
     return;
   }
 
+  // 「自动测试巡检报告」：跨作业的周期性汇总——按时间窗口聚合各自动测试作业的目标模型，
+  // 出调度健康 + 逐模型小结 + 每模型一张稳定性趋势图，落报告中心（登录即用，只读既有数据、不发起测试）。
+  // 传 { profileId } 则只出该单个模型的巡检报告（作业/告警/图均限定到它，报告名带渠道_模型前缀，报告中心可按渠道/模型筛）。
+  if (req.method === "POST" && url.pathname === "/api/reports/auto-test-digest") {
+    const body = await readJson(req);
+    // 时间窗口：24h / 7天(168) / 30天(720)，默认 7 天。
+    const allowedWindows = new Set([24, 168, 720]);
+    const windowHours = allowedWindows.has(Number(body?.windowHours)) ? Number(body.windowHours) : 168;
+    const soloProfileId = typeof body?.profileId === "string" && body.profileId.trim() ? body.profileId.trim() : null;
+    const now = new Date();
+    const windowStart = now.getTime() - windowHours * 3600 * 1000;
+    const withinWindow = (iso) => {
+      const t = Date.parse(iso);
+      return Number.isFinite(t) && t >= windowStart;
+    };
+    const OVERDUE_GRACE_MS = 3600 * 1000; // 逾期宽限 1h，避开正常抖动
+
+    const allJobs = await loadJobs();
+    const profiles = await loadRunnableProfiles();
+    const infoOf = (targetId) => {
+      const p = profiles.find((x) => x.id === targetId);
+      return { label: p?.name || targetId || "-", model: p?.defaultModel || "" };
+    };
+    // 单模型模式：作业与范围都限定到该目标；否则跨全部作业。
+    const jobs = soloProfileId ? allJobs.filter((j) => j.targetId === soloProfileId) : allJobs;
+
+    // 巡检范围：单模型 → 仅该目标；否则＝作业目标集，无作业时回退为「近期测过的模型」。
+    let targetIds;
+    if (soloProfileId) targetIds = [soloProfileId];
+    else {
+      targetIds = [...new Set(allJobs.map((j) => j.targetId).filter(Boolean))];
+      if (!targetIds.length) targetIds = [...new Set(profiles.map((p) => p.id))];
+    }
+
+    const targets = [];
+    for (const pid of targetIds) {
+      const { series, rounds, regression } = await buildProfileTrend(pid, { limit: 200 });
+      const seriesWindow = series.filter((p) => withinWindow(p.at));
+      const roundsWindow = rounds.filter((r) => withinWindow(r.at));
+      const latest = seriesWindow[seriesWindow.length - 1] || null;
+      const prev = seriesWindow.length >= 2 ? seriesWindow[seriesWindow.length - 2] : null;
+      const { label, model } = infoOf(pid);
+      // 回退（无作业）聚合模式下跳过窗口内无运行的模型；单模型模式始终收录（即便为空，给出「无运行」）。
+      if (!soloProfileId && !allJobs.length && !seriesWindow.length) continue;
+      targets.push({
+        profileId: pid,
+        label,
+        model,
+        runsInWindow: seriesWindow.length,
+        latest: latest ? { at: latest.at, grade: latest.grade, successRate: latest.successRate, p95Ms: latest.p95Ms } : null,
+        prev: prev ? { successRate: prev.successRate } : null,
+        regression,
+        rounds: roundsWindow,
+      });
+    }
+    // 每目标窗口内运行数，供作业行展示（运行未按 jobId 归属，按目标近似）。
+    const runsByTarget = new Map(targets.map((t) => [t.profileId, t.runsInWindow]));
+    const jobRows = jobs.map((j) => {
+      const { label, model } = infoOf(j.targetId);
+      const overdue = Boolean(j.enabled) && !j.autoDisabledAt && j.nextRunAt && Date.parse(j.nextRunAt) < now.getTime() - OVERDUE_GRACE_MS;
+      return {
+        name: j.name || label,
+        kind: j.kind,
+        targetLabel: label,
+        targetId: j.targetId,
+        model,
+        enabled: Boolean(j.enabled),
+        periodHours: j.periodHours,
+        lastRunAt: j.lastRunAt,
+        lastStatus: j.lastStatus,
+        lastError: j.lastError,
+        nextRunAt: j.nextRunAt,
+        consecutiveFailures: j.consecutiveFailures || 0,
+        autoDisabled: Boolean(j.autoDisabledAt),
+        overdue,
+        runsInWindow: runsByTarget.get(j.targetId) ?? 0,
+      };
+    });
+    // 告警：单模型模式按渠道名过滤回归告警（告警按 profile_name 记录）。
+    const soloInfo = soloProfileId ? infoOf(soloProfileId) : null;
+    const regressionAlerts = (await queryRegressionAlerts(soloProfileId ? { profileId: soloProfileId, limit: 200 } : { limit: 200 })).filter((a) =>
+      withinWindow(a.created_at),
+    );
+    const highRiskAlerts = soloProfileId ? [] : await listAlerts();
+
+    const scopeLabel = soloProfileId ? `单个模型 · ${soloInfo.label}${soloInfo.model ? " · " + soloInfo.model : ""}` : null;
+    const data = { windowHours, generatedAt: now.toISOString(), jobs: jobRows, targets, regressionAlerts, highRiskAlerts, scopeLabel };
+    const markdown = formatAutoTestDigestReport(data, { now });
+    const stamp = compactDate(now).replace("-", "_"); // YYYYMMDD_HHMMSS
+    // 单模型报告名带 渠道_模型 前缀（供报告中心按渠道/模型筛选）；聚合报告无前缀。
+    const soloProfile = soloProfileId ? profiles.find((p) => p.id === soloProfileId) : null;
+    const soloSlug = soloProfile ? sanitizeReportBaseName(reportTargetSlug(soloProfile)) : "";
+    const baseName = soloSlug ? `${soloSlug}_autodigest_${stamp}_${randomUUID().slice(0, 4)}` : `autodigest_${stamp}_${randomUUID().slice(0, 4)}`;
+    await saveReportFiles(baseName, markdown, scopeLabel ? `自动测试巡检报告 · ${soloInfo.label}` : "自动测试巡检报告");
+    sendJson(res, 200, {
+      reportId: sanitizeReportBaseName(baseName),
+      markdown,
+      windowHours,
+      profileId: soloProfileId,
+      summary: { jobs: jobs.length, targets: targets.length, regressions: regressionAlerts.length, highRisk: highRiskAlerts.length },
+    });
+    return;
+  }
+
   // 在浏览器里查看一份报告 HTML（Docker/远程部署看报告的正路：应用内浮层 iframe 或新标签页打开）。
   // 鉴权同其它 /api/*（已登录即可读）。文件名经 sanitizeReportBaseName 防目录穿越；报告为纯静态
   // HTML+CSS、无脚本，再叠加 nosniff + 禁脚本 CSP，直开标签页也无 XSS 面。
@@ -1267,56 +1371,9 @@ async function handleApi(req, res) {
       sendJson(res, 400, { error: "missing_profile", userMessage: "请提供 profileId。" });
       return;
     }
-    const history = await queryProfileRunSummaries(profileId, { limit: 200 });
-    const series = buildTrendSeries(history);
-    // 稳定性类点：非场景、且有成功率（现有语义，行为不变）。
-    const stabilityRateByRun = new Map(
-      series.filter((p) => p.runId && p.type !== "scenario" && p.successRate !== null).map((p) => [p.runId, p.successRate]),
-    );
-    // 基础场景运行 → 其「基础」组 case id 集合（用于把逐轮明细过滤到基础组）。
-    const basicIdsByRun = collectBasicScenarioCaseIds(history);
-    // 一次查询取回两类运行的逐轮明细（含 caseId）。
-    const allRunIds = [...new Set([...stabilityRateByRun.keys(), ...basicIdsByRun.keys()])];
-    const rawRounds = allRunIds.length ? await queryRoundSeriesByRunIds(allRunIds) : [];
-    // 基础场景轮次：按 case 过滤到「基础」组并分运行归拢，现算基础成功率/P95 回填 series 点
-    //（→ 场景运行在「历次测试」表显示基础成功率、并按 type=scenario 自成回归基线）。
-    const basicRoundsByRun = new Map();
-    for (const r of rawRounds) {
-      const ids = basicIdsByRun.get(r.runId);
-      if (ids && r.caseId && ids.has(r.caseId)) {
-        if (!basicRoundsByRun.has(r.runId)) basicRoundsByRun.set(r.runId, []);
-        basicRoundsByRun.get(r.runId).push(r);
-      }
-    }
-    const basicRateByRun = new Map();
-    for (const [runId, rs] of basicRoundsByRun) {
-      const { successRate, p95Ms } = summarizeRoundStats(rs);
-      basicRateByRun.set(runId, successRate);
-      const pt = series.find((p) => p.runId === runId);
-      if (pt) {
-        pt.successRate = successRate;
-        pt.p95Ms = p95Ms;
-      }
-    }
-    // 回归判定：此刻 series 里的基础场景点已带 successRate（按 type 分组自成基线，不碰稳定性）。
-    const latest = series[series.length - 1] || null;
-    const regression = latest ? detectRegression({ current: latest, history: series }) : null;
+    // series（含「基础」场景成功率回填）+ 基线回归 + 逐轮 rounds（稳定性+基础场景，融合）
+    const { series, regression, rounds } = await buildProfileTrend(profileId, { limit: 200 });
     const alerts = await queryRegressionAlerts({ profileId, limit: 50 });
-    // 图表逐轮数据：稳定性运行（全轮）+ 基础场景运行（仅基础轮），融合显示、按时间排序。
-    // 每轮附上其所属运行的成功率（rate 曲线在「按次数」模式呈逐运行阶梯）。
-    const rounds = [];
-    for (const r of rawRounds) {
-      if (!r.startedAt) continue;
-      const base = { at: r.startedAt, ms: r.totalMs, ok: r.success, err: r.normalizedError || "" };
-      if (basicIdsByRun.has(r.runId)) {
-        const ids = basicIdsByRun.get(r.runId);
-        if (!(r.caseId && ids.has(r.caseId))) continue; // 丢弃非基础组的场景轮次
-        rounds.push({ ...base, runRate: basicRateByRun.get(r.runId) ?? null });
-      } else if (stabilityRateByRun.has(r.runId)) {
-        rounds.push({ ...base, runRate: stabilityRateByRun.get(r.runId) ?? null });
-      }
-    }
-    rounds.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     sendJson(res, 200, { profileId, series, regression, alerts, rounds });
     return;
   }

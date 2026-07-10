@@ -15,6 +15,7 @@ import { parseReportId, matchesReportFilter, computeDateBounds, reportChannelMod
 import { createDeveloper } from "./developer.js";
 import { createAutoTestConfig } from "./auto-test-config.js";
 import { createModelCompare } from "./model-compare.js";
+import { MANUAL_MARKDOWN } from "./manual-content.js";
 import {
   confirmExecution,
   estimateAdmissionBatchCost,
@@ -40,7 +41,6 @@ import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "
 import { buildDemoData } from "./demo-data.js";
 import { requireElement, requireElements } from "./dom-utils.js";
 import { createKeyModal } from "./key-modal.js";
-import { renderPageHelp as renderPageHelpPanel } from "./page-help.js";
 import { renderProfileConfigCheck as renderProfileConfigCheckPanel } from "./profile-config-check.js";
 import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
@@ -176,12 +176,10 @@ const stabilityTestForm = requireElement("#stability-test-form");
 const stabilityProfileSelect = requireElement("#stability-profile-select");
 const stabilitySubmit = requireElement("#stability-submit");
 const stabilitySummary = requireElement("#stability-summary");
-const stabilityReport = requireElement("#stability-report");
 const loadTestForm = requireElement("#load-test-form");
 const loadTestProfileSelect = requireElement("#load-test-profile-select");
 const loadTestSubmit = requireElement("#load-test-submit");
 const loadTestSummary = requireElement("#load-test-summary");
-const loadTestReport = requireElement("#load-test-report");
 const loadTestEstimate = requireElement("#load-test-estimate");
 const batchTestForm = requireElement("#batch-test-form");
 const batchProfileSelect = requireElement("#batch-profile-select");
@@ -192,7 +190,6 @@ const scenarioProfileSelect = requireElement("#scenario-profile-select");
 const scenarioCaseSelect = requireElement("#scenario-case-select");
 const scenarioSubmit = requireElement("#scenario-submit");
 const scenarioSummary = requireElement("#scenario-summary");
-const scenarioTestResult = requireElement("#scenario-test-result");
 const testRunList = requireElement("#test-run-list");
 const clientLogForm = requireElement("#client-log-form");
 const clientLogSubmit = requireElement("#client-log-submit");
@@ -248,8 +245,6 @@ const rankingList = requireElement("#ranking-list");
 const modelComparisonList = requireElement("#model-comparison-list");
 const handoffSummary = requireElement("#handoff-summary");
 const handoffTemplate = requireElement("#handoff-template");
-const pageHelp = requireElement("#page-help");
-const pageHelpContent = requireElement("#page-help-content");
 const manualContent = requireElement("#manual-content");
 const dashboardEmpty = requireElement("#dashboard-empty");
 const dashboardPopulated = requireElement("#dashboard-populated");
@@ -263,7 +258,6 @@ const statTodosChips = requireElement("#stat-todos-chips");
 const dashboardRecent = requireElement("#dashboard-recent");
 const nextAction = requireElement("#next-action");
 const workflowSteps = requireElements(".workflow-step");
-const editionBanner = requireElement("#edition-banner");
 const demoModeBanner = requireElement("#demo-mode-banner");
 const missingKeyGuide = requireElement("#missing-key-guide");
 const quickFailureActions = requireElement("#quick-failure-actions");
@@ -330,9 +324,6 @@ document.addEventListener("click", (event) => {
   showPage(button.dataset.goPage);
 });
 
-requireElement("#toggle-page-help").addEventListener("click", () => {
-  pageHelpContent.classList.toggle("hidden");
-});
 requireElement("#load-demo-data").addEventListener("click", enableDemoMode);
 requireElement("#exit-demo-mode").addEventListener("click", disableDemoMode);
 requireElement("#reload-profiles").addEventListener("click", loadProfiles);
@@ -359,6 +350,7 @@ const REPORT_TYPE_LABELS = {
   scenario: "场景测试",
   run: "稳定性测试",
   compare: "模型对比",
+  autodigest: "自动巡检",
   load: "压力测试", // runId 前缀 buildReportId("load", ...)
   "load-test": "压力测试",
   batch: "批量稳定性",
@@ -813,14 +805,12 @@ createTaskFormController({
   preparePayload: (payload) => payload,
   beforeStart: (payload) => {
     stabilitySummary.innerHTML = `<p class="muted">正在进行 ${payload.rounds} 轮测试。请不要关闭窗口。</p>`;
-    stabilityReport.textContent = "测试完成后会自动生成报告。";
     state.latestReportCopies.stability = "";
   },
   onSuccess: async (result) => {
     const copyableSummary = getCopyableReportText(result, formatStabilityResult(result));
     state.latestReportCopies.stability = copyableSummary;
     renderStabilitySummary(result);
-    stabilityReport.textContent = copyableSummary;
     await loadResultsBundle();
     toast("稳定性测试完成。");
   },
@@ -923,29 +913,6 @@ function renderLoadTestSweep(result) {
     </article>
   `;
 }
-function formatLoadTestResult(result) {
-  const lines = [
-    `测试 ID：${result.runId || "-"}`,
-    `被测 API：${result.profileName || "-"}（模型 ${result.model || "-"}）`,
-    `模式：${result.mode === "open" ? "开环（固定速率，含 CO 纠正）" : "闭环（固定并发）"} · 负载档 ${result.promptProfile || "-"} · 稳态 ${result.durationSec}s · ramp-up ${result.warmupSec}s`,
-  ];
-  if (result.sweep) {
-    lines.push(`负载序列：${result.sweep.map((p) => p.offered).join(", ")}`);
-    lines.push(`饱和拐点：${result.mode === "open" ? "速率" : "并发"} = ${result.knee?.offered}（${result.knee?.reason || ""}）`);
-    for (const p of result.sweep) {
-      lines.push(`  · 负载 ${p.offered}：QPS ${p.qps}，成功率 ${Math.round((p.successRate || 0) * 100)}%，p95 ${lms(p.latency.p95)}，p99 ${lms(p.latency.p99)}，429×${p.errors.http_429}，超时×${p.errors.timeout}，发生器受限×${p.genSaturated}`);
-    }
-  } else {
-    const L = result.latency || {};
-    const e = result.errors || {};
-    lines.push(`负载：${result.offered}　稳态完成 ${result.sentRequests}（预热 ${result.warmupRequests} 不计）`);
-    lines.push(`成功率：${Math.round((result.successRate || 0) * 100)}%　吞吐：${result.qps} req/s`);
-    lines.push(`延迟（成功）：p50 ${lms(L.p50)}　p90 ${lms(L.p90)}　p95 ${lms(L.p95)}　p99 ${lms(L.p99)}　max ${lms(L.max)}`);
-    lines.push(`错误：429×${e.http_429 || 0}　5xx×${e.http_5xx || 0}　超时×${e.timeout || 0}　网络×${e.network_error || 0}　发生器受限×${e.gen_saturated || 0}`);
-  }
-  lines.push(`Markdown 报告：${result.reportPath || "-"}`, `HTML 报告：${result.reportHtmlPath || "-"}`);
-  return lines.join("\n");
-}
 // 表单参数变化时更新预估框（选完参数即知这一轮大概发多少请求）。
 function updateLoadTestEstimate() {
   const raw = Object.fromEntries(new FormData(loadTestForm).entries());
@@ -994,12 +961,10 @@ createTaskFormController({
   beforeStart: (payload) => {
     const what = payload.loads.length > 1 ? `扫描 ${payload.loads.length} 个负载点` : `${payload.mode === "open" ? "速率" : "并发"} ${payload.loads[0]}`;
     loadTestSummary.innerHTML = `<p class="muted">正在压测：${what}，每点稳态 ${payload.durationSec}s。测试期间请不要关闭窗口。</p>`;
-    loadTestReport.textContent = "测试完成后会自动生成压测报告。";
   },
   onSuccess: async (result) => {
     if (result.sweep) renderLoadTestSweep(result);
     else renderLoadTestSingle(result);
-    loadTestReport.textContent = formatLoadTestResult(result);
     await loadResultsBundle();
     toast("压力测试完成。");
   },
@@ -1052,14 +1017,12 @@ createTaskFormController({
   },
   beforeStart: (payload) => {
     scenarioSummary.innerHTML = `<p class="muted">正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。</p>`;
-    scenarioTestResult.textContent = "测试完成后会在这里显示摘要和本地报告文件路径。";
     state.latestReportCopies.scenario = "";
   },
   onSuccess: async (result) => {
     const copyableSummary = getCopyableReportText(result, formatScenarioResult(result));
     state.latestReportCopies.scenario = copyableSummary;
     renderScenarioSummary(result);
-    scenarioTestResult.textContent = copyableSummary;
     await loadResultsBundle();
     toast("场景测试完成。");
   },
@@ -1317,7 +1280,6 @@ wireUnauthorizedRedirect();
 
 try {
   await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), preloadSettings(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
-  renderPageHelp("dashboard");
   await loadHighRiskAlerts(); // 启动时按开关拉一次高危报告横幅（此时 state.settings 已就绪）
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
@@ -1350,7 +1312,6 @@ function showPage(page) {
   currentPage = page;
   navButtons.forEach((item) => item.classList.toggle("active", item.dataset.page === page));
   pages.forEach((item) => item.classList.toggle("active", item.id === page));
-  renderPageHelp(page);
   if (page === "manual" && !state.manualLoaded) {
     loadManual();
   }
@@ -1393,36 +1354,61 @@ async function loadScenarios() {
 
 async function loadHealth() {
   state.health = await api("/api/health");
-  renderEditionBanner();
-}
-
-function renderEditionBanner() {
-  const safetyEnabled = Boolean(state.health?.safetyScenariosEnabled);
-  editionBanner.classList.toggle("hidden", !safetyEnabled);
-  editionBanner.innerHTML = safetyEnabled
-    ? `<strong>安全场景模式</strong>已启用内容安全合规测试。建议仅由负责人或受训测试人员使用。`
-    : "";
 }
 
 function loadManual() {
-  const guide = [
-    "## 使用说明",
-    "",
-    "本平台用于评测接入的上游渠道模型。配置分两层、两种角色：",
-    "",
-    "1. **渠道管理（超管）**：配连接信息 Base URL + Key + 协议。Key 加密保存、不回显、管理员看不到。",
-    "   站点是 new-api 搭的，可「从 new-api 导入」一键同步渠道（启用/禁用状态一并带过来）。",
-    "2. **模型管理（管理员）**：选一个渠道 + 填一个模型名 = 一个测试目标。看不到 Key。运行测试时从这些目标里选。",
-    "3. **一键快检**（快速测试页）：少量探针快速看渠道真伪、token 是否虚报、本次真实消耗。",
-    "4. **准入评测**：给目标打 A–F 分级，判断是否值得进一步测试。",
-    "5. **标准评测 / 稳定性测试**：多轮 + 统计置信区间评估可用性；多渠道可批量横向对比。",
-    "6. **稳定性趋势**：同一目标历次测试的成功率曲线 + 掉级回归告警。",
-    "7. **报告中心 / 测试交付**：查看与导出报告。",
-    "",
-    "每个页面右上角都有「怎么用」帮助；更完整的部署与配置说明见项目 README。",
-  ].join("\n");
-  manualContent.innerHTML = renderMarkdown(guide);
+  manualContent.innerHTML = renderMarkdown(MANUAL_MARKDOWN);
+  buildManualToc();
   state.manualLoaded = true;
+}
+
+// 渲染后构建右侧「本页目录」并接上滚动高亮（scrollspy）。
+// 不改共享的 renderMarkdown，全部在 manual 页 DOM 上后处理。
+function buildManualToc() {
+  const toc = document.getElementById("manual-toc");
+  if (!toc) return;
+  const headings = [...manualContent.querySelectorAll("h2, h3")];
+  let h2 = 0;
+  let h3 = 0;
+  const links = headings.map((el) => {
+    const level = el.tagName === "H2" ? 2 : 3;
+    if (level === 2) {
+      h2 += 1;
+      h3 = 0;
+      el.id = `sec-${h2}`;
+    } else {
+      h3 += 1;
+      el.id = `sec-${h2}-${h3}`;
+    }
+    const a = document.createElement("a");
+    a.href = `#${el.id}`;
+    a.className = "toc-link";
+    a.dataset.level = String(level);
+    a.dataset.target = el.id;
+    a.textContent = el.textContent;
+    a.addEventListener("click", (event) => {
+      event.preventDefault();
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      history.replaceState(null, "", `#${el.id}`);
+    });
+    return a;
+  });
+  toc.replaceChildren(...links);
+
+  // scrollspy：容器无关，观察各 heading，进入顶部触发带的那个高亮对应目录项。
+  const byId = new Map(links.map((a) => [a.dataset.target, a]));
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const active = byId.get(entry.target.id);
+        if (!active) continue;
+        for (const a of links) a.classList.toggle("is-active", a === active);
+      }
+    },
+    { rootMargin: "-45% 0px -50% 0px", threshold: 0 },
+  );
+  for (const el of headings) observer.observe(el);
 }
 
 // —— 设置页：AI 总结模型 / 场景题库开关（脱离环境变量，存本机）——
@@ -1659,13 +1645,6 @@ highRiskBanner.addEventListener("click", async (event) => {
 // 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
 setInterval(() => void loadHighRiskAlerts(), 60_000);
 
-function renderPageHelp(page) {
-  // 使用手册页、开发者页不显示「这个页面怎么用？」。
-  const noHelp = page === "manual" || page === "developer";
-  pageHelp.classList.toggle("hidden", noHelp);
-  if (noHelp) return;
-  renderPageHelpPanel(pageHelpContent, page);
-}
 
 function enableDemoMode() {
   const demoData = buildDemoData();
