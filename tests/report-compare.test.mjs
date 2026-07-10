@@ -363,10 +363,15 @@ test("buildCompareAnalysisPrompt + formatCompareReportMarkdown(aiNarrative)", as
   const cmp = buildComparison(a, b);
   const prompt = buildCompareAnalysisPrompt(cmp);
   assert.ok(prompt.includes("对比数据") && prompt.includes("难度档位"), "提示词含对比数据");
+  // 启用 AI 时：AI 叙述直接作为「结论速览」内容，替换掉机械速览（无「总评」与维度表）；不再单列「AI 叙述分析」节。
   const md = formatCompareReportMarkdown(cmp, { generatedAt: "2026-07-07T00:00:00.000Z", aiNarrative: "这是一段测试用 AI 叙述。" });
-  assert.ok(md.includes("## AI 叙述分析"), "含 AI 叙述节");
-  assert.ok(md.includes("这是一段测试用 AI 叙述。"));
-  // 不传 aiNarrative 时不应出现该节。
+  const overview = md.slice(md.indexOf("## 结论速览"), md.indexOf("## 1."));
+  assert.ok(overview.includes("这是一段测试用 AI 叙述。"), "AI 叙述作为结论速览内容");
+  assert.ok(!overview.includes("| 维度 | 结论 |") && !overview.includes("**总评：**"), "启用 AI 时不出机械速览表");
+  assert.ok(!md.includes("## AI 叙述分析"), "AI 叙述不再单列小节");
+  // 未启用 AI 时：结论速览回到机械速览（总评 + 维度表），且不含 AI 文本。
   const md2 = formatCompareReportMarkdown(cmp, { generatedAt: "2026-07-07T00:00:00.000Z" });
-  assert.ok(!md2.includes("## AI 叙述分析"));
+  const overview2 = md2.slice(md2.indexOf("## 结论速览"), md2.indexOf("## 1."));
+  assert.ok(overview2.includes("**总评：**") && overview2.includes("| 维度 | 结论 |"), "未启用 AI 时用机械速览");
+  assert.ok(!md2.includes("这是一段测试用 AI 叙述。"));
 });

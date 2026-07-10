@@ -260,22 +260,18 @@ export function parseRunReport(md) {
   const fs = (kv(s4, "最快/最慢") || "").split("/");
   const infl = review.match(/×\s*(\d+(?:\.\d+)?)/);
   const baselineText = kv(s4, "基线回归");
-  // 单轮明细：延迟统计口径 = 成功轮 + 超时轮（超时按其总耗时=超时上限计入，反映超时对体验的真实拖累）；
-  // 限流/其它失败不计入（非延迟问题）。latencyRounds 供第二小节重算「含超时」的 avg/P50/P95/P99。
+  // 单轮明细：延迟统计口径 = 成功轮 + 所有【有耗时记录】的失败轮（超时/限流/其它失败一律按其实际总耗时计入，
+  // 反映失败等待对体验的真实拖累）；仅无总耗时记录（如「-」）的轮次排除。latencyRounds 供第二小节重算 avg/P50/P95/P99。
   const detail = parseTable(section(md, "单轮明细"));
   const iRes = colIndex(detail.headers, "结果");
   const iTot = colIndex(detail.headers, "总耗时");
   const iFB = colIndex(detail.headers, "首包");
   const latencyRounds = [];
   for (const cells of detail.rows) {
-    const res = cell(cells, iRes) || "";
-    const isSucc = /成功/.test(res);
-    const isTimeout = /timeout|超时/i.test(res);
-    if (!isSucc && !isTimeout) continue;
     const total = num(cell(cells, iTot));
-    if (!Number.isFinite(total)) continue;
+    if (!Number.isFinite(total)) continue; // 无总耗时记录 → 排除
     const firstByte = num(cell(cells, iFB));
-    latencyRounds.push({ total, firstByte: Number.isFinite(firstByte) ? firstByte : null, timeout: isTimeout });
+    latencyRounds.push({ total, firstByte: Number.isFinite(firstByte) ? firstByte : null, success: /成功/.test(cell(cells, iRes) || "") });
   }
   const latencySamples = latencyRounds.map((r) => r.total);
   return {
@@ -630,9 +626,9 @@ function meanOf(values) {
   const arr = (values || []).filter(Number.isFinite);
   return arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
 }
-// 从「成功+超时」轮次算延迟统计（含超时）；无单轮明细则退回报告聚合值（成功轮口径）。
+// 从「成功 + 所有有耗时的失败」轮次算延迟统计；无单轮明细则退回报告聚合值（成功轮口径）。
 function latencyStatsFrom(rounds, fallback) {
-  if (!rounds || !rounds.length) return { ...(fallback || {}), timeouts: 0, recomputed: false };
+  if (!rounds || !rounds.length) return { ...(fallback || {}), failed: 0, recomputed: false };
   const tot = rounds.map((r) => r.total);
   const fb = rounds.map((r) => r.firstByte);
   return {
@@ -641,7 +637,7 @@ function latencyStatsFrom(rounds, fallback) {
     p50TotalMs: nearestRankPct(tot, 0.5),
     p95TotalMs: nearestRankPct(tot, 0.95),
     p99TotalMs: nearestRankPct(tot, 0.99),
-    timeouts: rounds.filter((r) => r.timeout).length,
+    failed: rounds.filter((r) => !r.success).length,
     recomputed: true,
   };
 }
@@ -803,33 +799,42 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   }
   L.push("");
 
-  // 0. 结论速览：一句「总评」抓要点 + 逐维度紧凑表格（结论与关键数字分列，结论列带信号图标）。
+  // 0. 结论速览：启用 AI 叙述时，直接用 AI 叙述作为结论速览；否则用机械速览（总评 + 逐维度表）。
   L.push("## 结论速览", "");
-  const overview = synthesize(cmp);
-  L.push(`**总评：** ${overview.headline}`, "");
-  L.push("| 维度 | 结论 | 对象A | 对象B |", "|---|---|---|---|");
-  for (const r of overview.rows) L.push(`| ${escapeCell(r.dim)} | ${escapeCell(r.verdict)} | ${escapeCell(r.a)} | ${escapeCell(r.b)} |`);
-  L.push("");
-  L.push("> 依据两个对象在报告中心已有的评测报告聚合对比。为便于决策，成功率/质量类结论一律按点估计给出「谁更好」；置信区间重叠或含 0 时标注为「未达统计显著」，请结合样本量谨慎采纳。延迟为长尾分布、样本有限，仅作参考。", "");
+  if (aiNarrative && String(aiNarrative).trim()) {
+    L.push(String(aiNarrative).trim(), "");
+    L.push("> 本节由「设置」里配置的 AI 总结模型基于下方结构化数据生成，仅供参考；具体数字与判定以下各小节为准。", "");
+  } else {
+    const overview = synthesize(cmp);
+    L.push(`**总评：** ${overview.headline}`, "");
+    L.push("| 维度 | 结论 | 对象A | 对象B |", "|---|---|---|---|");
+    for (const r of overview.rows) L.push(`| ${escapeCell(r.dim)} | ${escapeCell(r.verdict)} | ${escapeCell(r.a)} | ${escapeCell(r.b)} |`);
+    L.push("");
+    L.push("> 依据两个对象在报告中心已有的评测报告聚合对比。延迟为长尾分布、样本有限，仅作参考。", "");
+  }
 
   // 1. 可用性与通过率
   L.push("## 1. 可用性与通过率", "");
   L.push("| 指标 | 对象A | 对象B | 判定 |", "|---|---|---|---|");
-  L.push(`| 稳定性成功率 | ${stabCell(a)} | ${stabCell(b)} | ${decisiveProportion(cmp.verdicts.stability, a.label, b.label).text} |`);
-  L.push(`| 场景通过率 | ${passCell(a)} | ${passCell(b)} | ${decisiveProportion(cmp.verdicts.scenarioPass, a.label, b.label).text} |`);
+  const verdictCell = (v) => {
+    const d = decisiveProportion(v, a.label, b.label);
+    return d.winner ? `${d.text}（${d.effect}）` : d.text;
+  };
+  L.push(`| 稳定性成功率 | ${stabCell(a)} | ${stabCell(b)} | ${verdictCell(cmp.verdicts.stability)} |`);
+  L.push(`| 场景通过率 | ${passCell(a)} | ${passCell(b)} | ${verdictCell(cmp.verdicts.scenarioPass)} |`);
   L.push("");
   const pp = cmp.pairedPass;
-  L.push(`- 配对通过率检验（同名场景 n=${cmp.scenarioQuality.matched.length}）：两边结果不一致的场景里，对象A过/对象B不过=${pp.b}、对象A不过/对象B过=${pp.c}，${pp.method === "none" ? "没有结果不一致的场景 → 无法判定" : `p=${fmtP(pp.pValue)} → ${pp.pValue < 0.05 ? "**差异显著**" : "差异不显著（结果不一致的场景太少，判别力不足）"}`}`);
+  L.push(`- 配对通过率检验（同名场景 n=${cmp.scenarioQuality.matched.length}）：两边结果不一致的场景里，对象A过/对象B不过=${pp.b}、对象A不过/对象B过=${pp.c}，${pp.method === "none" ? "没有结果不一致的场景 → 无法判定" : `p=${fmtP(pp.pValue)}${pp.pValue < 0.05 ? " → **差异显著**" : ""}`}`);
   L.push("> 同名场景是同一批题目上的配对结果，通过率只看两边结果不一致的场景做头对头比较，比各自独立区间是否重叠更能分辨差异。");
   const ea = errSummary(a);
   const eb = errSummary(b);
   if (ea || eb) L.push(`- 稳定性错误分布：对象A ${ea || "无"} · 对象B ${eb || "无"}`);
   L.push("");
 
-  // 2. 延迟（含超时轮：见表格下方说明；口径见 aggregateSubject 的 latency.stats）
+  // 2. 延迟（含失败轮：见表格下方说明；口径见 aggregateSubject 的 latency.stats）
   const la = a.latency?.stats || {};
   const lb = b.latency?.stats || {};
-  L.push("## 2. 延迟（稳定性轮次，含超时，长尾/样本有限，仅供参考）", "");
+  L.push("## 2. 延迟（稳定性轮次，含失败轮，长尾/样本有限，仅供参考）", "");
   L.push("| 指标 | 对象A | 对象B | 对象A−对象B |", "|---:|---:|---:|---:|");
   for (const [label, key] of [["平均总耗时", "avgTotalMs"], ["平均首包", "avgFirstByteMs"], ["P50 总耗时", "p50TotalMs"], ["慢请求 P95", "p95TotalMs"], ["尾部 P99", "p99TotalMs"]]) {
     const va = la[key];
@@ -839,13 +844,13 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   L.push("");
   if (la.recomputed || lb.recomputed) {
     L.push(
-      `> 上表延迟已**包含超时轮**（超时按其总耗时=超时上限计入，不含限流/其它失败）——计入超时：对象A ${la.timeouts} 轮、对象B ${lb.timeouts} 轮；含超时时数值会高于仅统计成功轮，以反映超时对体验的真实拖累。`,
+      `> 上表延迟已**包含所有有耗时记录的失败轮**——计入失败：对象A ${la.failed} 轮、对象B ${lb.failed} 轮。`,
     );
     L.push("");
   }
   const lat = cmp.latency;
-  L.push(`- 延迟样本量（含超时轮）：对象A n=${lat.aN} · 对象B n=${lat.bN}`);
-  if (lat.median.point != null) L.push(`- 中位总耗时差 对象A−对象B = ${sgn(lat.median.point, " ms")}，95% 置信区间 ${fmtCI([lat.median.lower, lat.median.upper], " ms")}（对象A 中位 ${fmt(lat.median.statA, " ms")} / 对象B 中位 ${fmt(lat.median.statB, " ms")}）→ ${ciExcludesZero([lat.median.lower, lat.median.upper]) ? "**中位延迟差异显著**" : "中位延迟差异不显著（区间含 0）"}`);
+  L.push(`- 延迟样本量（含失败轮）：对象A n=${lat.aN} · 对象B n=${lat.bN}`);
+  if (lat.median.point != null) L.push(`- 中位总耗时差 对象A−对象B = ${sgn(lat.median.point, " ms")}，95% 置信区间 ${fmtCI([lat.median.lower, lat.median.upper], " ms")}（对象A 中位 ${fmt(lat.median.statA, " ms")} / 对象B 中位 ${fmt(lat.median.statB, " ms")}）${ciExcludesZero([lat.median.lower, lat.median.upper]) ? " → **中位延迟差异显著**" : ""}`);
   if (lat.p95.point != null) L.push(`- P95 总耗时差 对象A−对象B = ${sgn(lat.p95.point, " ms")}，95% 置信区间 ${fmtCI([lat.p95.lower, lat.p95.upper], " ms")}`);
   L.push("> 延迟是长尾分布，用中位数/尾部而非平均值；两组独立、区间由重采样估计（随机种子固定、可复现）。");
   L.push("");
@@ -887,7 +892,7 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   const ena = errNote(a);
   const enb = errNote(b);
   if (ena || enb) L.push(`- 含错误型失败（限流/超时，属可用性问题、非能力低分）的档位：对象A: ${ena || "无"} · 对象B: ${enb || "无"}`);
-  L.push("> HardcoreLogic / HLE / LiveBench 属抗污染/专家难档。判断档位降级须先剔除限流/超时的错误轮：仅当双方都成功作答、某方在难档质量分仍系统性更低时，才是降级信号（详见结论速览）。", "");
+  L.push("");
 
   // 5. 逐场景诊断
   L.push("## 5. 逐场景诊断（配对场景，含失败原因）", "");
@@ -917,13 +922,12 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   if (cmp.scenarioQuality.onlyA.length) L.push(`- 仅对象A 测过：${cmp.scenarioQuality.onlyA.map(escapeCell).join("、")}`);
   if (cmp.scenarioQuality.onlyB.length) L.push(`- 仅对象B 测过：${cmp.scenarioQuality.onlyB.map(escapeCell).join("、")}`);
   L.push("");
-  // 配对差值分析：统计口径细节、非主线结论，放本节最下方并以小字（<small>）呈现。
+  // 配对差值分析：统计口径细节、非主线结论，放本节最下方，以「> 注释」呈现（同第 2/4 节末尾说明的样式）。
   if (pq.n >= 1) {
-    L.push(`<small>**配对差值分析**（同名场景 n=${pq.n}，同一批题目上配对比较，比各自独立平均更能分辨差异）</small>`);
-    L.push(`<small>· 质量分平均差 对象A−对象B = ${sgn(pq.meanDiff)}${pq.ci ? `，95% 置信区间 ${fmtCI(pq.ci)}` : "（样本不足，无区间）"} → ${pq.ci ? (ciExcludesZero(pq.ci) ? "**差异显著（区间不含 0）**" : "**未达显著（区间含 0）**") : "样本不足"}</small>`);
-    if (pq.corr != null) L.push(`<small>· 配对相关 r=${r2(pq.corr)}（正相关时配对比较更稳）；符号秩 p=${fmtP(pq.pWilcoxon)}；配对均值检验 p=${fmtP(pq.pT)}</small>`);
-    L.push(`<small>· 效果量 δ=${pq.cliff.delta != null ? r2(pq.cliff.delta) : "-"}（${pq.cliff.magnitude}，阈值 0.15/0.33/0.47=小/中/大）；胜/平/负（对象A 视角）= ${pq.win}/${pq.tie}/${pq.loss}，符号检验 p=${fmtP(pq.signP)}</small>`);
-    L.push("");
+    L.push(`> **配对差值分析**（同名场景 n=${pq.n}，同一批题目上配对比较，比各自独立平均更能分辨差异）：`);
+    L.push(`> · 质量分平均差 对象A−对象B = ${sgn(pq.meanDiff)}${pq.ci ? `，95% 置信区间 ${fmtCI(pq.ci)}` : "（样本不足，无区间）"} → ${pq.ci ? (ciExcludesZero(pq.ci) ? "**差异显著（区间不含 0）**" : "**区间含 0**") : "样本不足"}`);
+    if (pq.corr != null) L.push(`> · 配对相关 r=${r2(pq.corr)}（正相关时配对比较更稳）；符号秩 p=${fmtP(pq.pWilcoxon)}；配对均值检验 p=${fmtP(pq.pT)}`);
+    L.push(`> · 效果量 δ=${pq.cliff.delta != null ? r2(pq.cliff.delta) : "-"}（${pq.cliff.magnitude}，阈值 0.15/0.33/0.47=小/中/大）；胜/平/负（对象A 视角）= ${pq.win}/${pq.tie}/${pq.loss}，符号检验 p=${fmtP(pq.signP)}`, "");
   }
 
   // 6. 总结
@@ -931,17 +935,11 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   for (const line of overallConclusions(cmp)) L.push(`- ${line}`);
   L.push("");
 
-  if (aiNarrative && String(aiNarrative).trim()) {
-    L.push("## AI 叙述分析", "");
-    L.push(String(aiNarrative).trim(), "");
-    L.push("> 以上由「设置」里配置的 AI 总结模型基于本报告的结构化数据生成，仅供参考，不覆盖上面的统计判定。", "");
-  }
-
   L.push("## 方法学与免责", "");
   L.push("- 同名场景为**配对样本**：质量分用配对差值 + 95% CI（Miller 2024《Adding Error Bars to Evals》），通过率头对头用 **McNemar**（只看结果不一致的场景），比「两条独立置信区间是否重叠」更有功效。");
-  L.push("- 效果量用 **Cliff's δ**（非参数；阈值 0.147/0.33/0.474 = 小/中/大）+ 胜平负符号检验，回答「差多少」而不只是「差不差」。");
+  L.push("- 效果量：质量分用 **Cliff's δ**（非参数；阈值 0.147/0.33/0.474 = 小/中/大）+ 胜平负符号检验；成功率/通过率用 **Cohen's h**（两比例效应量 h = 2·arcsin√p₁ − 2·arcsin√p₂；阈值 0.2/0.5/0.8 = 小/中/大，量纲无关、0/1 边界稳定）。回答「差多少」而不只是「差不差」。");
   L.push("- 单对象成功率仍给 Wilson 置信区间；延迟重尾，用中位/P95 的两样本 bootstrap 百分位 CI（种子固定、可复现），不用均值。");
-  L.push("- 显著性判据：差值的 95% CI 是否含 0（含 0 = 未达显著）。小样本功效不足时明确标注，不据此下优劣定论。");
+  L.push("- 显著性判据：看差值的 95% CI 是否含 0。为便于决策，成功率/质量类结论一律按点估计给出「谁更好」；若区间重叠或含 0（统计证据尚不充分），请结合样本量谨慎采纳。");
   L.push("- 质量分为规则化评分，非人工质量评审；身份/纯度判断均为黑盒概率结论，仅「疑似 / 需上游解释」。");
   L.push("- 本报告依据既有评测报告聚合，未重新发起请求；标注 |Δ|≥40 的场景建议人工复核原始回答。");
   return L.join("\n");
@@ -957,17 +955,30 @@ function errSummary(s) {
   return e.length ? e.map(([k, v]) => `${k}×${v}`).join("、") : "";
 }
 
-// 激进判定：即便置信区间重叠、未达统计显著，也按点估计给出「谁更好」，只在措辞上标注是否显著。
-// 返回 { winner, loser, significant, text }；样本不足或完全持平时 winner=null。
+// Cohen's h：两比例的效应量 = 2·arcsin(√p1) − 2·arcsin(√p2)。量纲无关、在 0/1 边界也有定义。
+function cohensH(p1, p2) {
+  const phi = (p) => 2 * Math.asin(Math.sqrt(Math.min(1, Math.max(0, p))));
+  return phi(p1) - phi(p2);
+}
+// |h| 档位（Cohen 惯例阈值 0.2 / 0.5 / 0.8）。
+function hMagnitude(h) {
+  const a = Math.abs(h);
+  return a < 0.2 ? "可忽略" : a < 0.5 ? "小" : a < 0.8 ? "中" : "大";
+}
+
+// 激进判定：即便置信区间重叠、统计证据不足，也按点估计给出「谁更好」。
+// 返回 { winner, loser, significant, text, effect }；effect 为两比例效应量 Cohen's h（含 小/中/大 档位）。
+// 样本不足或完全持平时 winner=null、effect=""。
 function decisiveProportion(v, labelA, labelB) {
-  if (!v || String(v.verdict || "").includes("样本不足")) return { winner: null, significant: false, text: "样本不足" };
+  if (!v || String(v.verdict || "").includes("样本不足")) return { winner: null, significant: false, text: "样本不足", effect: "" };
   const pa = v.a?.point;
   const pb = v.b?.point;
-  if (!Number.isFinite(pa) || !Number.isFinite(pb) || pa === pb) return { winner: null, significant: false, text: "两者相当" };
+  if (!Number.isFinite(pa) || !Number.isFinite(pb) || pa === pb) return { winner: null, significant: false, text: "两者相当", effect: "" };
   const winner = pa > pb ? labelA : labelB;
   const loser = pa > pb ? labelB : labelA;
   const significant = Boolean(v.significant);
-  return { winner, loser, significant, text: significant ? `${winner} 明显优于 ${loser}` : `${winner} 更好（领先但差距未达统计显著）` };
+  const h = cohensH(pa, pb);
+  return { winner, loser, significant, text: significant ? `${winner} 明显优于 ${loser}` : `${winner} 更好`, effect: `效应量 h ${r2(Math.abs(h))}，${hMagnitude(h)}` };
 }
 
 // 综合投票：可用性 / 通过率 / 质量三项各按点估计投一票，得票多者为整体更优方（激进：不要求显著）。
@@ -1000,7 +1011,7 @@ function synthesize(cmp) {
   const availVerdict = (v) => {
     const d = decisiveProportion(v, a.label, b.label);
     if (!d.winner) return d.text === "样本不足" ? "❓ 样本不足" : "≈ 两者相当";
-    return d.significant ? `✅ ${d.text}` : `↗ ${d.text}`;
+    return `${d.significant ? "✅" : "↗"} ${d.text}（${d.effect}）`;
   };
   rows.push({ dim: "稳定性成功率", verdict: availVerdict(cmp.verdicts.stability), a: stabCell(a), b: stabCell(b) });
   rows.push({ dim: "场景通过率", verdict: availVerdict(cmp.verdicts.scenarioPass), a: passCell(a), b: passCell(b) });
@@ -1011,16 +1022,16 @@ function synthesize(cmp) {
     const sig = ciExcludesZero(pq.ci);
     const tie = pq.meanDiff === 0;
     const better = pq.meanDiff > 0 ? a.label : b.label;
-    const stat = `对象A−对象B ${sgn(pq.meanDiff)}，95% 置信区间 ${fmtCI(pq.ci)}，效果量 δ ${r2(pq.cliff.delta)}／${pq.cliff.magnitude}，胜/平/负 ${pq.win}/${pq.tie}/${pq.loss}`;
+    const stat = `对象A−对象B ${sgn(pq.meanDiff)}，95% 置信区间 ${fmtCI(pq.ci)}，效果量 δ ${r2(pq.cliff.delta)}，胜/平/负 ${pq.win}/${pq.tie}/${pq.loss}`;
     rows.push({
       dim: `质量分（配对 n=${pq.n}）`,
-      verdict: tie ? `≈ 两者相当（${stat}）` : sig ? `✅ ${better} 显著更高（${stat}）` : `↗ ${better} 更高（未达显著，${stat}）`,
+      verdict: tie ? `≈ 两者相当（${stat}）` : sig ? `✅ ${better} 显著更高（${stat}）` : `↗ ${better} 更高（${stat}）`,
       a: `均分 ${fmt(a.quality.mean)}`,
       b: `均分 ${fmt(b.quality.mean)}`,
     });
   }
 
-  // —— 延迟（P95，含超时，长尾/样本有限，仅参考）——
+  // —— 延迟（P95，含失败轮，长尾/样本有限，仅参考）——
   const pa = a.latency?.stats?.p95TotalMs;
   const pb = b.latency?.stats?.p95TotalMs;
   if (Number.isFinite(pa) && Number.isFinite(pb) && Math.abs(pa - pb) >= 1) {
@@ -1043,7 +1054,7 @@ function overallConclusions(cmp) {
   const { a, b } = cmp;
   const sd = decisiveProportion(cmp.verdicts.stability, a.label, b.label);
   const pd = decisiveProportion(cmp.verdicts.scenarioPass, a.label, b.label);
-  const tail = (d) => (d.significant ? "（差异显著）" : "（点估计领先，样本有限、未达显著）");
+  const tail = (d) => (d.significant ? "（差异显著）" : "（点估计领先）");
   out.push(sd.winner ? `稳定性成功率：**${sd.text}**${tail(sd)}。` : `稳定性成功率：${sd.text}。`);
   out.push(pd.winner ? `场景通过率：**${pd.text}**${tail(pd)}。` : `场景通过率：${pd.text}。`);
   const pq = cmp.pairedQuality;
@@ -1052,14 +1063,14 @@ function overallConclusions(cmp) {
     out.push(
       pq.meanDiff === 0
         ? `质量分（同名场景配对）：两者相当（对象A−对象B=0 分）。`
-        : `质量分（同名场景配对）：**${better} 更高**（对象A−对象B=${sgn(pq.meanDiff)} 分，95% 置信区间 ${fmtCI(pq.ci)}${ciExcludesZero(pq.ci) ? "，差异显著" : "，未达显著但点估计领先"}；效果量 δ=${r2(pq.cliff.delta)}／${pq.cliff.magnitude}）。`,
+        : `质量分（同名场景配对）：**${better} 更高**（对象A−对象B=${sgn(pq.meanDiff)} 分，95% 置信区间 ${fmtCI(pq.ci)}，效果量 δ=${r2(pq.cliff.delta)}）。`,
     );
   } else {
     const qd = diff(a.quality.mean, b.quality.mean);
     if (qd != null) out.push(qd === 0 ? `平均质量分：两者相当（配对样本不足，仅作描述）。` : `平均质量分：**${qd > 0 ? a.label : b.label} 更高**（对象A−对象B ${signed(qd)} 分，配对样本不足，仅作参考）。`);
   }
   const ld = diff(a.latency?.stats?.p95TotalMs, b.latency?.stats?.p95TotalMs);
-  if (ld != null && Math.abs(ld) >= 1) out.push(`P95 延迟：**${ld < 0 ? a.label : b.label} 更快**约 ${fmt(Math.abs(ld), " ms")}（延迟长尾、含超时、样本有限，仅供参考）。`);
+  if (ld != null && Math.abs(ld) >= 1) out.push(`P95 延迟：**${ld < 0 ? a.label : b.label} 更快**约 ${fmt(Math.abs(ld), " ms")}（延迟长尾、含失败轮）。`);
   // 综合判断（激进）：多数维度点估计领先者即整体更优。
   const ov = overallVote(cmp);
   out.push(
@@ -1091,12 +1102,15 @@ export function buildCompareAnalysisPrompt(cmp) {
     if (err) risks.push(`稳定性错误 ${err}`);
     if (risks.length) facts.push(`${s.label} 风险：${risks.join("、")}`);
   }
+  const ov = overallVote(cmp);
+  facts.push(ov.winner ? `综合点估计：${ov.winner} 在可用性/通过率/质量里于 ${ov.lead}/${ov.total} 项领先，整体更优` : "综合点估计：两者互有胜负、整体相当");
   return [
-    "你是资深 AI 评测分析师。下面是对两个模型（对象A=所用模型，对象B=要对比的模型）依据既有评测报告做的结构化对比（已含统计显著性判定）。",
+    "你是资深 AI 评测分析师，判断果断、但措辞委婉得体、对两方都留有分寸。下面是对两个模型（对象A=所用模型，对象B=要对比的模型）依据既有评测报告做的结构化对比（含点估计与统计判定）。",
     "请用中文写一段 150–300 字的对比叙述，要求：",
-    "1) 分别就可用性、难档能力、延迟谁更好给出判断，但务必尊重显著性——置信区间含 0 或样本不足时不要断言优劣；",
-    "2) 指出最值得关注的风险；3) 给出一句使用建议。",
-    "不要编造数据中没有的数字，不要输出 Markdown 标题或表格，只写正文段落。",
+    "1) 就可用性、质量/难档能力、延迟分别给出明确的「谁更占优」结论（按点估计判断，不回避表态、不用「难分伯仲 / 不好说」之类和稀泥的措辞）；但用词委婉——多用「更稳一些 / 略胜一筹 / 更从容」这类表达，对落后一方点到为止、留出正面空间；统计上不显著时可温和提示一句「差距尚未被统计确认」；",
+    "2) 给出一个清晰但不生硬的总体倾向：整体上更推荐哪一个（须与上面「综合点估计」一致）；",
+    "3) 委婉点出最值得留意的风险，并给一句得体的使用建议。",
+    "不要编造数据中没有的数字，不要输出 Markdown 标题或表格，只写正文段落，语气专业、克制、有分寸。",
     "",
     "对比数据：",
     ...facts.map((f) => `- ${f}`),
