@@ -170,12 +170,6 @@ export function maskScenario(scenario) {
   };
 }
 
-export function maskKey(value) {
-  const text = String(value || "");
-  if (text.length <= 8) return "****";
-  return `${text.slice(0, 4)}...${text.slice(-4)}`;
-}
-
 export async function loadProfiles() {
   // 优先从 SQLite model_configs 共享目录读；sqlite 不可用时降级旧 JSON。
   const fromDb = await loadModelConfigs();

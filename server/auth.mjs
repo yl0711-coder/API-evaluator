@@ -240,5 +240,3 @@ export async function authenticate(username, password, opts = {}) {
   }
   return authenticateLocal(username, password, opts);
 }
-
-export const SESSION_COOKIE = SESSION_COOKIE_NAME;
