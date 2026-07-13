@@ -22,6 +22,9 @@ export function createAutoTestScheduler({
   logError,
   tickMs = 60_000,
   maxConcurrent = Math.max(1, Number(process.env.EVALUATOR_AUTO_TEST_CONCURRENCY || 2)),
+  // 连续失败熔断阈值：作业连续失败达此次数即自动停用，避免被监控对象挂掉后无限空跑失败。
+  // 0 = 关闭熔断。默认 5，可用 EVALUATOR_AUTO_TEST_MAX_FAILURES 覆盖。
+  maxConsecutiveFailures = Math.max(0, Number(process.env.EVALUATOR_AUTO_TEST_MAX_FAILURES || 5)),
   now = () => Date.now(),
 }) {
   const runningJobIds = new Set();
@@ -83,6 +86,26 @@ export function createAutoTestScheduler({
     });
   }
 
+  // 需按当前值增改（如累加 consecutiveFailures + 到阈值停用）时用的可变体，同样走串行化 updateJobs。
+  function patchJobWith(id, mutate) {
+    return updateJobs((jobs) => {
+      const target = jobs.find((j) => j.id === id);
+      if (target) mutate(target);
+      return target || null;
+    });
+  }
+
+  // 连续失败熔断：达阈值即自动停用（enabled=false、nextRunAt=null、记 autoDisabledAt+原因），
+  // 待人工修复后在配置页重新启用（端点会清零 consecutiveFailures/autoDisabledAt 复活）。
+  function maybeDisableForFailures(job) {
+    if (maxConsecutiveFailures > 0 && (Number(job.consecutiveFailures) || 0) >= maxConsecutiveFailures) {
+      job.enabled = false;
+      job.nextRunAt = null;
+      job.autoDisabledAt = new Date(now()).toISOString();
+      job.lastError = `${job.lastError ? job.lastError + " " : ""}连续失败 ${job.consecutiveFailures} 次，已自动停用以避免无效重跑；请修复后在配置页重新启用。`.slice(0, 500);
+    }
+  }
+
   async function fireJob(job) {
     // 先同步查重 + 占位：在任何 await 之前把 id 记入 runningJobIds，
     // 这样即便本作业还在信号量队列里等待，跨 tick 也不会被重复触发。
@@ -109,12 +132,18 @@ export function createAutoTestScheduler({
           // config 级失败（如目标不存在）会返回 success:false / normalizedError，算 failed。
           const ok = Boolean(result) && result.success !== false && !result.normalizedError && !result.error;
           const reportId = reportIdFromHtmlPath?.(result?.reportHtmlPath || result?.reportPath || "") || "";
-          await patchJob(job.id, {
-            lastRunAt: startedIso,
-            nextRunAt,
-            lastStatus: ok ? "success" : "failed",
-            lastReportId: reportId || null,
-            lastError: ok ? null : String(result?.message || result?.normalizedError || "测试未成功").slice(0, 500),
+          await patchJobWith(job.id, (t) => {
+            t.lastRunAt = startedIso;
+            t.nextRunAt = nextRunAt;
+            t.lastStatus = ok ? "success" : "failed";
+            t.lastReportId = reportId || null;
+            t.lastError = ok ? null : String(result?.message || result?.normalizedError || "测试未成功").slice(0, 500);
+            if (ok) {
+              t.consecutiveFailures = 0; // 成功即复位熔断计数
+            } else {
+              t.consecutiveFailures = (Number(t.consecutiveFailures) || 0) + 1;
+              maybeDisableForFailures(t); // 达阈值则停用（会覆盖上面的 nextRunAt→null、enabled→false）
+            }
           });
         } catch (error) {
           try {
@@ -122,11 +151,13 @@ export function createAutoTestScheduler({
           } catch {
             // 记录失败不应影响调度
           }
-          await patchJob(job.id, {
-            lastRunAt: startedIso,
-            nextRunAt,
-            lastStatus: "failed",
-            lastError: String(error?.message || error).slice(0, 500),
+          await patchJobWith(job.id, (t) => {
+            t.lastRunAt = startedIso;
+            t.nextRunAt = nextRunAt;
+            t.lastStatus = "failed";
+            t.lastError = String(error?.message || error).slice(0, 500);
+            t.consecutiveFailures = (Number(t.consecutiveFailures) || 0) + 1;
+            maybeDisableForFailures(t);
           });
         }
       } finally {
@@ -151,6 +182,32 @@ export function createAutoTestScheduler({
     await Promise.all(due.map((job) => fireJob(job)));
   }
 
+  // 启动对账：进程崩溃/OOM/重启会让中途运行的作业在盘上永久停留 lastStatus="running"（内存 runningJobIds
+  // 已随进程清空）。启动时把这些「僵尸运行中」归位为 interrupted 并计一次失败——既清掉误导性的 UI 状态，
+  // 也让 OOM 崩溃循环能被熔断收敛。best-effort，不阻断随后的首个 tick。
+  async function reconcileInterruptedJobs() {
+    await updateJobs((jobs) => {
+      for (const job of jobs) {
+        if (job.lastStatus === "running") {
+          job.lastStatus = "interrupted";
+          job.lastError = "上次运行被进程中断（崩溃/重启/OOM），已按失败计。";
+          job.consecutiveFailures = (Number(job.consecutiveFailures) || 0) + 1;
+          maybeDisableForFailures(job);
+        }
+      }
+      return null;
+    });
+  }
+
+  async function reconcileThenTick() {
+    try {
+      await reconcileInterruptedJobs();
+    } catch {
+      /* 对账失败不应阻断首个 tick 的追补 */
+    }
+    await tick();
+  }
+
   async function runJobNow(id) {
     const jobs = await loadJobs();
     const job = jobs.find((j) => j.id === id);
@@ -162,7 +219,7 @@ export function createAutoTestScheduler({
 
   function start() {
     if (timer) return;
-    void tick(); // 启动即跑一次做停机追补
+    void reconcileThenTick(); // 启动即对账僵尸「running」+ 跑一次做停机追补
     timer = setInterval(() => void tick(), tickMs);
     timer.unref?.(); // 不因调度器让本应退出的进程保持存活（listen 的 socket 才是存活来源）
   }
@@ -174,5 +231,5 @@ export function createAutoTestScheduler({
     }
   }
 
-  return { start, stop, tick, fireJob, runJobNow, runningJobIds };
+  return { start, stop, tick, fireJob, runJobNow, runningJobIds, reconcileInterruptedJobs };
 }

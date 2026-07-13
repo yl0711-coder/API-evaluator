@@ -338,158 +338,6 @@
           </div>
         </section>
 
-        <section class="page" id="profiles">
-          <div class="cfg">
-          <div class="cfg-topbar">
-            <div>
-              <h2><span class="step">第 1 步 · API 配置</span>配置要评测的渠道</h2>
-              <p class="section-desc">普通用户只填必填项，点“保存并测试配置”。Key 只存本机，不进报告/导出。</p>
-            </div>
-            <div class="action-row">
-              <button id="import-profiles-button" class="secondary" type="button">导入配置</button>
-              <button id="export-profiles" class="secondary" type="button">导出配置</button>
-              <button id="reload-profiles" class="secondary" type="button">刷新</button>
-              <input id="import-profiles-file" type="file" accept="application/json,.json" hidden />
-            </div>
-          </div>
-
-          <div class="cfg-grid">
-          <form id="profile-form" class="panel form-grid" autocomplete="off">
-            <input type="hidden" name="id" />
-            <div class="wide form-section-title">
-              <p class="eyebrow">普通用户只填这里</p>
-              <h3>必填信息</h3>
-              <p class="section-desc">如果你只是拿到一个 API 地址和 Key 来测试，填完下面几项后直接点“保存并测试配置”。</p>
-            </div>
-            <label class="wide">
-              配置模板
-              <select id="profile-template">
-                <option value="">不使用模板，手动填写</option>
-                <option value="relay_openai_compatible">AI 中转站 / OpenAI 兼容</option>
-                <option value="claude_native">Claude 原生 Messages</option>
-                <option value="openai_official">OpenAI 官方 / Chat Completions（含 codex / o 系列）</option>
-                <option value="deepseek_openai_compatible">DeepSeek / OpenAI 兼容</option>
-                <option value="gemini_openai_compatible">Gemini / OpenAI 兼容</option>
-                <option value="kimi_openai_compatible">Kimi (Moonshot) / OpenAI 兼容</option>
-                <option value="doubao_openai_compatible">豆包 (火山方舟) / OpenAI 兼容</option>
-                <option value="glm_openai_compatible">GLM (智谱) / OpenAI 兼容</option>
-                <option value="qwen_openai_compatible">通义千问 Qwen / OpenAI 兼容</option>
-                <option value="grok_openai_compatible">Grok (xAI) / OpenAI 兼容</option>
-              </select>
-              <small class="field-hint">不懂协议时，先选“AI 中转站 / OpenAI 兼容”。模板只辅助填写，保存前仍可修改。</small>
-            </label>
-            <label>
-              名称
-              <input name="name" placeholder="例如 CC-Kiro-CH2 Claude" required />
-              <small class="field-hint">写成人能看懂的名字，报告里会显示。</small>
-            </label>
-            <label class="wide">
-              Base URL
-              <input name="baseUrl" placeholder="https://api.example.com" required />
-              <small class="field-hint">
-                正确示例：<code>https://api.example.com</code>。不要填：<code>https://api.example.com/v1/chat/completions</code>。
-              </small>
-            </label>
-            <label>
-              默认模型
-              <input name="defaultModel" placeholder="claude-sonnet-4-5 / gpt-4.1" required />
-              <small class="field-hint">复制平台后台里的模型名，不要自己猜。</small>
-            </label>
-            <label class="wide">
-              API Key
-              <input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴平台提供的 API Key" />
-              <small class="field-hint">Key 只保存在本机，不会出现在报告、日志或导出配置里。<b>编辑已有渠道时留空 = 保留原 Key。</b></small>
-            </label>
-
-            <details class="wide advanced-settings">
-              <summary>高级设置，一般不用改</summary>
-              <div class="form-grid advanced-settings-body">
-                <label>
-                  角色
-                  <select name="role">
-                    <option value="target">被测 API</option>
-                    <option value="baseline">可信基线 API</option>
-                    <option value="judge">主 API / 评分 API</option>
-                  </select>
-                  <small class="field-hint">官方 API 或长期稳定渠道可设为“可信基线 API”，用于后续横向对比。</small>
-                </label>
-                <label>
-                  供应商
-                  <input name="provider" placeholder="例如 OpenAI / Anthropic / DeepSeek" required />
-                </label>
-                <label>
-                  协议
-                  <select name="protocol">
-                    <option value="openai_compatible">OpenAI Compatible</option>
-                    <option value="openai_chat">OpenAI Chat Completions</option>
-                    <option value="claude_messages">Claude Messages</option>
-                  </select>
-                  <small class="field-hint">不确定时先选 OpenAI Compatible。</small>
-                </label>
-                <label>
-                  渠道标识
-                  <input name="channelCode" placeholder="可选，例如 CC-Kiro-CH2" />
-                </label>
-                <label>
-                  最大输出
-                  <input name="maxTokens" type="number" value="512" min="1" />
-                </label>
-                <label>
-                  超时毫秒
-                  <input name="timeoutMs" type="number" value="60000" min="1000" />
-                  <small class="field-hint">复杂任务建议 60000-120000，太短容易误判超时。</small>
-                </label>
-                <label>
-                  输入成本单价
-                  <input name="inputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 4.5" />
-                  <small class="field-hint">元 / 1M tokens。填写上游结算价，用于成本估算。</small>
-                </label>
-                <label>
-                  输出成本单价
-                  <input name="outputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 22.5" />
-                  <small class="field-hint">元 / 1M tokens。填写上游结算价。</small>
-                </label>
-                <label>
-                  输入售卖单价
-                  <input name="inputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 5" />
-                  <small class="field-hint">元 / 1M tokens。填写本站对外售卖价，用于毛利估算。</small>
-                </label>
-                <label>
-                  输出售卖单价
-                  <input name="outputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 25" />
-                  <small class="field-hint">元 / 1M tokens。可不填，不填则不计算收入和毛利。</small>
-                </label>
-                <label class="wide">
-                  备注
-                  <textarea name="notes" placeholder="价格、倍率、来源、测试目的"></textarea>
-                </label>
-              </div>
-            </details>
-            <div id="profile-check-result" class="wide check-panel muted">填写配置后，这里会提示明显风险。</div>
-            <div class="wide action-row split-actions">
-              <button id="save-and-test-profile" class="primary" type="submit">保存并测试配置</button>
-              <button id="save-profile-only" class="secondary quiet-action" type="button">仅保存，不测试</button>
-            </div>
-          </form>
-
-          <aside class="panel cfg-tips">
-            <h4>填写要点</h4>
-            <div class="tip"><b>Base URL</b><span>填到域名/网关 <code>https://api.example.com</code>，别带 <code>/v1/chat/completions</code>。</span></div>
-            <div class="tip"><b>协议</b><span>多数中转站选 OpenAI Compatible；Claude 原生接口才选 Claude Messages。选错常表现为内容块缺失/空响应。</span></div>
-            <div class="tip"><b>API Key</b><span>只保存在本机安全存储；导出配置、报告、日志都不带真实 Key。</span></div>
-            <div class="tip"><b>可信基线</b><span>官方或长期稳定渠道可在高级设置里设为“可信基线 API”，用于横向对比与防换模型。</span></div>
-          </aside>
-          </div>
-
-          <div id="missing-key-guide" class="panel missing-key-guide hidden"></div>
-
-          <div class="panel">
-            <h3>已配置渠道</h3>
-            <div id="profile-list" class="table"></div>
-          </div>
-          </div>
-        </section>
-
         <section class="page" id="channels">
           <div class="cfg">
             <div class="cfg-topbar">
@@ -519,6 +367,40 @@
                   <small class="field-hint">该渠道支持的模型，逗号分隔；在“模型管理”里选其一建测试目标。</small></label>
                 <label class="wide">API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴上游 Key" />
                   <small class="field-hint">编辑时留空 = 保留原 Key。只存本机、不下发浏览器。</small></label>
+
+                <details class="wide advanced-settings">
+                  <summary>高级设置</summary>
+                  <div class="form-grid advanced-settings-body">
+                    <label>最大输出
+                      <input name="maxTokens" type="number" value="512" min="1" />
+                      <small class="field-hint">单次响应的最大 token 数上限。</small>
+                    </label>
+                    <label>超时毫秒
+                      <input name="timeoutMs" type="number" value="60000" min="1000" />
+                      <small class="field-hint">复杂任务建议 60000-120000，太短容易误判超时。</small>
+                    </label>
+                    <label>输入成本单价
+                      <input name="inputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 4.5" />
+                      <small class="field-hint">元 / 1M tokens。填写上游结算价，用于成本估算。</small>
+                    </label>
+                    <label>输出成本单价
+                      <input name="outputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 22.5" />
+                      <small class="field-hint">元 / 1M tokens。填写上游结算价。</small>
+                    </label>
+                    <label>输入售卖单价
+                      <input name="inputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 5" />
+                      <small class="field-hint">元 / 1M tokens。填写本站对外售卖价，用于毛利估算。</small>
+                    </label>
+                    <label>输出售卖单价
+                      <input name="outputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 25" />
+                      <small class="field-hint">元 / 1M tokens。可不填，不填则不计算收入和毛利。</small>
+                    </label>
+                    <label class="wide">备注
+                      <textarea name="notes" placeholder="价格、倍率、来源、测试目的"></textarea>
+                    </label>
+                  </div>
+                </details>
+
                 <div class="wide action-row">
                   <button class="primary" id="save-channel" type="submit">保存渠道</button>
                 </div>
@@ -1234,7 +1116,7 @@
           <div class="section-header">
             <div>
               <h2><span class="step">高级 · 自动化</span>自动测试配置</h2>
-              <p class="section-desc">仅超级管理员可见。为某渠道的某模型配置定时自动测试：到点后平台自动跑一次对应测试并生成报告。调度器为进程内运行——仅在服务器运行时生效，重启后按下次运行时间自动追补。</p>
+              <p class="section-desc">为某渠道的某模型配置定时自动测试：到点后平台自动跑一次对应测试并生成报告。调度器为进程内运行——仅在服务器运行时生效，重启后按下次运行时间自动追补。</p>
             </div>
           </div>
 

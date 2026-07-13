@@ -41,8 +41,7 @@ import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "
 import { buildDemoData } from "./demo-data.js";
 import { requireElement, requireElements } from "./dom-utils.js";
 import { createKeyModal } from "./key-modal.js";
-import { renderProfileConfigCheck as renderProfileConfigCheckPanel } from "./profile-config-check.js";
-import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions } from "./profile-view.js";
+import { renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createBatchTargetPicker } from "./batch-target-picker.js";
@@ -51,7 +50,6 @@ import {
   applyPromptPresetToForm,
   renderPromptPresetOptions,
 } from "./prompt-presets.js";
-import { createProfileController } from "./profile-controller.js";
 import { createChannelAdmin } from "./channel-admin.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
@@ -61,7 +59,6 @@ import { updateEstimateLabels } from "./test-estimates.js";
 import { createTaskFormController, requireSelectedValues } from "./test-form-controller.js";
 import {
   applyBatchTemplate as applyBatchTemplateToForm,
-  applyProfileTemplate as applyProfileTemplateToForm,
   applyStabilityTemplate as applyStabilityTemplateToForm,
 } from "./test-templates.js";
 import {
@@ -100,10 +97,6 @@ let settingsDirty = false;
 let currentPage = "dashboard";
 const projectInfoForm = requireElement("#project-info-form");
 const projectInfoSummary = requireElement("#project-info-summary");
-const profileForm = requireElement("#profile-form");
-const profileList = requireElement("#profile-list");
-const profileTemplate = requireElement("#profile-template");
-const profileCheckResult = requireElement("#profile-check-result");
 const channelForm = requireElement("#channel-form");
 const channelList = requireElement("#channel-list");
 const modelTargetForm = requireElement("#model-target-form");
@@ -259,7 +252,6 @@ const dashboardRecent = requireElement("#dashboard-recent");
 const nextAction = requireElement("#next-action");
 const workflowSteps = requireElements(".workflow-step");
 const demoModeBanner = requireElement("#demo-mode-banner");
-const missingKeyGuide = requireElement("#missing-key-guide");
 const quickFailureActions = requireElement("#quick-failure-actions");
 const keyModal = requireElement("#key-modal");
 const keyModalForm = requireElement("#key-modal-form");
@@ -284,7 +276,7 @@ const quickFailurePanel = createQuickFailurePanel({
   getDefaultProfileId: () => quickVerifyProfileSelect.value,
   updateProfileKey,
   retryQuickTest: () => quickVerifySubmit.click(),
-  openProfiles: () => showPage("profiles"),
+  openProfiles: () => showPage("channels"),
   openStandardEval: (profileId) => {
     if (profileId) standardCascade.setValue(profileId);
     showPage("standard-eval");
@@ -296,20 +288,6 @@ const quickFailurePanel = createQuickFailurePanel({
     applyStabilityTemplate();
     showPage("stability-test");
   },
-});
-const profileController = createProfileController({
-  state,
-  profileForm,
-  profileTemplate,
-  demoModeBanner,
-  renderProfileConfigCheck,
-  loadProfiles,
-  loadRequests,
-  quickProfileSelect: quickVerifyProfileTarget,
-  quickTestResult: quickVerifyResult,
-  quickFailurePanel,
-  showPage,
-  confirmAction,
 });
 
 navButtons.forEach((button) => {
@@ -326,13 +304,11 @@ document.addEventListener("click", (event) => {
 
 requireElement("#load-demo-data").addEventListener("click", enableDemoMode);
 requireElement("#exit-demo-mode").addEventListener("click", disableDemoMode);
-requireElement("#reload-profiles").addEventListener("click", loadProfiles);
 requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
 });
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
-requireElement("#export-profiles").addEventListener("click", exportProfiles);
 requireElement("#export-support-bundle").addEventListener("click", exportSupportBundle);
 
 // 「查看报告」：列出「评测数据/报告」里的报告文件（每页 10 个，分页 + 新格式按渠道/模型/种类/日期筛选）。
@@ -519,12 +495,6 @@ async function loadReportFiles() {
     reportFilesList.innerHTML = `<p class="muted">加载报告列表失败：${escapeHtml(error.message)}</p>`;
   }
 }
-requireElement("#save-profile-only").addEventListener("click", saveProfileOnly);
-requireElement("#import-profiles-button").addEventListener("click", () => {
-  if (assertNotDemo("导入配置")) return;
-  requireElement("#import-profiles-file").click();
-});
-requireElement("#import-profiles-file").addEventListener("change", profileController.importProfiles);
 requireElement("#cancel-stability-task").addEventListener("click", () => cancelRemoteTask(state, "stability"));
 requireElement("#cancel-load-test-task").addEventListener("click", () => cancelRemoteTask(state, "loadTest"));
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
@@ -536,7 +506,6 @@ batchTemplate.addEventListener("change", applyBatchTemplate);
 standardPromptPreset.addEventListener("change", applyStandardPromptPreset);
 stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
-profileTemplate.addEventListener("change", applyProfileTemplate);
 clientLogForm.addEventListener("submit", analyzeClientLogs);
 clientEvidenceSubmit.addEventListener("click", generateSupplierEvidence);
 clientLogFile.addEventListener("change", importClientLogFile);
@@ -544,8 +513,8 @@ clientLogDirectoryImport.addEventListener("click", importClientLogDirectory);
 clientReplayExtract.addEventListener("click", extractReplayRequestFromLogs);
 clientReplayForm.addEventListener("submit", replayClientRequest);
 clientReplayBatch.addEventListener("click", replayClientRequestsFromLogs);
-// input 事件每敲一个字符就触发，updateEstimates/renderProfileConfigCheck 会重建
-// 面板 innerHTML（闪烁、低端机输入延迟）。去抖 200ms，只在停止输入后渲染一次。
+// input 事件每敲一个字符就触发，updateEstimates 会重建面板 innerHTML（闪烁、低端机
+// 输入延迟）。去抖 200ms，只在停止输入后渲染一次。
 function debounce(fn, ms = 200) {
   let timer = null;
   return (...args) => {
@@ -554,13 +523,11 @@ function debounce(fn, ms = 200) {
   };
 }
 const updateEstimatesDebounced = debounce(updateEstimates, 200);
-const renderProfileConfigCheckDebounced = debounce(renderProfileConfigCheck, 200);
 stabilityTestForm.addEventListener("input", updateEstimatesDebounced);
 batchTestForm.addEventListener("input", updateEstimatesDebounced);
 scenarioTestForm.addEventListener("input", updateEstimatesDebounced);
 admissionTestForm.addEventListener("input", updateEstimatesDebounced);
 admissionBatchForm.addEventListener("input", updateEstimatesDebounced);
-profileForm.addEventListener("input", renderProfileConfigCheckDebounced);
 admissionProfileSelect.addEventListener("change", updateEstimates);
 admissionBatchProfileSelect.addEventListener("change", updateEstimates);
 stabilityProfileSelect.addEventListener("change", updateEstimates);
@@ -569,7 +536,6 @@ scenarioProfileSelect.addEventListener("change", updateEstimates);
 scenarioCaseSelect.addEventListener("change", updateEstimates);
 hydrateProjectInfoForm();
 hydratePromptPresetSelects();
-renderProfileConfigCheck();
 
 projectInfoForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -578,20 +544,6 @@ projectInfoForm.addEventListener("submit", (event) => {
   renderDeliveryViews();
   toast("本次测试信息已保存。");
 });
-
-profileForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  await profileController.saveAndTestProfile();
-});
-
-async function saveProfileOnly() {
-  try {
-    await profileController.saveProfileFromForm({ resetAfterSave: true });
-    toast("API 配置已保存。");
-  } catch (error) {
-    toast(error.message, true);
-  }
-}
 
 function formatQuickVerify(result) {
   const verdict = result.verdict || {};
@@ -1332,14 +1284,12 @@ function showPage(page) {
 
 async function loadProfiles() {
   if (state.demoMode) {
-    renderProfiles();
     renderProfileOptions();
     renderDashboard();
     updateEstimates();
     return;
   }
   state.profiles = await api("/api/profiles");
-  renderProfiles();
   renderProfileOptions();
   renderDashboard();
   updateEstimates();
@@ -1527,14 +1477,12 @@ async function loadTestRuns() {
   if (state.demoMode) {
     renderTestRuns();
     renderDashboard();
-    renderProfiles();
     renderDeliveryViews();
     return;
   }
   state.testRuns = await api("/api/test-runs/recent");
   renderTestRuns();
   renderDashboard();
-  renderProfiles();
   renderDeliveryViews();
 }
 
@@ -1570,7 +1518,6 @@ function renderResultsViews() {
   renderRequests();
   renderTestRuns();
   renderTaskEvents();
-  renderProfiles();
   renderDashboard();
   renderDeliveryViews();
   void loadHighRiskAlerts(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
@@ -1654,7 +1601,6 @@ function enableDemoMode() {
   state.testRuns = demoData.testRuns.map((item) => ({ ...item }));
   state.taskEvents = demoData.taskEvents.map((item) => ({ ...item }));
   demoModeBanner.classList.remove("hidden");
-  renderProfiles();
   renderProfileOptions();
   renderRequests();
   renderTestRuns();
@@ -1845,94 +1791,6 @@ function renderWorkflowGuide() {
   });
 }
 
-// 每个渠道的最近一次测试结论（profileId → {cls,label}），供配置页健康行用。
-// 与首页"渠道健康"卡同源（state.testRuns 按 profile 取最近 verdict）。
-function latestVerdictsByProfile() {
-  const map = {};
-  for (const run of state.testRuns || []) {
-    const id = run.profileId;
-    if (!id || map[id]) continue;
-    const v = dashVerdict(run);
-    if (v) map[id] = v;
-  }
-  return map;
-}
-
-function renderProfiles() {
-  renderMissingKeyGuide();
-  renderProfileList({
-    profiles: state.profiles,
-    list: profileList,
-    verdicts: latestVerdictsByProfile(),
-    onFocusForm: () => {
-      profileForm.scrollIntoView({ behavior: "smooth", block: "start" });
-      profileForm.elements.name.focus();
-    },
-    onDeleteProfile: async (profileId) => {
-      if (assertNotDemo("删除配置")) return;
-      const confirmed = await confirmAction({
-        title: "删除这个 API 配置？",
-        message: "删除后，这个配置不会再出现在测试列表里。",
-        detail: "如果只是 Key 失效，建议优先更新 Key，不一定要删除配置。",
-        confirmLabel: "确认删除",
-        cancelLabel: "保留配置",
-        tone: "danger",
-      });
-      if (!confirmed) {
-        return;
-      }
-      await api(`/api/profiles/${encodeURIComponent(profileId)}`, {
-        method: "DELETE",
-      });
-      await loadProfiles();
-    },
-    onUpdateKey: updateProfileKey,
-    onEditProfile: fillProfileFormForEdit,
-  });
-}
-
-// 把已有渠道载入表单做编辑（带 id → 保存时后端按 id 更新，不是新建）。
-// Key 留空表示保留原 Key（脱敏数据本就没有明文 Key）。
-function fillProfileFormForEdit(profileId) {
-  if (assertNotDemo("编辑配置")) return;
-  const profile = state.profiles.find((p) => p.id === profileId);
-  if (!profile) return;
-  const f = profileForm.elements;
-  const set = (name, val) => {
-    if (f[name] !== undefined && f[name] !== null) f[name].value = val ?? "";
-  };
-  set("id", profile.id);
-  set("name", profile.name);
-  set("provider", profile.provider);
-  set("baseUrl", profile.baseUrl);
-  set("defaultModel", profile.defaultModel);
-  set("protocol", profile.protocol);
-  set("role", profile.role);
-  set("channelCode", profile.channelCode);
-  set("maxTokens", profile.maxTokens);
-  set("timeoutMs", profile.timeoutMs);
-  set("inputPricePerMTokens", profile.inputPricePerMTokens);
-  set("outputPricePerMTokens", profile.outputPricePerMTokens);
-  set("inputSellPricePerMTokens", profile.inputSellPricePerMTokens);
-  set("outputSellPricePerMTokens", profile.outputSellPricePerMTokens);
-  set("notes", profile.notes);
-  if (f.apiKey) f.apiKey.value = ""; // 留空 = 不修改 Key
-  const advanced = profileForm.querySelector("details.advanced-settings");
-  if (advanced) advanced.open = true; // 展开高级设置，方便改角色/单价
-  renderProfileConfigCheck();
-  profileForm.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (f.name) f.name.focus();
-  toast(`正在编辑「${profile.name}」。改完点“保存”。Key 留空表示不修改。`);
-}
-
-function renderMissingKeyGuide() {
-  renderMissingKeyPanel({
-    profiles: state.profiles,
-    container: missingKeyGuide,
-    onFillKey: updateProfileKey,
-  });
-}
-
 async function updateProfileKey(profileId) {
   if (assertNotDemo("保存 Key")) return;
   const apiKey = await keyPrompt.requestApiKey();
@@ -2020,14 +1878,6 @@ function renderScenarioSummary(result) {
   renderScenarioSummaryPanel(scenarioSummary, result);
 }
 
-function renderProfileConfigCheck(validation = null) {
-  renderProfileConfigCheckPanel({
-    form: profileForm,
-    container: profileCheckResult,
-    validation,
-  });
-}
-
 async function copyReportText(kind) {
   const text = state.latestReportCopies[kind] || "";
   if (!text) {
@@ -2103,17 +1953,6 @@ function applyBatchPromptPreset() {
   });
 }
 
-function applyProfileTemplate() {
-  applyProfileTemplateToForm({
-    form: profileForm,
-    templateSelect: profileTemplate,
-    onApplied: (template) => {
-      renderProfileConfigCheck();
-      toast(`已应用配置模板：${template.label}`);
-    },
-  });
-}
-
 function hydrateProjectInfoForm() {
   hydrateProjectInfoFormFields(projectInfoForm, state.projectInfo);
   renderDeliveryViews();
@@ -2160,13 +1999,6 @@ function formatEstimateForAdmissionBatch() {
 
 function findProfileModelName(profileId) {
   return state.profiles.find((profile) => profile.id === profileId)?.defaultModel || "";
-}
-
-async function exportProfiles() {
-  if (assertNotDemo("导出配置")) return;
-  const data = await api("/api/profiles/export");
-  downloadText(`evaluator-profiles-${Date.now()}.json`, JSON.stringify(data, null, 2));
-  toast("配置已导出，导出文件不包含 API Key。");
 }
 
 async function exportSupportBundle() {

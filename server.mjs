@@ -680,6 +680,11 @@ async function handleApi(req, res) {
         const cadenceChanged = !existing || existing.periodHours !== next.periodHours || (!existing.enabled && next.enabled);
         if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next.periodHours);
         if (!next.enabled) next.nextRunAt = null;
+        // 由停用转启用（含熔断自动停用后的人工复活）：清零连续失败熔断状态，让作业重新开始计数。
+        if (existing && !existing.enabled && next.enabled) {
+          next.consecutiveFailures = 0;
+          next.autoDisabledAt = null;
+        }
         const idx = jobs.findIndex((j) => j.id === next.id);
         if (idx >= 0) jobs[idx] = next;
         else jobs.push(next);
@@ -1327,13 +1332,15 @@ async function handleApi(req, res) {
 
     const scopeLabel = soloProfileId ? `单个模型 · ${soloInfo.label}${soloInfo.model ? " · " + soloInfo.model : ""}` : null;
     const data = { windowHours, generatedAt: now.toISOString(), jobs: jobRows, targets, regressionAlerts, highRiskAlerts, scopeLabel };
-    const markdown = formatAutoTestDigestReport(data, { now });
+    // 一次性图表穿透 nonce：仅本次巡检的可信趋势图 SVG 可原样内联；其它报告与不可信正文无法伪造。
+    const chartNonce = randomUUID();
+    const markdown = formatAutoTestDigestReport(data, { now, chartNonce });
     const stamp = compactDate(now).replace("-", "_"); // YYYYMMDD_HHMMSS
     // 单模型报告名带 渠道_模型 前缀（供报告中心按渠道/模型筛选）；聚合报告无前缀。
     const soloProfile = soloProfileId ? profiles.find((p) => p.id === soloProfileId) : null;
     const soloSlug = soloProfile ? sanitizeReportBaseName(reportTargetSlug(soloProfile)) : "";
     const baseName = soloSlug ? `${soloSlug}_autodigest_${stamp}_${randomUUID().slice(0, 4)}` : `autodigest_${stamp}_${randomUUID().slice(0, 4)}`;
-    await saveReportFiles(baseName, markdown, scopeLabel ? `自动测试巡检报告 · ${soloInfo.label}` : "自动测试巡检报告");
+    await saveReportFiles(baseName, markdown, scopeLabel ? `自动测试巡检报告 · ${soloInfo.label}` : "自动测试巡检报告", { chartNonce });
     sendJson(res, 200, {
       reportId: sanitizeReportBaseName(baseName),
       markdown,

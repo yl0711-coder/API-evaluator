@@ -235,7 +235,7 @@ function runStandardNextAction({
   updateEstimates,
 }) {
   if (action === "profile-config") {
-    showPage("profiles");
+    showPage("channels");
     return;
   }
   if (action === "quick-retry") {

@@ -154,6 +154,30 @@ test("普通管理员(role=10) 可完整使用作业端点：GET / 建 / 删", a
   assert.equal((await del(`/api/auto-test-jobs/${jobId}`, cookieUser)).status, 200);
 });
 
+test("熔断复活：由停用转启用时清零 consecutiveFailures 与 autoDisabledAt，并重算 nextRunAt", async () => {
+  assert.ok(ready, "server 未就绪");
+  // 造一个「已自动停用」的作业：create 无 existing，故 body 里的熔断态被采纳（模拟调度器停用后的盘上状态）。
+  const created = await post("/api/auto-test-jobs", cookieAdmin, {
+    name: "熔断作业", targetId, kind: "quick", periodHours: 6,
+    enabled: false, consecutiveFailures: 3, autoDisabledAt: "2026-07-03T00:00:00.000Z",
+  });
+  assert.equal(created.status, 200);
+  const jobId = created.body.job.id;
+  let found = (await get("/api/auto-test-jobs", cookieAdmin)).body.jobs.find((j) => j.id === jobId);
+  assert.equal(found.consecutiveFailures, 3, "停用态应保留熔断计数");
+  assert.equal(found.autoDisabledAt, "2026-07-03T00:00:00.000Z", "停用态应保留 autoDisabledAt");
+  assert.equal(found.enabled, false);
+
+  // 重新启用 → 清零复活
+  const reenabled = await post("/api/auto-test-jobs", cookieAdmin, { id: jobId, targetId, kind: "quick", periodHours: 6, enabled: true });
+  assert.equal(reenabled.body.job.enabled, true);
+  found = (await get("/api/auto-test-jobs", cookieAdmin)).body.jobs.find((j) => j.id === jobId);
+  assert.equal(found.consecutiveFailures, 0, "重新启用清零熔断计数");
+  assert.equal(found.autoDisabledAt, null, "重新启用清除 autoDisabledAt");
+  assert.ok(found.nextRunAt, "重新启用重算 nextRunAt");
+  await del(`/api/auto-test-jobs/${jobId}`, cookieAdmin);
+});
+
 test("未登录：作业端点一律 401", async () => {
   assert.ok(ready, "server 未就绪");
   assert.equal((await get("/api/auto-test-jobs", "")).status, 401);

@@ -1,6 +1,6 @@
 import { escapeHtmlText } from "./utils.mjs";
 
-export function renderReportHtml(markdown, title) {
+export function renderReportHtml(markdown, title, { chartNonce = "" } = {}) {
   const escapedTitle = escapeHtmlText(title || "测试报告");
   return [
     "<!doctype html>",
@@ -8,6 +8,9 @@ export function renderReportHtml(markdown, title) {
     "<head>",
     '<meta charset="UTF-8" />',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+    // 内联 CSP：报告是纯静态 HTML+CSS、无脚本。除 HTTP /view 的响应头 CSP 外再加一道 <meta>，
+    // 使桌面 file:// 直开磁盘 .html（EVALUATOR_OPEN_REPORT / 手动打开）时脚本同样被拦，堵住 file:// 独立缺口。
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'\" />",
     `<title>${escapedTitle}</title>`,
     "<style>",
     "body{margin:0;padding:32px;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;background:#f6f7fb;color:#172033;line-height:1.75}",
@@ -20,16 +23,20 @@ export function renderReportHtml(markdown, title) {
     "</head>",
     "<body><main>",
     `<div class="meta">本报告由模型评测平台本地生成，不包含 API Key。</div>`,
-    renderMarkdownForReport(markdown),
+    renderMarkdownForReport(markdown, chartNonce),
     "</main></body></html>",
   ].join("\n");
 }
 
-function renderMarkdownForReport(markdown) {
+// chartNonce：仅由服务端在出「自动测试巡检」报告时生成的一次性随机串。只有围栏 info 串
+// 精确等于 `chart-svg:<chartNonce>` 才进入原样穿透态。不传 nonce（AI 辅助分析等所有其它报告）
+// 时任何围栏都不穿透——不可信上游模型输出（走 AI 辅助分析正文）因此无法伪造 SVG 穿透注入原始 HTML。
+function renderMarkdownForReport(markdown, chartNonce = "") {
   const lines = String(markdown || "").split(/\r?\n/);
   const html = [];
   let inCode = false;
-  let inRawSvg = false; // ```chart-svg 围栏内：内容原样输出（可信 SVG，由本平台 renderTrendChart 生成）
+  let inRawSvg = false; // 可信图表穿透态：仅经 nonce 校验的平台图表围栏可进入
+  const trustedFence = chartNonce ? `chart-svg:${chartNonce}` : null;
   let table = [];
   const flushTable = () => {
     if (!table.length) return;
@@ -48,8 +55,9 @@ function renderMarkdownForReport(markdown) {
     }
     if (line.startsWith("```")) {
       flushTable();
-      const info = line.slice(3).trim().toLowerCase();
-      if (!inCode && (info === "chart-svg" || info === "svg")) {
+      const info = line.slice(3).trim();
+      // 仅平台自带、经一次性 nonce 校验的图表围栏才穿透；无 nonce 或不匹配一律当普通代码块转义。
+      if (!inCode && trustedFence && info === trustedFence) {
         inRawSvg = true;
         continue;
       }

@@ -753,26 +753,115 @@ label {
 }
 
 .advanced-settings {
+  position: relative;
   border: 1px solid rgba(109, 169, 255, 0.24);
   border-radius: 18px;
   background: rgba(109, 169, 255, 0.06);
   padding: 0;
+  overflow: hidden;
+  transition: border-color 0.35s ease, box-shadow 0.35s ease, background 0.35s ease;
+}
+
+/* 展开态：整块微微发光、描边点亮 */
+.advanced-settings[open] {
+  border-color: rgba(109, 169, 255, 0.55);
+  background: rgba(109, 169, 255, 0.09);
+  box-shadow: 0 0 0 1px rgba(109, 169, 255, 0.18), 0 16px 40px -14px rgba(109, 169, 255, 0.55);
+}
+
+/* 顶部一道光扫过（展开时触发一次） */
+.advanced-settings::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), #6da9ff, transparent);
+  background-size: 220% 100%;
+  opacity: 0;
+}
+.advanced-settings[open]::before {
+  animation: adv-sweep 0.9s ease-out both;
+}
+@keyframes adv-sweep {
+  0% { opacity: 0; background-position: 220% 0; }
+  25% { opacity: 1; }
+  100% { opacity: 1; background-position: -120% 0; }
 }
 
 .advanced-settings summary {
   cursor: pointer;
   color: var(--text);
   font-weight: 800;
-  padding: 15px 16px;
+  padding: 15px 16px 15px 42px;
+  position: relative;
+  list-style: none;
+  user-select: none;
+  transition: color 0.2s ease;
 }
+.advanced-settings summary::-webkit-details-marker { display: none; }
+.advanced-settings summary:hover { color: var(--accent); }
 
-.advanced-settings summary::marker {
-  color: var(--accent);
+/* 自定义 chevron：展开时优雅旋转 */
+.advanced-settings summary::before {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: translateY(-70%) rotate(-45deg);
+  transition: transform 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.4);
+}
+.advanced-settings[open] summary::before {
+  transform: translateY(-30%) rotate(45deg);
 }
 
 .advanced-settings-body {
   border-top: 1px solid rgba(109, 169, 255, 0.18);
   padding: 16px;
+}
+
+/* 展开时：整块内容模糊 → 清晰、轻微下滑淡入 */
+.advanced-settings[open] .advanced-settings-body {
+  animation: adv-body-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes adv-body-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.985); filter: blur(3px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+
+/* 各字段错峰滑入，营造“逐条点亮”的层次感 */
+.advanced-settings[open] .advanced-settings-body > * {
+  animation: adv-field-in 0.45s ease both;
+}
+.advanced-settings[open] .advanced-settings-body > *:nth-child(1) { animation-delay: 0.05s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(2) { animation-delay: 0.09s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(3) { animation-delay: 0.13s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(4) { animation-delay: 0.17s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(5) { animation-delay: 0.21s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(6) { animation-delay: 0.25s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(7) { animation-delay: 0.29s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(8) { animation-delay: 0.33s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(9) { animation-delay: 0.37s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(10) { animation-delay: 0.41s; }
+.advanced-settings[open] .advanced-settings-body > *:nth-child(11) { animation-delay: 0.45s; }
+@keyframes adv-field-in {
+  from { opacity: 0; transform: translateY(9px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 尊重“减少动态效果”系统偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .advanced-settings,
+  .advanced-settings *,
+  .advanced-settings::before {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 input,

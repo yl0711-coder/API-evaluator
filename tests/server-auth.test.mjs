@@ -30,7 +30,13 @@ const server = spawn(process.execPath, [join(root, "server.mjs")], {
 });
 test.after(() => {
   server.kill();
-  rmSync(dataDir, { recursive: true, force: true });
+  // best-effort 清理：Windows 上子进程刚 kill 时 SQLite 文件仍被短暂占用（EPERM/EBUSY），
+  // 重试几次；清理失败绝不能让测试变红（断言早已跑完，这里只是删临时目录）。
+  try {
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch {
+    /* 临时目录清理失败不影响测试结论 */
+  }
 });
 
 async function waitHealthy() {

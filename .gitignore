@@ -31,6 +31,7 @@ app-data/
 
 # Claude Code local config (keep shareable skills under .claude/skills/)
 .claude/settings.local.json
+.claude/
 
 # Local-only reference material & personal notes (not project source)
 *.pdf

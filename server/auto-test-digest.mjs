@@ -30,7 +30,7 @@ function deltaPct(cur, prev) {
   return dpp > 0 ? `（↑${dpp}pp）` : `（↓${Math.abs(dpp)}pp）`;
 }
 
-export function formatAutoTestDigestReport(data = {}, { now = null } = {}) {
+export function formatAutoTestDigestReport(data = {}, { now = null, chartNonce = "" } = {}) {
   const windowHours = data.windowHours;
   const jobs = Array.isArray(data.jobs) ? data.jobs : [];
   const targets = Array.isArray(data.targets) ? data.targets : [];
@@ -118,7 +118,9 @@ export function formatAutoTestDigestReport(data = {}, { now = null } = {}) {
       const rounds = Array.isArray(t.rounds) ? t.rounds : [];
       if (rounds.length) {
         const svg = renderTrendChart(rounds, "count");
-        lines.push("```chart-svg");
+        // nonce 标记的可信图表围栏：只有 report-html.mjs 收到同一 nonce 才会原样内联此 SVG，
+        // 不可信正文即便伪造 ```chart-svg / ```svg 也因 nonce 不符而被转义。
+        lines.push(`\`\`\`chart-svg${chartNonce ? ":" + chartNonce : ""}`);
         lines.push(`<div style="background:#0b1220;border-radius:12px;padding:12px;margin:8px 0;overflow-x:auto">${svg}</div>`);
         lines.push("```");
       } else {

@@ -35,13 +35,15 @@ export function openReportInBrowser(htmlPath, { enabled = isOpenReportEnabled(pr
   }
 }
 
-export async function saveReportFiles(baseName, markdown, title) {
+// chartNonce：仅「自动测试巡检」报告出报告时由服务端生成并传入，用于校验平台图表围栏的可信穿透
+// （见 report-html.mjs）。其它报告（含 AI 辅助分析）不传，任何 SVG 围栏都会被转义。
+export async function saveReportFiles(baseName, markdown, title, { chartNonce = "" } = {}) {
   await mkdir(REPORTS_DIR, { recursive: true });
   const safeBaseName = sanitizeReportBaseName(baseName);
   const markdownPath = join(REPORTS_DIR, `${safeBaseName}.md`);
   const htmlPath = join(REPORTS_DIR, `${safeBaseName}.html`);
   await writeFile(markdownPath, markdown, "utf8");
-  await writeFile(htmlPath, renderReportHtml(markdown, title), "utf8");
+  await writeFile(htmlPath, renderReportHtml(markdown, title, { chartNonce }), "utf8");
   // 登记报告元数据（共享报告中心 + 留存清理）。best-effort，不影响出报告。
   await recordReport({
     reportId: safeBaseName,

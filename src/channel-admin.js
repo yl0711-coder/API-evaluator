@@ -207,6 +207,16 @@ export function createChannelAdmin({ state, els, onChange }) {
     f.elements.provider.value = channel.provider || "";
     f.elements.models.value = (channel.models || []).join(", ");
     f.elements.apiKey.value = "";
+    // 高级设置回填：单价为 null（未设置）时置空，别显示成 0。
+    f.elements.maxTokens.value = channel.maxTokens ?? 512;
+    f.elements.timeoutMs.value = channel.timeoutMs ?? 60000;
+    f.elements.inputPricePerMTokens.value = channel.inputPricePerMTokens ?? "";
+    f.elements.outputPricePerMTokens.value = channel.outputPricePerMTokens ?? "";
+    f.elements.inputSellPricePerMTokens.value = channel.inputSellPricePerMTokens ?? "";
+    f.elements.outputSellPricePerMTokens.value = channel.outputSellPricePerMTokens ?? "";
+    f.elements.notes.value = channel.notes || "";
+    const advanced = f.querySelector("details.advanced-settings");
+    if (advanced) advanced.open = true; // 编辑时展开，方便改超时/单价/备注
     f.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   async function deleteChannel(id) {
