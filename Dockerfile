@@ -29,6 +29,9 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 COPY --from=build /app/server.mjs ./server.mjs
 COPY --from=build /app/server ./server
 COPY --from=build /app/dist ./dist
+# 前后端共用的纯函数（server/auto-test-digest.mjs 用 shared/trend-chart.mjs 出趋势图）。后端在运行时
+# import 它，故必须随镜像带上 shared/——历史上后端曾误引 src/、而 src/ 不打包，导致 0.5.7 升级启动崩溃。
+COPY --from=build /app/shared ./shared
 # 运行时数据文件：server/ 会按 ../scripts/*.json 相对路径读取 Claude 分词基线
 # (tokenizer-fingerprint-audit.mjs) 与档位判别参考 (tier-admission.mjs)。漏拷会导致
 # 上线后报「未找到本地分词基线」，故必须随镜像带上 scripts/。

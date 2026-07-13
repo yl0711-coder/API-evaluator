@@ -1494,7 +1494,7 @@ function sleepUnlessAborted(ms, signal) {
 async function runUpstreamProbe(profile, options, { buildRequest, interpret, computeSuccess, captureFirstToken = false }) {
   const requestId = crypto.randomUUID();
   const startedAt = new Date();
-  const timeoutMs = Number(profile.timeoutMs || 60000);
+  const timeoutMs = Number(profile.timeoutMs || 300000);
 
   // 贯穿各 finalize 分支的可变结果（含变体特有字段 toolCall / streamValidation / firstTokenMs）。
   const r = {

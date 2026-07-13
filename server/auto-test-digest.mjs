@@ -1,9 +1,10 @@
 // server/auto-test-digest.mjs
 // 「自动测试巡检报告」的纯格式化内核：把已聚合好的巡检数据渲染成 Markdown（数据源无关，便于单测）。
 // 数据的采集（loadJobs / buildProfileTrend / 告警）在 server.mjs 端点里做；这里只负责成文与配图。
-// 每个模型一张「稳定性趋势」图：复用 src/trend-chart.js 的纯函数 renderTrendChart（数字 → SVG 字符串），
+// 每个模型一张「稳定性趋势」图：复用 shared/trend-chart.mjs 的纯函数 renderTrendChart（数字 → SVG 字符串），
 // 用专用 ```chart-svg 围栏交给 report-html.mjs 原样内联（见该文件的可信 SVG 穿透）。
-import { renderTrendChart } from "../src/trend-chart.js";
+// 注意：从 shared/（而非前端 src/）import——后端引 src/ 会因生产镜像不打包 src/ 启动崩溃。
+import { renderTrendChart } from "../shared/trend-chart.mjs";
 
 const KIND_LABELS = { quick: "快速验证", admission: "准入评测", stability: "稳定性", scenario: "场景测试" };
 

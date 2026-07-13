@@ -209,7 +209,7 @@ export function createChannelAdmin({ state, els, onChange }) {
     f.elements.apiKey.value = "";
     // 高级设置回填：单价为 null（未设置）时置空，别显示成 0。
     f.elements.maxTokens.value = channel.maxTokens ?? 512;
-    f.elements.timeoutMs.value = channel.timeoutMs ?? 60000;
+    f.elements.timeoutMs.value = channel.timeoutMs ?? 300000;
     f.elements.inputPricePerMTokens.value = channel.inputPricePerMTokens ?? "";
     f.elements.outputPricePerMTokens.value = channel.outputPricePerMTokens ?? "";
     f.elements.inputSellPricePerMTokens.value = channel.inputSellPricePerMTokens ?? "";

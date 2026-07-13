@@ -376,8 +376,8 @@
                       <small class="field-hint">单次响应的最大 token 数上限。</small>
                     </label>
                     <label>超时毫秒
-                      <input name="timeoutMs" type="number" value="60000" min="1000" />
-                      <small class="field-hint">复杂任务建议 60000-120000，太短容易误判超时。</small>
+                      <input name="timeoutMs" type="number" value="300000" min="1000" />
+                      <small class="field-hint">单请求总时限（含推理+完整输出）。默认 300000（5 分钟）；太短容易把慢响应误判成超时。</small>
                     </label>
                     <label>输入成本单价
                       <input name="inputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 4.5" />
@@ -1052,6 +1052,13 @@
               <span>
                 加入 HardcoreLogic 长尾逻辑谜题
                 <small>10 类逻辑谜题的长尾变体/无解题（JSON 客观判分），更耗额度，主攻档位降级判别。</small>
+              </span>
+            </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-coding-hard" />
+              <span>
+                加入 编程硬核题
+                <small>针对前沿模型高失败区的自制硬题（组合计数 / 非标准博弈 / 对抗性模拟）：要求写程序并给出指定输入的运行结果，exact 客观判分。很耗额度。</small>
               </span>
             </label>
 

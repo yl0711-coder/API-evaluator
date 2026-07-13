@@ -32,7 +32,7 @@ test("normalizeChannel：必填名称，默认值与价格/模型清单归一", 
   assert.equal(ch.baseUrl, "https://api.x.com"); // 去尾斜杠
   assert.equal(ch.protocol, "openai_chat");
   assert.equal(ch.maxTokens, 512);
-  assert.equal(ch.timeoutMs, 60000);
+  assert.equal(ch.timeoutMs, 300000);
   assert.deepEqual(ch.models, ["gpt-4o"]);
   assert.equal(ch.status, "enabled");
   assert.equal(ch.source, "manual");

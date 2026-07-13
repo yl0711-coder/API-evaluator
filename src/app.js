@@ -36,7 +36,7 @@ import {
   formatStabilityResult,
 } from "./formatters.js";
 import { renderRequestList, renderTaskEventList, renderTestRunList } from "./history-view.js";
-import { renderTrendChart } from "./trend-chart.js";
+import { renderTrendChart } from "../shared/trend-chart.mjs";
 import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "./workflow-guide.js";
 import { buildDemoData } from "./demo-data.js";
 import { requireElement, requireElements } from "./dom-utils.js";
@@ -1370,6 +1370,7 @@ const setLivebench = requireElement("#set-livebench");
 const setSafety = requireElement("#set-safety");
 const setHle = requireElement("#set-hle");
 const setHardcoreLogic = requireElement("#set-hardcore-logic");
+const setCodingHard = requireElement("#set-coding-hard");
 const setAutoTag = requireElement("#set-auto-tag");
 const setNewapiBase = requireElement("#set-newapi-base");
 const setNewapiToken = requireElement("#set-newapi-token");
@@ -1408,6 +1409,7 @@ async function loadSettings() {
     setSafety.checked = Boolean(s.enableSafety);
     setHle.checked = Boolean(s.enableHle);
     setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
+    setCodingHard.checked = Boolean(s.enableCodingHard);
     setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
     setTestCycleDays.value = Number(s.testCycleDays) > 0 ? String(Math.trunc(s.testCycleDays)) : ""; // 0/空 → 空框（占位符 0）
     setHighRiskAlert.checked = s.enableHighRiskAlert === true;
@@ -1439,6 +1441,7 @@ settingsForm.addEventListener("submit", async (event) => {
     enableSafety: setSafety.checked,
     enableHle: setHle.checked,
     enableHardcoreLogic: setHardcoreLogic.checked,
+    enableCodingHard: setCodingHard.checked,
     enableAutoTag: setAutoTag.checked,
     testCycleDays: Math.max(0, Math.trunc(Number(setTestCycleDays.value) || 0)),
     enableHighRiskAlert: setHighRiskAlert.checked,

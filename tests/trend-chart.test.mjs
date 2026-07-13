@@ -4,7 +4,7 @@
 //   ② count 模式补时间刻度；⑤ 右轴上界取整数友好值。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderTrendChart } from "../src/trend-chart.js";
+import { renderTrendChart } from "../shared/trend-chart.mjs";
 
 const at = (h, m = 0) => `2026-07-09T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`;
 // 抽出指定 stroke 的 polyline 顶点数（用于判定耗时线连了几个点）。
