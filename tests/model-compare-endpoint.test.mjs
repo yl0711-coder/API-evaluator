@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
-import { readdir, readFile, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -17,7 +17,6 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const PORT = 5386;
 const dataDir = mkdtempSync(join(tmpdir(), "mc-endpoint-"));
 const REPORTS_DIR = join(dataDir, "报告");
-const EVAL = join(root, "Evaluation Report");
 // 样例对象：文件名前缀 = 渠道_模型。A=test/…，B=Claude-1.3x/…（与夹具文件名一致）。
 const A = { channel: "test", model: "claude-opus-4-8" };
 const B = { channel: "Claude-1.3x", model: "claude-opus-4-8" };
@@ -62,21 +61,67 @@ async function post(path, ck, body) {
   return { status: r.status, body: await r.json().catch(() => null) };
 }
 
-// 把两个夹具文件夹里的 .md 报告平铺播种进 REPORTS_DIR（文件名前缀已含渠道_模型，端点按前缀匹配）。
+// 自造最小但可解析的报告夹具（旧实现读 Evaluation Report/ 下的真实样例，但那目录从未提交进仓库
+// → seedReports 播不进任何报告 → 端点 no_reports → 测试挂）。这里内联生成，测试自包含、可复现。
+// 文件名前缀 = sanitizeReportBaseName(渠道_模型)_类型_YYYYMMDD，与端点匹配口径一致；
+// 每模型各一份 稳定性(run)/场景(scenario)/准入(admission)，场景名两方共有（「基础问答」）以便配对对比。
+function runReportMd(rate, ms) {
+  return [
+    "# 稳定性测试报告",
+    "",
+    "## 测试对象",
+    "- 测试轮数：10",
+    "- 并发数：1",
+    "",
+    "## 专业汇总结论",
+    `- 成功率：${rate}`,
+    `- 平均总耗时：${ms} ms`,
+    "- 平均首包：300 ms",
+    "",
+  ].join("\n");
+}
+function scenarioReportMd(rate, quality) {
+  return [
+    "# 场景测试报告",
+    "",
+    "## 专业分析摘要",
+    "- 每个场景重复次数：3",
+    "",
+    "## 场景明细",
+    "| 场景 | 成功率 | 平均质量分 | 平均耗时 | 问题摘要 | 场景结论 |",
+    "|---|---|---|---|---|---|",
+    `| 基础问答 | ${rate} | ${quality} | 1500 | - | 通过 |`,
+    "",
+  ].join("\n");
+}
+function admissionReportMd(grade, composite) {
+  return [
+    "# 准入评测报告",
+    "",
+    "## 准入结论",
+    `- 准入等级：${grade}`,
+    `- 综合分：${composite}`,
+    "- 结论：可用",
+    "",
+    "## 关键指标",
+    "- 成功率：100% (12/12)",
+    "- 平均耗时：1300 ms",
+    "",
+  ].join("\n");
+}
+
 async function seedReports() {
   await mkdir(REPORTS_DIR, { recursive: true });
-  for (const sub of ["新建文件夹", "新建文件夹 (2)"]) {
-    const dir = join(EVAL, sub);
-    let names = [];
-    try {
-      names = (await readdir(dir)).filter((n) => n.toLowerCase().endsWith(".md"));
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      await writeFile(join(REPORTS_DIR, name), await readFile(join(dir, name), "utf8"), "utf8");
-    }
-  }
+  const D = "20260701";
+  const write = (name, md) => writeFile(join(REPORTS_DIR, name), md, "utf8");
+  // A = test / claude-opus-4-8（较优）
+  await write(`test_claude-opus-4-8_run_${D}.md`, runReportMd("100% (10/10)", 1200));
+  await write(`test_claude-opus-4-8_scenario_${D}.md`, scenarioReportMd("100% (3/3)", "8.5"));
+  await write(`test_claude-opus-4-8_admission_${D}.md`, admissionReportMd("A", 85));
+  // B = Claude-1.3x / claude-opus-4-8（略逊，产生可对比的差异）
+  await write(`Claude-1.3x_claude-opus-4-8_run_${D}.md`, runReportMd("80% (8/10)", 1600));
+  await write(`Claude-1.3x_claude-opus-4-8_scenario_${D}.md`, scenarioReportMd("67% (2/3)", "6.0"));
+  await write(`Claude-1.3x_claude-opus-4-8_admission_${D}.md`, admissionReportMd("B", 70));
 }
 
 before(async () => {
