@@ -918,6 +918,20 @@ label {
     animation: none !important;
     transition: none !important;
   }
+
+  /* 卡片 hover：取消位移与过渡（保留阴影加深），避免跳动 */
+  .panel,
+  .metric-card,
+  .workflow-step {
+    transition: none !important;
+  }
+  .panel:hover,
+  .dash .panel:hover,
+  .cfg .panel:hover,
+  .metric-card:hover,
+  .workflow-step:hover {
+    transform: none !important;
+  }
 }
 
 input,
@@ -1847,16 +1861,27 @@ button.danger {
 }
 
 .manual-content h2 {
+  position: relative;
   margin: 30px 0 12px;
   padding-top: 18px;
-  border-top: 1px solid var(--line);
   font-size: 25px;
+}
+
+/* 章节分隔线：改用与「高级设置」顶部同款的橙→蓝渐变线 */
+.manual-content h2::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent), #6da9ff);
 }
 
 .manual-content h3 {
   margin: 22px 0 10px;
   color: var(--accent);
-  font-size: 19px;
+  font-size: 22px;
 }
 
 .manual-content p,
@@ -1960,6 +1985,27 @@ button.danger {
   font-size: 12.5px;
 }
 
+/* 目录大标题：更亮的暖白（非纯白），与灰色小标题项拉开层级；前置矢量图标 */
+.doc-toc .toc-link[data-level="2"] {
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.doc-toc .toc-ico {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+}
+
+.doc-toc .toc-ico svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
 .doc-toc .toc-link:hover {
   color: var(--text);
 }
@@ -1967,6 +2013,11 @@ button.danger {
 .doc-toc .toc-link.is-active {
   color: var(--accent);
   border-left-color: var(--accent);
+  /* 当前章节高亮：橙色文字辉光 + 左侧橙色渐变光晕 */
+  text-shadow:
+    0 0 6px rgba(246, 181, 107, 0.75),
+    0 0 14px rgba(246, 181, 107, 0.45);
+  background: radial-gradient(120px 60% at left, rgba(246, 181, 107, 0.22), transparent 72%);
 }
 
 @media (max-width: 960px) {
@@ -2385,8 +2436,6 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
   border-radius: 12px;
   background: rgba(8, 17, 31, 0.4);
 }
-.cfg #channel-list .chan-row:hover,
-.cfg #model-target-list .chan-row:hover { border-color: rgba(246, 181, 107, 0.28); }
 .cfg #channel-list .chan-who,
 .cfg #model-target-list .chan-who { grid-column: 1 / -1; }
 .cfg #channel-list .chan-pill,
@@ -2462,6 +2511,9 @@ button.help-toggle:hover { color: var(--accent); }
   --mint: #5fe3b0;
   --sky: #6db4ff;
   --soft: rgba(255, 255, 255, 0.045);
+  --shadow-card: 8px 10px 22px -8px rgba(109, 169, 255, 0.22), 20px 26px 52px -18px rgba(109, 169, 255, 0.3);
+  --shadow-card-hover: 12px 16px 30px -8px rgba(109, 169, 255, 0.3), 28px 38px 68px -18px rgba(109, 169, 255, 0.4);
+  --shadow-card-sm: 0 1px 2px rgba(0, 0, 0, 0.22), 0 4px 12px rgba(0, 0, 0, 0.24);
   --brand: linear-gradient(120deg, #f6b56b 0%, #ff7a8a 100%);
   --brand-soft: linear-gradient(120deg, rgba(246,181,107,.16), rgba(255,122,138,.16));
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", system-ui, sans-serif;
@@ -2487,7 +2539,9 @@ input, select, textarea, button { font-family: var(--sans); }
 /* 侧边栏 */
 .sidebar { background: linear-gradient(180deg, rgba(20,28,46,.5), rgba(10,14,23,.2)); border-right: 1px solid var(--line); }
 .nav-button { border-radius: 12px; transition: .16s; }
-.nav-button.active, .nav-button:hover { background: var(--brand-soft); border-color: rgba(246,181,107,.28); color: var(--text); }
+/* 选中/悬停都去掉橙色边框；悬停态方框改为浅橙色 */
+.nav-button:hover { background: rgba(246, 181, 107, 0.1); border-color: transparent; color: var(--text); }
+.nav-button.active { background: linear-gradient(120deg, rgba(246, 181, 107, 0.32), rgba(255, 122, 138, 0.32)); border-color: transparent; color: var(--text); }
 .nav-group > span { color: var(--muted); }
 /* 按钮：主操作品牌渐变 */
 button.primary, .btn-primary { background: var(--brand) !important; color: #1a0f08 !important; box-shadow: 0 10px 26px rgba(255,122,138,.26); }
@@ -2658,3 +2712,90 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 #auto-test-config .pill { font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
 #auto-test-config .pill.muted { opacity: 0.7; }
 #auto-test-config .pill.danger { color: var(--bad); border-color: rgba(255, 122, 138, 0.4); }
+
+/* —— 统一卡片立体阴影（静态）——
+   置于文件末尾，确保胜过前面所有 .panel / .dash .panel 的 box-shadow 覆盖。 */
+.panel { box-shadow: var(--shadow-card); }
+.dash .panel,
+.cfg .panel { box-shadow: var(--shadow-card); }
+.metric-card { box-shadow: var(--shadow-card); } /* 归一化：替掉残留的过重旧阴影 */
+
+/* 独立大卡片：工作流步骤（仅非仪表盘态才是卡片） */
+.workflow-step { box-shadow: var(--shadow-card); }
+.dash .workflow-step { box-shadow: none; } /* 仪表盘里它是进度圆点，不是卡片 */
+
+/* 内层小卡片：更轻的阴影，避免与外层 .panel 叠加过重 */
+.guide-card,
+.flow-step,
+.insight-card,
+.ranking-card,
+.plain-card,
+.comparison-card,
+.check-panel,
+.next-step-panel,
+.plain-result-card { box-shadow: var(--shadow-card-sm); }
+
+/* 外层大卡片：hover 抬升（轻微上移 + 蓝色阴影加深） */
+.panel,
+.metric-card,
+.workflow-step {
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+.panel:hover,
+.dash .panel:hover,
+.cfg .panel:hover,
+.metric-card:hover,
+.workflow-step:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-card-hover);
+}
+
+/* 仪表盘进度圆点不是卡片：排除抬升 */
+.dash .workflow-step { transition: none; }
+.dash .workflow-step:hover { transform: none; box-shadow: none; }
+
+/* 报告中心下拉栏（.collapsible-panel 同时是 .panel）：与其它界面下拉栏
+   （helper/technical/advanced-details）统一——不用卡片阴影，也不 hover 抬升。 */
+.collapsible-panel,
+.collapsible-panel:hover {
+  box-shadow: none;
+  transform: none;
+}
+
+/* —— 外观 · 更好的光影：背景橙色渐变流光（设置里开启后加 body.better-lighting）——
+   一道柔和的橙色斜向光带在页面背景缓缓划过；置于所有内容之下（z-index:-1）。 */
+body.better-lighting::after {
+  content: "";
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  z-index: -1;
+  pointer-events: none;
+  /* 用羽化的渐变色标做柔边，替代 filter:blur（模糊大图层会每帧重绘、非常卡） */
+  background: linear-gradient(
+    115deg,
+    transparent 36%,
+    rgba(246, 181, 107, 0.1) 46%,
+    rgba(246, 181, 107, 0.16) 50%,
+    rgba(246, 181, 107, 0.1) 54%,
+    transparent 64%
+  );
+  transform: translateZ(0);
+  will-change: transform;
+  animation: bg-flux 16s linear infinite;
+}
+@keyframes bg-flux {
+  0% {
+    transform: translateX(-42%);
+  }
+  100% {
+    transform: translateX(42%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.better-lighting::after {
+    animation: none;
+  }
+}
