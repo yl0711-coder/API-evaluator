@@ -39,17 +39,72 @@ code {
 }
 
 #app {
+  --sidebar-w: 260px;
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: var(--sidebar-w) 1fr;
   height: 100vh;
+  overflow: hidden; /* 收起时刚性滑出的侧栏在左侧被裁掉，不产生横向滚动 */
+  transition: grid-template-columns 0.25s ease;
+}
+
+#app.sidebar-collapsed {
+  --sidebar-w: 0px;
 }
 
 .sidebar {
+  width: 260px; /* 固定宽度：收起时内部文字不重排，整块随 transform 平移 */
   border-right: 1px solid var(--line);
   background: rgba(5, 12, 24, 0.78);
   padding: 24px 18px;
   min-height: 0;
   overflow-y: auto;
+  transition: transform 0.25s ease;
+}
+
+#app.sidebar-collapsed .sidebar {
+  transform: translateX(-100%); /* 整块刚性滑出，文字相对位置始终不变 */
+}
+
+/* 侧边栏折叠按钮：贴在侧栏右缘正中，半透明箭头 */
+.sidebar-toggle {
+  position: fixed;
+  top: 50%;
+  left: var(--sidebar-w);
+  transform: translate(-50%, -50%);
+  z-index: 40;
+  width: 44px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text, #e6edf6);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: left 0.25s ease, opacity 0.2s ease;
+}
+
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible {
+  opacity: 1;
+}
+
+.sidebar-toggle-arrow {
+  font-size: 46px;
+  line-height: 1;
+  transition: transform 0.25s ease;
+}
+
+#app.sidebar-collapsed .sidebar-toggle-arrow {
+  transform: rotate(180deg);
+}
+
+/* 折叠态：主内容区宽度与展开时完全一致，内部布局不变，只把整体居中。
+   侧栏腾出的 260px 平分到左右各 130px，加上原有 34px 内边距。 */
+#app.sidebar-collapsed .main {
+  padding-inline: calc(34px + 260px / 2);
 }
 
 .brand {
@@ -111,6 +166,7 @@ code {
   padding: 34px;
   overflow: auto;
   min-height: 0;
+  transition: padding 0.25s ease;
 }
 
 /* 主区/侧边栏/目录内部滚动条与站点风格不符，隐藏但保留滚动 */
@@ -1954,14 +2010,22 @@ button.danger {
 @media (max-width: 860px) {
   #app {
     grid-template-columns: 1fr;
+    overflow: visible;
   }
 
-  .sidebar {
+  .sidebar-toggle {
+    display: none;
+  }
+
+  .sidebar,
+  #app.sidebar-collapsed .sidebar {
     position: sticky;
     top: 0;
     z-index: 10;
     display: flex;
     gap: 8px;
+    width: auto; /* 窄屏恢复横向铺满，覆盖桌面固定宽度 */
+    transform: none; /* 窄屏忽略折叠平移，顶部横条照常显示 */
     overflow-x: auto;
   }
 
@@ -2200,10 +2264,10 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 .cfg #profile-form .field-hint { font-size: 11.5px; line-height: 1.65; color: #7d8aa0; }
 .cfg #profile-form > label > input,
 .cfg #profile-form > label > select { padding: 12px 14px; }
-/* 高级设置：标题克制、内部双列保持紧凑 */
-.cfg .advanced-settings { margin-top: 2px; }
-.cfg .advanced-settings summary { font-size: 13px; font-weight: 600; }
-.cfg .advanced-settings-body { gap: 16px 18px; }
+/* 高级设置：标题克制、内部双列保持紧凑（场景测试的高级设置也对齐这套字号） */
+.cfg .advanced-settings, #scenario-test .advanced-settings { margin-top: 2px; }
+.cfg .advanced-settings summary, #scenario-test .advanced-settings summary { font-size: 13px; font-weight: 600; }
+.cfg .advanced-settings-body, #scenario-test .advanced-settings-body { gap: 16px 18px; }
 .cfg .check-panel { font-size: 12.5px; }
 .cfg .split-actions { gap: 12px; margin-top: 4px; }
 /* 右侧贴士卡：标题与正文层级 */
@@ -2243,6 +2307,9 @@ button.secondary:hover:not(:disabled) { border-color: var(--accent); color: var(
 .cfg-stack #model-target-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; }
 .cfg-stack #model-target-form > label { margin: 0; flex: 1 1 200px; }
 .cfg-stack #model-target-form .wide { grid-column: auto; flex: 1 1 200px; }
+/* 高级设置：整行折叠块，独占一行、置于渠道/模型名/备注下方（否则会被上面的 .wide 规则降级成
+   200px 弹性项，挤在「备注」同一行旁边）。 */
+.cfg-stack #model-target-form > .advanced-settings { flex: 1 0 100%; }
 /* 标签字段独占整行，置于渠道/模型名/备注下方（chip 多、需要更宽）；
    外层是 div（非 label），自行 grid 排版还原「标题在上、内容在下」。 */
 .cfg-stack #model-target-form .field-tags { flex: 1 0 100%; display: grid; gap: 7px; }
@@ -2546,6 +2613,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .dev-group-chip b { font-weight: 600; color: var(--text); }
 .dev-group-chip .linklike { background: none; border: 0; color: var(--blue); font-size: 12px; cursor: pointer; padding: 0; font-family: inherit; }
 .dev-group-chip .linklike:hover { text-decoration: underline; }
+.dev-group-chip--builtin { border-style: dashed; opacity: 0.85; }
+.dev-group-chip--builtin .dev-group-builtin { font-size: 11px; color: var(--muted); }
 /* 此页内的工具栏/操作行左对齐（站点默认 .action-row 右对齐）。 */
 #developer .action-row { justify-content: flex-start; }
 /* 场景列表里的折叠卡之间留白。 */
@@ -2565,7 +2634,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .dev-scenario-form input:disabled { background: rgba(145, 160, 183, 0.18); color: var(--muted); cursor: not-allowed; }
 
 /* —— 自动测试配置页：沿用「高级测试」各页的 form-grid 观感（两列网格 + .wide 跨行 + .checkbox-option）—— */
-#auto-test-config .form-grid { gap: 20px 24px; }
+/* 「测试周期（小时）」列带 field-hint 更高，默认 align-items: stretch 会把同行右侧的
+   「测试种类」label 一起拉高、其下拉随之下移，与左侧控件错位。改顶端对齐，使同行下拉同高对齐
+   （同 #admission-batch-form / #load-test-form）。 */
+#auto-test-config .form-grid { gap: 20px 24px; align-items: start; }
 /* 种类相关选项块：作为整行（.wide）出现，内部再走两列网格，与主表单一致（轮数/并发并排、文案跨行）。
    显隐由 JS 内联 style.display 控制（inline 优先级最高，稳压此处的网格 display）。 */
 #auto-test-config .atc-opt { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 24px; }

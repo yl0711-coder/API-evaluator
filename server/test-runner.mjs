@@ -1196,6 +1196,15 @@ async function awardScenarioTags(summary, selectedScenarios) {
   }
 }
 
+// 可选的一次性数值覆盖：空/无效 → null（表示不覆盖，回落默认）；有效正数 → clamp 到 [min,max]。
+// 注意不能直接用 clampNumber：Number("")===0 是有限值，会被 clamp 到 min 而非回落。
+function optionalOverrideInt(value, min, max) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
 export async function runScenarioTest(body, taskContext = {}) {
   const profiles = await loadRunnableProfiles();
   const profileIds = normalizeProfileIds(body.profileIds);
@@ -1214,6 +1223,9 @@ export async function runScenarioTest(body, taskContext = {}) {
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const requestConcurrency = clampNumber(body.requestConcurrency || body.concurrency, 1, 3, 1);
   const repeats = clampNumber(body.repeats, 1, 5, 1);
+  // 一次性覆盖：仅本次运行生效，不持久化。留空则回落（maxTokens→场景默认 4096，timeoutMs→渠道配置）。
+  const maxTokensOverride = optionalOverrideInt(body.maxTokens, 1, 32768);
+  const timeoutMsOverride = optionalOverrideInt(body.timeoutMs, 1000, 600000);
   const startedAt = new Date();
   const profileResults = [];
   if (taskContext?.task) {
@@ -1231,6 +1243,8 @@ export async function runScenarioTest(body, taskContext = {}) {
           scenarios: selectedScenarios,
           repeats,
           requestConcurrency,
+          maxTokensOverride,
+          timeoutMsOverride,
           taskContext,
         }),
       ),
@@ -1353,7 +1367,7 @@ export function normalizeScenarioIds(value) {
   return ids.length > 0 ? ids : getTestScenarios().map((scenario) => scenario.id);
 }
 
-async function runScenarioProfile({ runId, profile, scenarios, repeats, requestConcurrency, taskContext }) {
+async function runScenarioProfile({ runId, profile, scenarios, repeats, requestConcurrency, maxTokensOverride = null, timeoutMsOverride = null, taskContext }) {
   const records = [];
   // LLM 裁判审计（内联）：仅在开关开启时收集 (问题, 回答) 对，回答剥离前抓取。
   const collectForJudge = isLiveJudgeEnabled();
@@ -1370,8 +1384,13 @@ async function runScenarioProfile({ runId, profile, scenarios, repeats, requestC
     const batch = jobs.slice(index, index + requestConcurrency);
     const batchRecords = await Promise.all(
       batch.map(async ({ scenario, repeat }) => {
-        // 所有场景测试统一用 4096 输出窗口（覆盖渠道配置与 scenario.maxTokens）。
-        const caseProfile = { ...profile, maxTokens: SCENARIO_MAX_OUTPUT_TOKENS };
+        // 场景测试默认用 4096 输出窗口（覆盖渠道配置与 scenario.maxTokens）；
+        // 高级设置里的一次性覆盖（若填写）优先。timeoutMs 默认继承渠道配置，同样可被一次性覆盖。
+        const caseProfile = {
+          ...profile,
+          maxTokens: maxTokensOverride ?? SCENARIO_MAX_OUTPUT_TOKENS,
+          timeoutMs: timeoutMsOverride ?? profile.timeoutMs,
+        };
         const record = await executeTestRequest(caseProfile, buildScenarioPrompt(scenario, repeat, repeats), {
           runId,
           caseId: scenario.id,

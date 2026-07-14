@@ -102,6 +102,7 @@ import {
   saveChannels,
 } from "./server/channel-store.mjs";
 import { loadModelTargets, saveModelTargets } from "./server/model-target-store.mjs";
+import { migratePricingToTargetsOnce } from "./server/migrate-pricing.mjs";
 import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./server/channel-model.mjs";
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
@@ -170,11 +171,13 @@ async function loadBalancedCompareFiles(A, B) {
     /* 报告目录不存在 → 空 */
   }
   const collect = async (subject) => {
-    const head = sanitizeReportBaseName(`${subject.channel}_${subject.model}`);
-    const prefix = `${head}_`;
+    // 候选前缀：当前名 + 曾用名(aliases)的笛卡尔组合，让改名前的历史报告也能被本模型认领。
+    const channels = [subject.channel, ...(Array.isArray(subject.channelAliases) ? subject.channelAliases : [])].filter(Boolean);
+    const models = [subject.model, ...(Array.isArray(subject.modelAliases) ? subject.modelAliases : [])].filter(Boolean);
+    const prefixes = [...new Set(channels.flatMap((c) => models.map((m) => `${sanitizeReportBaseName(`${c}_${m}`)}_`)))];
     const metas = [];
     for (const name of names) {
-      if (!name.startsWith(prefix)) continue;
+      if (!prefixes.some((p) => name.startsWith(p))) continue;
       const base = name.replace(/\.md$/i, "");
       const type = parseReportBaseName(base).type;
       if (type !== "run" && type !== "admission" && type !== "scenario") continue;
@@ -258,6 +261,11 @@ createServer(async (req, res) => {
   migrateProfilesToChannelsIfEmpty()
     .then((r) => {
       if (r?.migrated) console.log(`已迁移 ${r.migrated} 个渠道 / ${r.targets} 个模型目标。`);
+    })
+    // 接着把「最大输出/超时/单价」从渠道下沉到模型目标（幂等；须在 profile→渠道迁移之后，以覆盖其新建的目标）。
+    .then(() => migratePricingToTargetsOnce())
+    .then((r) => {
+      if (r?.migrated) console.log(`已把单价/参数下沉到 ${r.migrated} 个模型目标。`);
     })
     .catch(() => {});
   const backend = (process.env.EVALUATOR_AUTH_BACKEND || "local").toLowerCase();

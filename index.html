@@ -30,7 +30,7 @@
           <button class="nav-button" type="button" data-page="quick-test">快速测试</button>
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
           <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
-          <button class="nav-button" type="button" data-page="auto-test-config" data-requires-admin>自动测试配置</button>
+          <button class="nav-button" type="button" data-page="auto-test-config">自动测试配置</button>
           <button class="nav-button" type="button" data-page="load-test" data-requires-admin>压力测试</button>
           <button class="nav-button" type="button" data-page="model-compare">模型比对</button>
         </div>
@@ -368,38 +368,9 @@
                 <label class="wide">API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴上游 Key" />
                   <small class="field-hint">编辑时留空 = 保留原 Key。只存本机、不下发浏览器。</small></label>
 
-                <details class="wide advanced-settings">
-                  <summary>高级设置</summary>
-                  <div class="form-grid advanced-settings-body">
-                    <label>最大输出
-                      <input name="maxTokens" type="number" value="512" min="1" />
-                      <small class="field-hint">单次响应的最大 token 数上限。</small>
-                    </label>
-                    <label>超时毫秒
-                      <input name="timeoutMs" type="number" value="300000" min="1000" />
-                      <small class="field-hint">单请求总时限（含推理+完整输出）。默认 300000（5 分钟）；太短容易把慢响应误判成超时。</small>
-                    </label>
-                    <label>输入成本单价
-                      <input name="inputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 4.5" />
-                      <small class="field-hint">元 / 1M tokens。填写上游结算价，用于成本估算。</small>
-                    </label>
-                    <label>输出成本单价
-                      <input name="outputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 22.5" />
-                      <small class="field-hint">元 / 1M tokens。填写上游结算价。</small>
-                    </label>
-                    <label>输入售卖单价
-                      <input name="inputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 5" />
-                      <small class="field-hint">元 / 1M tokens。填写本站对外售卖价，用于毛利估算。</small>
-                    </label>
-                    <label>输出售卖单价
-                      <input name="outputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 25" />
-                      <small class="field-hint">元 / 1M tokens。可不填，不填则不计算收入和毛利。</small>
-                    </label>
-                    <label class="wide">备注
-                      <textarea name="notes" placeholder="价格、倍率、来源、测试目的"></textarea>
-                    </label>
-                  </div>
-                </details>
+                <label class="wide">备注
+                  <textarea name="notes" placeholder="渠道来源、倍率、测试目的等（对渠道/连接本身的说明）"></textarea>
+                </label>
 
                 <div class="wide action-row">
                   <button class="primary" id="save-channel" type="submit">保存渠道</button>
@@ -424,6 +395,37 @@
                 <label class="wide">渠道<select name="channelId" id="model-target-channel" required></select></label>
                 <label>模型名<input name="model" autocomplete="off" placeholder="gpt-4o" required /></label>
                 <label>备注<input name="note" autocomplete="off" placeholder="可选" /></label>
+
+                <details class="wide advanced-settings">
+                  <summary>高级设置</summary>
+                  <div class="form-grid advanced-settings-body">
+                    <label>最大输出
+                      <input name="maxTokens" type="number" value="512" min="1" />
+                      <small class="field-hint">单次响应的最大 token 数上限。</small>
+                    </label>
+                    <label>超时毫秒
+                      <input name="timeoutMs" type="number" value="300000" min="1000" />
+                      <small class="field-hint">单请求总时限（含推理+完整输出）。默认 300000（5 分钟）。</small>
+                    </label>
+                    <label>输入成本单价
+                      <input name="inputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 4.5" />
+                      <small class="field-hint">元 / 1M tokens。填写上游结算价，用于成本估算。</small>
+                    </label>
+                    <label>输出成本单价
+                      <input name="outputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 22.5" />
+                      <small class="field-hint">元 / 1M tokens。填写上游结算价。</small>
+                    </label>
+                    <label>输入售卖单价
+                      <input name="inputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 5" />
+                      <small class="field-hint">元 / 1M tokens。填写本站对外售卖价，用于毛利估算。</small>
+                    </label>
+                    <label>输出售卖单价
+                      <input name="outputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 25" />
+                      <small class="field-hint">元 / 1M tokens。可不填，不填则不计算收入和毛利。</small>
+                    </label>
+                  </div>
+                </details>
+
                 <div class="wide field-tags">
                   <span class="tag-field-label">标签</span>
                   <div id="model-target-tags" class="tag-pick"></div>
@@ -686,29 +688,46 @@
             <select name="profileIds" id="scenario-profile-select" multiple hidden></select>
             <div class="wide" id="scenario-case-picker"></div>
             <select name="scenarioIds" id="scenario-case-select" multiple hidden></select>
-            <label>
-              每个场景重复次数
-              <select name="repeats">
-                <option value="1" selected>1 次：快速筛查</option>
-                <option value="2">2 次：观察波动</option>
-                <option value="3">3 次：更稳妥</option>
-              </select>
-            </label>
-            <label>
-              同时测试 API 数
-              <select name="maxParallelProfiles">
-                <option value="1">1：最稳妥</option>
-                <option value="2" selected>2：推荐</option>
-                <option value="3">3：较激进</option>
-              </select>
-            </label>
-            <label>
-              单 API 请求并发
-              <select name="requestConcurrency">
-                <option value="1" selected>1：顺序场景</option>
-                <option value="2">2：并发场景</option>
-              </select>
-            </label>
+
+            <details class="wide advanced-settings">
+              <summary>高级设置</summary>
+              <div class="form-grid advanced-settings-body">
+                <label>
+                  最大输出
+                  <input name="maxTokens" type="number" min="1" max="32768" placeholder="留空 = 场景默认 4096" />
+                  <small class="field-hint">仅本次运行生效；留空则默认 4096，最高 32768。</small>
+                </label>
+                <label>
+                  超时毫秒
+                  <input name="timeoutMs" type="number" min="1000" max="600000" placeholder="留空 = 按模型配置" />
+                  <small class="field-hint">仅本次运行生效；留空按模型配置里的超时。</small>
+                </label>
+                <label>
+                  每个场景重复次数
+                  <select name="repeats">
+                    <option value="1" selected>1 次：快速筛查</option>
+                    <option value="2">2 次：观察波动</option>
+                    <option value="3">3 次：更稳妥</option>
+                  </select>
+                </label>
+                <label>
+                  同时测试 API 数
+                  <select name="maxParallelProfiles">
+                    <option value="1" selected>1：最稳妥</option>
+                    <option value="2">2：推荐</option>
+                    <option value="3">3：较激进</option>
+                  </select>
+                </label>
+                <label>
+                  单 API 请求并发
+                  <select name="requestConcurrency">
+                    <option value="1" selected>1：顺序场景</option>
+                    <option value="2">2：并发场景</option>
+                  </select>
+                </label>
+              </div>
+            </details>
+
             <label class="wide checkbox-option">
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
@@ -1119,7 +1138,7 @@
           </form>
         </section>
 
-        <section class="page" id="auto-test-config" data-requires-admin hidden>
+        <section class="page" id="auto-test-config" hidden>
           <div class="section-header">
             <div>
               <h2><span class="step">高级 · 自动化</span>自动测试配置</h2>
@@ -1503,6 +1522,17 @@
           </div>
         </div>
       </main>
+
+      <button
+        id="sidebar-toggle"
+        class="sidebar-toggle"
+        type="button"
+        aria-label="收起侧边栏"
+        aria-expanded="true"
+        title="收起侧边栏"
+      >
+        <span class="sidebar-toggle-arrow" aria-hidden="true">‹</span>
+      </button>
     </div>
 
     <script type="module" src="/src/app.js"></script>

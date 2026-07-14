@@ -30,11 +30,18 @@ export function createModelCompare({ state }) {
   // 数组 = 已加载的两方共有场景 [{name, tier}]，勾选状态在 DOM 上。
   let loadedScenarios = null;
 
-  // 由模型目标 id 反查 { channel(渠道名), model }，供后端按报告文件名匹配。
+  // 由模型目标 id 反查 { channel(渠道名), model, 曾用名 }，供后端按报告文件名匹配。
+  // 带上渠道与模型的曾用名(aliases)，让改名前的历史报告也能被本模型认领。
   function subjectOf(targetId) {
     const t = (state.modelTargets || []).find((x) => x.id === targetId);
     if (!t) return null;
-    return { channel: t.channelName || "", model: t.model || "" };
+    const ch = (state.channels || []).find((c) => c.id === t.channelId);
+    return {
+      channel: t.channelName || "",
+      model: t.model || "",
+      channelAliases: Array.isArray(ch?.aliases) ? ch.aliases : [],
+      modelAliases: Array.isArray(t.aliases) ? t.aliases : [],
+    };
   }
 
   async function onSubmit(event) {

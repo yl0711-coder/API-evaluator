@@ -331,20 +331,25 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
 
   // —— 分组管理 ——
   function renderGroups() {
-    groupListBox.innerHTML = scenarioGroups.length
-      ? scenarioGroups
-          .map(
-            (g) =>
-              `<span class="dev-group-chip"><b>${escapeHtml(g)}</b><button type="button" class="linklike" data-rename-group="${escapeHtml(g)}">重命名</button><button type="button" class="linklike" data-del-group="${escapeHtml(g)}">删除</button></span>`,
-          )
-          .join("")
-      : "（暂无分组）";
+    // 实际场景里出现的分组（含 bank 默认组，如「编程硬核」）；bankOnly = 不在自定义清单里的 bank 默认组。
+    const sceneGroups = [...new Set((allScenarios || []).map((s) => s.resolvedGroup).filter(Boolean))];
+    const bankOnly = sceneGroups.filter((g) => !scenarioGroups.includes(g));
+    // 分组列表：自定义分组（可重命名/删除）+ bank 默认组（只读，标「题库默认」——由题库归属决定，删/改无意义）。
+    const customChips = scenarioGroups.map(
+      (g) =>
+        `<span class="dev-group-chip"><b>${escapeHtml(g)}</b><button type="button" class="linklike" data-rename-group="${escapeHtml(g)}">重命名</button><button type="button" class="linklike" data-del-group="${escapeHtml(g)}">删除</button></span>`,
+    );
+    const bankChips = bankOnly.map(
+      (g) => `<span class="dev-group-chip dev-group-chip--builtin"><b>${escapeHtml(g)}</b><small class="dev-group-builtin">题库默认</small></span>`,
+    );
+    groupListBox.innerHTML = customChips.length + bankChips.length ? [...customChips, ...bankChips].join("") : "（暂无分组）";
     groupListBox.querySelectorAll("[data-rename-group]").forEach((b) => b.addEventListener("click", () => renameGroup(b.dataset.renameGroup)));
     groupListBox.querySelectorAll("[data-del-group]").forEach((b) => b.addEventListener("click", () => deleteGroup(b.dataset.delGroup)));
-    // 筛选下拉（保留当前选中）。
+    // 筛选下拉（保留当前选中）：同样并入 bank 默认组，让「编程硬核」等可按组筛选。
     const cur = groupFilterSel.value;
-    groupFilterSel.innerHTML = `<option value="">全部分组</option>` + scenarioGroups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
-    groupFilterSel.value = scenarioGroups.includes(cur) ? cur : "";
+    const filterGroups = [...new Set([...scenarioGroups, ...sceneGroups])];
+    groupFilterSel.innerHTML = `<option value="">全部分组</option>` + filterGroups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
+    groupFilterSel.value = filterGroups.includes(cur) ? cur : "";
   }
   async function addGroup() {
     const name = groupInput.value.trim();
@@ -433,6 +438,7 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
     try {
       allScenarios = await api("/api/dev/scenarios");
       renderScenarioList();
+      renderGroups(); // 场景就绪后重渲染，让筛选下拉并入 bank 默认组（如「编程硬核」）
     } catch (error) {
       listBox.textContent = `加载场景失败：${error.message}`;
     }

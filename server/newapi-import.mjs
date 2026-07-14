@@ -94,7 +94,8 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
       for (const model of mapped.models) {
         const key = `${channelId}|${model}`;
         if (!targetKeys.has(key)) {
-          targets.push({ id: deterministicModelTargetId(channelId, model), channelId, model, note: "", source: "newapi", createdAt: now, updatedAt: now });
+          // 最大输出/超时/单价已下沉到模型目标层：导入的目标给出默认参数，单价留空由管理员在「模型管理」补。
+          targets.push({ id: deterministicModelTargetId(channelId, model), channelId, model, note: "", maxTokens: 512, timeoutMs: 300000, inputPricePerMTokens: null, outputPricePerMTokens: null, inputSellPricePerMTokens: null, outputSellPricePerMTokens: null, source: "newapi", createdAt: now, updatedAt: now });
           targetKeys.add(key);
           newTargets += 1;
         }

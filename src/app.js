@@ -296,6 +296,39 @@ navButtons.forEach((button) => {
   });
 });
 
+// 侧边栏折叠：切换 #app.sidebar-collapsed，并把状态持久化到本机
+const SIDEBAR_COLLAPSED_KEY = "evaluator:sidebar-collapsed";
+const readSidebarCollapsed = () => {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const writeSidebarCollapsed = (on) => {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, on ? "1" : "0");
+  } catch {
+    /* 隐私模式：忽略 */
+  }
+};
+
+const appEl = requireElement("#app");
+const sidebarToggle = requireElement("#sidebar-toggle");
+function applySidebarCollapsed(on) {
+  appEl.classList.toggle("sidebar-collapsed", on);
+  sidebarToggle.setAttribute("aria-expanded", String(!on));
+  const label = on ? "展开侧边栏" : "收起侧边栏";
+  sidebarToggle.setAttribute("aria-label", label);
+  sidebarToggle.title = label;
+}
+applySidebarCollapsed(readSidebarCollapsed());
+sidebarToggle.addEventListener("click", () => {
+  const on = !appEl.classList.contains("sidebar-collapsed");
+  applySidebarCollapsed(on);
+  writeSidebarCollapsed(on);
+});
+
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-go-page]");
   if (!button) return;
@@ -407,6 +440,19 @@ function formatBytes(bytes) {
 function formatReportDate(yyyymmdd) {
   return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
 }
+// 报告归并映射：{曾用名→当前名}（渠道名、模型名各一份），据当前渠道/模型的 aliases 生成。
+// 让改名前落盘的历史报告（文件名是旧名）在筛选/下拉里归并到当前对象。
+function reportAliasMaps() {
+  const channel = {};
+  for (const c of state.channels || []) {
+    for (const a of Array.isArray(c.aliases) ? c.aliases : []) if (a && c.name) channel[a] = c.name;
+  }
+  const model = {};
+  for (const t of state.modelTargets || []) {
+    for (const a of Array.isArray(t.aliases) ? t.aliases : []) if (a && t.model) model[a] = t.model;
+  }
+  return { channel, model };
+}
 // 任一筛选生效 → 只留 isNew 且四项都匹配；无任何筛选 → 全部（新+老）。老报告不参与筛选。
 function filteredReportFiles() {
   const filter = {
@@ -416,7 +462,8 @@ function filteredReportFiles() {
     from: rfFilterDateFrom.value.replace(/-/g, ""), // YYYY-MM-DD → YYYYMMDD
     to: rfFilterDateTo.value.replace(/-/g, ""),
   };
-  return reportFiles.filter((f) => matchesReportFilter(f.parsed, filter));
+  const aliasMaps = reportAliasMaps();
+  return reportFiles.filter((f) => matchesReportFilter(f.parsed, filter, aliasMaps));
 }
 // 据新格式报告去重值填充四个下拉（保留当前选中值）。
 // 渠道/模型互相联动：渠道选项据「当前所选模型」收窄、模型选项据「当前所选渠道」收窄（见 reportChannelModelOptions）。
@@ -425,6 +472,7 @@ function populateReportFilters() {
   const { channels, models } = reportChannelModelOptions(
     reportFiles.map((f) => f.parsed),
     { channel: rfFilterChannel.value, model: rfFilterModel.value },
+    reportAliasMaps(),
   );
   const types = new Set();
   const dates = new Set();
@@ -1264,6 +1312,8 @@ function showPage(page) {
   currentPage = page;
   navButtons.forEach((item) => item.classList.toggle("active", item.dataset.page === page));
   pages.forEach((item) => item.classList.toggle("active", item.id === page));
+  // 切换页面后新页面从顶部开始，不保留上一页的滚动进度。
+  document.querySelector(".main")?.scrollTo(0, 0);
   if (page === "manual" && !state.manualLoaded) {
     loadManual();
   }

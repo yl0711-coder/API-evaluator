@@ -15,14 +15,22 @@ export function parseReportId(id) {
   return { isNew: true, type, date, channel, model };
 }
 
+// 名字规范化：把报告文件名里的「曾用名」折算成「当前名」。map 为 {曾用名→当前名}；
+// 缺省或未命中则原样返回。用于渠道/模型改名后，仍把改名前的历史报告归并到当前对象。
+function canonName(name, map) {
+  if (name == null) return name;
+  return (map && Object.prototype.hasOwnProperty.call(map, name) && map[name]) || name;
+}
+
 // 一条报告（其 parseReportId 结果）是否匹配筛选条件。
 // filter: { channel, model, type, from, to }，date 边界 from/to 为 YYYYMMDD（含端点）。
+// aliasMaps: { channel: {曾用名→当前名}, model: {曾用名→当前名} }（可选）——比较前把报告里的名字折算成当前名。
 // 无任何条件 → 全部命中（含老报告）；一旦有条件 → 只命中新格式且各项都匹配（老报告不参与）。
-export function matchesReportFilter(parsed, { channel = "", model = "", type = "", from = "", to = "" } = {}) {
+export function matchesReportFilter(parsed, { channel = "", model = "", type = "", from = "", to = "" } = {}, aliasMaps = null) {
   if (!channel && !model && !type && !from && !to) return true;
   if (!parsed || !parsed.isNew) return false;
-  if (channel && parsed.channel !== channel) return false;
-  if (model && parsed.model !== model) return false;
+  if (channel && canonName(parsed.channel, aliasMaps?.channel) !== channel) return false;
+  if (model && canonName(parsed.model, aliasMaps?.model) !== model) return false;
   if (type && parsed.type !== type) return false;
   if (from && parsed.date < from) return false; // YYYYMMDD 零填充 → 字符串比较即时间序
   if (to && parsed.date > to) return false;
@@ -32,13 +40,16 @@ export function matchesReportFilter(parsed, { channel = "", model = "", type = "
 // 渠道↔模型联动：给定各报告的 parse 结果与当前所选渠道/模型，算出两个下拉的可选项（已排序）。
 // 渠道候选 = 「未选模型 或 模型相符」的报告的渠道集；模型候选 = 「未选渠道 或 渠道相符」的报告的模型集。
 // 故：选了渠道 → 模型下拉只剩该渠道的模型；选了模型 → 渠道下拉只剩该模型所属渠道。老报告(!isNew)不参与。
-export function reportChannelModelOptions(parsedList, { channel = "", model = "" } = {}) {
+export function reportChannelModelOptions(parsedList, { channel = "", model = "" } = {}, aliasMaps = null) {
   const channels = new Set();
   const models = new Set();
   for (const p of parsedList || []) {
     if (!p || !p.isNew) continue;
-    if (p.channel && (!model || p.model === model)) channels.add(p.channel);
-    if (p.model && (!channel || p.channel === channel)) models.add(p.model);
+    // 折算成当前名后再收集，让曾用名归并到当前渠道/模型（下拉只呈现当前名）。
+    const pChannel = canonName(p.channel, aliasMaps?.channel);
+    const pModel = canonName(p.model, aliasMaps?.model);
+    if (pChannel && (!model || pModel === model)) channels.add(pChannel);
+    if (pModel && (!channel || pChannel === channel)) models.add(pModel);
   }
   return { channels: [...channels].sort(), models: [...models].sort() };
 }
