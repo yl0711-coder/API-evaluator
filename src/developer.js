@@ -46,6 +46,9 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
   const tagAdd = requireElement("#set-custom-tag-add");
   const tagsBox = requireElement("#set-custom-tags");
   let customTags = [];
+  // 设置是否已成功从服务端读到。false 时禁止写回——PUT /api/settings 对 customTags 是整体覆盖，
+  // 若以「加载失败后的空数组」为基准保存，会把服务端已存的标签全部抹掉（数据丢失）。
+  let settingsLoaded = false;
 
   function renderChips() {
     tagsBox.innerHTML = customTags.length
@@ -60,6 +63,14 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
   // 把当前 customTags 写回服务端；成功后以服务端返回为准回填并刷新模型表单勾选项。
   // 失败则回滚到服务端已知状态（state.settings.customTags），避免界面与后端不一致。
   async function persistTags(okMsg) {
+    // 闸门：设置没读到就绝不写回，否则本地那份（可能是空的）会整体覆盖服务端已有标签。
+    // 回滚 UI 到服务端已知状态，避免界面显示一个其实没保存的标签。
+    if (!settingsLoaded) {
+      toast("设置尚未加载成功，暂不能改标签（以免覆盖服务端已有标签）。请刷新页面后重试。", true);
+      customTags = Array.isArray(state.settings?.customTags) ? [...state.settings.customTags] : [];
+      renderChips();
+      return;
+    }
     try {
       const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify({ customTags: [...customTags] }) });
       state.settings = saved;
@@ -185,9 +196,14 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
     const minCharsInput = el("input", { value: working.minChars ?? "", type: "number" });
     form.append(field("最少字数", minCharsInput));
 
-    const expectedIsObject = working.expected !== null && typeof working.expected === "object";
+    // expected 的类型会随 JSON 模式往返而改变（字符串↔对象），所以绝不能只在创建时算一次：
+    // 陈旧的 false 会让 fillForm 把对象塞进 input.value（被 JS 转成 "[object Object]"），
+    // 再由 collect() 当普通字符串写回 → 对象答案被永久损坏并落盘到题库覆盖层。故每次回填时重算。
+    const isObjExpected = (v) => v !== null && typeof v === "object";
+    let expectedIsObject = isObjExpected(working.expected);
+    const EXPECTED_OBJ_HINT = "（对象答案，请用 JSON 模式编辑）";
     const expectedInput = el("input", {
-      value: expectedIsObject ? "（对象答案，请用 JSON 模式编辑）" : working.expected ?? "",
+      value: expectedIsObject ? EXPECTED_OBJ_HINT : working.expected ?? "",
       disabled: expectedIsObject,
       size: 70,
     });
@@ -236,7 +252,10 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
       for (const f of SIMPLE_FIELDS) inputs[f.key].value = obj[f.key] ?? "";
       groupSelect.value = obj.group ?? "";
       minCharsInput.value = obj.minChars ?? "";
-      if (!expectedIsObject) expectedInput.value = obj.expected ?? "";
+      // 按当前值重算：JSON 模式里把 expected 改成对象/改回字符串后，这里要跟着切换禁用态与文案。
+      expectedIsObject = isObjExpected(obj.expected);
+      expectedInput.disabled = expectedIsObject;
+      expectedInput.value = expectedIsObject ? EXPECTED_OBJ_HINT : obj.expected ?? "";
       requiredAnyInput.value = Array.isArray(obj.requiredAny) ? obj.requiredAny.join(", ") : "";
       promptArea.value = promptText(obj.prompt);
     }
@@ -427,9 +446,15 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
       state.settings = s;
       customTags = Array.isArray(s.customTags) ? [...s.customTags] : [];
       scenarioGroups = Array.isArray(s.scenarioGroups) ? [...s.scenarioGroups] : [];
-    } catch {
-      customTags = [];
-      scenarioGroups = [];
+      settingsLoaded = true;
+    } catch (error) {
+      // 绝不能清零：清零后界面显示「还没有自定义标签」，超管一旦再加一个标签，
+      // persistTags 就会以空数组为基准整体覆盖服务端 → 已有标签全部永久丢失。
+      // 故回落到已知的 state.settings，并锁住写回（settingsLoaded=false），且必须明确报错。
+      settingsLoaded = false;
+      customTags = Array.isArray(state.settings?.customTags) ? [...state.settings.customTags] : [];
+      scenarioGroups = Array.isArray(state.settings?.scenarioGroups) ? [...state.settings.scenarioGroups] : [];
+      toast(`加载设置失败，自定义标签暂不可编辑：${error.message}`, true);
     }
     renderChips();
     renderGroups();

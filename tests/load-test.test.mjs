@@ -87,6 +87,36 @@ test("aggregate：输出 token 吞吐（宏观 tok/s、单请求均速、usage �
   assert.match(md, /其中 25% 为本地分词估算/, "覆盖率<100% 应标注估算占比");
 });
 
+test("aggregate + 报告：流式给出 TTFT 分位数；非流式无 TTFT → 整节省略", () => {
+  const ok = (ms, ttft) => ({ ms, ttft, ok: true, status: 200, err: "", outTok: 10, outTokEst: false, warmup: false });
+  // 流式：ttft 有值（且失败样本不计入）
+  const streamed = aggregate({
+    samples: [ok(1000, 100), ok(1000, 200), ok(1000, 300), ok(1000, 400), { ms: null, ttft: null, ok: false, status: 500, err: "upstream_5xx", warmup: false }],
+    mode: "closed",
+    offered: 4,
+    durationSec: 10,
+  });
+  assert.equal(streamed.ttftCount, 4, "只统计有 TTFT 的成功样本");
+  assert.equal(streamed.ttft.p50, 200);
+  assert.equal(streamed.ttft.max, 400);
+  assert.equal(streamed.ttft.avg, 250);
+
+  // 非流式：执行器不采 TTFT → 全 null
+  const plain = aggregate({ samples: [ok(1000, null), ok(1000, null)], mode: "closed", offered: 2, durationSec: 10 });
+  assert.equal(plain.ttftCount, 0);
+  assert.equal(plain.ttft.p50, null, "无样本时为 null，不能是 0（0 会被误读成极快）");
+
+  const meta = { mode: "closed", timeoutSec: 30, durationSec: 10, warmupSec: 0, maxTokens: 64 };
+  const mdStream = formatSinglePointReport({ ...meta, stream: true }, streamed);
+  assert.match(mdStream, /## 首 token 延迟（TTFT · 仅流式）/, "流式应出 TTFT 小节");
+  assert.match(mdStream, /基于 4 条成功请求/);
+  assert.match(mdStream, /请求方式 流式 SSE/, "报告头标明请求方式");
+
+  const mdPlain = formatSinglePointReport({ ...meta, stream: false }, plain);
+  assert.doesNotMatch(mdPlain, /首 token 延迟/, "非流式不应出现 TTFT 小节（不留空表误导）");
+  assert.match(mdPlain, /请求方式 非流式/);
+});
+
 // ===================== 闭环 worker 池 =====================
 test("闭环：持续并发（在飞可达 N，非串行）、writeLog:false + noRetry:true 透传、产出单点报告", async () => {
   let inFlight = 0;
@@ -162,6 +192,42 @@ test("详细错误构成表：每个状态码一行、含上游原因短语；�
   assert.match(md, /- HTTP 429 Slow Down Please（上游限流）：3/, "错误构成列表含原因短语");
 });
 
+// 成功判定是「2xx 且有输出」，故 200 也可能算失败——此时状态码本身毫无信息量，报告必须说出
+// 真实原因（normalizedError）。旧实现按状态码分桶、把 err 丢掉，200 落进兜底文案「非常规状态码」，
+// 既是错的（200 最常规）又把排查方向带偏。
+test("2xx 判失败：报告给出真实原因而非「非常规状态码」；同码多因取占比最高者", () => {
+  const mk = (n, s) => Array.from({ length: n }, () => s);
+  const samples = [
+    ...mk(10, { ms: 100, ok: true, status: 200, statusText: "OK", err: "", warmup: false }),
+    // 200 但响应体没有可提取文本 → 对用户等同于没有回答
+    ...mk(8, { ms: null, ok: false, status: 200, statusText: "OK", err: "empty_response", warmup: false }),
+  ];
+  const p = aggregate({ samples, mode: "closed", offered: 5, durationSec: 10 });
+  assert.equal(p.statusCounts[200], 8, "只有失败的 200 进错误分桶，成功的不算");
+  assert.deepEqual(p.statusReasons[200], { empty_response: 8 }, "真实原因必须留存——压测不写请求日志，报告是唯一产物");
+
+  const meta = { mode: "closed", timeoutSec: 30, durationSec: 10, warmupSec: 0, maxTokens: 64 };
+  const md = formatSinglePointReport(meta, p);
+  assert.match(md, /\| 无输出 \| 200 \| OK \| 8 \|/, "详细表按真实原因给标签");
+  assert.match(md, /- HTTP 200 OK（无输出）：8/);
+  assert.doesNotMatch(md, /非常规状态码/, "200 是最常规的状态码，这句话会把排查带偏");
+  assert.match(md, /没有可提取的文本/, "说明栏要讲清为什么 2xx 也算失败");
+
+  // 中转用 200 包错误的情形：限流原因不能被「无输出」盖掉
+  const throttled = aggregate({
+    samples: [
+      ...mk(2, { ms: 100, ok: true, status: 200, statusText: "OK", err: "", warmup: false }),
+      ...mk(5, { ms: null, ok: false, status: 200, statusText: "OK", err: "rate_limited", warmup: false }),
+      ...mk(2, { ms: null, ok: false, status: 200, statusText: "OK", err: "empty_response", warmup: false }),
+    ],
+    mode: "closed",
+    offered: 5,
+    durationSec: 10,
+  });
+  const md2 = formatSinglePointReport(meta, throttled);
+  assert.match(md2, /\| 上游限流（2xx 包错误） \| 200 \| OK \| 7 \|/, "同码多因：取占比最高的 rate_limited");
+});
+
 // ===================== 开环固定速率 + CO 纠正 + 发生器受限 =====================
 test("开环：按目标速率发包、在飞打满记 gen_saturated（客户端饱和信号）；延迟按计划时刻计(CO 纠正)", async () => {
   let inFlight = 0;
@@ -219,6 +285,9 @@ const mkPoint = (o = {}) => ({
   qps: o.qps ?? 100,
   tokensPerSecond: o.tokensPerSecond ?? 0,
   successRate: o.successRate ?? 1,
+  // 真实点必有此字段；sentRequests=0 意味着一个请求都没发出去，此时 successRate 是 0/0 造出来的，
+  // 不是测量值（见 classifyPointStatus 的客户端受限判定）。
+  sentRequests: o.sentRequests ?? 100,
   genSaturated: o.genSaturated ?? 0,
   errors: { http_429: o.http_429 ?? 0, http_5xx: o.http_5xx ?? 0, timeout: o.timeout ?? 0 },
   latency: { p95: o.p95 ?? o.p99 ?? 1000, p99: o.p99 ?? 1000 },
@@ -265,6 +334,71 @@ test("findKnee：上游饱和 vs 客户端受限，措辞区分、推荐点为�
   assert.match(k2.reason, /未能证明上游是否还有余量/);
 });
 
+// 基准点(points[0])从不被 classifyPointStatus 判定（首点恒返回 baseline），findKnee 又从 i=1 起判、
+// 返回 i-1 —— 于是「Key 填错 → 全部点 401」时，一个 0% 成功率的点会被当「最后一个健康点」推荐出去。
+test("findKnee：基准点自己就不可用（全 401）→ 不得把它当健康点推荐", () => {
+  const allFailing = [
+    mkPoint({ offered: 2, qps: 0, successRate: 0, tokensPerSecond: 0 }),
+    mkPoint({ offered: 5, qps: 0, successRate: 0, tokensPerSecond: 0 }),
+    mkPoint({ offered: 10, qps: 0, successRate: 0, tokensPerSecond: 0 }),
+  ];
+  const k = findKnee(allFailing);
+  assert.equal(k.index, -1, "无任何可用点时不得指向某个负载点");
+  assert.equal(k.tag, "unusable_baseline");
+  assert.match(k.reason, /基准点/, "须点明是基准点本身就不可用");
+  assert.doesNotMatch(k.reason, /最后一个健康点/);
+});
+
+test("findKnee：基准点一上来就被限流（429）→ 同样无可推荐容量", () => {
+  const k = findKnee([mkPoint({ offered: 2, http_429: 5 }), mkPoint({ offered: 5, http_429: 9 })]);
+  assert.equal(k.index, -1);
+  assert.equal(k.tag, "unusable_baseline");
+});
+
+test("formatSweepReport：无可推荐容量时如实说明，不得崩溃、不得报出不存在的点", () => {
+  const allFailing = [
+    mkPoint({ offered: 2, qps: 0, successRate: 0, tokensPerSecond: 0 }),
+    mkPoint({ offered: 5, qps: 0, successRate: 0, tokensPerSecond: 0 }),
+  ];
+  const md = formatSweepReport(
+    { mode: "closed", model: "m", protocol: "openai", promptProfile: "simple", durationSec: 60, warmupSec: 5, timeoutSec: 30, maxTokens: 256 },
+    allFailing,
+    findKnee(allFailing),
+  );
+  const capacityLine = md.split("\n").find((l) => l.includes("推荐可用容量")) || "";
+  assert.match(capacityLine, /无可推荐容量/);
+  assert.doesNotMatch(capacityLine, /并发 = 2/, "0% 成功率的点绝不能被推荐为容量");
+  assert.doesNotMatch(capacityLine, /undefined/, "不得把不存在的点渲染成 undefined");
+  assert.match(md, /基准点/, "判定须点明是基准点本身不可用");
+});
+
+test("findKnee：基准点健康时行为不变（防回归）", () => {
+  const seq = [
+    mkPoint({ offered: 2, tokensPerSecond: 50, p99: 500 }),
+    mkPoint({ offered: 4, tokensPerSecond: 100, p99: 800 }),
+    mkPoint({ offered: 8, tokensPerSecond: 101, p99: 2000 }),
+  ];
+  assert.equal(findKnee(seq).index, 1);
+  assert.equal(findKnee(seq).tag, "server_saturated");
+});
+
+// sent=0 时 successRate 是 0/0 造出来的 0（不是测量值）。classifyPointStatus 先判 successRate<0.99
+// 再判 genSaturated，于是「发生器打满、一个请求都没发出去」会被判成「出错/失败」甩锅上游——
+// 正是本模块注释明令不许的混淆（gen_saturated 证明不了上游到顶）。
+test("classifyPointStatus：一个都没发出去 + 发生器打满 → 客户端受限，不得甩锅上游", () => {
+  const prev = mkPoint({ offered: 10, tokensPerSecond: 500, p99: 900 });
+  const cur = mkPoint({ offered: 100, qps: 0, successRate: 0, tokensPerSecond: 0, genSaturated: 500, sentRequests: 0 });
+  const st = classifyPointStatus(prev, cur);
+  assert.equal(st.tag, "client_saturated", "没发出去的请求不能算上游失败");
+  assert.equal(st.label, "客户端受限");
+});
+
+test("classifyPointStatus：真发出去了且成功率低 → 仍判出错/失败（防止修过头）", () => {
+  const prev = mkPoint({ offered: 10, tokensPerSecond: 500, p99: 900 });
+  const cur = mkPoint({ offered: 20, successRate: 0.5, genSaturated: 3, sentRequests: 100 });
+  assert.equal(classifyPointStatus(prev, cur).tag, "errors", "确实发出去并失败了，就该算上游出错——即便同时有发生器受限");
+});
+
 test("formatSweepReport：表格含「状态」列，首行「基准」，饱和点标注「上游饱和」+ 双峰脚注", () => {
   const points = [
     mkPoint({ offered: 2, qps: 10, tokensPerSecond: 50, p95: 400, p99: 500 }),
@@ -273,7 +407,8 @@ test("formatSweepReport：表格含「状态」列，首行「基准」，饱和
   ];
   const knee = findKnee(points);
   const md = formatSweepReport({ mode: "closed", model: "m1", protocol: "openai", durationSec: 5, warmupSec: 0, maxTokens: 64, timeoutSec: 30, promptProfile: "simple" }, points, knee);
-  assert.match(md, /\| 并发 \| QPS \| tok\/s \| 成功率 \| p95 \| p99 \| 429 \| 超时\+5xx \| 发生器受限 \| 状态 \|/, "表头含状态列");
+  // TTFT p95 列：非流式点无数据显示「—」（见下方 mkPoint 未给 ttft）。
+  assert.match(md, /\| 并发 \| QPS \| tok\/s \| 成功率 \| TTFT p95 \| p95 \| p99 \| 429 \| 超时\+5xx \| 发生器受限 \| 状态 \|/, "表头含 TTFT p95 与状态列");
   assert.match(md, /\| 2 \| 10 \| 50 \| .* \| 基准 \|/, "首行状态为基准");
   assert.match(md, /上游饱和/, "饱和点标注上游饱和");
   assert.match(md, /双峰/, "脚注含双峰提示");

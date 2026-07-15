@@ -109,7 +109,7 @@ async function resolveTarget(target) {
 // —— 闭环负载点：固定并发 N（load=并发数）。延迟取执行器测得的响应时间（send→receive）。——
 // thinkMs>0 时为「闭环 + 思考时间」：每个 worker 收到响应后停顿 thinkMs 再发下一条（模拟真实用户节奏）。
 async function runClosedPoint(cfg) {
-  const { execute, probeTarget, dispatch, runId, load, warmupMs, thinkMs, deadline, runStart, abortSignal, taskContext } = cfg;
+  const { execute, probeTarget, dispatch, runId, load, warmupMs, thinkMs, deadline, runStart, abortSignal, stream, taskContext } = cfg;
   const samples = [];
   let stopped = false;
   const worker = async () => {
@@ -127,7 +127,7 @@ async function runClosedPoint(cfg) {
       const { prompt, caseId } = dispatch();
       let rec;
       try {
-        rec = await execute(probeTarget, prompt, { runId, caseId, writeLog: false, noRetry: true, abortSignal });
+        rec = await execute(probeTarget, prompt, { runId, caseId, writeLog: false, noRetry: true, stream, abortSignal });
       } catch {
         rec = { success: false, statusCode: null, totalMs: null, normalizedError: "network_error" };
       }
@@ -135,6 +135,8 @@ async function runClosedPoint(cfg) {
       const out = deriveOutputTokens(rec);
       samples.push({
         ms: rec.success && Number.isFinite(rec.totalMs) ? rec.totalMs : null,
+        // 首 token 延迟：仅流式测得到（非流式整体返回，执行器保持 null）。
+        ttft: rec.success && Number.isFinite(rec.firstTokenMs) ? rec.firstTokenMs : null,
         ok: Boolean(rec.success),
         status: rec.statusCode ?? null,
         statusText: rec.statusText || "", // 上游实际返回的原因短语（HTTP/1.1 可自定义）
@@ -166,7 +168,7 @@ async function runClosedPoint(cfg) {
 // coordinated omission 纠正(B)：延迟 = 完成时刻 − 计划发起时刻(intendedAt)，把发生器侧排队算进去。
 // 发送周期 burstMs>1000 时为「间歇/突发」：每 burstMs 毫秒只在前 1 秒按速率匀速发满，其余时间静默。
 async function runOpenPoint(cfg) {
-  const { execute, probeTarget, dispatch, runId, load, maxInFlight, warmupMs, burstMs, deadline, runStart, abortSignal, taskContext } = cfg;
+  const { execute, probeTarget, dispatch, runId, load, maxInFlight, warmupMs, burstMs, deadline, runStart, abortSignal, stream, taskContext } = cfg;
   const samples = [];
   const intervalMs = 1000 / load;
   let inFlight = 0;
@@ -211,7 +213,7 @@ async function runOpenPoint(cfg) {
     const p = (async () => {
       let rec;
       try {
-        rec = await execute(probeTarget, prompt, { runId, caseId, writeLog: false, noRetry: true, abortSignal });
+        rec = await execute(probeTarget, prompt, { runId, caseId, writeLog: false, noRetry: true, stream, abortSignal });
       } catch {
         rec = { success: false, statusCode: null, totalMs: null, normalizedError: "network_error" };
       }
@@ -219,6 +221,13 @@ async function runOpenPoint(cfg) {
       const out = deriveOutputTokens(rec);
       samples.push({
         ms: rec.success ? ms : null,
+        // TTFT 同样纠正 coordinated omission：执行器测的是「实发→首片」，这里补上
+        // 「计划发起→实发」的排队延迟（≈ ms − totalMs），与上面 ms 的口径保持一致；
+        // 否则开环高负载下 TTFT 会漏掉发生器排队、系统性偏乐观。
+        ttft:
+          rec.success && Number.isFinite(rec.firstTokenMs) && Number.isFinite(rec.totalMs)
+            ? Math.max(0, rec.firstTokenMs + (ms - rec.totalMs))
+            : null,
         ok: Boolean(rec.success),
         status: rec.statusCode ?? null,
         statusText: rec.statusText || "", // 上游实际返回的原因短语（HTTP/1.1 可自定义）
@@ -245,6 +254,8 @@ export function aggregate(ctx) {
   const sent = steady.filter((s) => s.err !== "gen_saturated"); // 真正打到上游的（开环丢弃的不算）
   const okSamples = sent.filter((s) => s.ok);
   const latencies = okSamples.map((s) => s.ms).filter((v) => Number.isFinite(v));
+  // TTFT 仅流式有值；非流式该数组为空 → 下面各分位数为 null，报告据此整节省略。
+  const ttfts = okSamples.map((s) => s.ttft).filter((v) => Number.isFinite(v));
   const genSaturated = steady.length - sent.length;
 
   // 聚合桶（供扫描表格/前端摘要/拐点判定）：429、5xx 聚合。
@@ -252,6 +263,10 @@ export function aggregate(ctx) {
   // 逐状态码明细（供报告「错误构成」）：每个失败的 HTTP 状态码单独一项。
   const statusCounts = {}; // { [httpStatus]: count }，仅非成功的 HTTP 响应
   const statusPhrases = {}; // { [httpStatus]: 原因短语 }，取该码首个非空 statusText（上游可自定义，故用实测值）
+  // { [httpStatus]: { [normalizedError]: 次数 } }。压测不写 requests.jsonl，报告是唯一产物：
+  // 失败原因若在这里被状态码盖掉就永久丢失了。2xx 判失败时（成功＝2xx 且有输出）尤其要靠它——
+  // 状态码本身说明不了任何问题。
+  const statusReasons = {};
   const network = { local: 0, upstream: 0, unknown: 0 }; // 网络错误按侧别细分
   let noStatusOther = 0; // 无状态码、且非 timeout/network 的失败（罕见）
   for (const s of sent) {
@@ -259,6 +274,10 @@ export function aggregate(ctx) {
     if (typeof s.status === "number") {
       statusCounts[s.status] = (statusCounts[s.status] || 0) + 1;
       if (s.statusText && !statusPhrases[s.status]) statusPhrases[s.status] = s.statusText;
+      if (s.err) {
+        const byReason = (statusReasons[s.status] ||= {});
+        byReason[s.err] = (byReason[s.err] || 0) + 1;
+      }
       if (s.status === 429) errors.http_429 += 1;
       else if (s.status >= 500) errors.http_5xx += 1;
       else errors.other += 1;
@@ -302,9 +321,20 @@ export function aggregate(ctx) {
       max: safeMax(latencies),
       avg: mean(latencies),
     },
+    // 首 token 延迟（TTFT）：仅流式采得到；ttftCount=0 表示本点无 TTFT 数据（非流式或全失败）。
+    ttftCount: ttfts.length,
+    ttft: {
+      p50: percentile(ttfts, 0.5),
+      p90: percentile(ttfts, 0.9),
+      p95: percentile(ttfts, 0.95),
+      p99: percentile(ttfts, 0.99),
+      max: safeMax(ttfts),
+      avg: mean(ttfts),
+    },
     errors,
     statusCounts,
     statusPhrases,
+    statusReasons,
     network,
     noStatusOther,
   };
@@ -317,10 +347,16 @@ export function aggregate(ctx) {
 function tputOf(p) {
   return p.tokensPerSecond > 0 ? p.tokensPerSecond : p.qps;
 }
+// sentRequests=0 时 successRate 是 0/0 造出来的 0，不是测量值——发生器把请求全丢了、
+// 一个都没发出去，拿它判「上游出错」就是甩锅。字段缺失（老数据/测试夹具）时按原样信任 successRate。
+function measuredSuccessRate(p) {
+  return p.sentRequests === 0 ? null : p.successRate;
+}
 export function classifyPointStatus(prev, cur) {
   if (!prev) return { tag: "baseline", label: "基准" };
   if (cur.errors.http_429 > 0) return { tag: "throttled", label: "上游限流" };
-  if (cur.successRate < 0.99) return { tag: "errors", label: "出错/失败" };
+  const success = measuredSuccessRate(cur);
+  if (success !== null && success < 0.99) return { tag: "errors", label: "出错/失败" };
   if (cur.genSaturated > 0) return { tag: "client_saturated", label: "客户端受限" };
   const plateau = tputOf(cur) < tputOf(prev) * THROUGHPUT_PLATEAU_RATIO; // 吞吐较前点持平
   const p99Spiked = Number.isFinite(cur.latency.p99) && Number.isFinite(prev.latency.p99) && cur.latency.p99 >= prev.latency.p99 * P99_SATURATION_RATIO;
@@ -330,7 +366,26 @@ export function classifyPointStatus(prev, cur) {
 
 // 饱和拐点检测(D)：负载点按 offered 升序，逐点分类，取「首个非健康点」的前一点为推荐容量。
 // reason 按饱和类型分别措辞——尤其把「上游饱和」与「客户端受限」讲清，避免误判上游是否还有余量。
+// 基准点(points[0])的体检：classifyPointStatus 对首点恒返回 baseline（无前点可比），
+// 而下面的循环从 i=1 起判、返回 i-1——于是基准点自己从没被验过。「Key 填错 → 全部点 401」时，
+// 一个 0% 成功率的点就会被当「最后一个健康点」推荐出去。返回不可用的原因，null=可用。
+function baselineProblem(p) {
+  if (p.errors.http_429 > 0) return `一上来就被限流（429=${p.errors.http_429}）`;
+  const success = measuredSuccessRate(p);
+  if (success !== null && success < 0.99) return `成功率仅 ${(success * 100).toFixed(1)}%`;
+  if (success === null && p.genSaturated > 0) return `发生器在飞打满，一个请求都没发出去（gen_saturated=${p.genSaturated}）`;
+  return null;
+}
 export function findKnee(points) {
+  const first = points[0];
+  const problem = first ? baselineProblem(first) : null;
+  if (problem) {
+    return {
+      index: -1, // 无任何可用点：调用方须据此渲染「无可推荐容量」，不得去取 points[-1]
+      reason: `基准点（最低负载 ${first.offered}）本身就不可用：${problem} → 无可推荐容量。这不是容量问题，请先排查鉴权 / 连通性 / 模型名后重测`,
+      tag: "unusable_baseline",
+    };
+  }
   for (let i = 1; i < points.length; i += 1) {
     const prev = points[i - 1];
     const cur = points[i];
@@ -358,13 +413,39 @@ function reportHeaderLines(meta) {
   return [
     `- 目标：${meta.profileName || meta.model}（模型 ${meta.model}，协议 ${meta.protocol}）`,
     `- 模式：${meta.mode === "open" ? `开环（固定到达率 req/s，含 coordinated omission 纠正${meta.burstPeriodSec > 1 ? `；每 ${meta.burstPeriodSec}s 突发发送 1s` : ""}）` : `闭环（固定并发${meta.intervalSec ? `，思考时间 ${meta.intervalSec}s` : ""}）`} · 负载档 ${meta.promptProfile}`,
-    `- 参数：稳态 ${meta.durationSec}s · ramp-up ${meta.warmupSec}s · max_tokens ${meta.maxTokens} · 每请求超时 ${meta.timeoutSec}s${meta.mode === "open" ? ` · 在飞上限 ${meta.maxInFlight}${meta.burstPeriodSec > 1 ? ` · 发送周期 ${meta.burstPeriodSec}s` : ""}` : meta.intervalSec ? ` · 测试间隔 ${meta.intervalSec}s` : ""}`,
+    `- 参数：稳态 ${meta.durationSec}s · ramp-up ${meta.warmupSec}s · max_tokens ${meta.maxTokens} · 每请求超时 ${meta.timeoutSec}s · 请求方式 ${meta.stream ? "流式 SSE" : "非流式"}${meta.mode === "open" ? ` · 在飞上限 ${meta.maxInFlight}${meta.burstPeriodSec > 1 ? ` · 发送周期 ${meta.burstPeriodSec}s` : ""}` : meta.intervalSec ? ` · 测试间隔 ${meta.intervalSec}s` : ""}`,
     `- 时间：${meta.startedAt} → ${meta.endedAt}`,
   ];
 }
 
+// 2xx 却算失败：成功判定是「2xx 且能提取到输出文本」，所以这里必然是没拿到文本。
+// 状态码此时说明不了任何问题，得靠 normalizedError（normalizeEmptyResponse 按响应体细分）出文案。
+// 有些中转会用 200 包一个错误返回，故限流/模型错误也可能出现在 2xx 上。
+const EMPTY_2XX_REASONS = {
+  empty_response: {
+    label: "无输出",
+    note: "上游以 2xx 返回，但响应体里没有可提取的文本。常见于上游空响应、流式中断或中转的协议转换异常。对用户等同于「没有回答」，故计为失败。",
+  },
+  content_block_not_found: {
+    label: "无输出（内容块缺失）",
+    note: "上游以 2xx 返回但报 content block not found，多见于中转做流式协议转换时出错。",
+  },
+  rate_limited: {
+    label: "上游限流（2xx 包错误）",
+    note: "上游用 2xx 包了一个限流错误，未按 429 返回。需与上游核对配额或降低负载。",
+  },
+  model_not_found: {
+    label: "模型不可用（2xx 包错误）",
+    note: "上游用 2xx 包了一个模型错误：模型名有误，或渠道未开通该模型。",
+  },
+};
+
 // 把 HTTP 状态码归到「短标签 + 说明」，供错误构成逐码列项与说明。
-function classifyStatus(code) {
+// reason：该码下最主要的 normalizedError；2xx 必须靠它，否则只能说出「200」这种废话。
+function classifyStatus(code, reason = "") {
+  // 放在最前：2xx 绝不能落到底部那条「非常规状态码」兜底——200 恰恰是最常规的状态码，
+  // 那句话会把排查方向带偏。
+  if (code >= 200 && code < 300) return EMPTY_2XX_REASONS[reason] || EMPTY_2XX_REASONS.empty_response;
   if (code === 401 || code === 403) return { label: "认证失败", note: "Key 无效 / 无权限 / 欠费，或鉴权头不被上游接受。" };
   if (code === 404) return { label: "模型不可用", note: "模型名错误，或渠道未开通该模型。" };
   if (code === 429) return { label: "上游限流", note: "触发配额 / 速率限制，需与上游核对或降低负载。" };
@@ -379,6 +460,21 @@ function sortedStatusCodes(p) {
   return Object.keys(p.statusCounts || {})
     .map(Number)
     .sort((a, b) => a - b);
+}
+
+// 该状态码下最主要的失败原因（normalizedError）。同码多因时取占比最高的一种——报告的
+// 「原因短语」列仍给上游原话，无需逐因铺开。
+function dominantReason(p, code) {
+  const byReason = (p.statusReasons || {})[code] || {};
+  let top = "";
+  let max = 0;
+  for (const [reason, count] of Object.entries(byReason)) {
+    if (count > max) {
+      max = count;
+      top = reason;
+    }
+  }
+  return top;
 }
 
 // 上游实际返回的原因短语（reason phrase）；无（HTTP/2 或上游未给）则空串。
@@ -396,7 +492,7 @@ function errorComposition(p) {
   const e = p.errors;
   const lines = [`- 成功：${e.ok}`];
   for (const code of sortedStatusCodes(p)) {
-    lines.push(`- HTTP ${codeWithPhrase(p, code)}（${classifyStatus(code).label}）：${p.statusCounts[code]}`);
+    lines.push(`- HTTP ${codeWithPhrase(p, code)}（${classifyStatus(code, dominantReason(p, code)).label}）：${p.statusCounts[code]}`);
   }
   if (e.timeout > 0) lines.push(`- 超时：${e.timeout}`);
   if (e.network_error > 0) {
@@ -419,7 +515,7 @@ function detailedErrorTable(p) {
   const n = p.network || {};
   const rows = [];
   for (const code of sortedStatusCodes(p)) {
-    rows.push(`| ${classifyStatus(code).label} | ${code} | ${statusPhrase(p, code) || "—"} | ${p.statusCounts[code]} |`);
+    rows.push(`| ${classifyStatus(code, dominantReason(p, code)).label} | ${code} | ${statusPhrase(p, code) || "—"} | ${p.statusCounts[code]} |`);
   }
   if (e.timeout > 0) rows.push(`| 超时 | — | — | ${e.timeout} |`);
   if (n.local) rows.push(`| 网络·本机侧 | — | — | ${n.local} |`);
@@ -436,7 +532,7 @@ function errorNotes(meta, p) {
   const e = p.errors;
   const notes = [];
   for (const code of sortedStatusCodes(p)) {
-    const c = classifyStatus(code);
+    const c = classifyStatus(code, dominantReason(p, code));
     notes.push(`- HTTP ${codeWithPhrase(p, code)}（${c.label}）：${c.note}`);
   }
   if (e.timeout > 0) notes.push(`- 超时：请求未在每请求超时（${meta.timeoutSec}s）内返回，通常是上游在该负载下延迟过高。`);
@@ -495,6 +591,22 @@ export function formatSinglePointReport(meta, p) {
     "|---|---|---|---|---|---|",
     `| ${fmtMs(L.p50)} | ${fmtMs(L.p90)} | ${fmtMs(L.p95)} | ${fmtMs(L.p99)} | ${fmtMs(L.max)} | ${fmtMs(L.avg)} |`,
     "",
+  );
+  // TTFT 只有流式测得到；非流式整节省略，不留空表误导。
+  if (p.ttftCount > 0) {
+    const T = p.ttft;
+    lines.push(
+      "## 首 token 延迟（TTFT · 仅流式）",
+      "",
+      `> 用户感知的「反应快不快」看这里，而非上面的端到端耗时。取首个**可见输出 token** 所在分片的到达时刻（已排除 Claude 的 message_start、中转保活帧等无内容首帧，故可跨协议横评），基于 ${p.ttftCount} 条成功请求。${meta.mode === "open" ? "已按计划发起时刻计，纠正 coordinated omission。" : ""}`,
+      "",
+      "| p50 | p90 | p95 | p99 | max | avg |",
+      "|---|---|---|---|---|---|",
+      `| ${fmtMs(T.p50)} | ${fmtMs(T.p90)} | ${fmtMs(T.p95)} | ${fmtMs(T.p99)} | ${fmtMs(T.max)} | ${fmtMs(T.avg)} |`,
+      "",
+    );
+  }
+  lines.push(
     "## 错误构成",
     "",
     ...errorComposition(p),
@@ -516,9 +628,15 @@ export function formatSweepReport(meta, points, knee) {
   const unit = meta.mode === "open" ? "速率(req/s)" : "并发";
   const rows = points.map((p, i) => {
     const st = classifyPointStatus(i > 0 ? points[i - 1] : null, p);
-    return `| ${p.offered} | ${p.qps} | ${p.tokensPerSecond} | ${pct(p.successRate)} | ${fmtMs(p.latency.p95)} | ${fmtMs(p.latency.p99)} | ${p.errors.http_429} | ${p.errors.timeout + p.errors.http_5xx} | ${p.genSaturated} | ${st.label} |`;
+    // TTFT p95：非流式（或该点无成功样本）无数据，显示「—」而非 0，避免被当成「极快」。
+    const ttftP95 = p.ttftCount > 0 ? fmtMs(p.ttft.p95) : "—";
+    return `| ${p.offered} | ${p.qps} | ${p.tokensPerSecond} | ${pct(p.successRate)} | ${ttftP95} | ${fmtMs(p.latency.p95)} | ${fmtMs(p.latency.p99)} | ${p.errors.http_429} | ${p.errors.timeout + p.errors.http_5xx} | ${p.genSaturated} | ${st.label} |`;
   });
-  const kneePoint = points[knee.index];
+  // knee.index=-1：基准点自己就不可用，没有任何点可推荐（points[-1] 是 undefined，不能去取）。
+  const kneePoint = knee.index >= 0 ? points[knee.index] : null;
+  const capacityLine = kneePoint
+    ? `- 推荐可用容量（最后一个健康点）：**${unit} = ${kneePoint.offered}**（QPS ${kneePoint.qps}，成功率 ${pct(kneePoint.successRate)}，p99 ${fmtMs(kneePoint.latency.p99)}）`
+    : "- 推荐可用容量：**无可推荐容量** —— 最低负载点就已不可用，本次压测测不出容量上限（先按上面「判定」排查）";
   return [
     "# 压力测试报告（负载扫描）",
     "",
@@ -527,14 +645,14 @@ export function formatSweepReport(meta, points, knee) {
     "",
     "## 负载 → 吞吐 / 尾延迟曲线",
     "",
-    `| ${unit} | QPS | tok/s | 成功率 | p95 | p99 | 429 | 超时+5xx | 发生器受限 | 状态 |`,
-    "|---|---|---|---|---|---|---|---|---|---|",
+    `| ${unit} | QPS | tok/s | 成功率 | TTFT p95 | p95 | p99 | 429 | 超时+5xx | 发生器受限 | 状态 |`,
+    "|---|---|---|---|---|---|---|---|---|---|---|",
     ...rows,
     "",
     "## 饱和拐点",
     "",
     `- 判定：${knee.reason}`,
-    `- 推荐可用容量（最后一个健康点）：**${unit} = ${kneePoint.offered}**（QPS ${kneePoint.qps}，成功率 ${pct(kneePoint.successRate)}，p99 ${fmtMs(kneePoint.latency.p99)}）`,
+    capacityLine,
     "",
     "> 判定参考：成功率≥99% 且 429=0 → 该负载下容量充足；出现 429 → 上游/中转在限流；",
     "> **上游饱和** = 吞吐持平（tok/s 或 QPS 不再随负载上升）且 p99 抬升 → 上游产能到顶；",
@@ -563,6 +681,7 @@ export async function runLoadTest(payload = {}, taskContext = {}, deps = {}) {
   const key = LOAD_PROFILES[payload.promptProfile] ? payload.promptProfile : "simple";
   const loadProfile = LOAD_PROFILES[key];
   const maxTokens = clampNumber(payload.maxTokens, 1, 4096, loadProfile.maxTokens);
+  const stream = payload.stream === true; // 流式 SSE：贴近真实前端流量，且只有它测得到 TTFT
 
   // 负载序列：闭环夹 1..200(并发)，开环夹 1..2000(速率)。去空、取前 MAX_POINTS 个、升序。
   const loadMax = mode === "open" ? 2000 : 200;
@@ -614,6 +733,7 @@ export async function runLoadTest(payload = {}, taskContext = {}, deps = {}) {
         runStart,
         deadline: runStart + perPointSec * 1000,
         abortSignal,
+        stream,
         taskContext,
       };
       const samples = mode === "open" ? await runOpenPoint(cfg) : await runClosedPoint(cfg);
@@ -641,6 +761,7 @@ export async function runLoadTest(payload = {}, taskContext = {}, deps = {}) {
     maxInFlight,
     intervalSec,
     burstPeriodSec,
+    stream,
     startedAt: startedAt.toISOString(),
     endedAt: endedAt.toISOString(),
   };
@@ -655,7 +776,8 @@ export async function runLoadTest(payload = {}, taskContext = {}, deps = {}) {
       runId,
       ...meta,
       sweep: points,
-      knee: { ...knee, offered: points[knee.index].offered },
+      // index=-1（基准点即不可用）时无点可取——offered 置 null，前端已按 `?? "—"` 兜底。
+      knee: { ...knee, offered: knee.index >= 0 ? points[knee.index].offered : null },
       reportPath: reportFiles.markdownPath,
       reportHtmlPath: reportFiles.htmlPath,
     };

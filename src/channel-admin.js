@@ -62,10 +62,14 @@ export function createChannelAdmin({ state, els, onChange }) {
   function tagVocabulary() {
     return unionTagVocabulary(state.scenarios, state.settings?.customTags);
   }
-  function renderTagOptions(selected = []) {
+  // selected 省略 = 「只刷新可选词表、保留当前勾选」。
+  // 不能默认成 []：onTagsSaved / loadScenarios / 设置保存 都会无参调用它，若此时表单正处于编辑态，
+  // 勾选会被清空，用户随后点保存就收集到 tags:[] → 服务端把 [] 当「显式清空」→ 该模型的能力标签被抹掉。
+  // 显式传 [] 仍是清空（saveModelTarget 保存后重置表单用）。
+  function renderTagOptions(selected) {
     const box = els.modelTargetForm.querySelector("#model-target-tags");
     if (!box) return;
-    const sel = new Set(selected);
+    const sel = new Set(selected ?? [...box.querySelectorAll("input[name=modelTag]:checked")].map((i) => i.value));
     const vocab = tagVocabulary();
     box.innerHTML = vocab.length
       ? vocab

@@ -725,6 +725,20 @@
                     <option value="2">2：并发场景</option>
                   </select>
                 </label>
+                <label class="wide checkbox-option">
+                  <input name="fullResponseInReport" type="checkbox" value="1" />
+                  <span>
+                    在报告中完整显示返回
+                    <small>报告末尾追加「完整返回」小节，逐条列出模型原始回答全文（不截断）。默认只在场景明细表里给一条截断样例；回答很长或场景数多时报告体积会明显变大。</small>
+                  </span>
+                </label>
+                <label class="wide checkbox-option">
+                  <input name="streamRequest" type="checkbox" value="1" />
+                  <span>
+                    发送流式请求（SSE）
+                    <small>按真实前端的方式发 SSE 流式请求，上游的排队与连接占用行为更接近线上。开启后能测出真实首 token 延迟（TTFT，写入请求日志）；回答文本、token 数与截断判定与非流式一致。默认关。</small>
+                  </span>
+                </label>
               </div>
             </details>
 
@@ -1295,6 +1309,13 @@
                 <option value="simple" selected>简单：一句话连通（max_tokens 64）</option>
                 <option value="think">轻思考：小推理题（max_tokens 256）</option>
                 <option value="coding">编程：代码排错（max_tokens 800）</option>
+              </select>
+            </label>
+            <label>
+              请求方式
+              <select name="streamRequest">
+                <option value="" selected>非流式（默认）</option>
+                <option value="1">流式 SSE（贴近真实前端流量，可测 TTFT）</option>
               </select>
             </label>
             <label>

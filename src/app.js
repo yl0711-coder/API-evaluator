@@ -987,6 +987,7 @@ createTaskFormController({
       maxInFlight: Number(raw.maxInFlight) || 300,
       intervalSec: raw.mode === "open" ? 0 : Number(raw.intervalSec) || 0, // 思考时间仅闭环
       burstPeriodSec: raw.mode === "open" ? Number(raw.burstPeriodSec) || 1 : 1, // 发送周期仅开环
+      stream: raw.streamRequest === "1", // 流式 SSE；开启后报告额外给出 TTFT
     };
   },
   beforeStart: (payload) => {
@@ -2042,8 +2043,13 @@ async function copyReportText(kind) {
     return;
   }
 
-  await copyText(text);
-  toast("摘要和报告路径已复制。");
+  // copyText 失败会抛错：必须接住并提示，否则点击 handler 的 promise 静默拒绝，用户什么都看不到。
+  try {
+    await copyText(text);
+    toast("摘要和报告路径已复制。");
+  } catch (error) {
+    toast(`复制失败：${error.message}`, true);
+  }
 }
 
 function getCopyableReportText(result, fallbackText) {
@@ -2060,8 +2066,12 @@ async function copyHandoffTemplate() {
     toast("当前没有可复制的交付模板。", true);
     return;
   }
-  await copyText(text);
-  toast("交付模板已复制。");
+  try {
+    await copyText(text);
+    toast("交付模板已复制。");
+  } catch (error) {
+    toast(`复制失败：${error.message}`, true);
+  }
 }
 
 function applyStabilityTemplate() {

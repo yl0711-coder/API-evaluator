@@ -149,21 +149,27 @@ export function createModelCompare({ state }) {
       </div>
       <div class="mc-scenario-list">${items}</div>`;
     scenariosBox.classList.remove("hidden");
-    const updateCount = () => {
-      const n = checkedScenarioNames().length;
-      scenariosBox.querySelector("#mc-scenario-count").textContent = `已选 ${n} / ${scenarios.length} 个共有场景`;
-    };
+    // 以下按钮是本次 innerHTML 新建的子节点，随重渲染一起丢弃，故可在渲染函数里挂监听。
     scenariosBox.querySelector("[data-mc-all]").addEventListener("click", () => {
       scenariosBox.querySelectorAll('input[type="checkbox"]').forEach((el) => (el.checked = true));
-      updateCount();
+      updateScenarioCount();
     });
     scenariosBox.querySelector("[data-mc-none]").addEventListener("click", () => {
       scenariosBox.querySelectorAll('input[type="checkbox"]').forEach((el) => (el.checked = false));
-      updateCount();
+      updateScenarioCount();
     });
     scenariosBox.querySelector("[data-mc-reset]").addEventListener("click", resetScenarios);
-    scenariosBox.addEventListener("change", updateCount);
-    updateCount();
+    updateScenarioCount();
+  }
+
+  // 计数文案：读模块级 loadedScenarios（渲染时传的就是它），不闭包 scenarios 参数——
+  // 这样 change 监听可在 init 处只挂一次。scenariosBox 是 requireElement 拿到的持久元素，
+  // innerHTML 只换子节点、不换它自己；若在渲染函数里给它挂监听，每点一次「加载共有场景」就叠加一个。
+  // 重置后 #mc-scenario-count 随子节点消失，故需空值保护。
+  function updateScenarioCount() {
+    const el = scenariosBox.querySelector("#mc-scenario-count");
+    if (!el) return;
+    el.textContent = `已选 ${checkedScenarioNames().length} / ${loadedScenarios?.length ?? 0} 个共有场景`;
   }
 
   // 清空场景选择：回到「未加载」态（生成时不带 scenarios → 用全部共有）。
@@ -203,6 +209,8 @@ export function createModelCompare({ state }) {
   }
 
   loadScenariosBtn.addEventListener("click", onLoadScenarios);
+  // 勾选变化 → 更新计数。挂在持久容器上，故只在此挂一次（放渲染函数里会每次渲染叠加）。
+  scenariosBox.addEventListener("change", updateScenarioCount);
   // 换模型/渠道后，已加载的场景列表可能不再适用 → 重置，避免用旧场景生成。
   for (const el of [aChannel, aModel, bChannel, bModel]) el.addEventListener("change", resetScenarios);
 
