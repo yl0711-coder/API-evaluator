@@ -1022,21 +1022,6 @@
               <p class="section-desc">这些开关只保存在本机，立即生效、无需重启，也不依赖环境变量。</p>
             </div>
           </div>
-
-          <div class="panel">
-            <div class="form-section-title">
-              <h3>外观</h3>
-              <p class="section-desc">纯本机显示偏好，勾选即时生效、无需点“保存设置”。</p>
-            </div>
-            <label class="wide checkbox-option">
-              <input type="checkbox" id="set-better-lighting" />
-              <span>
-                更好的光影
-                <small>开启后，网页背景会有一道橙色渐变流光缓缓划过。纯视觉效果，不发起任何请求、不影响测试与服务器。</small>
-              </span>
-            </label>
-          </div>
-
           <form id="settings-form" class="panel form-grid">
             <div class="form-section-title">
               <h3>AI 总结报告</h3>
@@ -1145,6 +1130,11 @@
             <label data-requires-admin>
               管理员用户ID
               <input id="set-newapi-userid" type="text" inputmode="numeric" placeholder="1" />
+            </label>
+
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-better-lighting" />
+              <span>更好的光影</span>
             </label>
 
             <div class="wide action-row">

@@ -2540,8 +2540,8 @@ input, select, textarea, button { font-family: var(--sans); }
 .sidebar { background: linear-gradient(180deg, rgba(20,28,46,.5), rgba(10,14,23,.2)); border-right: 1px solid var(--line); }
 .nav-button { border-radius: 12px; transition: .16s; }
 /* 选中/悬停都去掉橙色边框；悬停态方框改为浅橙色 */
-.nav-button:hover { background: rgba(246, 181, 107, 0.1); border-color: transparent; color: var(--text); }
-.nav-button.active { background: linear-gradient(120deg, rgba(246, 181, 107, 0.32), rgba(255, 122, 138, 0.32)); border-color: transparent; color: var(--text); }
+.nav-button:hover { background: rgba(203, 198, 190, 0.12); border-color: transparent; color: var(--text); }
+.nav-button.active { background: linear-gradient(120deg, rgba(246, 181, 107, 0.38), rgba(255, 122, 138, 0.38)); border-color: transparent; color: var(--text); }
 .nav-group > span { color: var(--muted); }
 /* 按钮：主操作品牌渐变 */
 button.primary, .btn-primary { background: var(--brand) !important; color: #1a0f08 !important; box-shadow: 0 10px 26px rgba(255,122,138,.26); }

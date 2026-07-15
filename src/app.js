@@ -352,7 +352,10 @@ function applyBetterLighting(on) {
   betterLightingToggle.checked = on;
 }
 applyBetterLighting(readBetterLighting());
-betterLightingToggle.addEventListener("change", () => {
+betterLightingToggle.addEventListener("change", (event) => {
+  // 它在 #settings-form 内，但即时生效、不走「保存设置」：阻止冒泡，
+  // 免得表单的 change 监听把它误标为「设置未保存」。
+  event.stopPropagation();
   applyBetterLighting(betterLightingToggle.checked);
   writeBetterLighting(betterLightingToggle.checked);
 });

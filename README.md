@@ -101,7 +101,7 @@ persisted config and reports. A `docker-compose` file and a Caddy reverse-proxy 
 
 ```bash
 # Build once on a build host / CI:
-docker build -t api-evaluator:0.5.9 .
+docker build -t api-evaluator:0.6.0 .
 # Then on the server (image loaded/pulled), run without rebuilding:
 docker compose --env-file .env.evaluator \
   -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
