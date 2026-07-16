@@ -34,6 +34,7 @@ import { deleteProfileApiKey, saveProfileApiKey } from "./server/secret-store.mj
 import { createTaskManager } from "./server/task-manager.mjs";
 import { buildSupportBundle } from "./server/support-bundle.mjs";
 import {
+  closeDatabase,
   deleteReport,
   getDbHealth,
   pruneHistory,
@@ -79,6 +80,7 @@ import { appendJsonLine, compactDate, hasProxyEnv, requiredString, safeJson, sen
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
 import {
   authenticate,
+  assertSessionSecretStrength,
   buildSessionCookie,
   canWriteConfig,
   clearSessionCookie,
@@ -111,6 +113,7 @@ import { readConfig as readNewapiConfig, loadNewapiToken, saveNewapiToken } from
 import { getSettings, loadSettings, saveSettings, peekLegacyNewapiToken, stripLegacyNewapiToken } from "./server/settings-store.mjs";
 import { withRunBy } from "./server/run-context.mjs";
 import { createRouter } from "./server/router.mjs";
+import { createRateLimiter } from "./server/rate-limit.mjs";
 import { APP_VERSION } from "./server/version.mjs";
 
 const PORT = Number(process.env.API_PORT || process.env.PORT || 5180);
@@ -141,6 +144,15 @@ const autoTestScheduler = createAutoTestScheduler({
   logError: (error, job) =>
     logErrorSafely({ source: "auto-test-scheduler", error, context: { jobId: job?.id, kind: job?.kind, targetId: job?.targetId } }),
 });
+
+try {
+  // 会话密钥强度门（P3-2）：弱密钥可被离线爆破后伪造超管会话。在 listen 前失败快，
+  // 让「弱密钥」变成启动即拒，而不是线上默默可被伪造。
+  assertSessionSecretStrength();
+} catch (error) {
+  console.error(`[启动失败] ${error?.message || error}`);
+  process.exit(1);
+}
 
 try {
   await ensureDataDir();
@@ -214,7 +226,7 @@ async function loadBalancedCompareFiles(A, B) {
   return { balA, balB };
 }
 
-createServer(async (req, res) => {
+const httpServer = createServer(async (req, res) => {
   try {
     if (req.url?.startsWith("/api/")) {
       if (!isAllowedBrowserOrigin(req.headers.origin)) {
@@ -275,6 +287,58 @@ createServer(async (req, res) => {
       "[auth] 登录后端=local 但未配置任何账号：请设置 EVALUATOR_ADMIN_PASSWORD（或 EVALUATOR_LOCAL_USERS），否则无法登录。",
     );
   }
+});
+
+// —— 优雅停机 —— //
+// 容器里 node 以 PID 1 运行、CMD 是 exec 形式，无 init/tini 回收信号：内核对 PID 1 上「无处理器」的
+// 信号不执行默认终止动作，故 docker stop 的 SIGTERM 会被无视 → 白等满 10s 宽限期后被 SIGKILL 硬杀。
+// 注册处理器把它变成「收到即主动收尾并退出」：停调度器（不再起新 tick）、停止接受新连接、关库刷 WAL。
+// best-effort 且带兜底超时，绝不因某一步卡住而永远不退出。
+let shuttingDown = false;
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] 收到 ${signal}，开始优雅停机…`);
+  // 兜底：无论下面哪步卡住，最多等这么久就强制退出，避免吊死在宽限期。
+  const forceExit = setTimeout(() => {
+    console.warn("[shutdown] 收尾超时，强制退出。");
+    process.exit(0);
+  }, 8000);
+  forceExit.unref?.();
+  try {
+    autoTestScheduler.stop(); // 不再触发新 tick；在途作业不强杀，靠启动对账归位
+  } catch {
+    /* 停调度器失败不应阻断后续收尾 */
+  }
+  httpServer.close(() => {
+    // 所有在途连接结束后：关库让 SQLite 干净检查点（WAL 即便不关也能在下次打开时恢复，关一下更稳）。
+    try {
+      closeDatabase();
+    } catch {
+      /* 关库失败可接受：WAL 会在下次打开时恢复 */
+    }
+    clearTimeout(forceExit);
+    console.log("[shutdown] 收尾完成，退出。");
+    process.exit(0);
+  });
+  // close() 只等【在途请求】结束，但反向代理（Caddy）会握着【空闲 keep-alive】长连接不放——不主动断开
+  // 它们，close() 的回调永不触发，只能等下面 forceExit 硬退（实测：空闲 keepalive 会把优雅退出拖到超时）。
+  // 故立刻断开当前空闲连接；再给在途请求一段宽限，到点强断剩余连接让 close() 回调尽快触发。
+  httpServer.closeIdleConnections?.();
+  setTimeout(() => httpServer.closeAllConnections?.(), 5000).unref?.();
+}
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// 最后一道兜底：任何逃逸的 Promise 拒绝 / 未捕获异常，在 Node 默认「直接杀进程」之前先落一条日志，
+// 把「静默猝死」变成「可诊断」。不吞异常、不假装恢复——记录后仍按默认语义处理（rejection 仅告警，
+// 保持进程存活；uncaughtException 记录后退出，避免进程停留在未知状态）。
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection] 未处理的 Promise 拒绝：", reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("[uncaughtException] 未捕获异常，进程即将退出：", error);
+  process.exit(1);
 });
 
 // —— API 路由表 —— //
@@ -499,6 +563,8 @@ function handleAuthMe(req, res) {
 }
 
 function handleHealth(req, res) {
+  // autoTest.stale=true 表示调度器心跳超时（进程活着但定时器僵死）——容器健康检查据此判 unhealthy，
+  // autoheal 看门狗再重启，补上「进程活着但自动测试停摆」这类静默故障的自动恢复（见 deploy compose）。
   sendJson(res, 200, {
     ok: true,
     service: "evaluator-api",
@@ -506,6 +572,7 @@ function handleHealth(req, res) {
     proxyEnvDetected: hasProxyEnv(),
     safetyScenariosEnabled: getTestScenarios().some((scenario) => scenario.category === "safety"),
     version: APP_VERSION,
+    autoTest: autoTestScheduler.getStatus(),
   });
 }
 
@@ -559,7 +626,19 @@ async function handleDevScenarioDelete(req, res, { params }) {
   sendJson(res, 200, result);
 }
 
+// /api/client-errors 在免登录白名单里（前端崩溃需能在登录前上报），故匿名可达、可被灌日志（P3-8）。
+// 按客户端 IP 轻量限流：正常前端每分钟寥寥几条，60/分钟绰绰有余；灌日志会被挡在 429。
+const clientErrorLimiter = createRateLimiter({
+  windowMs: 60_000,
+  max: Number(process.env.EVALUATOR_CLIENT_ERROR_RATE_MAX) > 0 ? Number(process.env.EVALUATOR_CLIENT_ERROR_RATE_MAX) : 60,
+});
+
 async function handleClientErrorReport(req, res) {
+  const gate = clientErrorLimiter.check(clientIp(req));
+  if (!gate.allowed) {
+    sendJson(res, 429, { error: "rate_limited", userMessage: "错误上报过于频繁，请稍后再试。", retryAfterMs: gate.retryAfterMs });
+    return;
+  }
   const body = await readJson(req);
   const errorId = await logTechnicalError(ERROR_LOG_FILE, {
     source: "client",

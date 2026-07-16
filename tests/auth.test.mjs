@@ -18,6 +18,30 @@ test("session sign/verify roundtrip", () => {
   assert.ok(payload.exp > Date.now());
 });
 
+// 回归（P3-2）：会话密钥强度门。空/过短应在启动校验时抛出，强密钥放行。
+test("assertSessionSecretStrength 拦空 / 过短，放行强密钥", () => {
+  const saved = process.env.EVALUATOR_SESSION_SECRET;
+  try {
+    process.env.EVALUATOR_SESSION_SECRET = "";
+    assert.throws(() => auth.assertSessionSecretStrength(), /未配置/);
+
+    process.env.EVALUATOR_SESSION_SECRET = "short-key"; // 9 字节 < 32
+    assert.throws(() => auth.assertSessionSecretStrength(), /过弱/);
+
+    process.env.EVALUATOR_SESSION_SECRET = "x".repeat(auth.MIN_SESSION_SECRET_BYTES - 1);
+    assert.throws(() => auth.assertSessionSecretStrength(), /过弱/, "恰好差 1 字节也应拒");
+
+    process.env.EVALUATOR_SESSION_SECRET = "x".repeat(auth.MIN_SESSION_SECRET_BYTES);
+    assert.equal(auth.assertSessionSecretStrength(), true, "达门槛即放行");
+
+    // README 推荐的 openssl rand -hex 32（64 字符）当然放行
+    process.env.EVALUATOR_SESSION_SECRET = "a".repeat(64);
+    assert.equal(auth.assertSessionSecretStrength(), true);
+  } finally {
+    process.env.EVALUATOR_SESSION_SECRET = saved;
+  }
+});
+
 test("verifySession rejects tampered signature", () => {
   const token = auth.createSessionToken({ userId: "1", username: "a", role: 10 });
   const tampered = token.slice(0, -1) + (token.endsWith("a") ? "b" : "a");

@@ -384,3 +384,79 @@ test("auth_failed：profile 无可读 Key → success=false 且不发请求", as
   assert.equal(r.normalizedError, "auth_failed");
   assert.equal(r.firstByteMs, null); // 未发请求
 });
+
+// —— 端到端接线（P2-2 / P2-3）：证明 executeTestRequest 真的调用了流式完整性校验与放大后的字节上限，
+//    而不只是「辅助函数单测通过」。用本地 mock 上游返回真实 SSE。 ——
+const sendSse = (res, body) => {
+  res.writeHead(200, { "content-type": "text/event-stream" });
+  res.end(body);
+};
+const oaFrame = (obj) => `data: ${JSON.stringify(obj)}\n`;
+const oaDelta = (text) => oaFrame({ choices: [{ delta: { content: text } }] });
+const joinSse = (frames) => frames.join("\n") + "\n\n";
+
+test("流式接线：完整 SSE（含 [DONE]）→ success，且 streamValidation 被填充（P2-2）", async () => {
+  await withMockUpstream(
+    (req, res) => sendSse(res, joinSse([oaDelta("你"), oaDelta("好"), "data: [DONE]\n"])),
+    async (baseUrl) => {
+      const r = await executeTestRequest(await probeProfile(baseUrl), "hi", { stream: true, writeLog: false });
+      assert.equal(r.success, true);
+      assert.equal(r.responseText, "你好");
+      assert.ok(r.streamValidation, "流式路必须产出 streamValidation（此前场景/压测路为 null）");
+      assert.equal(r.streamValidation.passed, true);
+    },
+  );
+});
+
+test("流式接线：半截流（无 [DONE]）→ success=false, stream_incomplete（P2-2 核心回归）", async () => {
+  await withMockUpstream(
+    (req, res) => sendSse(res, joinSse([oaDelta("你"), oaDelta("好")])), // 干净断流，缺终止帧
+    async (baseUrl) => {
+      const r = await executeTestRequest(await probeProfile(baseUrl), "hi", { stream: true, writeLog: false });
+      assert.equal(r.success, false, "半截流即便拼出了文本也不能判成功");
+      assert.equal(r.normalizedError, "stream_incomplete");
+    },
+  );
+});
+
+test("流式接线：中途 error 帧 → success=false, stream_error（P2-2）", async () => {
+  await withMockUpstream(
+    (req, res) => sendSse(res, joinSse([oaDelta("你"), oaFrame({ error: { message: "上游中途报错" } }), "data: [DONE]\n"])),
+    async (baseUrl) => {
+      const r = await executeTestRequest(await probeProfile(baseUrl), "hi", { stream: true, writeLog: false });
+      assert.equal(r.success, false);
+      assert.equal(r.normalizedError, "stream_error");
+    },
+  );
+});
+
+test("字节上限接线：非流式 >2MB → response_too_large；流式同尺寸完整流 → 不截断、判成功（P2-3）", async () => {
+  const bigText = "x".repeat(3 * 1024 * 1024); // 3MB，超非流式 2MB 上限、在流式 24MB 上限内
+
+  // 非流式：3MB JSON body → 被 2MB 上限截断
+  await withMockUpstream(
+    (req, res) => sendJson(res, 200, { choices: [{ message: { content: bigText } }] }),
+    async (baseUrl) => {
+      const r = await executeTestRequest(await probeProfile(baseUrl), "hi", { writeLog: false });
+      assert.equal(r.normalizedError, "response_too_large", "非流式 3MB 应触发 2MB 上限");
+      assert.equal(r.success, false);
+    },
+  );
+
+  // 流式：同样 3MB 的完整流 → 放大上限放行，判成功（旧代码会在 2MB 处误判 F）
+  await withMockUpstream(
+    (req, res) => {
+      const frames = [];
+      // 拆成多帧 delta，凑够 3MB，最后带 [DONE]
+      const chunk = "x".repeat(64 * 1024);
+      for (let i = 0; i < 48; i += 1) frames.push(oaDelta(chunk)); // 48 * 64KB ≈ 3MB
+      frames.push("data: [DONE]\n");
+      sendSse(res, joinSse(frames));
+    },
+    async (baseUrl) => {
+      const r = await executeTestRequest(await probeProfile(baseUrl), "hi", { stream: true, writeLog: false });
+      assert.notEqual(r.normalizedError, "response_too_large", "流式 3MB 不应被截断");
+      assert.equal(r.success, true, "健康的长流式响应应判成功，而非误判 F");
+    },
+  );
+});

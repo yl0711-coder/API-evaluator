@@ -371,14 +371,18 @@ export async function queryRoundSeriesByRunIds(runIds, { limit = 4000, path } = 
   const db = await getDatabase(path);
   if (!db) return [];
   const placeholders = ids.map(() => "?").join(",");
+  // 超过 limit 时保留【最新】的若干轮，而非最旧的（P2-5）：趋势图/回归判定都以最新点为准，
+  // 旧写法 `ORDER BY id ASC LIMIT` 砍掉的恰是 id 最大=最新的轮次，会静默丢最近数据。
+  // 故先按 id DESC 取最新 limit 条，再 reverse 回升序，交给下游按时间正序消费。
   const rows = db
     .prepare(
       `SELECT started_at, total_ms, success, normalized_error, run_id, case_id
        FROM test_requests
        WHERE run_id IN (${placeholders}) AND total_ms IS NOT NULL
-       ORDER BY id ASC LIMIT ?`,
+       ORDER BY id DESC LIMIT ?`,
     )
-    .all(...ids, Math.max(1, Math.floor(limit)));
+    .all(...ids, Math.max(1, Math.floor(limit)))
+    .reverse();
   return rows.map((r) => ({
     startedAt: r.started_at || null,
     totalMs: Number(r.total_ms),

@@ -21,6 +21,9 @@ export function createAutoTestScheduler({
   onRunComplete, // (result) => void：运行完成回调（用于高危报告提示等），best-effort
   logError,
   tickMs = 60_000,
+  // 活性判定：距上次 tick 超过此毫秒数即判「僵死」（getStatus().stale=true），供 /api/health 暴露、
+  // 容器健康检查 + 外部看门狗（autoheal）据此重启「进程活着但定时器僵死」的静默故障。
+  staleAfterMs = tickMs * 5,
   maxConcurrent = Math.max(1, Number(process.env.EVALUATOR_AUTO_TEST_CONCURRENCY || 2)),
   // 连续失败熔断阈值：作业连续失败达此次数即自动停用，避免被监控对象挂掉后无限空跑失败。
   // 0 = 关闭熔断。默认 5，可用 EVALUATOR_AUTO_TEST_MAX_FAILURES 覆盖。
@@ -29,6 +32,8 @@ export function createAutoTestScheduler({
 }) {
   const runningJobIds = new Set();
   let timer = null;
+  // 活性时间戳（ms）：每个 tick 开始时刷新。start() 先置为启动时刻，避免启动瞬间被判僵死。
+  let lastTickAt = null;
 
   // 并发信号量（与 task-manager 同款）：acquire 拿槽/排队，release 直接转交等待者，计数守恒。
   let activeSlots = 0;
@@ -182,6 +187,7 @@ export function createAutoTestScheduler({
   }
 
   async function tick() {
+    lastTickAt = now(); // 活性心跳：在任何 await 前刷新，长 tick 也算「还活着」
     let jobs;
     try {
       jobs = await loadJobs();
@@ -230,8 +236,26 @@ export function createAutoTestScheduler({
     return { ok: true };
   }
 
+  // 活性快照：供 /api/health 暴露、容器健康检查 + 外部看门狗（autoheal）据 stale 判定是否重启。
+  function getStatus() {
+    const running = Boolean(timer);
+    const sinceLastTickMs = lastTickAt == null ? null : Math.max(0, now() - lastTickAt);
+    // 仅在「已启动且确有一次心跳且超阈值」时判僵死：未启动 / 优雅停机不算，避免关停期误触发重启。
+    const stale = running && lastTickAt != null && sinceLastTickMs > staleAfterMs;
+    return {
+      running,
+      lastTickAt: lastTickAt == null ? null : new Date(lastTickAt).toISOString(),
+      sinceLastTickMs,
+      tickMs,
+      staleAfterMs,
+      stale,
+      activeJobs: runningJobIds.size,
+    };
+  }
+
   function start() {
     if (timer) return;
+    lastTickAt = now(); // 先置起点，start_period 内不会被误判僵死
     void reconcileThenTick(); // 启动即对账僵尸「running」+ 跑一次做停机追补
     timer = setInterval(() => void tick(), tickMs);
     timer.unref?.(); // 不因调度器让本应退出的进程保持存活（listen 的 socket 才是存活来源）
@@ -244,5 +268,5 @@ export function createAutoTestScheduler({
     }
   }
 
-  return { start, stop, tick, fireJob, runJobNow, runningJobIds, reconcileInterruptedJobs };
+  return { start, stop, tick, fireJob, runJobNow, runningJobIds, getStatus, reconcileInterruptedJobs };
 }

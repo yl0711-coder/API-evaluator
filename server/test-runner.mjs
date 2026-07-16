@@ -78,7 +78,37 @@ import {
 } from "./utils.mjs";
 import { saveRunArtifacts } from "./workspace-store.mjs";
 
-const MAX_UPSTREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
+export const MAX_UPSTREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
+// 流式 SSE 每个 token 单独成帧、外裹一层 JSON 信封（Claude 更是每 token 多个事件），体积是同等纯
+// 文本的 50–100 倍；长输出（maxTokens override ≥ ~8k 或推理模型长思考）流式下轻松 5–7MB。若沿用上面
+// 2MB 上限，健康渠道的长流式响应会在 2MB 处被截断、误判 response_too_large → 判 F（好渠道判成坏渠道）。
+// 故流式单独放大上限；仍有硬顶（+每请求超时兜底），不会因坏上游无界缓冲。可用 env 覆盖。
+export const MAX_UPSTREAM_STREAM_RESPONSE_BYTES =
+  Number(process.env.EVALUATOR_MAX_STREAM_RESPONSE_BYTES) > 0
+    ? Number(process.env.EVALUATOR_MAX_STREAM_RESPONSE_BYTES)
+    : 24 * 1024 * 1024;
+
+// 流式完整性：只在「流被截断 / 出错帧 / 内容块损坏」这些**确定**的不完整信号上判失败。
+// 刻意不采纳 summarizeStreamStructure 的全部 issue（如 invalid_json_chunk、event_order_invalid 等
+// 软信号）——那些在健康但怪癖的中转上会误触发，把好流判失败，是评测工具最不该犯的错。
+// finish_reason=length 这类「内容被 max_tokens 截断」不在此列：那种流仍有完整终止帧，属正常截断，
+// 由 isTruncatedFinish 另行处理，不当失败。
+const FATAL_STREAM_ISSUES = new Set([
+  "empty_stream", // 2xx 却一个事件都没有
+  "missing_done", // OpenAI SSE 无 [DONE] 终止帧 → 半截流
+  "missing_message_stop", // Claude SSE 无 message_stop 终止帧 → 半截流
+  "missing_content_block_stop", // Claude 内容块未收尾
+  "stream_error_event", // 吐到一半改口报错帧
+  "content_block_not_found", // Claude 已知的块错位崩溃
+  "content_block_dropped", // delta 落在从未 start 的块 → 内容丢失
+]);
+
+export function streamCompletenessError(streamValidation) {
+  if (!streamValidation || streamValidation.passed) return "";
+  const fatal = (streamValidation.issues || []).filter((issue) => FATAL_STREAM_ISSUES.has(issue));
+  if (!fatal.length) return "";
+  return fatal.includes("stream_error_event") ? "stream_error" : "stream_incomplete";
+}
 
 // Owns all real upstream evaluation work. server.mjs should route requests here
 // instead of carrying test execution details in the HTTP entrypoint.
@@ -1663,7 +1693,9 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       r.statusCode = response.status;
       // 原因短语：直接取上游实际返回的 statusText（HTTP/1.1 可被上游自定义），不套用标准短语。
       r.statusText = typeof response.statusText === "string" ? response.statusText : "";
-      const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller, {
+      // 流式响应体积远大于纯文本（每 token 独立成帧），用放大后的上限，避免长流式被误截断判 F。
+      const responseByteCap = streaming ? MAX_UPSTREAM_STREAM_RESPONSE_BYTES : MAX_UPSTREAM_RESPONSE_BYTES;
+      const rawResult = await readBoundedResponseText(response, responseByteCap, controller, {
         firstTokenPattern: captureFirstToken ? firstTokenPatternFor(profile.protocol) : null,
       });
       r.totalMs = Math.round(performance.now() - started);
@@ -1675,7 +1707,7 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
         r.firstTokenMs = Math.max(0, Math.round(rawResult.firstTokenAt - started));
       }
       if (rawResult.truncated) {
-        r.rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
+        r.rawError = `上游响应超过 ${responseByteCap} bytes，已停止读取。`;
         r.normalizedError = "response_too_large";
         break; // finally 会清理；不重试
       }
@@ -1778,8 +1810,23 @@ export async function executeTestRequest(profile, prompt, options = {}) {
         r.rawError = summarizeText(raw);
         r.normalizedError = normalizeEmptyResponse(raw);
       }
+      // 流式完整性校验：coalesceSseResponse 会把「吐了一半就断」或「中途 error 帧」的流照样拼出文本，
+      // 只看「2xx + 有文本」会把这种半截流判成功——成功率虚高，半截答案还进 LLM 裁判打分。
+      // 复用准入路已有的 summarizeStreamStructure（此前只用在准入探测，未覆盖场景/压测流式路）。
+      if (streaming) {
+        r.streamValidation = summarizeStreamStructure(profile.protocol, raw);
+        const streamError = streamCompletenessError(r.streamValidation);
+        if (streamError) {
+          r.normalizedError = streamError; // 覆盖：半截流即便拼出了文本也不算成功
+          if (!r.rawError) r.rawError = (r.streamValidation.issues || []).join(", ");
+        }
+      }
     },
-    computeSuccess: () => undefined, // 走 finalize 默认：2xx + 有输出
+    // 流式：除「2xx + 有文本」外，还须流完整（无致命不完整信号）；非流式走 finalize 默认。
+    computeSuccess: (r) =>
+      streaming
+        ? Boolean(r.statusCode && r.statusCode >= 200 && r.statusCode < 300 && r.responseText && !streamCompletenessError(r.streamValidation))
+        : undefined,
   });
 }
 

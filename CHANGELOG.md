@@ -6,6 +6,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed / Hardened（上线前就绪检查）
+- **健康检查的「调度器活性」判定是死配置** — `deploy/docker-compose.evaluator.yml` 的健康检查断言
+  `!(j.autoTest && j.autoTest.stale)` 以感知「进程活着但定时器僵死」，但 7月7日 `80624fc` 把调度器的
+  活性心跳（`lastTickAt`/`stale`/`getStatus`）连同其测试一起**静默删除**，`/api/health` 此后不再返回
+  `autoTest` 字段 → 表达式恒真、健康检查退化成纯 HTTP ping，autoheal 对「自动测试停摆」永不触发。
+  复原心跳：`getStatus()` 回归调度器、`/api/health` 重新暴露 `autoTest`（compose 无需改动即恢复生效），
+  并补回被删的 stale 判定回归测试（`server/auto-test-scheduler.mjs`、`server.mjs`、
+  `tests/auto-test-scheduler.test.mjs`）。
+- **容器无 SIGTERM 处理 + node 以 PID 1 运行 → 每次 `docker stop` 白等 10s 再被 SIGKILL** —
+  `CMD` 是 exec 形式、无 init/tini，内核不对 PID 1 上无处理器的信号执行默认终止动作。新增
+  `SIGTERM`/`SIGINT` 处理器：停调度器 → `server.close()` → `closeDatabase()` 干净收尾，带 8s 兜底
+  超时防卡死（`server.mjs`）。关键细节：`server.close()` 只等在途请求，反向代理握着的【空闲 keep-alive】
+  长连接会让回调永不触发、被兜底超时拖住，故补 `closeIdleConnections()`（立即断空闲连接）+ 5s 宽限后
+  `closeAllConnections()`（放剩余连接），在途请求先排空、空闲连接即时断。已用 `process.emit("SIGTERM")`
+  驱动真实处理器 + 持有 keep-alive 连接验证：真实处理器 5ms 内走完优雅收尾退出。注：OS 信号投递本身
+  （docker SIGTERM → 处理器）在 Windows Git Bash 下不投递，只能在 Linux/Docker 目标上验证；处理器体逻辑
+  已在本机真实驱动过。
+- **new-api 导入出站无超时 → 上游挂起会无限期吊住导入请求** — `newapi-source.mjs` 的分页 `fetch`
+  是全站唯一没带 `AbortSignal` 的出站点（undici 无默认响应超时），new-api 主机挂起会逐页累加吊死。
+  补每页超时（默认 15s，`EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS` 可覆盖），与 test-runner / client-replay
+  的守卫 + redirect + 超时三项对齐（`server/newapi-source.mjs` + 回归测试）。
+- **全局兜底：`unhandledRejection` / `uncaughtException`** — 此前未注册，任何逃逸的拒绝在 Node 默认
+  语义下静默杀进程、连日志都没有。新增兜底处理器：先落一条可诊断日志再按默认语义处理（rejection
+  仅告警保活、uncaughtException 记录后退出），把「静默猝死」变「可诊断」（`server.mjs`）。
+- **修正三处会误导排查的失效 / 虚假注释** —
+  (1) `egress-guard.mjs` 的 P1-2 安全决策记录称「newapi-source 的导入 fetch 没走本守卫」，该论据自
+  P2-1 起已失效（现已走守卫），改写为不依赖失效事实的表述；
+  (2) `channel-store.mjs` / `model-target-store.mjs` 的「SQLite + JSON 兜底」易被读成实时镜像——实为
+  仅在 SQLite 不可用时的降级路径，DB 损坏时读到的是旧 JSON、非恢复来源，注释据实澄清；
+  (3) `utils.mjs` 的原子写注释声称抗「断电」，实际不 fsync、只抗进程崩溃，据实收窄承诺。
+
+### Fixed（评测正确性）
+- **流式「半截流 / 中途 error 帧」被判成功（P2-2）** — 场景/压测的流式路成功判定只看「2xx + 拼得出
+  文本」，而 `coalesceSseResponse` 会把「吐一半就断」或「中途 `{"error":...}` 帧」的流照样拼出文本
+  → 成功率系统性高估、半截答案还进 LLM 裁判打分。改为流式路复用准入路已有的
+  `summarizeStreamStructure`，并新增 `streamCompletenessError`：仅在**确定的**不完整信号
+  （无 `[DONE]`/`message_stop` 终止帧、`content_block` 损坏、error 帧）上判失败，刻意不采纳
+  `invalid_json_chunk` 等软信号以免误杀健康怪癖中转。`finish_reason=length` 这类正常截断不受影响
+  （`server/test-runner.mjs`；接线经 `tests/probe-requests.test.mjs` 端到端验证）。
+- **2MB 响应上限没随流式放大 → 长流式被误判失败（P2-3）** — SSE 每 token 独立成帧、体积是纯文本的
+  50–100 倍，长输出流式轻松 5–7MB，会在 2MB 处被截断误判 `response_too_large` → 判 F（好渠道判成
+  坏渠道）。流式单独用放大上限（默认 24MB，`EVALUATOR_MAX_STREAM_RESPONSE_BYTES` 可覆盖），非流式
+  仍 2MB（`server/test-runner.mjs`）。
+- **趋势数据超 4000 行时砍掉的是「最新」轮次（P2-5）** — `queryRoundSeriesByRunIds` 用
+  `ORDER BY id ASC LIMIT`，历史轮数 >4000 时被砍的恰是最新轮，而回归判定以最新点为准 → 静默漂移。
+  改为 `ORDER BY id DESC LIMIT` 取最新再 `.reverse()` 回升序（`server/db.mjs`）。
+
+### Fixed / Hardened（安全）
+- **new-api 导入的出站漏在守卫之外、且跟随重定向（P2-1）** — `fetchViaApi` 的 `fetch` 未过
+  `assertPublicTarget`、未设 `redirect:"error"`，是全站第三个出站点。base 填内网/元数据、或上游 302
+  到内网都会打过去。补上守卫（host 跨页不变，校验一次）+ `redirect:"error"`，与另两个出站点对齐
+  （`server/newapi-source.mjs`）。
+- **`EVALUATOR_SESSION_SECRET` 无强度校验（P3-2）** — 会话 Cookie 用 HMAC-SHA256(secret) 自签，密钥
+  太短可被离线爆破后伪造超管会话。新增 `assertSessionSecretStrength`（≥32 字节，README 的
+  `openssl rand -hex 32`=64 字符远超门槛），由 server.mjs 在 listen 前调用，弱密钥变「启动即拒」而非
+  「线上默默可被伪造」（`server/auth.mjs` + `server.mjs`）。
+- **`/api/client-errors` 匿名可写、无限流（P3-8）** — 免登录白名单端点，任何人可无限灌错误日志。
+  新增极简固定窗口限流 `server/rate-limit.mjs`，按客户端 IP 限流（默认 60/分钟，
+  `EVALUATOR_CLIENT_ERROR_RATE_MAX` 可覆盖），超限返回 429。
+
 ### Security decisions
 - **DNS rebinding（原审查 P1-2）定为「已知接受的缺口」，不在代码里修** — 出站守卫校验 DNS 解析
   结果但不 pin 已验证 IP，fetch 会独立再解析一次，存在 TOCTOU 窗口。评估后不修，理由：

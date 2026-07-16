@@ -451,3 +451,29 @@ test("跑完后回写失败：结果丢了但进程活着（P2-4 回归，第二
   assert.equal(store.snapshot()[0].lastStatus, "running", "回写没成功，状态停在占位值");
   assert.equal(scheduler.runningJobIds.size, 0, "内存占位仍必须解除");
 });
+
+// —— 活性心跳（getStatus().stale）回归 —— //
+// 这段判定曾在 80624fc（7月7日）连同它的测试一起被静默删除，而 deploy/docker-compose 的健康检查
+// 仍在断言 j.autoTest.stale——导致「调度器僵死」这一故障永远不会被 autoheal 感知。此测试守住它别再丢。
+test("getStatus：未启动不判僵死；心跳新鲜=not stale；超阈值=stale；停机后不 stale", async () => {
+  let clock = NOW;
+  const store = makeStore([]);
+  const { runners } = makeRunners();
+  const scheduler = build(store, runners, { tickMs: 1000, staleAfterMs: 5000, now: () => clock });
+
+  assert.equal(scheduler.getStatus().running, false, "未启动 running=false");
+  assert.equal(scheduler.getStatus().stale, false, "未启动不判僵死");
+
+  scheduler.start();
+  try {
+    // start() 先把 lastTickAt 置为启动时刻，随后 reconcileThenTick 会跑一次 tick 再刷新一次心跳。
+    await new Promise((r) => setImmediate(r)); // 让首个 tick 的微任务跑完
+    assert.equal(scheduler.getStatus().stale, false, "刚 tick 过，心跳新鲜");
+
+    clock += 6000; // 合成时钟推过 staleAfterMs=5000（真实定时器 1000ms 在假时钟下不会触发）
+    assert.equal(scheduler.getStatus().stale, true, "心跳超阈值 → 判僵死");
+  } finally {
+    scheduler.stop();
+  }
+  assert.equal(scheduler.getStatus().stale, false, "停机后不再判僵死，避免关停期误重启");
+});

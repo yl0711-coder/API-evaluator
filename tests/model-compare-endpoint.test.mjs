@@ -26,7 +26,7 @@ let ready = false;
 let cookie = "";
 
 const baseEnv = {
-  EVALUATOR_SESSION_SECRET: "test-secret",
+  EVALUATOR_SESSION_SECRET: "test-secret-0123456789abcdef-32b+",
   EVALUATOR_ADMIN_PASSWORD: "adminpw",
   EVALUATOR_SECRET_STORE: "memory",
   EVALUATOR_COOKIE_SECURE: "false",

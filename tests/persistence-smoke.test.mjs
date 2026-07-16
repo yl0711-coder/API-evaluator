@@ -18,7 +18,7 @@ const PORT = 5387; // 避开其它端点测试占用的 5388-5399
 const dataDir = mkdtempSync(join(tmpdir(), "persist-smoke-"));
 
 const baseEnv = {
-  EVALUATOR_SESSION_SECRET: "test-secret",
+  EVALUATOR_SESSION_SECRET: "test-secret-0123456789abcdef-32b+",
   EVALUATOR_ADMIN_PASSWORD: "adminpw",
   EVALUATOR_SECRET_STORE: "local", // 用本地加密库（落 .vault），验证密钥库跨重启存活
   EVALUATOR_COOKIE_SECURE: "false",

@@ -17,7 +17,7 @@ const dataDir = mkdtempSync(join(tmpdir(), "server-auth-test-"));
 const server = spawn(process.execPath, [join(root, "server.mjs")], {
   env: {
     ...process.env,
-    EVALUATOR_SESSION_SECRET: "test-secret",
+    EVALUATOR_SESSION_SECRET: "test-secret-0123456789abcdef-32b+",
     EVALUATOR_ADMIN_PASSWORD: "adminpw",
     EVALUATOR_LOCAL_USERS: "tester:testerpw:10",
     EVALUATOR_DATA_DIR: dataDir,

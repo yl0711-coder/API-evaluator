@@ -21,7 +21,7 @@ let cookieUser = "";
 let targetId = "";
 
 const baseEnv = {
-  EVALUATOR_SESSION_SECRET: "test-secret",
+  EVALUATOR_SESSION_SECRET: "test-secret-0123456789abcdef-32b+",
   EVALUATOR_ADMIN_PASSWORD: "adminpw", // admin / role=100
   EVALUATOR_LOCAL_USERS: "tester:testerpw:10", // tester / role=10
   EVALUATOR_SECRET_STORE: "memory",

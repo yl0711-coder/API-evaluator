@@ -13,6 +13,31 @@ const SESSION_COOKIE_NAME = "evaluator_session";
 function sessionSecret() {
   return process.env.EVALUATOR_SESSION_SECRET || "";
 }
+
+// 会话密钥强度门槛（字节）。会话 Cookie 用 HMAC-SHA256(secret) 自签，密钥太短可被离线爆破后
+// 伪造出任意角色（含超管）的会话——绕过整个鉴权。README 建议的 `openssl rand -hex 32` 产出 64 字符，
+// 远超此门槛；这里只拦「明显过弱」。
+export const MIN_SESSION_SECRET_BYTES = 32;
+
+// 启动时校验会话密钥强度（P3-2）。空 / 过短一律抛出可操作的运维提示。
+// 由 server.mjs 在 listen 前调用，让弱密钥变成「启动即失败」而非「线上可被伪造超管」。
+// 纯函数、不读全局状态，便于单测；签名/校验路径本身不调用它（保持可独立单测）。
+export function assertSessionSecretStrength() {
+  const secret = sessionSecret();
+  if (!secret) {
+    throw new Error(
+      "EVALUATOR_SESSION_SECRET 未配置：会话 Cookie 无法签名。请生成一个强随机密钥，例如 `openssl rand -hex 32`。",
+    );
+  }
+  const bytes = Buffer.byteLength(secret, "utf8");
+  if (bytes < MIN_SESSION_SECRET_BYTES) {
+    throw new Error(
+      `EVALUATOR_SESSION_SECRET 过弱（${bytes} 字节，至少需 ${MIN_SESSION_SECRET_BYTES} 字节）：` +
+        "太短的密钥可被离线爆破后伪造超管会话。请用 `openssl rand -hex 32` 重新生成。",
+    );
+  }
+  return true;
+}
 function sessionTtlMs() {
   const hours = Number(process.env.EVALUATOR_SESSION_TTL_HOURS || 12);
   return (Number.isFinite(hours) && hours > 0 ? hours : 12) * 3600 * 1000;

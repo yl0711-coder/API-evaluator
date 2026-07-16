@@ -279,6 +279,33 @@ test("queryRoundSeriesByRunIds：按 run_id 集合取逐轮明细（升序、限
   }
 });
 
+// 回归（P2-5）：超过 limit 时保留【最新】的轮次，而非最旧的。
+// 旧写法 `ORDER BY id ASC LIMIT` 砍掉 id 最大=最新的轮，趋势图/回归判定丢最近数据、静默漂移。
+test("queryRoundSeriesByRunIds：超出 limit 时保留最新轮次并保持升序（P2-5）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "rounds-limit.db");
+  try {
+    // 顺序插入 5 轮，startedAt 递增标识新旧（插入顺序=id 顺序）
+    for (let i = 0; i < 5; i += 1) {
+      await recordRequest(
+        makeRecord({ requestId: `r${i}`, runId: "big", totalMs: 100 + i, startedAt: `2026-06-02T00:00:0${i}Z` }),
+        { path },
+      );
+    }
+    const rows = await queryRoundSeriesByRunIds(["big"], { path, limit: 3 });
+    assert.equal(rows.length, 3);
+    // 应是最新 3 轮（i=2,3,4），且按时间升序排列供下游消费
+    assert.deepEqual(
+      rows.map((r) => r.startedAt),
+      ["2026-06-02T00:00:02Z", "2026-06-02T00:00:03Z", "2026-06-02T00:00:04Z"],
+    );
+    assert.deepEqual(rows.map((r) => r.totalMs), [102, 103, 104], "保留的是最新轮，不是最旧轮");
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("deleteReport：删存在的一条→true 且不再出现在列表；删不存在→false", async () => {
   const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
   const path = join(dir, "reports.db");
