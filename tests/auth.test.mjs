@@ -59,6 +59,28 @@ test("getSessionFromRequest reads valid cookie, null otherwise", () => {
   assert.equal(auth.getSessionFromRequest({ headers: {} }), null);
 });
 
+// 回归（P2-6）：非法百分号转义过去会让 decodeURIComponent 抛 URIError，
+// 经顶层兜底变成 500 + 一条错误日志，且匿名可刷。现在必须逐值兜住。
+test("parseCookies 不因单个畸形值抛错（P2-6 回归）", () => {
+  assert.doesNotThrow(() => auth.parseCookies("evaluator_session=%zz"));
+  assert.doesNotThrow(() => auth.parseCookies("bad=%"));
+  assert.doesNotThrow(() => auth.parseCookies("a=%E4%B8"));
+
+  // 解不开的值按原文保留，且不影响同一 header 里其它 cookie 的解析
+  assert.deepEqual(auth.parseCookies("good=1; bad=%zz; other=%E4%B8%AD"), {
+    good: "1",
+    bad: "%zz",
+    other: "中",
+  });
+});
+
+test("畸形会话 cookie 走正常未登录路径，而不是 500（P2-6 回归）", () => {
+  for (const cookie of ["evaluator_session=%zz", "evaluator_session=%", "evaluator_session=%E4%B8"]) {
+    assert.doesNotThrow(() => auth.getSessionFromRequest({ headers: { cookie } }));
+    assert.equal(auth.getSessionFromRequest({ headers: { cookie } }), null, `${cookie} 应判为未登录`);
+  }
+});
+
 test("login throttle blocks after max failures, resets on success", () => {
   auth._resetLoginThrottle();
   const key = "1.2.3.4|admin";

@@ -32,6 +32,7 @@
     "build": "vite build",
     "check": "node --check server.mjs",
     "compare:eval": "node scripts/compare-eval-reports.mjs",
+    "check:egress": "node scripts/check-egress-mitigation.mjs",
     "test": "node --test tests/*.test.mjs",
     "fingerprint:baseline": "node --env-file=.env.evaluator scripts/claude-token-baseline.mjs"
   },

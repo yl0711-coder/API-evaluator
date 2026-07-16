@@ -85,6 +85,10 @@ export function canWriteConfig(role) {
 }
 
 // —— Cookie 工具 ——
+// 单个值解不开不能连累整个请求：decodeURIComponent 遇非法百分号转义（"%zz"、裸 "%"）会抛
+// URIError，而本函数在鉴权前对每个请求都跑一遍——任何人随手带一个坏 cookie 就能把请求打成
+// 500 并写一条错误日志（匿名可达，无需登录）。故逐值兜住，解不开就按原文保留：
+// 会话 cookie 是签名令牌，原文自然验签失败 → 正常 401，不影响判定。
 export function parseCookies(header) {
   const out = {};
   if (!header || typeof header !== "string") return out;
@@ -93,7 +97,12 @@ export function parseCookies(header) {
     if (idx < 0) continue;
     const k = part.slice(0, idx).trim();
     const v = part.slice(idx + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+    if (!k) continue;
+    try {
+      out[k] = decodeURIComponent(v);
+    } catch {
+      out[k] = v;
+    }
   }
   return out;
 }

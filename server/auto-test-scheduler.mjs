@@ -163,6 +163,19 @@ export function createAutoTestScheduler({
       } finally {
         releaseSlot();
       }
+    } catch (error) {
+      // 兜底：本函数的三个调用点全是「拒绝无人接管」的形态 —— tick 里的 Promise.all、
+      // start 里的 void reconcileThenTick()、runJobNow 里的 void fireJob(job)。一旦本函数拒绝
+      // 就成了 unhandledRejection，而 Node 默认直接杀进程：一次盘写失败会打死整个评测平台，
+      // 而不只是这一个作业。
+      // 逃逸点是两处状态回写 —— 占位的 lastStatus="running"、以及失败分支里的回写 ——
+      // 它们都在上面 catch 的覆盖之外，updateJobs 落盘失败（盘满 / EACCES）时从这里冒出来。
+      // 此时作业在盘上可能停留 "running"，由启动时的 reconcileInterruptedJobs 归位，不会永久卡住。
+      try {
+        await logError?.(error, job);
+      } catch {
+        // 记录失败同样不应影响调度
+      }
     } finally {
       runningJobIds.delete(job.id);
     }

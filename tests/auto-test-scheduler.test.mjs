@@ -331,3 +331,123 @@ test("runJobNow：手动运行放行已停用作业（绕过 enabled 门禁）�
   assert.equal(job.lastStatus, "success");
   assert.equal(job.enabled, false, "手动运行不复活作业，启用态仍由配置端点掌控");
 });
+
+// —— 回归（P2-4）：盘写失败不能掀翻进程 ——
+// fireJob 里有两处状态回写不在内层 catch 覆盖内（占位 lastStatus="running"、失败分支的回写）。
+// updateJobs 落盘失败（盘满 / EACCES）时异常会一路冒到三个「拒绝无人接管」的调用点
+// （tick 的 Promise.all、start 的 void reconcileThenTick、runJobNow 的 void fireJob），
+// 变成 unhandledRejection —— Node 默认直接杀进程，一次盘写失败打死整个评测平台。
+
+// 所有写盘都失败的假存储（读得到、写就抛，模拟 ENOSPC / EACCES）。
+function makeFailingStore(initial) {
+  const jobs = initial.map((j) => ({ ...j }));
+  return {
+    loadJobs: async () => jobs.map((j) => ({ ...j })),
+    updateJobs: async () => {
+      throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    },
+    snapshot: () => jobs,
+  };
+}
+
+test("盘写失败：tick 不拒绝（否则 void tick() → unhandledRejection → 杀进程）（P2-4 回归）", async () => {
+  const store = makeFailingStore([
+    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
+  ]);
+  const { runners } = makeRunners();
+  const logged = [];
+  const scheduler = build(store, runners, { logError: (err, job) => logged.push({ code: err.code, id: job?.id }) });
+
+  await assert.doesNotReject(() => scheduler.tick(), "tick 必须自己咽下盘写失败");
+  assert.deepEqual(logged, [{ code: "ENOSPC", id: "a" }], "错误仍要被上报，不能静默吞掉");
+});
+
+test("盘写失败：runJobNow 的后台 fireJob 不产生无人接管的拒绝（P2-4 回归）", async () => {
+  const store = makeFailingStore([
+    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
+  ]);
+  const { runners } = makeRunners();
+  const scheduler = build(store, runners, { logError: () => {} });
+
+  const rejections = [];
+  const onRejection = (reason) => rejections.push(reason);
+  process.on("unhandledRejection", onRejection);
+  try {
+    const res = await scheduler.runJobNow("a"); // 内部是 void fireJob(job)
+    assert.equal(res.ok, true);
+    await new Promise((r) => setTimeout(r, 30));
+    await new Promise((r) => setImmediate(r));
+  } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+  assert.deepEqual(rejections, [], "「立即运行」遇盘写失败不得产生 unhandledRejection");
+});
+
+test("盘写失败：两个作业各自失败，互不拖累，且都不拒绝（P2-4 回归）", async () => {
+  const store = makeFailingStore([
+    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
+    { id: "b", targetId: "ts", kind: "stability", periodHours: 1, enabled: true, nextRunAt: null },
+  ]);
+  const { calls, runners } = makeRunners();
+  const logged = [];
+  const scheduler = build(store, runners, { logError: (err, job) => logged.push(job?.id) });
+
+  await assert.doesNotReject(() => scheduler.tick());
+  // 占位回写 lastStatus="running" 排在 runner 之前，故全盘写失败时 runner 根本轮不到调用。
+  // 这正是第一个逃逸点：过去这里抛出后会一路冒成 unhandledRejection。
+  assert.equal(calls.length, 0, "占位回写就失败了，不该已经打到上游");
+  assert.deepEqual(logged.sort(), ["a", "b"], "两个作业各自失败各自上报，互不拖累");
+  assert.equal(scheduler.runningJobIds.size, 0, "失败后必须解除占位，否则作业永远不再被触发");
+});
+
+test("盘写失败后占位被解除，盘恢复前的下一轮仍会重试（P2-4 回归）", async () => {
+  const store = makeFailingStore([
+    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
+  ]);
+  const { runners } = makeRunners();
+  const logged = [];
+  const scheduler = build(store, runners, { logError: (err, job) => logged.push(job?.id) });
+
+  await scheduler.tick();
+  await scheduler.tick();
+  assert.deepEqual(logged, ["a", "a"], "占位没解除的话第二轮会被防重入挡掉，只会有一次");
+});
+
+// 第二个逃逸点：跑完之后的状态回写。占位写得进、runner 也跑完了，落盘时才失败
+// （更贴近真实：盘在测试运行的几分钟里写满了）。此时异常从失败分支的 patchJobWith 冒出。
+function makeStoreFailingAfter(initial, okWrites) {
+  const jobs = initial.map((j) => ({ ...j }));
+  let writes = 0;
+  return {
+    loadJobs: async () => jobs.map((j) => ({ ...j })),
+    updateJobs: async (mutator) => {
+      writes += 1;
+      if (writes > okWrites) throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+      const arr = jobs.map((j) => ({ ...j }));
+      const value = await mutator(arr);
+      jobs.splice(0, jobs.length, ...arr);
+      return value;
+    },
+    snapshot: () => jobs,
+  };
+}
+
+test("跑完后回写失败：结果丢了但进程活着（P2-4 回归，第二个逃逸点）", async () => {
+  const store = makeStoreFailingAfter(
+    [{ id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }],
+    1, // 第 1 次写（占位 running）成功，之后全失败
+  );
+  const { calls, runners } = makeRunners();
+  const logged = [];
+  const scheduler = build(store, runners, { logError: (err, job) => logged.push({ code: err.code, id: job?.id }) });
+
+  await assert.doesNotReject(() => scheduler.tick(), "跑完后回写失败同样不得拒绝");
+  assert.equal(calls.length, 1, "上游确实被打了一次");
+  // 两条日志对应真实的失败链路：成功分支回写(第2次写)失败 → 内层 catch 记一次 → 它再试着
+  // 回写 "failed" 状态(第3次写) → 又失败 → 从内层 catch 里冒出来 → 外层兜底记第二次。
+  // 过去没有外层兜底，第二次失败就是那个杀进程的 unhandledRejection。
+  assert.deepEqual(logged, [{ code: "ENOSPC", id: "a" }, { code: "ENOSPC", id: "a" }]);
+  // 盘上停在 "running"：这是可接受的降级，启动时的 reconcileInterruptedJobs 会把它归位为 interrupted。
+  assert.equal(store.snapshot()[0].lastStatus, "running", "回写没成功，状态停在占位值");
+  assert.equal(scheduler.runningJobIds.size, 0, "内存占位仍必须解除");
+});
