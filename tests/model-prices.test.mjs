@@ -31,7 +31,5 @@ test("lookupModelPrice returns null for unknown / empty model", () => {
 test("listModelPrices returns the full catalog with input/output prices", () => {
   const all = listModelPrices();
   assert.ok(all.length >= 10);
-  assert.ok(
-    all.every((entry) => entry.id && Number.isFinite(entry.inputPricePerMTokens) && Number.isFinite(entry.outputPricePerMTokens)),
-  );
+  assert.ok(all.every((entry) => entry.id && Number.isFinite(entry.inputPricePerMTokens) && Number.isFinite(entry.outputPricePerMTokens)));
 });

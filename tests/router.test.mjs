@@ -88,7 +88,11 @@ test("router refuses to build a table whose ordering makes a rule unreachable", 
 
 test("router rejects duplicate rules at construction time", () => {
   assert.throws(
-    () => createRouter([["GET", "/api/health", noop], ["GET", "/api/health", noop]]),
+    () =>
+      createRouter([
+        ["GET", "/api/health", noop],
+        ["GET", "/api/health", noop],
+      ]),
     /重复规则/,
   );
 });

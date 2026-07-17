@@ -18,7 +18,10 @@ test("quick-verify 判定：全部正常 → ok", () => {
 });
 
 test("quick-verify 判定：标称冲突 → suspect", () => {
-  const v = buildQuickVerifyVerdict({ ...OK_BASE, identityCheck: { status: "conflict", expectedFamily: "claude", reportedFamily: "openai" } });
+  const v = buildQuickVerifyVerdict({
+    ...OK_BASE,
+    identityCheck: { status: "conflict", expectedFamily: "claude", reportedFamily: "openai" },
+  });
   assert.equal(v.level, "suspect");
   assert.ok(v.reasons.some((r) => /标称冲突/.test(r)));
 });

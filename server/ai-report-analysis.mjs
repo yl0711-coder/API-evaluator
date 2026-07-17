@@ -223,5 +223,7 @@ function compactDiagnostics(diagnostics) {
 }
 
 function trimAnalysisText(text) {
-  return String(text || "").trim().slice(0, MAX_ANALYSIS_TEXT);
+  return String(text || "")
+    .trim()
+    .slice(0, MAX_ANALYSIS_TEXT);
 }

@@ -5,12 +5,7 @@ import { maskScenario } from "./profile-store.mjs";
 import { aggregateUsage, buildRunConsumption, estimateProfileRunEconomics } from "./costing.mjs";
 import { proportionReport } from "./stats.mjs";
 import { auditRunTokenUsage } from "./token-auditor.mjs";
-import {
-  buildErrorDiagnostics,
-  buildRecommendation,
-  buildScenarioRecommendation,
-  countErrors,
-} from "./reporting.mjs";
+import { buildErrorDiagnostics, buildRecommendation, buildScenarioRecommendation, countErrors } from "./reporting.mjs";
 import { formatPercent, groupBy, isFiniteNumber, mean, percentile, summarizeText } from "./utils.mjs";
 
 export function buildStabilitySummary({ runId, profile, records, rounds, concurrency, prompt, startedAt, endedAt }) {
@@ -176,7 +171,9 @@ function buildActualConsumption(target, judge) {
   const costs = [target?.cost, judge?.cost].filter((c) => typeof c === "number" && Number.isFinite(c));
   return {
     target: { inputTokens: target?.inputTokens ?? null, outputTokens: target?.outputTokens ?? null, cost: target?.cost ?? null },
-    judge: judge ? { calls: judge.calls, inputTokens: judge.inputTokens, outputTokens: judge.outputTokens, cost: judge.cost ?? null } : null,
+    judge: judge
+      ? { calls: judge.calls, inputTokens: judge.inputTokens, outputTokens: judge.outputTokens, cost: judge.cost ?? null }
+      : null,
     totalCost: costs.length ? Math.round(costs.reduce((a, b) => a + Number(b), 0) * 1_000_000) / 1_000_000 : null,
   };
 }

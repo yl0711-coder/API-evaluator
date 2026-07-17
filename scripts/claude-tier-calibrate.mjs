@@ -95,7 +95,11 @@ function parseArgs(argv) {
     else if (a === "--max-tokens") args.maxTokens = Math.max(1, parseInt(argv[++i], 10) || 512);
     else if (a === "--temperature") args.temperature = Number(argv[++i]);
     else if (a === "--concurrency") args.concurrency = Math.max(1, parseInt(argv[++i], 10) || 3);
-    else if (a === "--only") args.only = String(argv[++i] || "").split(",").map((s) => s.trim()).filter(Boolean);
+    else if (a === "--only")
+      args.only = String(argv[++i] || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
     else if (a === "--key-opus") args.keyEnv.opus = argv[++i];
     else if (a === "--key-sonnet") args.keyEnv.sonnet = argv[++i];
     else if (a === "--key-haiku") args.keyEnv.haiku = argv[++i];
@@ -220,10 +224,15 @@ async function chatComplete({ baseUrl, apiKey, model, prompt, proxy, maxTokens, 
       continue;
     }
     const hint =
-      res.status === 401 ? "key 无效或缺失" :
-      res.status === 403 ? "被拒（大陆直连地域封锁→配代理；或 key 无该模型权限）" :
-      res.status === 404 ? `模型 id 可能有误: ${model}` :
-      res.status === 400 ? "请求被拒（模型 id / 参数；试着去掉 --temperature）" : "上游错误";
+      res.status === 401
+        ? "key 无效或缺失"
+        : res.status === 403
+          ? "被拒（大陆直连地域封锁→配代理；或 key 无该模型权限）"
+          : res.status === 404
+            ? `模型 id 可能有误: ${model}`
+            : res.status === 400
+              ? "请求被拒（模型 id / 参数；试着去掉 --temperature）"
+              : "上游错误";
     throw new Error(`HTTP ${res.status} ${hint}${res.text ? ` — ${res.text.replace(/\s+/g, " ").slice(0, 160)}` : ""}`);
   }
 }

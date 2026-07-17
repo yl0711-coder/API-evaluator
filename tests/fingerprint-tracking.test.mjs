@@ -50,7 +50,12 @@ test("extractTokenizerSignature 只取固定探针且 token>0", () => {
 });
 
 test("extractProbeSignature 优先用 fingerprintSummary.probes", () => {
-  const summary = { probes: [{ id: "p1", passed: true }, { id: "p2", passed: false }] };
+  const summary = {
+    probes: [
+      { id: "p1", passed: true },
+      { id: "p2", passed: false },
+    ],
+  };
   assert.deepEqual(extractProbeSignature([], summary), { p1: true, p2: false });
   const records = [{ caseId: "px", admission: { probe: true, passed: true } }];
   assert.deepEqual(extractProbeSignature(records, null), { px: true });

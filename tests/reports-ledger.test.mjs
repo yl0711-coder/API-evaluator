@@ -42,7 +42,14 @@ test("run_by accounting, reports registry, retention prune, spend ledger", async
     assert.equal(reports[0].type, "scenario");
 
     // 3) spend_ledger 记账
-    await db.recordSpend({ runBy: "alice", runId: "run-1", estimated: 0.5, actual: 0.7, currency: "USD", createdAt: new Date().toISOString() });
+    await db.recordSpend({
+      runBy: "alice",
+      runId: "run-1",
+      estimated: 0.5,
+      actual: 0.7,
+      currency: "USD",
+      createdAt: new Date().toISOString(),
+    });
     const spendRow = conn.prepare("SELECT run_by, actual FROM spend_ledger WHERE run_id = ?").get("run-1");
     assert.equal(spendRow.run_by, "alice");
     assert.equal(spendRow.actual, 0.7);
@@ -58,10 +65,16 @@ test("run_by accounting, reports registry, retention prune, spend ledger", async
       createdAt: "2000-01-01T00:00:00.000Z",
     });
     const removed = await db.pruneReports({ retentionDays: 30, maxTotal: 2000 });
-    assert.ok(removed.find((r) => r.reportId === "old-1"), "过期报告应被清理");
+    assert.ok(
+      removed.find((r) => r.reportId === "old-1"),
+      "过期报告应被清理",
+    );
     reports = await db.queryRecentReports(10);
     assert.ok(!reports.find((r) => r.report_id === "old-1"), "过期报告已删除");
-    assert.ok(reports.find((r) => r.report_id === "rep-1"), "新报告应保留");
+    assert.ok(
+      reports.find((r) => r.report_id === "rep-1"),
+      "新报告应保留",
+    );
 
     db.closeDatabase();
   } finally {

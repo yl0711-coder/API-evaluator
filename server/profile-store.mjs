@@ -17,7 +17,10 @@ export function hashApiKey(key) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-const normalizeBaseUrl = (url) => String(url || "").trim().replace(/\/+$/, "");
+const normalizeBaseUrl = (url) =>
+  String(url || "")
+    .trim()
+    .replace(/\/+$/, "");
 
 // 查重：同 baseUrl + 同 defaultModel + 同 keyHash 视为同一渠道。candidate 需带 keyHash。
 // 老数据若缺 keyHash，则按需从 vault 读 key 现算（仅在 url+模型已匹配的少数候选上）。

@@ -67,30 +67,34 @@ test("delivery view renders operator-facing insights and handoff template", () =
   };
 
   const cards = renderInsightCards(runs, { compact: false });
-  const handoff = buildHandoffTemplate(runs, {
-    projectName: "渠道复测",
-    batchName: "第一批",
-    testerName: "测试员 A",
-    testPurpose: "筛选稳定候选",
-  }, [
+  const handoff = buildHandoffTemplate(
+    runs,
     {
-      profileName: "Demo API",
-      model: "demo-model",
-      score: 91,
-      successRate: 1,
-      purityScore: 88,
-      fingerprintRate: 1,
-      baselineDelta: 3,
-      baselineProfileName: "Official Demo",
+      projectName: "渠道复测",
+      batchName: "第一批",
+      testerName: "测试员 A",
+      testPurpose: "筛选稳定候选",
     },
-    {
-      profileName: "Official Demo",
-      profileRole: "baseline",
-      model: "demo-model",
-      score: 88,
-      successRate: 1,
-    },
-  ]);
+    [
+      {
+        profileName: "Demo API",
+        model: "demo-model",
+        score: 91,
+        successRate: 1,
+        purityScore: 88,
+        fingerprintRate: 1,
+        baselineDelta: 3,
+        baselineProfileName: "Official Demo",
+      },
+      {
+        profileName: "Official Demo",
+        profileRole: "baseline",
+        model: "demo-model",
+        score: 88,
+        successRate: 1,
+      },
+    ],
+  );
 
   assert.match(cards, /稳定性结论/);
   assert.match(cards, /交付材料基本完整/);

@@ -19,8 +19,7 @@ import { auditModelSubstitution, rutBudgetGuard } from "./rut-auditor.mjs";
 
 // 无 logprobs 时的纯文本评分降级：响应长度的 token 估算。弱代理，明确标注。
 export function textLengthScore(response) {
-  const text =
-    typeof response === "string" ? response : response?.text || response?.responseText || "";
+  const text = typeof response === "string" ? response : response?.text || response?.responseText || "";
   return estimateTokens(text);
 }
 

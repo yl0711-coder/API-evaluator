@@ -144,7 +144,10 @@ test("所有持久化面（渠道+密钥库/模型目标/设置/场景提示词�
   if (keyHash) assert.equal(ch2.keyHash, keyHash, "重启后 keyHash 不变（同一把 key）");
 
   const targets = await api("GET", "/api/model-targets", cookie);
-  assert.ok(targets.body.some((t) => t.id === targetId), "重启后模型目标仍在");
+  assert.ok(
+    targets.body.some((t) => t.id === targetId),
+    "重启后模型目标仍在",
+  );
 
   const settings = await api("GET", "/api/settings", cookie);
   assert.equal(settings.body.enableHle, true, "重启后设置开关仍在");

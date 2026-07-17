@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  buildAiAnalysisResult,
-  buildAiReportAnalysisPrompt,
-  isAiReportAnalysisEnabled,
-} from "../server/ai-report-analysis.mjs";
+import { buildAiAnalysisResult, buildAiReportAnalysisPrompt, isAiReportAnalysisEnabled } from "../server/ai-report-analysis.mjs";
 
 test("AI report analysis prompt uses compact sanitized report data", () => {
   const prompt = buildAiReportAnalysisPrompt({
@@ -42,20 +38,23 @@ test("AI report analysis flag accepts browser checkbox values", () => {
 });
 
 test("AI report analysis result keeps usage and failure details", () => {
-  assert.deepEqual(buildAiAnalysisResult({
-    success: true,
-    responseText: "分析结果",
-    requestId: "req-1",
-    inputTokens: 10,
-    outputTokens: 20,
-  }), {
-    enabled: true,
-    success: true,
-    text: "分析结果",
-    requestId: "req-1",
-    inputTokens: 10,
-    outputTokens: 20,
-  });
+  assert.deepEqual(
+    buildAiAnalysisResult({
+      success: true,
+      responseText: "分析结果",
+      requestId: "req-1",
+      inputTokens: 10,
+      outputTokens: 20,
+    }),
+    {
+      enabled: true,
+      success: true,
+      text: "分析结果",
+      requestId: "req-1",
+      inputTokens: 10,
+      outputTokens: 20,
+    },
+  );
 
   const failed = buildAiAnalysisResult({
     success: false,

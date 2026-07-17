@@ -81,7 +81,9 @@ export function normalizeJob(raw, existing = null) {
   const options = normalizeOptions(rawOptions);
   return {
     id,
-    name: String(raw.name ?? existing?.name ?? "").trim().slice(0, 120),
+    name: String(raw.name ?? existing?.name ?? "")
+      .trim()
+      .slice(0, 120),
     targetId: String(raw.targetId ?? existing?.targetId ?? "").trim(),
     kind,
     periodHours,

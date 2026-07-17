@@ -131,4 +131,3 @@ function roleClass(role) {
   if (role === "baseline") return "baseline";
   return "target";
 }
-

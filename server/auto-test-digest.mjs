@@ -13,7 +13,11 @@ const pct = (v) => (isNum(v) ? `${Math.round(Number(v) * 100)}%` : "-");
 const ms = (v) => (isNum(v) ? `${Math.round(Number(v))}ms` : "-");
 const dt = (iso) => (iso ? String(iso).replace("T", " ").slice(0, 16) : "-");
 // 表格单元格：转义竖线与换行，避免撑破 Markdown 表格（report-html 会把 \| 还原成字面量）。
-const cell = (v) => String(v ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim() || "-";
+const cell = (v) =>
+  String(v ?? "")
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, " ")
+    .trim() || "-";
 
 export function windowLabel(hours) {
   const h = Number(hours);
@@ -53,13 +57,19 @@ export function formatAutoTestDigestReport(data = {}, { now = null, chartNonce =
   const attention = [];
   for (const j of jobs) {
     if (j.autoDisabled) attention.push(`作业「${j.name || j.targetLabel || j.targetId}」已因连续失败被自动停用，请核查上游/配置。`);
-    else if (j.overdue) attention.push(`作业「${j.name || j.targetLabel || j.targetId}」已过计划时间仍未运行（下次计划 ${dt(j.nextRunAt)}），可能调度停滞。`);
+    else if (j.overdue)
+      attention.push(`作业「${j.name || j.targetLabel || j.targetId}」已过计划时间仍未运行（下次计划 ${dt(j.nextRunAt)}），可能调度停滞。`);
     else if (isNum(j.consecutiveFailures) && Number(j.consecutiveFailures) > 0)
-      attention.push(`作业「${j.name || j.targetLabel || j.targetId}」连续失败 ${j.consecutiveFailures} 次${j.lastError ? `：${j.lastError}` : ""}。`);
+      attention.push(
+        `作业「${j.name || j.targetLabel || j.targetId}」连续失败 ${j.consecutiveFailures} 次${j.lastError ? `：${j.lastError}` : ""}。`,
+      );
   }
   for (const t of targets) {
     if (t.regression && t.regression.status === "regressed") {
-      const detail = (t.regression.changes || []).map((c) => c.detail).filter(Boolean).join("；");
+      const detail = (t.regression.changes || [])
+        .map((c) => c.detail)
+        .filter(Boolean)
+        .join("；");
       attention.push(`模型「${t.label}${t.model ? " · " + t.model : ""}」疑似退化：${detail || t.regression.verdict || "见趋势"}。`);
     }
   }
@@ -138,7 +148,9 @@ export function formatAutoTestDigestReport(data = {}, { now = null, chartNonce =
   lines.push("## 方法学与免责");
   lines.push("- 巡检范围＝已配置的自动测试作业的目标模型；无作业时回退为窗口内测过的模型。");
   lines.push("- 稳定性成功率/P95 取窗口内最近一次运行；「基础」场景轮次按分组并入稳定性趋势（见「稳定性趋势」页说明）。");
-  lines.push("- 回归判定以同类历史中位数为基线（成功率跌 ≥10pp / P95 恶化 ≥1.5× / 准入等级下滑 ≥2 档），为「疑似退化，建议复核」，非铁证。");
+  lines.push(
+    "- 回归判定以同类历史中位数为基线（成功率跌 ≥10pp / P95 恶化 ≥1.5× / 准入等级下滑 ≥2 档），为「疑似退化，建议复核」，非铁证。",
+  );
   lines.push("- 本报告由平台本地生成，只读既有测试数据，不发起新测试、不含 API Key。");
   lines.push("");
 

@@ -1,9 +1,4 @@
-import {
-  downloadText,
-  escapeHtml,
-  renderMarkdown,
-  toast,
-} from "./client-utils.js";
+import { downloadText, escapeHtml, renderMarkdown, toast } from "./client-utils.js";
 import { renderAdmissionResult } from "./admission-view.js";
 import { installClientErrorReporter } from "./client-error-reporter.js";
 import { copyText } from "./clipboard.js";
@@ -46,10 +41,7 @@ import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createBatchTargetPicker } from "./batch-target-picker.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
-import {
-  applyPromptPresetToForm,
-  renderPromptPresetOptions,
-} from "./prompt-presets.js";
+import { applyPromptPresetToForm, renderPromptPresetOptions } from "./prompt-presets.js";
 import { createChannelAdmin } from "./channel-admin.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
@@ -61,11 +53,7 @@ import {
   applyBatchTemplate as applyBatchTemplateToForm,
   applyStabilityTemplate as applyStabilityTemplateToForm,
 } from "./test-templates.js";
-import {
-  hydrateProjectInfoForm as hydrateProjectInfoFormFields,
-  loadProjectInfo,
-  saveProjectInfo,
-} from "./project-info.js";
+import { hydrateProjectInfoForm as hydrateProjectInfoFormFields, loadProjectInfo, saveProjectInfo } from "./project-info.js";
 
 installClientErrorReporter();
 
@@ -208,12 +196,28 @@ const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-se
 
 // 程序化跳转回填代理:控制器里 `xxxProfileSelect.value = id` 时,写入走级联(同步渠道+模型下拉),
 // 读取仍取模型选中值。传给会做跳转回填的控制器(profile / standard-eval)。
-const quickVerifyProfileTarget = { get value() { return quickVerifyProfileSelect.value; }, set value(v) { quickVerifyCascade.setValue(v); } };
-const stabilityProfileTarget = { get value() { return stabilityProfileSelect.value; }, set value(v) { stabilityCascade.setValue(v); } };
+const quickVerifyProfileTarget = {
+  get value() {
+    return quickVerifyProfileSelect.value;
+  },
+  set value(v) {
+    quickVerifyCascade.setValue(v);
+  },
+};
+const stabilityProfileTarget = {
+  get value() {
+    return stabilityProfileSelect.value;
+  },
+  set value(v) {
+    stabilityCascade.setValue(v);
+  },
+};
 
 // 批量两维度选择器(渠道体检 A / 渠道选优 B),3 个批量页各一个。选中项同步到隐藏的
 // *-profile-select(name=profileIds),所以 updateEstimates / 提交 / 监听器 读法不变。
-const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-batch-picker"), { hiddenSelect: admissionBatchProfileSelect });
+const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-batch-picker"), {
+  hiddenSelect: admissionBatchProfileSelect,
+});
 const batchPicker = createBatchTargetPicker(requireElement("#batch-picker"), { hiddenSelect: batchProfileSelect });
 const scenarioPicker = createBatchTargetPicker(requireElement("#scenario-picker"), { hiddenSelect: scenarioProfileSelect });
 // 「选择测试场景」复用 .batch-picker 勾选样式,真值写回隐藏的 scenarioCaseSelect。
@@ -440,9 +444,7 @@ reportFilesList.addEventListener("click", (event) => {
   if (pager) {
     const totalPages = Math.max(1, Math.ceil(filteredReportFiles().length / REPORT_PAGE_SIZE));
     reportFilesPage =
-      pager.dataset.reportPage === "next"
-        ? Math.min(reportFilesPage + 1, totalPages - 1)
-        : Math.max(reportFilesPage - 1, 0);
+      pager.dataset.reportPage === "next" ? Math.min(reportFilesPage + 1, totalPages - 1) : Math.max(reportFilesPage - 1, 0);
     renderReportFilesPage();
     return;
   }
@@ -681,13 +683,25 @@ async function updateTrendView(profileId) {
           .reverse()
           .map(
             (p) =>
-              `${String(p.at || "").replace("T", " ").slice(0, 19)} | ${p.type} | 成功率 ${p.successRate != null ? Math.round(p.successRate * 100) + "%" : "-"} | P95 ${p.p95Ms ?? "-"}ms${p.grade ? " | " + p.grade : ""}${p.cost != null ? " | $" + p.cost : ""}`,
+              `${String(p.at || "")
+                .replace("T", " ")
+                .slice(
+                  0,
+                  19,
+                )} | ${p.type} | 成功率 ${p.successRate != null ? Math.round(p.successRate * 100) + "%" : "-"} | P95 ${p.p95Ms ?? "-"}ms${p.grade ? " | " + p.grade : ""}${p.cost != null ? " | $" + p.cost : ""}`,
           )
           .join("\n")
       : "暂无历史。";
     const alerts = data.alerts || [];
     trendAlerts.textContent = alerts.length
-      ? alerts.map((a) => `${String(a.created_at || "").replace("T", " ").slice(0, 19)} | ${a.severity} | ${a.summary}`).join("\n")
+      ? alerts
+          .map(
+            (a) =>
+              `${String(a.created_at || "")
+                .replace("T", " ")
+                .slice(0, 19)} | ${a.severity} | ${a.summary}`,
+          )
+          .join("\n")
       : "暂无告警。";
   } catch (error) {
     trendChart.textContent = `加载失败：${error.message}`;
@@ -889,7 +903,10 @@ function renderLoadTestSingle(result) {
   const modeLabel = result.mode === "open" ? `开环 · 速率 ${result.offered} req/s` : `闭环 · 并发 ${result.offered}`;
   const sent = result.sentRequests || 0;
   const notReturned = (e.timeout || 0) + (e.http_5xx || 0) + (e.network_error || 0) + (e.other || 0);
-  const biasNote = notReturned > 0 ? `<small class="fail">⚠️ 另有 ${notReturned} 条（${Math.round(sent ? (notReturned / sent) * 100 : 0)}%）超时/失败未返回、未计入延迟，真实尾延迟更差</small>` : "";
+  const biasNote =
+    notReturned > 0
+      ? `<small class="fail">⚠️ 另有 ${notReturned} 条（${Math.round(sent ? (notReturned / sent) * 100 : 0)}%）超时/失败未返回、未计入延迟，真实尾延迟更差</small>`
+      : "";
   loadTestSummary.innerHTML = `
     <article class="summary-card">
       <span>吞吐 QPS</span>
@@ -991,7 +1008,10 @@ createTaskFormController({
     };
   },
   beforeStart: (payload) => {
-    const what = payload.loads.length > 1 ? `扫描 ${payload.loads.length} 个负载点` : `${payload.mode === "open" ? "速率" : "并发"} ${payload.loads[0]}`;
+    const what =
+      payload.loads.length > 1
+        ? `扫描 ${payload.loads.length} 个负载点`
+        : `${payload.mode === "open" ? "速率" : "并发"} ${payload.loads[0]}`;
     loadTestSummary.innerHTML = `<p class="muted">正在压测：${what}，每点稳态 ${payload.durationSec}s。测试期间请不要关闭窗口。</p>`;
   },
   onSuccess: async (result) => {
@@ -1311,7 +1331,17 @@ applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
 try {
-  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), preloadSettings(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
+  await Promise.all([
+    loadHealth(),
+    loadProfiles(),
+    loadScenarios(),
+    loadRequests(),
+    loadTestRuns(),
+    loadTaskEvents(),
+    preloadSettings(),
+    channelAdmin.loadChannels(),
+    channelAdmin.loadModelTargets(),
+  ]);
   await loadHighRiskAlerts(); // 启动时按开关拉一次高危报告横幅（此时 state.settings 已就绪）
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
@@ -1412,9 +1442,7 @@ function tocIconFor(title) {
     );
   }
   if (title.includes("逐页要点")) {
-    return svg(
-      '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
-    );
+    return svg('<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>');
   }
   return svg('<path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/>');
 }
@@ -1472,11 +1500,7 @@ function buildManualToc() {
       // 直接对真正的滚动容器 .main 做确定性偏移滚动，不依赖 scrollIntoView
       // 的祖先启发式（#app 设了 overflow:hidden 会干扰其落点计算）。
       if (scroller) {
-        const top =
-          scroller.scrollTop +
-          el.getBoundingClientRect().top -
-          scroller.getBoundingClientRect().top -
-          TOC_SCROLL_OFFSET;
+        const top = scroller.scrollTop + el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - TOC_SCROLL_OFFSET;
         scroller.scrollTo({ top, behavior: "smooth" });
       } else {
         el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1502,9 +1526,7 @@ function buildManualToc() {
   const observer = new IntersectionObserver(
     (entries) => {
       if (spyLocked) return;
-      const hit = entries
-        .filter((e) => e.isIntersecting)
-        .sort((x, y) => x.boundingClientRect.top - y.boundingClientRect.top)[0];
+      const hit = entries.filter((e) => e.isIntersecting).sort((x, y) => x.boundingClientRect.top - y.boundingClientRect.top)[0];
       if (!hit) return;
       const active = byId.get(hit.target.id);
       if (!active) return;
@@ -1750,7 +1772,6 @@ highRiskBanner.addEventListener("click", async (event) => {
 // 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
 setInterval(() => void loadHighRiskAlerts(), 60_000);
 
-
 function enableDemoMode() {
   const demoData = buildDemoData();
   state.demoMode = true;
@@ -1863,22 +1884,28 @@ function renderDashboardStatus() {
   }
   statChannels.innerHTML = `${targets.length} <em>个测试目标</em>`;
   // 健康占比条：按 正常/观察/异常/未测 的数量做 flex 比例
-  statChannelsBars.innerHTML = targets.length === 0
-    ? `<i style="flex:1;background:var(--line)"></i>`
-    : [
-        good ? `<i style="flex:${good};background:var(--good)"></i>` : "",
-        warn ? `<i style="flex:${warn};background:var(--accent)"></i>` : "",
-        bad ? `<i style="flex:${bad};background:var(--bad)"></i>` : "",
-        idle ? `<i style="flex:${idle};background:var(--muted)"></i>` : "",
-      ].filter(Boolean).join("");
-  statChannelsChips.innerHTML = targets.length === 0
-    ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无被测渠道</span>`
-    : [
-        good ? `<span class="chip good"><i></i>${good} 正常</span>` : "",
-        warn ? `<span class="chip warn"><i></i>${warn} 需观察</span>` : "",
-        bad ? `<span class="chip bad"><i></i>${bad} 异常</span>` : "",
-        idle ? `<span class="chip idle muted-chip"><i></i>${idle} 未测</span>` : "",
-      ].filter(Boolean).join("");
+  statChannelsBars.innerHTML =
+    targets.length === 0
+      ? `<i style="flex:1;background:var(--line)"></i>`
+      : [
+          good ? `<i style="flex:${good};background:var(--good)"></i>` : "",
+          warn ? `<i style="flex:${warn};background:var(--accent)"></i>` : "",
+          bad ? `<i style="flex:${bad};background:var(--bad)"></i>` : "",
+          idle ? `<i style="flex:${idle};background:var(--muted)"></i>` : "",
+        ]
+          .filter(Boolean)
+          .join("");
+  statChannelsChips.innerHTML =
+    targets.length === 0
+      ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无被测渠道</span>`
+      : [
+          good ? `<span class="chip good"><i></i>${good} 正常</span>` : "",
+          warn ? `<span class="chip warn"><i></i>${warn} 需观察</span>` : "",
+          bad ? `<span class="chip bad"><i></i>${bad} 异常</span>` : "",
+          idle ? `<span class="chip idle muted-chip"><i></i>${idle} 未测</span>` : "",
+        ]
+          .filter(Boolean)
+          .join("");
 
   // 最近结论：按 recommendation.level 统计
   let pass = 0;
@@ -1891,9 +1918,10 @@ function renderDashboardStatus() {
     else if (v?.cls === "bad") fail += 1;
   }
   statVerdicts.innerHTML = `${runs.length} <em>份报告</em>`;
-  statVerdictsChips.innerHTML = runs.length === 0
-    ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>还没有报告</span>`
-    : `<span class="chip good"><i></i>推荐 ${pass}</span><span class="chip warn"><i></i>观察 ${watchN}</span><span class="chip bad"><i></i>不推荐 ${fail}</span>`;
+  statVerdictsChips.innerHTML =
+    runs.length === 0
+      ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>还没有报告</span>`
+      : `<span class="chip good"><i></i>推荐 ${pass}</span><span class="chip warn"><i></i>观察 ${watchN}</span><span class="chip bad"><i></i>不推荐 ${fail}</span>`;
 
   // 待办：疑似计费（tokenAuditFindings 含 high/medium）+ 待复测（最近为观察的渠道）
   let billing = 0;
@@ -1903,12 +1931,15 @@ function renderDashboardStatus() {
   }
   const todoCount = warn + billing;
   statTodos.innerHTML = `${todoCount} <em>项</em>`;
-  statTodosChips.innerHTML = todoCount === 0
-    ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无待办</span>`
-    : [
-        warn ? `<span class="chip blue"><i></i>${warn} 待复测</span>` : "",
-        billing ? `<span class="chip bad"><i></i>${billing} 疑似计费异常</span>` : "",
-      ].filter(Boolean).join("");
+  statTodosChips.innerHTML =
+    todoCount === 0
+      ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无待办</span>`
+      : [
+          warn ? `<span class="chip blue"><i></i>${warn} 待复测</span>` : "",
+          billing ? `<span class="chip bad"><i></i>${billing} 疑似计费异常</span>` : "",
+        ]
+          .filter(Boolean)
+          .join("");
 }
 
 function renderDashboardRecent() {
@@ -1917,22 +1948,22 @@ function renderDashboardRecent() {
     dashboardRecent.innerHTML = `<p class="muted" style="padding:10px 12px">还没有测试报告。完成一次准入或标准评测后，这里会显示最近结论。</p>`;
     return;
   }
-  dashboardRecent.innerHTML = runs.map((run) => {
-    const v = dashVerdict(run);
-    const pill = v
-      ? `<span class="verdict-pill ${v.cls}">${v.label}</span>`
-      : `<span class="verdict-pill idle">—</span>`;
-    const metricBits = [];
-    if (run.successRateText) metricBits.push(escapeHtml(run.successRateText));
-    if (run.p95TotalMs) metricBits.push(`P95 ${dashFormatMs(run.p95TotalMs)}`);
-    return `<div class="rep-row" data-go-page="reports">
+  dashboardRecent.innerHTML = runs
+    .map((run) => {
+      const v = dashVerdict(run);
+      const pill = v ? `<span class="verdict-pill ${v.cls}">${v.label}</span>` : `<span class="verdict-pill idle">—</span>`;
+      const metricBits = [];
+      if (run.successRateText) metricBits.push(escapeHtml(run.successRateText));
+      if (run.p95TotalMs) metricBits.push(`P95 ${dashFormatMs(run.p95TotalMs)}`);
+      return `<div class="rep-row" data-go-page="reports">
       <div class="who"><b>${escapeHtml(run.profileName || "未命名渠道")}</b><small>${escapeHtml(run.model || "")}</small></div>
       <div class="kind">${escapeHtml(dashTypeLabel(run.type))}</div>
       ${pill}
       <div class="when">${escapeHtml(dashRelTime(run.endedAt || run.startedAt))}</div>
       <div class="go">›</div>
     </div>`;
-  }).join("");
+    })
+    .join("");
 }
 
 function renderWorkflowGuide() {

@@ -5,12 +5,40 @@ import { assessTokenHonesty } from "../server/fingerprint-tracking.mjs";
 import { auditBillingDimensions, auditRunTokenUsage } from "../server/token-auditor.mjs";
 
 // 同模型多渠道的"诚实"基线（固定探针 prompt_tokens；带不同固定模板开销）。
-const PEER_A = { tokenizerSignature: { fingerprint_instruction_lock: 40, fingerprint_logic_anchor: 30, fingerprint_code_reasoning: 120, fingerprint_context_recall: 70 } };
-const PEER_B = { tokenizerSignature: { fingerprint_instruction_lock: 44, fingerprint_logic_anchor: 34, fingerprint_code_reasoning: 124, fingerprint_context_recall: 74 } };
-const PEER_C = { tokenizerSignature: { fingerprint_instruction_lock: 38, fingerprint_logic_anchor: 28, fingerprint_code_reasoning: 118, fingerprint_context_recall: 68 } };
+const PEER_A = {
+  tokenizerSignature: {
+    fingerprint_instruction_lock: 40,
+    fingerprint_logic_anchor: 30,
+    fingerprint_code_reasoning: 120,
+    fingerprint_context_recall: 70,
+  },
+};
+const PEER_B = {
+  tokenizerSignature: {
+    fingerprint_instruction_lock: 44,
+    fingerprint_logic_anchor: 34,
+    fingerprint_code_reasoning: 124,
+    fingerprint_context_recall: 74,
+  },
+};
+const PEER_C = {
+  tokenizerSignature: {
+    fingerprint_instruction_lock: 38,
+    fingerprint_logic_anchor: 28,
+    fingerprint_code_reasoning: 118,
+    fingerprint_context_recall: 68,
+  },
+};
 
 test("assessTokenHonesty：与同模型基线一致 → consistent", () => {
-  const current = { tokenizerSignature: { fingerprint_instruction_lock: 41, fingerprint_logic_anchor: 31, fingerprint_code_reasoning: 121, fingerprint_context_recall: 71 } };
+  const current = {
+    tokenizerSignature: {
+      fingerprint_instruction_lock: 41,
+      fingerprint_logic_anchor: 31,
+      fingerprint_code_reasoning: 121,
+      fingerprint_context_recall: 71,
+    },
+  };
   const r = assessTokenHonesty({ current, peers: [PEER_A, PEER_B, PEER_C] });
   assert.equal(r.status, "consistent_with_baseline");
   assert.ok(r.overReportRatio > 0.9 && r.overReportRatio < 1.1);

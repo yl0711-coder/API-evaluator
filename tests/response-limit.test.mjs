@@ -35,7 +35,11 @@ test("bounded reader: firstTokenAt 跳过无内容首帧，只在首个可见 to
       controller.enqueue(enc.encode(`event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3}}}\n\n`));
       await new Promise((r) => setTimeout(r, 40)); // 与首帧拉开可测量的间隔
       // 第 2 帧：首个真正的可见 token
-      controller.enqueue(enc.encode(`event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你"}}\n\n`));
+      controller.enqueue(
+        enc.encode(
+          `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你"}}\n\n`,
+        ),
+      );
       controller.close();
     },
   });

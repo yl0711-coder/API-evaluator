@@ -404,18 +404,14 @@ export async function countRequests({ path } = {}) {
 export async function queryRecentRequests(limit = 50, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return null;
-  const rows = db
-    .prepare("SELECT raw_json FROM test_requests ORDER BY id DESC LIMIT ?")
-    .all(Math.max(1, Math.floor(limit)));
+  const rows = db.prepare("SELECT raw_json FROM test_requests ORDER BY id DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
   return rows.map((row) => safeParse(row.raw_json)).filter(Boolean);
 }
 
 export async function queryRecentTestRuns(limit = 20, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return null;
-  const rows = db
-    .prepare("SELECT raw_json FROM test_runs ORDER BY id DESC LIMIT ?")
-    .all(Math.max(1, Math.floor(limit)));
+  const rows = db.prepare("SELECT raw_json FROM test_runs ORDER BY id DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
   return rows.map((row) => safeParse(row.raw_json)).filter(Boolean);
 }
 
@@ -423,9 +419,7 @@ export async function queryRecentTestRuns(limit = 20, { path } = {}) {
 export async function queryRunsByProfile(profileId, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return [];
-  return db
-    .prepare("SELECT * FROM test_runs WHERE profile_id = ? ORDER BY id ASC")
-    .all(profileId);
+  return db.prepare("SELECT * FROM test_runs WHERE profile_id = ? ORDER BY id ASC").all(profileId);
 }
 
 // 同一 profile 的历次运行汇总（解析 raw_json，时间升序），供趋势图/基线回归用。
@@ -740,9 +734,7 @@ export async function pruneReports({ retentionDays = 30, maxTotal = 2000, now, p
     const cutoffIso = new Date((now ?? Date.now()) - retentionDays * 24 * 3600 * 1000).toISOString();
     const expired = db.prepare("SELECT * FROM reports WHERE created_at IS NOT NULL AND created_at < ?").all(cutoffIso);
     // 超量清理：按时间倒序跳过最新 maxTotal 条，其余（更旧的）视为超量待删
-    const overflow = db
-      .prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT -1 OFFSET ?")
-      .all(Math.max(0, Math.floor(maxTotal)));
+    const overflow = db.prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT -1 OFFSET ?").all(Math.max(0, Math.floor(maxTotal)));
     const toDelete = new Map();
     for (const row of [...expired, ...overflow]) toDelete.set(row.report_id, row);
     if (toDelete.size === 0) return [];

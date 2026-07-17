@@ -23,12 +23,19 @@ test("api 模式：调 new-api /api/channel/ 取渠道（透传 token、翻页�
       seenUser = req.headers["new-api-user"];
       const page = Number(new URL(req.url, "http://x").searchParams.get("p") || 0);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(page === 0
-        ? { success: true, data: [
-            { id: 1, type: 1, name: "A", base_url: "https://a.test", models: "gpt-4o", status: 1 },
-            { id: 14, type: 14, name: "Claude", base_url: "https://c.test", models: "claude-sonnet-4-5", status: 2 },
-          ] }
-        : { success: true, data: [] }));
+      res.end(
+        JSON.stringify(
+          page === 0
+            ? {
+                success: true,
+                data: [
+                  { id: 1, type: 1, name: "A", base_url: "https://a.test", models: "gpt-4o", status: 1 },
+                  { id: 14, type: 14, name: "Claude", base_url: "https://c.test", models: "claude-sonnet-4-5", status: 2 },
+                ],
+              }
+            : { success: true, data: [] },
+        ),
+      );
     },
     async (base) => {
       process.env.EVALUATOR_IMPORT_SOURCE = "api";

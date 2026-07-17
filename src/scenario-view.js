@@ -8,9 +8,7 @@ import { reportViewUrl } from "./report-overlay.js";
 export function renderScenarioSummary(container, result) {
   // 优先用 profileDigest：任务通道会剥掉重字段 results/records，digest 是不被剥离的轻量副本。
   const source = result.profileDigest || result.results || [];
-  const profiles = [...source].sort(
-    (a, b) => (b.avgQualityScore || 0) - (a.avgQualityScore || 0),
-  );
+  const profiles = [...source].sort((a, b) => (b.avgQualityScore || 0) - (a.avgQualityScore || 0));
   if (profiles.length === 0) {
     container.innerHTML = `<p class="muted">本轮没有有效结果。</p>`;
     return;

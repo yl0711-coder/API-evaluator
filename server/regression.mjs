@@ -30,11 +30,20 @@ export function summarizeRoundStats(rounds) {
   const rs = (rounds || []).filter((r) => r && r.totalMs != null && Number.isFinite(Number(r.totalMs)));
   if (!rs.length) return { successRate: null, p95Ms: null };
   const ok = rs.filter((r) => r.success).length;
-  return { successRate: ok / rs.length, p95Ms: percentile(rs.map((r) => Number(r.totalMs)), 0.95) };
+  return {
+    successRate: ok / rs.length,
+    p95Ms: percentile(
+      rs.map((r) => Number(r.totalMs)),
+      0.95,
+    ),
+  };
 }
 
 function median(values) {
-  const a = (values || []).filter(isNum).map(Number).sort((x, y) => x - y);
+  const a = (values || [])
+    .filter(isNum)
+    .map(Number)
+    .sort((x, y) => x - y);
   const n = a.length;
   if (!n) return null;
   return n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2;

@@ -12,9 +12,7 @@ test("hashApiKey：相同 key 同指纹，不同 key 不同指纹，空为 null"
 
 const H1 = hashApiKey("key-1");
 const H2 = hashApiKey("key-2");
-const profiles = [
-  { id: "a", name: "渠道A", baseUrl: "https://api.example.com", defaultModel: "gpt-4o", keyHash: H1 },
-];
+const profiles = [{ id: "a", name: "渠道A", baseUrl: "https://api.example.com", defaultModel: "gpt-4o", keyHash: H1 }];
 
 test("findDuplicateProfile：URL+模型+Key 全一致 → 判重(忽略末尾斜杠)", async () => {
   const dup = await findDuplicateProfile(profiles, { id: "", baseUrl: "https://api.example.com/", defaultModel: "gpt-4o", keyHash: H1 });
@@ -28,7 +26,12 @@ test("findDuplicateProfile：Key 不同 → 不算重复", async () => {
 });
 
 test("findDuplicateProfile：模型不同 → 不算重复", async () => {
-  const dup = await findDuplicateProfile(profiles, { id: "", baseUrl: "https://api.example.com", defaultModel: "gpt-4o-mini", keyHash: H1 });
+  const dup = await findDuplicateProfile(profiles, {
+    id: "",
+    baseUrl: "https://api.example.com",
+    defaultModel: "gpt-4o-mini",
+    keyHash: H1,
+  });
   assert.equal(dup, null);
 });
 

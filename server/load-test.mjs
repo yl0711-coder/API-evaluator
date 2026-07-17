@@ -55,7 +55,12 @@ export function classifyNetwork(rawError) {
   // 上游/网关在高负载下主动重置或挂断连接
   if (/ECONNRESET|EPIPE|HANG UP|OTHER SIDE CLOSED|UND_ERR_SOCKET/.test(t)) return "upstream";
   // 本机/链路侧：DNS、拒连、连接超时、端口/文件描述符耗尽、路由不可达、TLS/证书
-  if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EMFILE|ENFILE|EADDRNOTAVAIL|EADDRINUSE|ENETUNREACH|EHOSTUNREACH|EPROTO|CERT|TLS|SELF_SIGNED|UNABLE_TO_VERIFY/.test(t)) return "local";
+  if (
+    /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EMFILE|ENFILE|EADDRNOTAVAIL|EADDRINUSE|ENETUNREACH|EHOSTUNREACH|EPROTO|CERT|TLS|SELF_SIGNED|UNABLE_TO_VERIFY/.test(
+      t,
+    )
+  )
+    return "local";
   return "unknown";
 }
 
@@ -168,7 +173,21 @@ async function runClosedPoint(cfg) {
 // coordinated omission 纠正(B)：延迟 = 完成时刻 − 计划发起时刻(intendedAt)，把发生器侧排队算进去。
 // 发送周期 burstMs>1000 时为「间歇/突发」：每 burstMs 毫秒只在前 1 秒按速率匀速发满，其余时间静默。
 async function runOpenPoint(cfg) {
-  const { execute, probeTarget, dispatch, runId, load, maxInFlight, warmupMs, burstMs, deadline, runStart, abortSignal, stream, taskContext } = cfg;
+  const {
+    execute,
+    probeTarget,
+    dispatch,
+    runId,
+    load,
+    maxInFlight,
+    warmupMs,
+    burstMs,
+    deadline,
+    runStart,
+    abortSignal,
+    stream,
+    taskContext,
+  } = cfg;
   const samples = [];
   const intervalMs = 1000 / load;
   let inFlight = 0;
@@ -359,7 +378,8 @@ export function classifyPointStatus(prev, cur) {
   if (success !== null && success < 0.99) return { tag: "errors", label: "出错/失败" };
   if (cur.genSaturated > 0) return { tag: "client_saturated", label: "客户端受限" };
   const plateau = tputOf(cur) < tputOf(prev) * THROUGHPUT_PLATEAU_RATIO; // 吞吐较前点持平
-  const p99Spiked = Number.isFinite(cur.latency.p99) && Number.isFinite(prev.latency.p99) && cur.latency.p99 >= prev.latency.p99 * P99_SATURATION_RATIO;
+  const p99Spiked =
+    Number.isFinite(cur.latency.p99) && Number.isFinite(prev.latency.p99) && cur.latency.p99 >= prev.latency.p99 * P99_SATURATION_RATIO;
   if (plateau && p99Spiked) return { tag: "server_saturated", label: "上游饱和" };
   return { tag: "healthy", label: "健康" };
 }
@@ -515,7 +535,9 @@ function detailedErrorTable(p) {
   const n = p.network || {};
   const rows = [];
   for (const code of sortedStatusCodes(p)) {
-    rows.push(`| ${classifyStatus(code, dominantReason(p, code)).label} | ${code} | ${statusPhrase(p, code) || "—"} | ${p.statusCounts[code]} |`);
+    rows.push(
+      `| ${classifyStatus(code, dominantReason(p, code)).label} | ${code} | ${statusPhrase(p, code) || "—"} | ${p.statusCounts[code]} |`,
+    );
   }
   if (e.timeout > 0) rows.push(`| 超时 | — | — | ${e.timeout} |`);
   if (n.local) rows.push(`| 网络·本机侧 | — | — | ${n.local} |`);
@@ -538,12 +560,19 @@ function errorNotes(meta, p) {
   if (e.timeout > 0) notes.push(`- 超时：请求未在每请求超时（${meta.timeoutSec}s）内返回，通常是上游在该负载下延迟过高。`);
   if (e.network_error > 0) {
     const n = p.network || {};
-    if (n.local) notes.push("- 网络·本机侧：连接被本机/链路侧中断（端口或文件描述符耗尽、DNS、代理/VPN、TLS 等）——多为压测机自身或网络环境所致，非上游；降并发或排查本机代理后复测。");
-    if (n.upstream) notes.push("- 网络·服务器端：连接被上游/网关主动重置或挂断（ECONNRESET / socket hang up 等）——上游在高负载下直接断连，属上游侧容量/稳定性问题。");
+    if (n.local)
+      notes.push(
+        "- 网络·本机侧：连接被本机/链路侧中断（端口或文件描述符耗尽、DNS、代理/VPN、TLS 等）——多为压测机自身或网络环境所致，非上游；降并发或排查本机代理后复测。",
+      );
+    if (n.upstream)
+      notes.push(
+        "- 网络·服务器端：连接被上游/网关主动重置或挂断（ECONNRESET / socket hang up 等）——上游在高负载下直接断连，属上游侧容量/稳定性问题。",
+      );
     if (n.unknown) notes.push("- 网络·未判明：未取得明确底层错误码，暂无法判定本机侧还是上游侧。");
     if (!n.local && !n.upstream && !n.unknown) notes.push("- 网络：连接层错误（断连 / DNS / TLS 等）。");
   }
-  if (e.gen_saturated > 0) notes.push(`- 发生器受限：同时在飞的请求打满上限（${meta.maxInFlight}），新请求发不出而被丢弃——客户端侧饱和信号，多因上游变慢致积压。`);
+  if (e.gen_saturated > 0)
+    notes.push(`- 发生器受限：同时在飞的请求打满上限（${meta.maxInFlight}），新请求发不出而被丢弃——客户端侧饱和信号，多因上游变慢致积压。`);
   if (p.noStatusOther > 0) notes.push("- 其它（无状态码）：未归入上述类别的失败。");
   return notes.length ? notes : ["- 本轮无错误。"];
 }
@@ -552,9 +581,7 @@ function errorNotes(meta, p) {
 function tokenThroughputLine(p) {
   if (!(p.outputTokens > 0)) return null;
   const cov =
-    Number.isFinite(p.tokenUsageCoverage) && p.tokenUsageCoverage < 1
-      ? `（其中 ${pct(1 - p.tokenUsageCoverage)} 为本地分词估算）`
-      : "";
+    Number.isFinite(p.tokenUsageCoverage) && p.tokenUsageCoverage < 1 ? `（其中 ${pct(1 - p.tokenUsageCoverage)} 为本地分词估算）` : "";
   return `- 输出吞吐：${p.tokensPerSecond} tok/s（总输出 ${p.outputTokens} tokens · 单请求均速 ${p.perReqTokensPerSec ?? "—"} tok/s · 受 max_tokens 上限影响；单请求均速为**端到端**含排队/网络，非纯服务端 decode 速率）${cov}`;
 }
 
@@ -708,7 +735,12 @@ export async function runLoadTest(payload = {}, taskContext = {}, deps = {}) {
   const progressTimer = setInterval(() => {
     const elapsed = Math.min(totalSec, progress.done * perPointSec + (performance.now() - progress.curStart) / 1000);
     try {
-      updateTaskProgress(taskContext, Math.round(elapsed), totalSec, `压测中 ${Math.round(elapsed)}/${totalSec}s · 点 ${progress.done + 1}/${loads.length} · 已发 ${counter}`);
+      updateTaskProgress(
+        taskContext,
+        Math.round(elapsed),
+        totalSec,
+        `压测中 ${Math.round(elapsed)}/${totalSec}s · 点 ${progress.done + 1}/${loads.length} · 已发 ${counter}`,
+      );
     } catch {
       /* 进度更新失败不影响压测 */
     }

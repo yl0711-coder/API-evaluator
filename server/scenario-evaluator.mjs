@@ -87,9 +87,7 @@ export function evaluateScenarioOutput(scenario, record) {
     issues.push(`输出偏短：${text.length}/${scenario.minChars} 字符`);
   }
 
-  const matchedKeywords = (scenario.requiredAny || []).filter((keyword) =>
-    text.toLowerCase().includes(String(keyword).toLowerCase()),
-  );
+  const matchedKeywords = (scenario.requiredAny || []).filter((keyword) => text.toLowerCase().includes(String(keyword).toLowerCase()));
   if (matchedKeywords.length > 0) {
     score += Math.min(15, matchedKeywords.length * 4);
   } else if (scenario.requiredAny?.length) {

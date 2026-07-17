@@ -258,7 +258,9 @@ export function createAutoTestConfig({ state, confirm }) {
           ${profileId ? "单模型报告：" : "汇总报告："}覆盖作业 ${s.jobs ?? 0} 个 · 模型 ${s.targets ?? 0} 个 · 回归告警 ${s.regressions ?? 0} 条 · 高危 ${s.highRisk ?? 0} 条。
         </p>
       </div>`;
-    digestResult.querySelector("[data-atd-view]").addEventListener("click", () => openReportOverlay(reportId, { title: "自动测试巡检报告" }));
+    digestResult
+      .querySelector("[data-atd-view]")
+      .addEventListener("click", () => openReportOverlay(reportId, { title: "自动测试巡检报告" }));
     digestResult.querySelector("[data-atd-download]").addEventListener("click", () => downloadText(`${reportId}.md`, markdown));
   }
 

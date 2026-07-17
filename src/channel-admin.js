@@ -25,8 +25,12 @@ export function createChannelAdmin({ state, els, onChange }) {
     els.channelList.innerHTML = list.length
       ? list.map(channelRow).join("")
       : `<div class="empty-state"><strong>还没有渠道</strong><p>在左侧填 Base URL + Key 添加，或从 new-api 一键导入。</p></div>`;
-    els.channelList.querySelectorAll("[data-del-channel]").forEach((b) => b.addEventListener("click", () => deleteChannel(b.dataset.delChannel)));
-    els.channelList.querySelectorAll("[data-edit-channel]").forEach((b) => b.addEventListener("click", () => editChannel(b.dataset.editChannel)));
+    els.channelList
+      .querySelectorAll("[data-del-channel]")
+      .forEach((b) => b.addEventListener("click", () => deleteChannel(b.dataset.delChannel)));
+    els.channelList
+      .querySelectorAll("[data-edit-channel]")
+      .forEach((b) => b.addEventListener("click", () => editChannel(b.dataset.editChannel)));
   }
 
   function channelRow(channel) {
@@ -121,15 +125,23 @@ export function createChannelAdmin({ state, els, onChange }) {
       groups.get(key).push(target);
     }
     els.modelTargetList.innerHTML = [...groups.entries()]
-      .map(([channelName, targets]) => `
+      .map(
+        ([channelName, targets]) => `
         <div class="model-group">
           <div class="model-group-head"><b>${escapeHtml(channelName)}</b><span>${targets.length} 个模型</span></div>
           <div class="model-group-grid">${targets.map(modelTargetRow).join("")}</div>
-        </div>`)
+        </div>`,
+      )
       .join("");
-    els.modelTargetList.querySelectorAll("[data-del-target]").forEach((b) => b.addEventListener("click", () => deleteModelTarget(b.dataset.delTarget)));
-    els.modelTargetList.querySelectorAll("[data-del-tag]").forEach((b) => b.addEventListener("click", () => removeModelTargetTag(b.dataset.tagTarget, b.dataset.delTag)));
-    els.modelTargetList.querySelectorAll("[data-edit-target]").forEach((b) => b.addEventListener("click", () => editModelTarget(b.dataset.editTarget)));
+    els.modelTargetList
+      .querySelectorAll("[data-del-target]")
+      .forEach((b) => b.addEventListener("click", () => deleteModelTarget(b.dataset.delTarget)));
+    els.modelTargetList
+      .querySelectorAll("[data-del-tag]")
+      .forEach((b) => b.addEventListener("click", () => removeModelTargetTag(b.dataset.tagTarget, b.dataset.delTag)));
+    els.modelTargetList
+      .querySelectorAll("[data-edit-target]")
+      .forEach((b) => b.addEventListener("click", () => editModelTarget(b.dataset.editTarget)));
   }
 
   // 重新编辑模型：回填表单（含标签勾选），保存沿用同一 saveModelTarget（按 id 覆盖）。
@@ -161,13 +173,14 @@ export function createChannelAdmin({ state, els, onChange }) {
       cycleDays: state.settings?.testCycleDays,
       now: Date.now(),
     });
-    const badge = target.channelStatus === "disabled"
-      ? `<span class="chan-pill bad">已禁用</span>`
-      : target.channelStatus === "missing"
-        ? `<span class="chan-pill bad">渠道缺失</span>`
-        : due
-          ? `<span class="chan-pill due">需测</span>`
-          : `<span class="chan-pill good">可测</span>`;
+    const badge =
+      target.channelStatus === "disabled"
+        ? `<span class="chan-pill bad">已禁用</span>`
+        : target.channelStatus === "missing"
+          ? `<span class="chan-pill bad">渠道缺失</span>`
+          : due
+            ? `<span class="chan-pill due">需测</span>`
+            : `<span class="chan-pill good">可测</span>`;
     // 标签为纯本地概念（单一样式），× 本地移除。不再区分明黄/灰、不再与 new-api 联动。
     const tags = Array.isArray(target.tags) ? target.tags : [];
     const allChips = tags.map(
@@ -275,7 +288,9 @@ export function createChannelAdmin({ state, els, onChange }) {
       const r = await api("/api/channels/import", { method: "POST", body: "{}" });
       await Promise.all([loadChannels(), loadModelTargets()]);
       const keyNote = r.mode === "api" ? "（api 模式不含 Key，请逐个补 Key）" : "";
-      toast(`从 new-api 导入完成：新增 ${r.imported} / 更新 ${r.updated} 个渠道，${r.newTargets} 个模型，禁用 ${r.disabled} 个${keyNote}。`);
+      toast(
+        `从 new-api 导入完成：新增 ${r.imported} / 更新 ${r.updated} 个渠道，${r.newTargets} 个模型，禁用 ${r.disabled} 个${keyNote}。`,
+      );
     } catch (error) {
       toast(`导入失败：${error.message}`, true);
     }
@@ -283,4 +298,3 @@ export function createChannelAdmin({ state, els, onChange }) {
 
   return { loadChannels, loadModelTargets, saveChannel, saveModelTarget, importFromNewapi, renderTagOptions, setTagFilter };
 }
-

@@ -11,7 +11,13 @@ test("workflow guide points operators to the next missing step", () => {
   assert.equal(getNextWorkflowStep(channelOnly).step, "models");
 
   // 渠道 + 模型目标齐 -> 去准入
-  const ready = buildWorkflowStatus({ profiles: [], channels: [{ id: "c1" }], modelTargets: [{ channelId: "c1", model: "m" }], requests: [], testRuns: [] });
+  const ready = buildWorkflowStatus({
+    profiles: [],
+    channels: [{ id: "c1" }],
+    modelTargets: [{ channelId: "c1", model: "m" }],
+    requests: [],
+    testRuns: [],
+  });
   assert.equal(getNextWorkflowStep(ready).step, "admission");
 
   // 老的孤儿 profile（渠道+模型二合一）也算就绪 -> 去准入

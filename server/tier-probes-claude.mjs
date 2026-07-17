@@ -45,7 +45,10 @@ function gcd(a, b) {
 // 严格 JSON 抽取：容忍 ```json 围栏与前后空白，但取出的对象必须值正确、键集精确。
 function parseJsonStrict(text) {
   let s = String(text || "").trim();
-  s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  s = s
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
   if (start === -1 || end === -1 || end < start) return null;
@@ -65,9 +68,26 @@ function lastInt(text) {
 // 类目 1 · 约束叠加 JSON —— 考"同时握住多个并发约束"，mini 会丢其中一条。
 // ============================================================================
 const WORDS = [
-  "garden", "planet", "silver", "copper", "matrix", "lantern", "window",
-  "castle", "dragon", "forest", "bridge", "candle", "pepper", "velvet",
-  "saddle", "mirror", "harbor", "ginger", "marble", "cactus",
+  "garden",
+  "planet",
+  "silver",
+  "copper",
+  "matrix",
+  "lantern",
+  "window",
+  "castle",
+  "dragon",
+  "forest",
+  "bridge",
+  "candle",
+  "pepper",
+  "velvet",
+  "saddle",
+  "mirror",
+  "harbor",
+  "ginger",
+  "marble",
+  "cactus",
 ];
 
 export function genConstraintJson(rng, level = 1) {
@@ -93,8 +113,7 @@ export function genConstraintJson(rng, level = 1) {
     extraLines.push(`  "d"："${W}" 中不同字母的种类数；`);
     extraLines.push(`  "n"：${a} 与 ${b} 中较小者对 (c+1) 取模的余数。`);
   }
-  const keyList =
-    level >= 3 ? `"r","g","c","p","q","d","n"` : level >= 2 ? `"r","g","c","p","q"` : `"r","g","c","p"`;
+  const keyList = level >= 3 ? `"r","g","c","p","q","d","n"` : level >= 2 ? `"r","g","c","p","q"` : `"r","g","c","p"`;
   const prompt = [
     "只输出一行 JSON，不要 Markdown、不要解释、不要任何多余字段。字段定义：",
     `  "r"：单词 "${W}" 反转后的字符串；`,
@@ -202,11 +221,7 @@ export function genCodeTrace(rng, level = 1) {
     expected = arr.reduce((s, x) => s + x, 0);
     code = `print(sum(i*i for i in range(${N}) if i%${M}==${R}))`;
   }
-  const prompt = [
-    "下面这段 Python 代码的输出是什么？只输出最终结果（一个整数），不要解释、不要写推导过程：",
-    "",
-    code,
-  ].join("\n");
+  const prompt = ["下面这段 Python 代码的输出是什么？只输出最终结果（一个整数），不要解释、不要写推导过程：", "", code].join("\n");
   return { prompt, expected, meta: { code } };
 }
 

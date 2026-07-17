@@ -59,7 +59,10 @@ function isPrivateV4(ip) {
 // 云元数据）可直接绕过守卫。同理 "fe80" 前缀只覆盖 fe80::/16，漏掉 fe80::/10 的其余部分。
 // 支持 "::" 压缩、末尾内嵌 IPv4、zone id；解析失败返回 null，调用方按不安全处理。
 function v6ToBytes(input) {
-  let s = String(input).split("%")[0].toLowerCase().replace(/^\[|\]$/g, "");
+  let s = String(input)
+    .split("%")[0]
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
 
   // 末尾内嵌 IPv4（::ffff:127.0.0.1 / ::127.0.0.1）→ 先折成两个十六进制段，统一走下面的解析
   const embedded = s.match(/(\d+\.\d+\.\d+\.\d+)$/);
@@ -73,7 +76,13 @@ function v6ToBytes(input) {
 
   const halves = s.split("::");
   if (halves.length > 2) return null;
-  const toHextets = (part) => (part ? part.split(":").filter((x) => x !== "").map((h) => parseInt(h, 16)) : []);
+  const toHextets = (part) =>
+    part
+      ? part
+          .split(":")
+          .filter((x) => x !== "")
+          .map((h) => parseInt(h, 16))
+      : [];
   const left = toHextets(halves[0]);
   const right = halves.length === 2 ? toHextets(halves[1]) : [];
   const gap = 8 - left.length - right.length;

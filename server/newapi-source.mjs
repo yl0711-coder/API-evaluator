@@ -38,7 +38,8 @@ async function fetchViaApi() {
   const headers = { Authorization: token, "New-Api-User": userId };
   const PAGE_SIZE = 100;
   const PAGE_CAP = 50; // 最多 5000 个渠道；超出则只导前 5000 并告警，避免无界翻页
-  const PAGE_TIMEOUT_MS = Number(process.env.EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS) > 0 ? Number(process.env.EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS) : 15_000;
+  const PAGE_TIMEOUT_MS =
+    Number(process.env.EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS) > 0 ? Number(process.env.EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS) : 15_000;
   const rows = [];
   let truncated = false;
   // 出站守卫：这是全站第三个出站点，此前漏在守卫之外（P2-1）。base 是超管在设置页填的 new-api

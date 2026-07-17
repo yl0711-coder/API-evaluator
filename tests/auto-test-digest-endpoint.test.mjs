@@ -90,8 +90,13 @@ test("登录 → 200，产出巡检报告并落报告中心（可查看）", asy
   assert.ok(r.body.summary && typeof r.body.summary.targets === "number");
 
   // 落报告中心：文件列表含该 id
-  const files = await (await fetch(`http://127.0.0.1:${PORT}/api/reports/files`, { headers: { origin: `http://127.0.0.1:${PORT}`, cookie } })).json();
-  assert.ok(files.some((f) => f.id === r.body.reportId), "报告文件列表应含新报告");
+  const files = await (
+    await fetch(`http://127.0.0.1:${PORT}/api/reports/files`, { headers: { origin: `http://127.0.0.1:${PORT}`, cookie } })
+  ).json();
+  assert.ok(
+    files.some((f) => f.id === r.body.reportId),
+    "报告文件列表应含新报告",
+  );
 
   // 可查看：/view 返回 HTML，含标题与调度健康小节
   const view = await getHtml(`/api/reports/${encodeURIComponent(r.body.reportId)}/view`, cookie);

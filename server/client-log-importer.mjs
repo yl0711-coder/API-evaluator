@@ -21,9 +21,7 @@ function allowedImportRoots() {
 function assertWithinAllowedRoots(target) {
   const roots = allowedImportRoots();
   if (!roots.length) {
-    throw new Error(
-      "未配置允许导入的日志目录。请由管理员在 EVALUATOR_LOG_IMPORT_ROOTS 设置允许的根目录（多个用逗号分隔）后再试。",
-    );
+    throw new Error("未配置允许导入的日志目录。请由管理员在 EVALUATOR_LOG_IMPORT_ROOTS 设置允许的根目录（多个用逗号分隔）后再试。");
   }
   const ok = roots.some((root) => target === root || target.startsWith(root + sep));
   if (!ok) {
@@ -44,17 +42,10 @@ export async function readClientLogDirectory(directoryPath, options = {}) {
   }
 
   const maxFiles = clampInteger(options.maxFiles, DEFAULT_MAX_FILES, 1, HARD_MAX_FILES);
-  const maxBytesPerFile = clampInteger(
-    options.maxBytesPerFile,
-    DEFAULT_MAX_BYTES_PER_FILE,
-    1024,
-    DEFAULT_MAX_BYTES_PER_FILE,
-  );
+  const maxBytesPerFile = clampInteger(options.maxBytesPerFile, DEFAULT_MAX_BYTES_PER_FILE, 1024, DEFAULT_MAX_BYTES_PER_FILE);
   const recursive = Boolean(options.recursive);
   const candidates = await collectLogFiles(root, { recursive, maxFiles: HARD_MAX_FILES });
-  const selected = candidates
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, maxFiles);
+  const selected = candidates.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, maxFiles);
 
   const parts = [];
   const files = [];
@@ -100,7 +91,7 @@ async function collectLogFiles(root, options, depth = 0) {
     const fullPath = join(root, entry.name);
     if (entry.isDirectory()) {
       if (options.recursive && depth < 2) {
-        files.push(...await collectLogFiles(fullPath, options, depth + 1));
+        files.push(...(await collectLogFiles(fullPath, options, depth + 1)));
       }
       continue;
     }

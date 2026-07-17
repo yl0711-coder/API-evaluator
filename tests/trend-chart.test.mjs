@@ -58,7 +58,13 @@ test("② count 模式补时间刻度：x 轴出现 MM-DD HH:MM 文本", () => {
 test("x 轴时间刻度不挤成一团：同分钟去重、同日只显示一次日期；图例不贴顶被裁", () => {
   // 30 轮跨约 2 分钟：改前会渲染 6 个几乎相同的「MM-DD HH:00」挤在一起。
   const b0 = Date.parse("2026-07-09T10:00:00Z");
-  const rounds = Array.from({ length: 30 }, (_, i) => ({ at: new Date(b0 + i * 4000).toISOString(), ms: 2000 + (i % 5) * 300, ok: 1, err: "", runRate: 1 }));
+  const rounds = Array.from({ length: 30 }, (_, i) => ({
+    at: new Date(b0 + i * 4000).toISOString(),
+    ms: 2000 + (i % 5) * 300,
+    ok: 1,
+    err: "",
+    runRate: 1,
+  }));
   const svg = renderTrendChart(rounds, "count");
   const labels = [...svg.matchAll(/<text x="[\d.]+" y="208"[^>]*>([^<]+)<\/text>/g)].map((m) => m[1]);
   // 去重后应明显变少（不再是 6 个），且相邻文本不重复。
@@ -95,7 +101,13 @@ test("时间范围：按时间模式下 windowHours 只保留最近 N 小时（�
     { at: atH(25), ms: 3000, ok: 1, err: "", runRate: 1 },
     { at: atH(29), ms: 4000, ok: 1, err: "", runRate: 1 },
   ];
-  const verts = (svg) => (svg.match(/stroke="#5b9bd5"/) ? svg.match(/<polyline points="([^"]+)" fill="none" stroke="#5b9bd5"/)[1].trim().split(/\s+/).length : 0);
+  const verts = (svg) =>
+    svg.match(/stroke="#5b9bd5"/)
+      ? svg
+          .match(/<polyline points="([^"]+)" fill="none" stroke="#5b9bd5"/)[1]
+          .trim()
+          .split(/\s+/).length
+      : 0;
   // 全部：4 个小时桶。
   assert.equal(verts(renderTrendChart(rounds, "hour", { windowHours: 0 })), 4, "全部 → 4 桶");
   // 最近 6 小时（锚=29h → 保留 ≥23h 的：25h、29h 两轮）。

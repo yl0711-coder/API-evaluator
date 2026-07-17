@@ -12,7 +12,10 @@ import { saveSecret, readSecret } from "./secret-store.mjs";
 export const NEWAPI_TOKEN_REF = "newapi:import-token";
 
 // 去掉可能误带入的行内注释（空白后的 #...）与首尾空白，避免把注释/全角符号塞进 HTTP 头。
-const cleanValue = (v) => String(v || "").replace(/\s+#.*$/, "").trim();
+const cleanValue = (v) =>
+  String(v || "")
+    .replace(/\s+#.*$/, "")
+    .trim();
 
 // 令牌的内存缓存（启动解密一次；readConfig 同步读取）。
 let cachedToken = "";
@@ -51,4 +54,3 @@ export function readConfig() {
     userId: cleanValue(s.newapiUserId || envCompat("NEWAPI_USER_ID")) || "1",
   };
 }
-

@@ -127,9 +127,17 @@ test("formatCompareReportMarkdown 含各对比小节", async () => {
     assert.ok(md.includes(heading), `缺少小节：${heading}`);
   }
   // 小节按新顺序排列（延迟在档位之前、准入在档位之前）。
-  const order = ["## 1. 可用性与通过率", "## 2. 延迟", "## 3. 准入分项与身份纯度", "## 4. 按难度档位拆解", "## 5. 逐场景诊断", "## 6. 总结"];
+  const order = [
+    "## 1. 可用性与通过率",
+    "## 2. 延迟",
+    "## 3. 准入分项与身份纯度",
+    "## 4. 按难度档位拆解",
+    "## 5. 逐场景诊断",
+    "## 6. 总结",
+  ];
   const positions = order.map((h) => md.indexOf(h));
-  for (let i = 1; i < positions.length; i++) assert.ok(positions[i] > positions[i - 1], `小节顺序错误：${order[i]} 应在 ${order[i - 1]} 之后`);
+  for (let i = 1; i < positions.length; i++)
+    assert.ok(positions[i] > positions[i - 1], `小节顺序错误：${order[i]} 应在 ${order[i - 1]} 之后`);
   // 已删除/精简：不再出现「计费与 Token 诚实度」小节、口语「挂羊头」、token 虚报话题。
   assert.ok(!md.includes("计费与 Token 诚实度"), "「计费与 Token 诚实度」小节应已删除");
   assert.ok(!md.includes("挂羊头"), "不应再出现口语「挂羊头」");
@@ -268,14 +276,24 @@ test("balanceCommonReports：两方只留共有报告——同名场景取交集
   assert.deepEqual(names(balB), ["数学题", "逻辑谜题"], "B 只留共有场景");
 
   // 无任何共有 → 两方都空（端点据此回 no_common_reports）。
-  const [eA, eB] = balanceCommonReports([{ name: "A-adm", md: admMd }, { name: "A-s3", md: scenMd("编程题") }], [{ name: "B-run", md: runMd }, { name: "B-s3", md: scenMd("翻译题") }]);
+  const [eA, eB] = balanceCommonReports(
+    [
+      { name: "A-adm", md: admMd },
+      { name: "A-s3", md: scenMd("编程题") },
+    ],
+    [
+      { name: "B-run", md: runMd },
+      { name: "B-s3", md: scenMd("翻译题") },
+    ],
+  );
   assert.equal(eA.length, 0);
   assert.equal(eB.length, 0);
 });
 
 test("场景通过率只用共有场景：单方独有的场景不计入通过率与其判定", () => {
   // 每份场景报告一个场景（一行）；重复 3 次 → 每场景 total=3、succ=round(rate*3)。
-  const scenMd = (name, pctVal) => `# 场景测试报告\n\n## 专业分析摘要\n\n每个场景重复次数：3\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n| ${name} | ${pctVal}% | 80 |\n`;
+  const scenMd = (name, pctVal) =>
+    `# 场景测试报告\n\n## 专业分析摘要\n\n每个场景重复次数：3\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n| ${name} | ${pctVal}% | 80 |\n`;
   // A：逻辑 3/3、数学 3/3（共有）、编程 0/3（独有，全败）→ 全量 6/9；共有 6/6=100%。
   const A = aggregateSubject({
     label: "A",
@@ -328,7 +346,9 @@ test("commonScenarioNames：取两方共有场景（多场景/份也精确，口
     { name: "b-run", md: runMd },
     { name: "b-s123", md: scenMd("逻辑谜题", "数学题", "翻译题") },
   ];
-  const common = commonScenarioNames(filesA, filesB).map((s) => s.name).sort();
+  const common = commonScenarioNames(filesA, filesB)
+    .map((s) => s.name)
+    .sort();
   assert.deepEqual(common, ["数学题", "逻辑谜题"], "共有 = 两方场景行交集（编程题/翻译题各为单方独有）");
   // 与报告口径一致：buildComparison 的 matched 名集应与 commonScenarioNames 完全相同。
   const cmp = buildComparison(aggregateSubject({ files: filesA }), aggregateSubject({ files: filesB }));

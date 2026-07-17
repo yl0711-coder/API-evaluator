@@ -118,9 +118,7 @@ export function compareTokenizerSignatures(a = {}, b = {}) {
     sharedPairs: shared.length,
     maxRelDivergence: round(maxRel),
     divergent,
-    verdict: inconsistent
-      ? "tokenizer 切分明显不一致（疑似不同底层模型/tokenizer，需上游解释）"
-      : "tokenizer 切分一致",
+    verdict: inconsistent ? "tokenizer 切分明显不一致（疑似不同底层模型/tokenizer，需上游解释）" : "tokenizer 切分一致",
   };
 }
 
@@ -217,9 +215,7 @@ export function assessCrossChannel({ current, peers } = {}) {
     tokenizerComparedPeers,
     tokenizerInconsistentPeers,
     divergences,
-    verdict: high
-      ? "本渠道与同模型其它渠道存在显著差异，疑似挂羊头卖狗肉（需上游解释）。"
-      : "与同模型其它渠道基本一致，未见明显异常。",
+    verdict: high ? "本渠道与同模型其它渠道存在显著差异，疑似挂羊头卖狗肉（需上游解释）。" : "与同模型其它渠道基本一致，未见明显异常。",
   };
 }
 
@@ -260,9 +256,7 @@ export function assessTokenHonesty({ current, peers } = {}) {
     };
   }
   const med = consensusTokenizerSignature(valid);
-  const probes = FIXED_TOKENIZER_PROBE_IDS.filter(
-    (k) => Number(cur[k]) > 0 && Number(med[k]) > 0,
-  );
+  const probes = FIXED_TOKENIZER_PROBE_IDS.filter((k) => Number(cur[k]) > 0 && Number(med[k]) > 0);
   const ratios = [];
   for (let i = 0; i < probes.length; i++) {
     for (let j = i + 1; j < probes.length; j++) {

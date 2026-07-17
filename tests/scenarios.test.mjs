@@ -6,8 +6,14 @@ import { __setSettingsForTest, __resetSettingsCacheForTest } from "../server/set
 test("scenario registry excludes safety + livebench by default (settings off)", () => {
   __resetSettingsCacheForTest();
   const list = getTestScenarios();
-  assert.equal(list.some((scenario) => scenario.category === "safety"), false);
-  assert.equal(list.some((scenario) => String(scenario.id).startsWith("livebench")), false);
+  assert.equal(
+    list.some((scenario) => scenario.category === "safety"),
+    false,
+  );
+  assert.equal(
+    list.some((scenario) => String(scenario.id).startsWith("livebench")),
+    false,
+  );
   assert.ok(list.some((scenario) => scenario.category === "coding"));
 });
 
@@ -25,7 +31,10 @@ test("scenario registry includes safety + livebench when enabled in settings", (
 
 test("scenario registry excludes HLE by default and includes it when enabled", () => {
   __resetSettingsCacheForTest();
-  assert.equal(getTestScenarios().some((scenario) => scenario.category === "hle"), false);
+  assert.equal(
+    getTestScenarios().some((scenario) => scenario.category === "hle"),
+    false,
+  );
 
   __setSettingsForTest({ enableHle: true });
   try {
@@ -46,7 +55,10 @@ test("scenario registry excludes HLE by default and includes it when enabled", (
 
 test("scenario registry excludes HardcoreLogic by default and includes it when enabled", () => {
   __resetSettingsCacheForTest();
-  assert.equal(getTestScenarios().some((scenario) => scenario.category === "hardcore-logic"), false);
+  assert.equal(
+    getTestScenarios().some((scenario) => scenario.category === "hardcore-logic"),
+    false,
+  );
 
   __setSettingsForTest({ enableHardcoreLogic: true });
   try {

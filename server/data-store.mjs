@@ -22,13 +22,7 @@ import {
   LOCAL_VAULT_FILE,
 } from "./paths.mjs";
 import { readTextTail, safeJson } from "./utils.mjs";
-import {
-  countRequests,
-  importRequestsFromJsonl,
-  isSqliteAvailable,
-  queryRecentRequests,
-  queryRecentTestRuns,
-} from "./db.mjs";
+import { countRequests, importRequestsFromJsonl, isSqliteAvailable, queryRecentRequests, queryRecentTestRuns } from "./db.mjs";
 
 export async function ensureDataDir() {
   await mkdir(DATA_DIR, { recursive: true });
@@ -124,11 +118,7 @@ async function ensureFile(file, content) {
 }
 
 async function migrateLegacyDataDir() {
-  if (
-    (envCompat("DATA_DIR") && !envCompat("LEGACY_DATA_DIR")) ||
-    !existsSync(LEGACY_DATA_DIR) ||
-    LEGACY_DATA_DIR === DATA_DIR
-  ) {
+  if ((envCompat("DATA_DIR") && !envCompat("LEGACY_DATA_DIR")) || !existsSync(LEGACY_DATA_DIR) || LEGACY_DATA_DIR === DATA_DIR) {
     return;
   }
   await copyIfMissing(join(LEGACY_DATA_DIR, "profiles.json"), PROFILES_FILE);

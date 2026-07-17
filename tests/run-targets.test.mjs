@@ -18,16 +18,41 @@ const { loadRunnableProfiles } = await import("../server/run-targets.mjs");
 test("loadRunnableProfiles：模型目标解析 + 跳过已迁移老 profile + 保留孤儿老 profile", async () => {
   if (!sqliteOk) return;
   const channel = {
-    id: "chA", name: "渠道A", provider: "P", baseUrl: "https://a.test",
-    apiKeyRef: "profile:chA:api-key", hasKey: true, protocol: "openai_chat",
-    maxTokens: 512, timeoutMs: 60000, status: "enabled",
+    id: "chA",
+    name: "渠道A",
+    provider: "P",
+    baseUrl: "https://a.test",
+    apiKeyRef: "profile:chA:api-key",
+    hasKey: true,
+    protocol: "openai_chat",
+    maxTokens: 512,
+    timeoutMs: 60000,
+    status: "enabled",
   };
   await channelStore.saveChannels([channel]);
   await targetStore.saveModelTargets([{ id: "t1", channelId: "chA", model: "gpt-4o" }]);
   // 老 profile：一个 id 与渠道相同（模拟已迁移，应被跳过），一个孤儿（应保留）
   await profileStore.saveProfiles([
-    { id: "chA", name: "老A", role: "target", baseUrl: "https://a.test", protocol: "openai_chat", defaultModel: "gpt-4o", apiKeyRef: "profile:chA:api-key", hasKey: true },
-    { id: "orphan", name: "孤儿渠道", role: "target", baseUrl: "https://o.test", protocol: "openai_compatible", defaultModel: "m-x", apiKeyRef: "profile:orphan:api-key", hasKey: true },
+    {
+      id: "chA",
+      name: "老A",
+      role: "target",
+      baseUrl: "https://a.test",
+      protocol: "openai_chat",
+      defaultModel: "gpt-4o",
+      apiKeyRef: "profile:chA:api-key",
+      hasKey: true,
+    },
+    {
+      id: "orphan",
+      name: "孤儿渠道",
+      role: "target",
+      baseUrl: "https://o.test",
+      protocol: "openai_compatible",
+      defaultModel: "m-x",
+      apiKeyRef: "profile:orphan:api-key",
+      hasKey: true,
+    },
   ]);
 
   const list = await loadRunnableProfiles();
@@ -46,5 +71,8 @@ test("loadRunnableProfiles：渠道缺失的模型目标被过滤", async () => 
   await targetStore.saveModelTargets([{ id: "t2", channelId: "ghost", model: "m" }]);
   await profileStore.saveProfiles([]);
   const list = await loadRunnableProfiles();
-  assert.equal(list.find((x) => x.id === "t2"), undefined); // 渠道不存在 -> 不可运行
+  assert.equal(
+    list.find((x) => x.id === "t2"),
+    undefined,
+  ); // 渠道不存在 -> 不可运行
 });

@@ -74,7 +74,11 @@ before(async () => {
     cookieUser = await login("tester", "testerpw");
     // 建一个渠道 + 模型目标，拿到可运行 targetId。
     await post("/api/channels", cookieAdmin, {
-      name: "测试渠道", baseUrl: "https://api.example.com", protocol: "openai_chat", models: "gpt-4o", apiKey: "sk-test1234567890",
+      name: "测试渠道",
+      baseUrl: "https://api.example.com",
+      protocol: "openai_chat",
+      models: "gpt-4o",
+      apiKey: "sk-test1234567890",
     });
     const channels = await get("/api/channels", cookieAdmin);
     const channelId = channels.body?.[0]?.id;
@@ -108,16 +112,16 @@ test("超管 GET 空列表 → { ok, jobs: [] }", async () => {
 test("超管 POST 缺 targetId → 400；非法 targetId → 400", async () => {
   assert.ok(ready, "server 未就绪");
   assert.equal((await post("/api/auto-test-jobs", cookieAdmin, { kind: "quick", periodHours: 6 })).status, 400);
-  assert.equal(
-    (await post("/api/auto-test-jobs", cookieAdmin, { targetId: "mt_nope", kind: "quick", periodHours: 6 })).status,
-    400,
-  );
+  assert.equal((await post("/api/auto-test-jobs", cookieAdmin, { targetId: "mt_nope", kind: "quick", periodHours: 6 })).status, 400);
 });
 
 test("超管 CRUD 快乐路径：建 → GET 反映（含 targetName/targetRunnable）→ 删", async () => {
   assert.ok(ready, "server 未就绪");
   const created = await post("/api/auto-test-jobs", cookieAdmin, {
-    name: "每日快检", targetId, kind: "quick", periodHours: 6,
+    name: "每日快检",
+    targetId,
+    kind: "quick",
+    periodHours: 6,
   });
   assert.equal(created.status, 200);
   assert.equal(created.body.job.enabled, true);
@@ -137,7 +141,11 @@ test("超管 CRUD 快乐路径：建 → GET 反映（含 targetName/targetRunna
 
   assert.equal((await del(`/api/auto-test-jobs/${jobId}`, cookieAdmin)).status, 200);
   const after = await get("/api/auto-test-jobs", cookieAdmin);
-  assert.equal(after.body.jobs.some((j) => j.id === jobId), false, "删除后不在列表");
+  assert.equal(
+    after.body.jobs.some((j) => j.id === jobId),
+    false,
+    "删除后不在列表",
+  );
 });
 
 test("普通管理员(role=10) 可完整使用作业端点：GET / 建 / 删", async () => {
@@ -158,8 +166,13 @@ test("熔断复活：由停用转启用时清零 consecutiveFailures 与 autoDis
   assert.ok(ready, "server 未就绪");
   // 造一个「已自动停用」的作业：create 无 existing，故 body 里的熔断态被采纳（模拟调度器停用后的盘上状态）。
   const created = await post("/api/auto-test-jobs", cookieAdmin, {
-    name: "熔断作业", targetId, kind: "quick", periodHours: 6,
-    enabled: false, consecutiveFailures: 3, autoDisabledAt: "2026-07-03T00:00:00.000Z",
+    name: "熔断作业",
+    targetId,
+    kind: "quick",
+    periodHours: 6,
+    enabled: false,
+    consecutiveFailures: 3,
+    autoDisabledAt: "2026-07-03T00:00:00.000Z",
   });
   assert.equal(created.status, 200);
   const jobId = created.body.job.id;

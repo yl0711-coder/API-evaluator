@@ -105,12 +105,7 @@ test("builds stream requests for OpenAI-compatible and Claude Messages protocols
 });
 
 test("validates OpenAI-compatible stream structure", () => {
-  const raw = [
-    'data: {"choices":[{"delta":{"content":"hello"}}]}',
-    "",
-    "data: [DONE]",
-    "",
-  ].join("\n");
+  const raw = ['data: {"choices":[{"delta":{"content":"hello"}}]}', "", "data: [DONE]", ""].join("\n");
   const summary = summarizeStreamStructure("openai_compatible", raw);
   assert.equal(summary.passed, true);
   assert.equal(summary.flags.delta, true);
@@ -186,7 +181,16 @@ test("extracts output text and usage from common response formats", () => {
 test("extractOutputText：OpenAI 形状的数组 content → 拼出真文本，绝不能是 [object Object]", () => {
   assert.equal(
     extractOutputText("openai_compatible", {
-      choices: [{ message: { content: [{ type: "text", text: "第一段" }, { type: "text", text: "第二段" }] } }],
+      choices: [
+        {
+          message: {
+            content: [
+              { type: "text", text: "第一段" },
+              { type: "text", text: "第二段" },
+            ],
+          },
+        },
+      ],
     }),
     "第一段\n第二段",
   );
@@ -195,7 +199,16 @@ test("extractOutputText：OpenAI 形状的数组 content → 拼出真文本，�
 test("extractOutputText：数组 content 里的思考块不计入可见输出（与 Claude 口径一致）", () => {
   assert.equal(
     extractOutputText("openai_compatible", {
-      choices: [{ message: { content: [{ type: "thinking", text: "我先想想" }, { type: "text", text: "答案" }] } }],
+      choices: [
+        {
+          message: {
+            content: [
+              { type: "thinking", text: "我先想想" },
+              { type: "text", text: "答案" },
+            ],
+          },
+        },
+      ],
     }),
     "答案",
   );
@@ -264,7 +277,7 @@ test("extracts tool call structures from common response formats", () => {
               {
                 function: {
                   name: "get_weather",
-                  arguments: "{\"city\":\"北京\"}",
+                  arguments: '{"city":"北京"}',
                 },
               },
             ],
@@ -274,7 +287,7 @@ test("extracts tool call structures from common response formats", () => {
     }),
     {
       name: "get_weather",
-      arguments: "{\"city\":\"北京\"}",
+      arguments: '{"city":"北京"}',
     },
   );
   assert.deepEqual(

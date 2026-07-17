@@ -1,11 +1,13 @@
 import { formatNumber } from "./client-utils.js";
 
 export function recommendationClass(level) {
-  return {
-    pass: "ok",
-    watch: "warn",
-    fail: "fail",
-  }[level] || "muted";
+  return (
+    {
+      pass: "ok",
+      watch: "warn",
+      fail: "fail",
+    }[level] || "muted"
+  );
 }
 
 // 预测 vs 实际消耗（跑前预估 token/请求 vs 跑后真实 token/成本，含裁判审计）。
@@ -37,13 +39,17 @@ export function formatConsumptionLines(result) {
 }
 
 export function formatTaskType(type) {
-  return {
-    stability: "稳定性测试",
-    "batch-admission": "批量准入评测",
-    "batch-stability": "批量稳定性测试",
-    scenario: "场景测试",
-    "load-test": "压力测试",
-  }[type] || type || "-";
+  return (
+    {
+      stability: "稳定性测试",
+      "batch-admission": "批量准入评测",
+      "batch-stability": "批量稳定性测试",
+      scenario: "场景测试",
+      "load-test": "压力测试",
+    }[type] ||
+    type ||
+    "-"
+  );
 }
 
 export function formatBatchAdmissionResult(result) {
@@ -64,25 +70,31 @@ export function formatBatchAdmissionResult(result) {
 }
 
 export function formatTaskStatus(status) {
-  return {
-    queued: "排队中",
-    running: "运行中",
-    completed: "已完成",
-    failed: "失败",
-    cancelled: "已取消",
-    interrupted: "已中断",
-  }[status] || status || "-";
+  return (
+    {
+      queued: "排队中",
+      running: "运行中",
+      completed: "已完成",
+      failed: "失败",
+      cancelled: "已取消",
+      interrupted: "已中断",
+    }[status] ||
+    status ||
+    "-"
+  );
 }
 
 export function taskStatusClass(status) {
-  return {
-    queued: "muted",
-    running: "warn",
-    completed: "ok",
-    failed: "fail",
-    cancelled: "warn",
-    interrupted: "fail",
-  }[status] || "muted";
+  return (
+    {
+      queued: "muted",
+      running: "warn",
+      completed: "ok",
+      failed: "fail",
+      cancelled: "warn",
+      interrupted: "fail",
+    }[status] || "muted"
+  );
 }
 
 export function formatResult(result) {
@@ -156,10 +168,11 @@ export function formatScenarioResult(result) {
 }
 
 export function formatClientLogAnalysisResult(result) {
-  const riskText = (result.riskFlags || [])
-    .slice(0, 5)
-    .map((item) => `- ${item.title}：${item.detail}`)
-    .join("\n") || "- 未发现明显风险。";
+  const riskText =
+    (result.riskFlags || [])
+      .slice(0, 5)
+      .map((item) => `- ${item.title}：${item.detail}`)
+      .join("\n") || "- 未发现明显风险。";
   const lines = [
     `分析 ID：${result.runId || "-"}`,
     `来源：${result.sourceName || "-"}`,
@@ -192,10 +205,16 @@ export function formatSupplierEvidenceResult(result) {
     `JSON 原始结果：${result.rawJsonPath || "-"}`,
     "",
     "上游可检索 ID：",
-    (result.upstreamIds || []).slice(0, 10).map((item) => `- ${item}`).join("\n") || "- 未识别到上游 request_id / trace_id",
+    (result.upstreamIds || [])
+      .slice(0, 10)
+      .map((item) => `- ${item}`)
+      .join("\n") || "- 未识别到上游 request_id / trace_id",
     "",
     "建议提交给上游确认：",
-    (result.askList || []).slice(0, 8).map((item) => `- ${item}`).join("\n") || "- 请按时间窗口、模型和状态码排查。",
+    (result.askList || [])
+      .slice(0, 8)
+      .map((item) => `- ${item}`)
+      .join("\n") || "- 请按时间窗口、模型和状态码排查。",
   ];
   return lines.join("\n");
 }

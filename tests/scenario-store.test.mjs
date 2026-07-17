@@ -34,11 +34,19 @@ test("getTestScenarios：默认仅常开 bank；开关开启后纳入受控 bank
   __resetSettingsCacheForTest(); // 缓存空 → 全部默认关
   const baseline = getTestScenarios().length;
   assert.ok(baseline > 0);
-  assert.equal(getTestScenarios().some((s) => s.category === "safety"), false, "默认不含 safety");
+  assert.equal(
+    getTestScenarios().some((s) => s.category === "safety"),
+    false,
+    "默认不含 safety",
+  );
 
   __setSettingsForTest({ enableSafety: true });
   const withSafety = getTestScenarios();
-  assert.equal(withSafety.some((s) => s.category === "safety"), true, "开启后含 safety");
+  assert.equal(
+    withSafety.some((s) => s.category === "safety"),
+    true,
+    "开启后含 safety",
+  );
   assert.ok(withSafety.length > baseline, "数量增加");
 });
 
@@ -49,7 +57,10 @@ test("getAllScenariosForAdmin：跨 bank 全量、含 prompt/bankKey/active", ()
   assert.ok(sample.prompt, "含 prompt（不脱敏）");
   assert.equal(typeof sample.active, "boolean");
   // safety 默认未启用 → active=false 但仍在全量里
-  assert.equal(all.some((s) => s.bankKey === "safety" && s.active === false), true);
+  assert.equal(
+    all.some((s) => s.bankKey === "safety" && s.active === false),
+    true,
+  );
 });
 
 test("显式 tag 覆盖 resolveScenarioTag", async () => {
@@ -63,10 +74,16 @@ test("显式 tag 覆盖 resolveScenarioTag", async () => {
 });
 
 test("upsert：新 id 进 custom bank；已有 id 原地替换", async () => {
-  const r1 = await upsertScenario({ id: "store-test-new", name: "新", category: "basic", difficulty: "small", prompt: "hello" }, { persist: false });
+  const r1 = await upsertScenario(
+    { id: "store-test-new", name: "新", category: "basic", difficulty: "small", prompt: "hello" },
+    { persist: false },
+  );
   assert.equal(r1.ok, true);
   assert.equal(r1.bankKey, "custom");
-  assert.equal(getAllScenariosForAdmin().some((s) => s.id === "store-test-new" && s.bankKey === "custom"), true);
+  assert.equal(
+    getAllScenariosForAdmin().some((s) => s.id === "store-test-new" && s.bankKey === "custom"),
+    true,
+  );
 
   const existing = getAllScenariosForAdmin().find((s) => s.bankKey === "basic");
   const r2 = await upsertScenario({ ...existing, prompt: "EDITED" }, { persist: false });
@@ -84,7 +101,10 @@ test("delete：移除场景；不存在 → found:false", async () => {
   await upsertScenario({ id: "store-test-del", category: "basic", difficulty: "small", prompt: "p" }, { persist: false });
   const r = await deleteScenario("store-test-del", { persist: false });
   assert.equal(r.ok, true);
-  assert.equal(getAllScenariosForAdmin().some((s) => s.id === "store-test-del"), false);
+  assert.equal(
+    getAllScenariosForAdmin().some((s) => s.id === "store-test-del"),
+    false,
+  );
   assert.equal((await deleteScenario("nope-id", { persist: false })).found, false);
 });
 
@@ -124,7 +144,11 @@ test("upsert persist=true：写进覆盖层 JSON、重载后合并生效、未�
     __setScenarioOverridesFileForTest(file);
     await loadScenarioOverrides();
     const all = getAllScenariosForAdmin();
-    assert.equal(all.some((s) => s.id === "persist-1" && s.bankKey === "custom"), true, "重载后新增题仍在");
+    assert.equal(
+      all.some((s) => s.id === "persist-1" && s.bankKey === "custom"),
+      true,
+      "重载后新增题仍在",
+    );
     assert.equal(all.find((s) => s.id === existing.id).prompt, "EDITED-OVR", "重载后内置题改动仍在");
     // 未被改的内置题不受影响（镜像升级新增题仍能显示的保证）
     assert.ok(all.filter((s) => s.bankKey === "basic").length >= 2, "其它内置 basic 题照常在");
@@ -146,7 +170,11 @@ test("delete persist=true：内置题落墓碑、重载后仍不在；纯自定�
     __resetStoreForTest();
     __setScenarioOverridesFileForTest(file);
     await loadScenarioOverrides();
-    assert.equal(getAllScenariosForAdmin().some((s) => s.id === builtin.id), false, "重载后内置题仍被删");
+    assert.equal(
+      getAllScenariosForAdmin().some((s) => s.id === builtin.id),
+      false,
+      "重载后内置题仍被删",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
@@ -176,7 +204,11 @@ test("renameScenarioGroup：级联把「解析==旧名」的题（含派生）�
   assert.equal(r.ok, true);
   assert.equal(r.changed, before, "改动数=原「基础」组题数");
   const admin = getAllScenariosForAdmin();
-  assert.equal(admin.some((s) => s.resolvedGroup === "基础"), false, "不再有解析为「基础」的题");
+  assert.equal(
+    admin.some((s) => s.resolvedGroup === "基础"),
+    false,
+    "不再有解析为「基础」的题",
+  );
   assert.ok(admin.filter((s) => s.resolvedGroup === "入门").length >= before);
   // 派生题被 materialize 为显式 group
   assert.equal(admin.find((s) => s.bankKey === "basic").group, "入门");
@@ -218,15 +250,25 @@ test("renameScenarioGroup：改成已存在的组 → 两组合并（记录既�
   assert.equal(r.changed, baseCount, "只改动原「基础」组，安全组本已==目标不重复计");
 
   const admin1 = getAllScenariosForAdmin();
-  assert.equal(admin1.some((s) => s.resolvedGroup === "基础"), false, "「基础」组消失");
+  assert.equal(
+    admin1.some((s) => s.resolvedGroup === "基础"),
+    false,
+    "「基础」组消失",
+  );
   assert.equal(admin1.filter((s) => s.resolvedGroup === "安全红线").length, baseCount + safetyCount, "两组并入");
 });
 
 test("renameScenarioGroup：改成同名 → 分组解析不变（幂等效果）", async () => {
-  const before = getAllScenariosForAdmin().filter((s) => s.resolvedGroup === "基础").map((s) => s.id).sort();
+  const before = getAllScenariosForAdmin()
+    .filter((s) => s.resolvedGroup === "基础")
+    .map((s) => s.id)
+    .sort();
   const r = await renameScenarioGroup("基础", "基础", { persist: false });
   assert.equal(r.ok, true);
-  const after = getAllScenariosForAdmin().filter((s) => s.resolvedGroup === "基础").map((s) => s.id).sort();
+  const after = getAllScenariosForAdmin()
+    .filter((s) => s.resolvedGroup === "基础")
+    .map((s) => s.id)
+    .sort();
   assert.deepEqual(after, before, "同名重命名后仍是同一批题解析为「基础」，无题丢失/迁移");
 });
 
@@ -236,7 +278,10 @@ test("clearScenarioGroup：空名 → ok:false；清默认派生组名 → chang
   const r = await clearScenarioGroup("基础", { persist: false });
   assert.equal(r.ok, true);
   assert.equal(r.changed, 0);
-  assert.ok(getAllScenariosForAdmin().some((s) => s.resolvedGroup === "基础"), "默认组不受影响");
+  assert.ok(
+    getAllScenariosForAdmin().some((s) => s.resolvedGroup === "基础"),
+    "默认组不受影响",
+  );
 });
 
 // ===================== upsert 校验：prompt 形态 =====================
@@ -262,7 +307,11 @@ test("upsert persist=true：写盘失败 → ok:true 但 persisted:false + persi
     assert.equal(r.persisted, false, "写盘失败");
     assert.ok(r.persistError, "带 persistError 供上层提示");
     // 内存改动不因写盘失败而回滚——运行态立即可见。
-    assert.equal(getAllScenariosForAdmin().some((s) => s.id === "persist-fail-1"), true, "内存里仍加入了该场景");
+    assert.equal(
+      getAllScenariosForAdmin().some((s) => s.id === "persist-fail-1"),
+      true,
+      "内存里仍加入了该场景",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
@@ -279,7 +328,10 @@ test("loadScenarioOverrides：非法 JSON → 不抛，回落空覆盖层，内�
     await assert.doesNotReject(loadScenarioOverrides(), "坏文件不应让启动抛错");
     const all = getAllScenariosForAdmin();
     assert.ok(all.length >= 60, "内置题库完好（未被坏覆盖层影响）");
-    assert.ok(all.some((s) => s.bankKey === "basic"), "已知内置题仍在");
+    assert.ok(
+      all.some((s) => s.bankKey === "basic"),
+      "已知内置题仍在",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
@@ -298,8 +350,15 @@ test("loadScenarioOverrides：脏结构被 normalize（丢无效 upsert、去空
     __setScenarioOverridesFileForTest(file);
     await loadScenarioOverrides();
     const all = getAllScenariosForAdmin();
-    assert.ok(all.some((s) => s.id === "good"), "合法 upsert 被保留（进 custom）");
-    assert.equal(all.some((s) => s.id === "bad"), false, "非对象 upsert 被丢弃");
+    assert.ok(
+      all.some((s) => s.id === "good"),
+      "合法 upsert 被保留（进 custom）",
+    );
+    assert.equal(
+      all.some((s) => s.id === "bad"),
+      false,
+      "非对象 upsert 被丢弃",
+    );
     assert.ok(all.length >= 60, "无效 deletes 未误删内置题");
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -311,7 +370,9 @@ test("renameScenarioGroup persist=true：改动进覆盖层，重启（重载）
   const file = join(dir, "scenario-overrides.json");
   try {
     __setScenarioOverridesFileForTest(file);
-    const renamedIds = getAllScenariosForAdmin().filter((s) => s.resolvedGroup === "基础").map((s) => s.id);
+    const renamedIds = getAllScenariosForAdmin()
+      .filter((s) => s.resolvedGroup === "基础")
+      .map((s) => s.id);
     const before = renamedIds.length;
     const r = await renameScenarioGroup("基础", "入门", { persist: true });
     assert.equal(r.persisted, true);
@@ -328,7 +389,11 @@ test("renameScenarioGroup persist=true：改动进覆盖层，重启（重载）
     __setScenarioOverridesFileForTest(file);
     await loadScenarioOverrides();
     const admin = getAllScenariosForAdmin();
-    assert.equal(admin.some((s) => s.resolvedGroup === "基础"), false, "重载后无「基础」");
+    assert.equal(
+      admin.some((s) => s.resolvedGroup === "基础"),
+      false,
+      "重载后无「基础」",
+    );
     assert.ok(admin.filter((s) => s.resolvedGroup === "入门").length >= before, "重载后原「基础」题解析为「入门」");
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

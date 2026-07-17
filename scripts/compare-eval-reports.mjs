@@ -15,9 +15,7 @@ const EVAL_DIR = join(ROOT, "Evaluation Report");
 
 async function readFolder(dir) {
   const names = (await readdir(dir)).filter((n) => n.toLowerCase().endsWith(".md"));
-  const files = await Promise.all(
-    names.map(async (name) => ({ name, md: await readFile(join(dir, name), "utf8") })),
-  );
+  const files = await Promise.all(names.map(async (name) => ({ name, md: await readFile(join(dir, name), "utf8") })));
   return files;
 }
 
@@ -38,7 +36,11 @@ async function main() {
   const cmp = buildComparison(a, b);
   const markdown = formatCompareReportMarkdown(cmp);
 
-  const slug = (s) => String(s).replace(/[\\/:*?"<>|\s]+/g, "_").replace(/_+/g, "_").slice(0, 40);
+  const slug = (s) =>
+    String(s)
+      .replace(/[\\/:*?"<>|\s]+/g, "_")
+      .replace(/_+/g, "_")
+      .slice(0, 40);
   const outName = `对比报告_${slug(a.label)}_vs_${slug(b.label)}.md`;
   const outPath = join(EVAL_DIR, outName);
   await writeFile(outPath, markdown, "utf8");
@@ -51,7 +53,9 @@ async function main() {
   console.log("");
   console.log(`稳定性成功率判定：${cmp.verdicts.stability.verdict}`);
   console.log(`场景通过率判定：${cmp.verdicts.scenarioPass.verdict}`);
-  console.log(`场景质量：A 均分 ${fmt(a.quality.mean)} / B 均分 ${fmt(b.quality.mean)}（配对场景 ${cmp.scenarioQuality.matched.length} 个）`);
+  console.log(
+    `场景质量：A 均分 ${fmt(a.quality.mean)} / B 均分 ${fmt(b.quality.mean)}（配对场景 ${cmp.scenarioQuality.matched.length} 个）`,
+  );
 }
 
 function fmt(v) {

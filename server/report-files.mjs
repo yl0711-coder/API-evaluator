@@ -8,7 +8,9 @@ import { renderReportHtml } from "./report-html.mjs";
 
 // EVALUATOR_OPEN_REPORT=1/true/on/yes 时，报告生成后自动在本机默认浏览器打开。默认关闭。
 export function isOpenReportEnabled(value) {
-  const v = String(value ?? "").trim().toLowerCase();
+  const v = String(value ?? "")
+    .trim()
+    .toLowerCase();
   return v === "1" || v === "true" || v === "on" || v === "yes";
 }
 
@@ -21,11 +23,7 @@ export function openReportInBrowser(htmlPath, { enabled = isOpenReportEnabled(pr
     // Windows：用 explorer.exe 的完整路径，避免 spawn 按裸名字解析 PATH 报 ENOENT。
     // explorer.exe 收到一个文件参数时，会用其默认关联程序（.html → 默认浏览器）打开。
     const command =
-      platform === "win32"
-        ? join(process.env.SystemRoot || "C:\\Windows", "explorer.exe")
-        : platform === "darwin"
-          ? "open"
-          : "xdg-open";
+      platform === "win32" ? join(process.env.SystemRoot || "C:\\Windows", "explorer.exe") : platform === "darwin" ? "open" : "xdg-open";
     const child = spawn(command, [htmlPath], { detached: true, stdio: "ignore" });
     child.on("error", () => {}); // 找不到命令 / 无图形界面 → 静默
     child.unref();

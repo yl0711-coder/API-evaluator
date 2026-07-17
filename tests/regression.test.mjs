@@ -38,7 +38,14 @@ test("toTrendPoint：quick-verify 无 successRate 字段时按 successCount/requ
   const p = toTrendPoint({ runId: "qv", type: "quick-verify", endedAt: new Date().toISOString(), successCount: 4, requestCount: 6 });
   assert.equal(p.successRate, 4 / 6);
   // 有显式 successRate 时以其为准（新版快检直接写了）。
-  const p2 = toTrendPoint({ runId: "qv2", type: "quick-verify", endedAt: new Date().toISOString(), successRate: 0.5, successCount: 4, requestCount: 6 });
+  const p2 = toTrendPoint({
+    runId: "qv2",
+    type: "quick-verify",
+    endedAt: new Date().toISOString(),
+    successRate: 0.5,
+    successCount: 4,
+    requestCount: 6,
+  });
   assert.equal(p2.successRate, 0.5);
   // 非 quick-verify 且无 successRate → 不臆造（保持 null，不污染趋势）。
   const p3 = toTrendPoint({ runId: "sc", type: "scenario", endedAt: new Date().toISOString(), successCount: 4, requestCount: 6 });
@@ -50,7 +57,10 @@ test("toTrendPoint：quick-verify 无 successRate 字段时按 successCount/requ
 
 test("buildBaseline：<2 同类样本 → insufficient；否则取中位", () => {
   assert.equal(buildBaseline([toTrendPoint(run())], { type: "stability" }).insufficient, true);
-  const base = buildBaseline([toTrendPoint(run({ successRate: 0.98 })), toTrendPoint(run({ successRate: 0.96 })), toTrendPoint(run({ successRate: 0.97 }))], { type: "stability" });
+  const base = buildBaseline(
+    [toTrendPoint(run({ successRate: 0.98 })), toTrendPoint(run({ successRate: 0.96 })), toTrendPoint(run({ successRate: 0.97 }))],
+    { type: "stability" },
+  );
   assert.equal(base.insufficient, false);
   assert.equal(base.successRate, 0.97);
 });
@@ -83,7 +93,10 @@ test("detectRegression：P95 翻倍 → regressed", () => {
 });
 
 test("detectRegression：准入等级下滑 ≥2 档 → regressed", () => {
-  const history = [run({ type: "admission", grade: "A", successRate: 0.99 }), run({ type: "admission", grade: "A", successRate: 0.99 })].map(toTrendPoint);
+  const history = [
+    run({ type: "admission", grade: "A", successRate: 0.99 }),
+    run({ type: "admission", grade: "A", successRate: 0.99 }),
+  ].map(toTrendPoint);
   const cur = toTrendPoint(run({ runId: "cur", type: "admission", grade: "D", successRate: 0.99 }));
   const r = detectRegression({ current: cur, history });
   assert.equal(r.status, "regressed");
@@ -94,15 +107,23 @@ test("collectBasicScenarioCaseIds：只挑场景运行、按分组过滤、混�
   assert.equal(BASIC_SCENARIO_GROUP, "基础");
   const summaries = [
     // 纯基础场景运行 → 取两个基础 id
-    { runId: "sc1", type: "scenario", scenarios: [
-      { id: "b1", group: "基础" },
-      { id: "b2", group: "基础" },
-    ] },
+    {
+      runId: "sc1",
+      type: "scenario",
+      scenarios: [
+        { id: "b1", group: "基础" },
+        { id: "b2", group: "基础" },
+      ],
+    },
     // 混合分组 → 只取基础 id，丢 HLE
-    { runId: "sc2", type: "scenario", scenarios: [
-      { id: "b3", group: "基础" },
-      { id: "h1", group: "HLE" },
-    ] },
+    {
+      runId: "sc2",
+      type: "scenario",
+      scenarios: [
+        { id: "b3", group: "基础" },
+        { id: "h1", group: "HLE" },
+      ],
+    },
     // 无基础场景 → 不入表
     { runId: "sc3", type: "scenario", scenarios: [{ id: "h2", group: "HLE" }] },
     // 非场景运行 → 忽略
@@ -136,7 +157,10 @@ test("summarizeRoundStats：成功率=成功轮/总轮、P95 取 0.95 分位、�
   assert.equal(s.successRate, 3 / 5);
   assert.equal(s.p95Ms, 5000); // ceil(5*0.95)-1 = 4 → 排序后第 5 个 = 5000
   // 无耗时的轮被剔除（不参与成功率与 P95）
-  const s2 = summarizeRoundStats([{ totalMs: 100, success: 1 }, { totalMs: null, success: 0 }]);
+  const s2 = summarizeRoundStats([
+    { totalMs: 100, success: 1 },
+    { totalMs: null, success: 0 },
+  ]);
   assert.equal(s2.successRate, 1);
   assert.equal(s2.p95Ms, 100);
   // 空集合 → null（既不进图也不污染回归）
@@ -150,8 +174,27 @@ test("regression_alerts 往返 + queryProfileRunSummaries", async () => {
   try {
     const db = await import(`../server/db.mjs?case=${Date.now()}`);
     if (!(await db.isSqliteAvailable())) return;
-    await db.recordTestRun({ runId: "run-1", type: "stability", profileId: "p1", profileName: "渠道A", successRate: 0.98, successCount: 49, endedAt: new Date().toISOString() }, { type: "stability" });
-    await db.recordRegressionAlert({ profileId: "p1", profileName: "渠道A", runId: "run-2", runType: "stability", severity: "high", summary: "成功率从 98% 跌到 70%", createdAt: new Date().toISOString() });
+    await db.recordTestRun(
+      {
+        runId: "run-1",
+        type: "stability",
+        profileId: "p1",
+        profileName: "渠道A",
+        successRate: 0.98,
+        successCount: 49,
+        endedAt: new Date().toISOString(),
+      },
+      { type: "stability" },
+    );
+    await db.recordRegressionAlert({
+      profileId: "p1",
+      profileName: "渠道A",
+      runId: "run-2",
+      runType: "stability",
+      severity: "high",
+      summary: "成功率从 98% 跌到 70%",
+      createdAt: new Date().toISOString(),
+    });
     const summaries = await db.queryProfileRunSummaries("p1");
     assert.ok(summaries.length >= 1);
     assert.equal(summaries[0].runId, "run-1");

@@ -117,16 +117,19 @@ export function buildRankingRows(testRuns) {
           ? estimatedGrossProfit / estimatedRevenue
           : null;
       const latencyScore = Math.max(0, 1 - Math.min(p95 || 60000, 60000) / 60000) * 100;
-      const score = Math.min(100, Math.round(
-        successRate * 35 +
-          successRate * 20 +
-          latencyScore * 0.2 +
-          qualityScore * 0.25 +
-          admissionScore * 0.05 +
-          purityScore * 0.05 +
-          fingerprintRate * 5 +
-          tokenCoverage * 2,
-      ));
+      const score = Math.min(
+        100,
+        Math.round(
+          successRate * 35 +
+            successRate * 20 +
+            latencyScore * 0.2 +
+            qualityScore * 0.25 +
+            admissionScore * 0.05 +
+            purityScore * 0.05 +
+            fingerprintRate * 5 +
+            tokenCoverage * 2,
+        ),
+      );
       return {
         ...item,
         successRate,
@@ -378,8 +381,8 @@ export function derivePlainConclusion(runs) {
         level === "pass"
           ? "继续跑复杂场景测试，或复制交付模板给负责人。"
           : level === "fail"
-          ? "查看错误类型，修配置或换渠道后再复测。"
-          : "建议再跑 10 轮稳定性或人工查看报告明细。",
+            ? "查看错误类型，修配置或换渠道后再复测。"
+            : "建议再跑 10 轮稳定性或人工查看报告明细。",
       evidence: `成功率 ${runs.latestStability.successRateText || "-"} / 慢请求参考 ${runs.latestStability.p95TotalMs ?? "-"} ms`,
     };
   }
@@ -390,10 +393,7 @@ export function derivePlainConclusion(runs) {
       level,
       title: level === "pass" ? "可进入标准评测" : level === "fail" ? "暂不推荐接入" : "需要观察",
       reason: runs.latestAdmission.recommendation?.title || "需要查看准入报告。",
-      next:
-        level === "pass"
-          ? "继续跑标准评测，确认稳定性和复杂场景表现。"
-          : "先复核协议、模型名、工具调用和上游配置，再重新做准入评测。",
+      next: level === "pass" ? "继续跑标准评测，确认稳定性和复杂场景表现。" : "先复核协议、模型名、工具调用和上游配置，再重新做准入评测。",
       evidence: `准入等级 ${runs.latestAdmission.grade || "-"} / 成功率 ${runs.latestAdmission.successRateText || "-"}`,
     };
   }
@@ -449,13 +449,7 @@ export function buildHandoffTemplate(runs, projectInfo = {}, rankingRows = []) {
   // This template is meant for non-technical operators to paste into a handoff
   // message. Keep it concise and never include secrets or raw 评测数据 content.
   if (!latest && !latestRequest) {
-    return [
-      "# 测试交付",
-      "",
-      "当前还没有测试结果。",
-      "",
-      "建议先执行：API 配置 -> 标准评测 -> 报告中心 -> 测试交付。",
-    ].join("\n");
+    return ["# 测试交付", "", "当前还没有测试结果。", "", "建议先执行：API 配置 -> 标准评测 -> 报告中心 -> 测试交付。"].join("\n");
   }
 
   const latestSummary = latest ? summarizeRunForHandoff(latest) : "只有快速测试记录，还没有可交付的完整报告。建议继续跑标准评测。";
@@ -527,9 +521,7 @@ function formatRankingForHandoff(rows = []) {
     return "暂无排行榜数据。建议至少完成准入评测或标准评测后再交付。";
   }
 
-  const visibleRows = rows
-    .filter((row) => row.profileRole !== "baseline")
-    .slice(0, 5);
+  const visibleRows = rows.filter((row) => row.profileRole !== "baseline").slice(0, 5);
   const baselineRows = rows.filter((row) => row.profileRole === "baseline");
   const candidateLines = visibleRows.length
     ? visibleRows
@@ -550,15 +542,7 @@ function formatRankingForHandoff(rows = []) {
         .join("\n")
     : "暂无可信基线配置。建议为关键模型配置官方 API 或长期稳定渠道作为对照。";
 
-  return [
-    "### 候选渠道排行",
-    "",
-    candidateLines,
-    "",
-    "### 可信基线",
-    "",
-    baselineLines,
-  ].join("\n");
+  return ["### 候选渠道排行", "", candidateLines, "", "### 可信基线", "", baselineLines].join("\n");
 }
 
 function renderStabilityInsight(run) {
@@ -658,7 +642,9 @@ function attachBaselineComparison(rows) {
 }
 
 function modelCompareKey(model) {
-  return String(model || "").trim().toLowerCase();
+  return String(model || "")
+    .trim()
+    .toLowerCase();
 }
 
 function formatBaselineDelta(row) {
@@ -667,7 +653,6 @@ function formatBaselineDelta(row) {
   const prefix = row.baselineDelta > 0 ? "+" : "";
   return `相对可信基线 ${row.baselineProfileName}：${prefix}${row.baselineDelta} 分`;
 }
-
 
 function formatMargin(value) {
   if (!Number.isFinite(Number(value))) return "-";
@@ -737,8 +722,8 @@ function renderOperatorAdvice(runs) {
     interrupted > 0
       ? `发现 ${interrupted} 个中断任务。交付时请说明这些任务没有完整结论，需要重新执行。`
       : failed > 0
-      ? `最近有 ${failed} 条失败请求。交付时请附上错误类型、平台 Request ID 和复测建议。`
-      : "请复制下方模板，并附上 Markdown 或 HTML 报告文件路径。";
+        ? `最近有 ${failed} 条失败请求。交付时请附上错误类型、平台 Request ID 和复测建议。`
+        : "请复制下方模板，并附上 Markdown 或 HTML 报告文件路径。";
   return `
     <article class="insight-card">
       <span>交付提醒</span>

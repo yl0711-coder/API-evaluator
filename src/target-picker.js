@@ -85,5 +85,11 @@ export function createCascadeTargetPicker(channelSelect, modelSelect) {
     setValue(prev, { silent: true });
   }
 
-  return { refresh, setValue, get value() { return modelSelect.value; } };
+  return {
+    refresh,
+    setValue,
+    get value() {
+      return modelSelect.value;
+    },
+  };
 }

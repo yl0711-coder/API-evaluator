@@ -14,7 +14,11 @@ const profile = (id, name) => ({
   channelCode: "",
 });
 
-function makeRecords(successCount, total, { responseText = "这是一段大约二十多个字的正常中文回答，用于本地 token 估算。", outputTokens = 30 } = {}) {
+function makeRecords(
+  successCount,
+  total,
+  { responseText = "这是一段大约二十多个字的正常中文回答，用于本地 token 估算。", outputTokens = 30 } = {},
+) {
   const records = [];
   for (let i = 0; i < total; i++) {
     const success = i < successCount;
@@ -81,20 +85,14 @@ function makeBatch(results) {
 }
 
 test("batch report does NOT declare a winner when CIs overlap", () => {
-  const batch = makeBatch([
-    makeStabilitySummary("a", "甲", 8, 10),
-    makeStabilitySummary("b", "乙", 6, 10),
-  ]);
+  const batch = makeBatch([makeStabilitySummary("a", "甲", 8, 10), makeStabilitySummary("b", "乙", 6, 10)]);
   const report = formatBatchReport(batch);
   assert.match(report, /差异不显著/);
   assert.match(report, /建议增加轮数/);
 });
 
 test("batch report declares a statistically distinguishable winner when CIs separate", () => {
-  const batch = makeBatch([
-    makeStabilitySummary("a", "甲", 10, 10),
-    makeStabilitySummary("b", "乙", 2, 10),
-  ]);
+  const batch = makeBatch([makeStabilitySummary("a", "甲", 10, 10), makeStabilitySummary("b", "乙", 2, 10)]);
   const report = formatBatchReport(batch);
   assert.match(report, /统计上可区分/);
   assert.match(report, /甲 优于 乙/);

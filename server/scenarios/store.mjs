@@ -228,7 +228,8 @@ export function getAllScenariosForAdmin() {
   const out = [];
   for (const b of banks()) {
     const active = b.always || Boolean(settings[b.flag]);
-    for (const s of b.scenarios) out.push({ ...s, bankKey: b.key, active, resolvedTag: withTag(s).tag, resolvedGroup: resolveScenarioGroup(s, b.key) });
+    for (const s of b.scenarios)
+      out.push({ ...s, bankKey: b.key, active, resolvedTag: withTag(s).tag, resolvedGroup: resolveScenarioGroup(s, b.key) });
   }
   return out;
 }
@@ -335,12 +336,7 @@ export async function clearScenarioGroup(name, { persist = true } = {}) {
 
 // —— 兼容导出（保持 index.mjs / 测试里的名字语义）——
 // ABILITY = 4 个手写常开 bank（不含 custom），与原 index.mjs 一致，供静态测试。
-export const ABILITY_SCENARIOS = [
-  ...BASIC_SCENARIOS,
-  ...CODING_SCENARIOS,
-  ...LONG_CONTEXT_SCENARIOS,
-  ...CHINESE_SCENARIOS,
-].map(withTag);
+export const ABILITY_SCENARIOS = [...BASIC_SCENARIOS, ...CODING_SCENARIOS, ...LONG_CONTEXT_SCENARIOS, ...CHINESE_SCENARIOS].map(withTag);
 // 向后兼容快照（import 期、设置缓存未加载 → 只含 always）。运行时一律调 getTestScenarios()。
 export const TEST_SCENARIOS = getTestScenarios();
 

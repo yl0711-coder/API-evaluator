@@ -92,9 +92,18 @@ test("超管 GET /api/dev/scenarios：完整数据，含 prompt + 至少一条 e
   const { status, body } = await get("/api/dev/scenarios", cookieAdmin);
   assert.equal(status, 200);
   assert.ok(Array.isArray(body) && body.length >= 60);
-  assert.ok(body.every((s) => typeof s.prompt !== "undefined"), "每条都带 prompt（不脱敏）");
-  assert.ok(body.some((s) => typeof s.expected !== "undefined"), "至少一条带 expected");
-  assert.ok(body.some((s) => s.bankKey && typeof s.active === "boolean"), "带 bankKey/active");
+  assert.ok(
+    body.every((s) => typeof s.prompt !== "undefined"),
+    "每条都带 prompt（不脱敏）",
+  );
+  assert.ok(
+    body.some((s) => typeof s.expected !== "undefined"),
+    "至少一条带 expected",
+  );
+  assert.ok(
+    body.some((s) => s.bankKey && typeof s.active === "boolean"),
+    "带 bankKey/active",
+  );
 });
 
 test("普通管理员(role=10) GET /api/dev/scenarios → 403", async () => {
@@ -112,8 +121,14 @@ test("公开 GET /api/scenarios：仍脱敏、不含 prompt，但含 group", asy
   const { status, body } = await get("/api/scenarios", cookieAdmin);
   assert.equal(status, 200);
   assert.ok(Array.isArray(body) && body.length > 0);
-  assert.ok(body.every((s) => typeof s.prompt === "undefined"), "公开接口不暴露 prompt");
-  assert.ok(body.every((s) => typeof s.group === "string" && s.group), "每条带非空 group，供分组筛选");
+  assert.ok(
+    body.every((s) => typeof s.prompt === "undefined"),
+    "公开接口不暴露 prompt",
+  );
+  assert.ok(
+    body.every((s) => typeof s.group === "string" && s.group),
+    "每条带非空 group，供分组筛选",
+  );
 });
 
 test("超管 GET /api/dev/scenarios：每条带 resolvedGroup（默认按 bank）", async () => {
@@ -138,7 +153,11 @@ test("分组端点：重命名级联改到该组所有题（resolvedGroup 随之
   assert.equal(r.status, 200);
   assert.ok(r.body.changed >= 1, "至少改动一题");
   const afterRename = await get("/api/dev/scenarios", cookieAdmin);
-  assert.equal(afterRename.body.some((s) => s.resolvedGroup === "安全红线"), false, "不再有「安全红线」");
+  assert.equal(
+    afterRename.body.some((s) => s.resolvedGroup === "安全红线"),
+    false,
+    "不再有「安全红线」",
+  );
   assert.ok(afterRename.body.some((s) => s.bankKey === "safety" && s.resolvedGroup === "安全测试组"));
   // 级联改动落进覆盖层 JSON（在临时数据目录下，非源码树）。
   assert.ok(existsSync(join(dataDir, "配置", "scenario-overrides.json")), "覆盖层文件已写入数据目录");

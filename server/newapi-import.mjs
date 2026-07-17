@@ -5,8 +5,24 @@
 import { deterministicModelTargetId, normalizeModelList } from "./channel-model.mjs";
 
 // new-api 渠道 type（见其 constant/channel.go）。14=Anthropic 走 Claude Messages，其余按 OpenAI 兼容。
-const TYPE_PROVIDER = { 1: "OpenAI", 14: "Anthropic", 15: "Baidu", 16: "Zhipu", 17: "Alibaba", 24: "Google", 25: "Moonshot", 43: "DeepSeek", 48: "xAI" };
-const TYPE_DEFAULT_URL = { 1: "https://api.openai.com", 14: "https://api.anthropic.com", 43: "https://api.deepseek.com", 25: "https://api.moonshot.cn", 48: "https://api.x.ai" };
+const TYPE_PROVIDER = {
+  1: "OpenAI",
+  14: "Anthropic",
+  15: "Baidu",
+  16: "Zhipu",
+  17: "Alibaba",
+  24: "Google",
+  25: "Moonshot",
+  43: "DeepSeek",
+  48: "xAI",
+};
+const TYPE_DEFAULT_URL = {
+  1: "https://api.openai.com",
+  14: "https://api.anthropic.com",
+  43: "https://api.deepseek.com",
+  25: "https://api.moonshot.cn",
+  48: "https://api.x.ai",
+};
 
 export function newapiTypeToProtocol(type) {
   return Number(type) === 14 ? "claude_messages" : "openai_compatible";
@@ -26,7 +42,12 @@ export function newapiChannelLocalId(newapiId) {
 // new-api 渠道行 -> 我们的渠道（不含 key）。
 export function mapNewapiChannel(row) {
   const type = Number(row.type);
-  const baseUrl = String(row.base_url ?? row.baseUrl ?? "").trim().replace(/\/+$/, "") || TYPE_DEFAULT_URL[type] || "";
+  const baseUrl =
+    String(row.base_url ?? row.baseUrl ?? "")
+      .trim()
+      .replace(/\/+$/, "") ||
+    TYPE_DEFAULT_URL[type] ||
+    "";
   const protocol = newapiTypeToProtocol(type);
   // type 1(OpenAI)/14(Anthropic) 协议确定；其余按 OpenAI 兼容自动推断 —— 非原生兼容的上游
   // （如 Baidu/Gemini 原生）导入后可能不可用，给个提示让超管人工核对/改协议。
@@ -95,7 +116,21 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
         const key = `${channelId}|${model}`;
         if (!targetKeys.has(key)) {
           // 最大输出/超时/单价已下沉到模型目标层：导入的目标给出默认参数，单价留空由管理员在「模型管理」补。
-          targets.push({ id: deterministicModelTargetId(channelId, model), channelId, model, note: "", maxTokens: 512, timeoutMs: 300000, inputPricePerMTokens: null, outputPricePerMTokens: null, inputSellPricePerMTokens: null, outputSellPricePerMTokens: null, source: "newapi", createdAt: now, updatedAt: now });
+          targets.push({
+            id: deterministicModelTargetId(channelId, model),
+            channelId,
+            model,
+            note: "",
+            maxTokens: 512,
+            timeoutMs: 300000,
+            inputPricePerMTokens: null,
+            outputPricePerMTokens: null,
+            inputSellPricePerMTokens: null,
+            outputSellPricePerMTokens: null,
+            source: "newapi",
+            createdAt: now,
+            updatedAt: now,
+          });
           targetKeys.add(key);
           newTargets += 1;
         }

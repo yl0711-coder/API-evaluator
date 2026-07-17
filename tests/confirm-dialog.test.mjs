@@ -9,16 +9,26 @@ function mockEl() {
   return {
     classList: {
       _s: new Set(),
-      add(c) { this._s.add(c); },
-      remove(c) { this._s.delete(c); },
-      contains(c) { return this._s.has(c); },
+      add(c) {
+        this._s.add(c);
+      },
+      remove(c) {
+        this._s.delete(c);
+      },
+      contains(c) {
+        return this._s.has(c);
+      },
     },
     textContent: "",
     innerHTML: "",
     className: "",
     focus() {},
-    addEventListener(ev, fn) { handlers[ev] = fn; },
-    _fire(ev, arg) { if (handlers[ev]) handlers[ev](arg); },
+    addEventListener(ev, fn) {
+      handlers[ev] = fn;
+    },
+    _fire(ev, arg) {
+      if (handlers[ev]) handlers[ev](arg);
+    },
   };
 }
 
@@ -80,7 +90,13 @@ test("confirm-dialog：三态返回 confirm/cancel/dismiss", async () => {
     const modal = mockEl();
     const ok = mockEl();
     const cancel = mockEl();
-    const confirmAction = createConfirmDialog({ modal, titleElement: mockEl(), messageElement: mockEl(), confirmButton: ok, cancelButton: cancel });
+    const confirmAction = createConfirmDialog({
+      modal,
+      titleElement: mockEl(),
+      messageElement: mockEl(),
+      confirmButton: ok,
+      cancelButton: cancel,
+    });
 
     const p1 = confirmAction({ title: "A", message: "a", tristate: true });
     ok._fire("click");
@@ -105,7 +121,14 @@ test("confirm-dialog：右上角 ❌(closeButton) 触发 dismiss", async () => {
     const ok = mockEl();
     const cancel = mockEl();
     const closeButton = mockEl();
-    const confirmAction = createConfirmDialog({ modal: mockEl(), titleElement: mockEl(), messageElement: mockEl(), confirmButton: ok, cancelButton: cancel, closeButton });
+    const confirmAction = createConfirmDialog({
+      modal: mockEl(),
+      titleElement: mockEl(),
+      messageElement: mockEl(),
+      confirmButton: ok,
+      cancelButton: cancel,
+      closeButton,
+    });
     const p = confirmAction({ title: "X", message: "x", tristate: true });
     closeButton._fire("click");
     assert.equal(await p, "dismiss");
@@ -120,7 +143,13 @@ test("confirm-dialog：confirmDelayMs 期间确认钮禁用、点击无效", asy
   try {
     const ok = mockEl();
     const cancel = mockEl();
-    const confirmAction = createConfirmDialog({ modal: mockEl(), titleElement: mockEl(), messageElement: mockEl(), confirmButton: ok, cancelButton: cancel });
+    const confirmAction = createConfirmDialog({
+      modal: mockEl(),
+      titleElement: mockEl(),
+      messageElement: mockEl(),
+      confirmButton: ok,
+      cancelButton: cancel,
+    });
     const p = confirmAction({ title: "X", message: "x", tristate: true, confirmDelayMs: 2000 });
     assert.equal(ok.disabled, true, "进入即禁用");
     ok._fire("click"); // 禁用期内点击应被忽略

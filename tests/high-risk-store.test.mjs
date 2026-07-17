@@ -28,10 +28,50 @@ test.afterEach(() => {
 // ===================== collectHighRiskReports 判危 =====================
 
 test("admission：D/E/F/X 级 或 综合分<60 或 结论 fail → 高危；A 级达标 → 空", () => {
-  assert.equal(collectHighRiskReports({ type: "admission", grade: "D", score: 82, recommendation: { level: "watch" }, model: "m1", reportHtmlPath: html("a_m1_admission_20260101_000000_aaaa") }).length, 1);
-  assert.equal(collectHighRiskReports({ type: "admission", grade: "C", score: 50, recommendation: { level: "watch" }, reportHtmlPath: html("a_admission_20260101_000000_bbbb") }).length, 1, "分数<60命中");
-  assert.equal(collectHighRiskReports({ type: "admission", grade: "B", score: 85, recommendation: { level: "fail" }, reportHtmlPath: html("a_admission_20260101_000000_cccc") }).length, 1, "结论 fail 命中");
-  assert.equal(collectHighRiskReports({ type: "admission", grade: "A", score: 95, recommendation: { level: "pass" }, reportHtmlPath: html("a_admission_20260101_000000_dddd") }).length, 0, "达标不报");
+  assert.equal(
+    collectHighRiskReports({
+      type: "admission",
+      grade: "D",
+      score: 82,
+      recommendation: { level: "watch" },
+      model: "m1",
+      reportHtmlPath: html("a_m1_admission_20260101_000000_aaaa"),
+    }).length,
+    1,
+  );
+  assert.equal(
+    collectHighRiskReports({
+      type: "admission",
+      grade: "C",
+      score: 50,
+      recommendation: { level: "watch" },
+      reportHtmlPath: html("a_admission_20260101_000000_bbbb"),
+    }).length,
+    1,
+    "分数<60命中",
+  );
+  assert.equal(
+    collectHighRiskReports({
+      type: "admission",
+      grade: "B",
+      score: 85,
+      recommendation: { level: "fail" },
+      reportHtmlPath: html("a_admission_20260101_000000_cccc"),
+    }).length,
+    1,
+    "结论 fail 命中",
+  );
+  assert.equal(
+    collectHighRiskReports({
+      type: "admission",
+      grade: "A",
+      score: 95,
+      recommendation: { level: "pass" },
+      reportHtmlPath: html("a_admission_20260101_000000_dddd"),
+    }).length,
+    0,
+    "达标不报",
+  );
 });
 
 test("scenario：逐模型 —— 质量分<60 或该模型结论 fail 命中", () => {
@@ -67,9 +107,26 @@ test("batch-admission：逐模型 grade D/E/F/X 或分<60 命中", () => {
 });
 
 test("stability：结论 fail 或成功率<0.8 命中；达标为空", () => {
-  assert.equal(collectHighRiskReports({ recommendation: { level: "fail" }, successRate: 0.6, model: "m1", reportHtmlPath: html("s_m1_run_20260101_000000_f1") }).length, 1);
-  assert.equal(collectHighRiskReports({ recommendation: { level: "watch" }, successRate: 0.7, reportHtmlPath: html("s_run_20260101_000000_f2") }).length, 1, "成功率<0.8命中");
-  assert.equal(collectHighRiskReports({ recommendation: { level: "pass" }, successRate: 0.99, reportHtmlPath: html("s_run_20260101_000000_f3") }).length, 0);
+  assert.equal(
+    collectHighRiskReports({
+      recommendation: { level: "fail" },
+      successRate: 0.6,
+      model: "m1",
+      reportHtmlPath: html("s_m1_run_20260101_000000_f1"),
+    }).length,
+    1,
+  );
+  assert.equal(
+    collectHighRiskReports({ recommendation: { level: "watch" }, successRate: 0.7, reportHtmlPath: html("s_run_20260101_000000_f2") })
+      .length,
+    1,
+    "成功率<0.8命中",
+  );
+  assert.equal(
+    collectHighRiskReports({ recommendation: { level: "pass" }, successRate: 0.99, reportHtmlPath: html("s_run_20260101_000000_f3") })
+      .length,
+    0,
+  );
 });
 
 test("batch-stability：任一子渠道 fail/低成功率 → 整篇一条", () => {
@@ -85,9 +142,25 @@ test("batch-stability：任一子渠道 fail/低成功率 → 整篇一条", () 
 });
 
 test("quickverify：verdict suspect 命中；ok/ watch 不报", () => {
-  assert.equal(collectHighRiskReports({ type: "quick-verify", verdict: { level: "suspect" }, model: "m1", reportHtmlPath: html("q_m1_quickverify_20260101_000000_h1") }).length, 1);
-  assert.equal(collectHighRiskReports({ type: "quick-verify", verdict: { level: "ok" }, reportHtmlPath: html("q_quickverify_20260101_000000_h2") }).length, 0);
-  assert.equal(collectHighRiskReports({ type: "quick-verify", verdict: { level: "watch" }, reportHtmlPath: html("q_quickverify_20260101_000000_h3") }).length, 0);
+  assert.equal(
+    collectHighRiskReports({
+      type: "quick-verify",
+      verdict: { level: "suspect" },
+      model: "m1",
+      reportHtmlPath: html("q_m1_quickverify_20260101_000000_h1"),
+    }).length,
+    1,
+  );
+  assert.equal(
+    collectHighRiskReports({ type: "quick-verify", verdict: { level: "ok" }, reportHtmlPath: html("q_quickverify_20260101_000000_h2") })
+      .length,
+    0,
+  );
+  assert.equal(
+    collectHighRiskReports({ type: "quick-verify", verdict: { level: "watch" }, reportHtmlPath: html("q_quickverify_20260101_000000_h3") })
+      .length,
+    0,
+  );
 });
 
 test("无 reportHtmlPath / 空结果 → 不产出", () => {
@@ -109,14 +182,20 @@ function withTempFile(fn) {
 test("addAlerts 去重；listAlerts 新→旧；ackAlert/ackAll 移除", async () => {
   await withTempFile(async () => {
     await addAlerts([{ reportId: "r1", label: "准入 · m1", reason: "F 级" }]);
-    await addAlerts([{ reportId: "r1", label: "重复", reason: "x" }, { reportId: "r2", label: "场景 · m2", reason: "质量分 40" }]);
+    await addAlerts([
+      { reportId: "r1", label: "重复", reason: "x" },
+      { reportId: "r2", label: "场景 · m2", reason: "质量分 40" },
+    ]);
     let list = await listAlerts();
     assert.equal(list.length, 2, "r1 去重");
     assert.equal(list[0].reportId, "r2", "新→旧：最后加入的在前");
 
     await ackAlert("r1");
     list = await listAlerts();
-    assert.deepEqual(list.map((a) => a.reportId), ["r2"]);
+    assert.deepEqual(
+      list.map((a) => a.reportId),
+      ["r2"],
+    );
 
     await ackAll();
     assert.equal((await listAlerts()).length, 0);
@@ -148,7 +227,13 @@ test("noteRunIfEnabled：开关关不记；开关开则记高危", async () => {
     assert.equal((await listAlerts()).length, 1, "开时记");
 
     // 达标运行即使开启也不产生条目
-    await noteRunIfEnabled({ type: "admission", grade: "A", score: 96, recommendation: { level: "pass" }, reportHtmlPath: html("a_m2_admission_20260101_000000_z2") });
+    await noteRunIfEnabled({
+      type: "admission",
+      grade: "A",
+      score: 96,
+      recommendation: { level: "pass" },
+      reportHtmlPath: html("a_m2_admission_20260101_000000_z2"),
+    });
     assert.equal((await listAlerts()).length, 1);
   });
 });

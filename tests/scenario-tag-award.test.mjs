@@ -3,11 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  computeEarnedTags,
-  applyEarnedTags,
-  TAG_AWARD_MIN_SCORE,
-} from "../server/scenario-tag-award.mjs";
+import { computeEarnedTags, applyEarnedTags, TAG_AWARD_MIN_SCORE } from "../server/scenario-tag-award.mjs";
 
 const scenarios = [
   { id: "s-code", tag: "编程" },
@@ -39,10 +35,13 @@ test("computeEarnedTags：>=90 且场景有 tag 才入；<90 不入；无 tag �
 test("computeEarnedTags：多场景达标 → 并集；无 profileId 跳过；无所得不入表", () => {
   const summary = {
     results: [
-      { profileId: "p1", scenarios: [
-        { scenarioId: "s-code", avgQualityScore: 95 },
-        { scenarioId: "s-reason", avgQualityScore: 99 },
-      ] },
+      {
+        profileId: "p1",
+        scenarios: [
+          { scenarioId: "s-code", avgQualityScore: 95 },
+          { scenarioId: "s-reason", avgQualityScore: 99 },
+        ],
+      },
       { profileId: "p2", scenarios: [{ scenarioId: "s-code", avgQualityScore: 10 }] }, // 全不达标 → 不入表
       { scenarios: [{ scenarioId: "s-code", avgQualityScore: 100 }] }, // 无 profileId → 跳过
     ],

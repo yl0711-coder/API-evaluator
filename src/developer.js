@@ -53,12 +53,13 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
   function renderChips() {
     tagsBox.innerHTML = customTags.length
       ? customTags
-          .map((t) => `<span class="model-tag">${escapeHtml(t)}<button type="button" class="model-tag-x" data-del-tag="${escapeHtml(t)}" title="删除标签">×</button></span>`)
+          .map(
+            (t) =>
+              `<span class="model-tag">${escapeHtml(t)}<button type="button" class="model-tag-x" data-del-tag="${escapeHtml(t)}" title="删除标签">×</button></span>`,
+          )
           .join("")
       : "（还没有自定义标签）";
-    tagsBox.querySelectorAll("[data-del-tag]").forEach((b) =>
-      b.addEventListener("click", () => removeTag(b.dataset.delTag)),
-    );
+    tagsBox.querySelectorAll("[data-del-tag]").forEach((b) => b.addEventListener("click", () => removeTag(b.dataset.delTag)));
   }
   // 把当前 customTags 写回服务端；成功后以服务端返回为准回填并刷新模型表单勾选项。
   // 失败则回滚到服务端已知状态（state.settings.customTags），避免界面与后端不一致。
@@ -189,7 +190,10 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
     if (curGroup && !groupOpts.includes(curGroup)) groupOpts.push(curGroup);
     const groupSelect = el("select");
     groupSelect.innerHTML = groupOpts
-      .map((g) => `<option value="${escapeHtml(g)}"${g === curGroup ? " selected" : ""}>${g === "" ? "（默认：按题库）" : escapeHtml(g)}</option>`)
+      .map(
+        (g) =>
+          `<option value="${escapeHtml(g)}"${g === curGroup ? " selected" : ""}>${g === "" ? "（默认：按题库）" : escapeHtml(g)}</option>`,
+      )
       .join("");
     form.append(field("分组", groupSelect));
 
@@ -203,7 +207,7 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
     let expectedIsObject = isObjExpected(working.expected);
     const EXPECTED_OBJ_HINT = "（对象答案，请用 JSON 模式编辑）";
     const expectedInput = el("input", {
-      value: expectedIsObject ? EXPECTED_OBJ_HINT : working.expected ?? "",
+      value: expectedIsObject ? EXPECTED_OBJ_HINT : (working.expected ?? ""),
       disabled: expectedIsObject,
       size: 70,
     });
@@ -238,7 +242,11 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
         else delete next.expected;
       }
       const ra = requiredAnyInput.value.trim();
-      if (ra) next.requiredAny = ra.split(",").map((s) => s.trim()).filter(Boolean);
+      if (ra)
+        next.requiredAny = ra
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
       else delete next.requiredAny;
       const g = groupSelect.value.trim();
       if (g) next.group = g;
@@ -255,7 +263,7 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
       // 按当前值重算：JSON 模式里把 expected 改成对象/改回字符串后，这里要跟着切换禁用态与文案。
       expectedIsObject = isObjExpected(obj.expected);
       expectedInput.disabled = expectedIsObject;
-      expectedInput.value = expectedIsObject ? EXPECTED_OBJ_HINT : obj.expected ?? "";
+      expectedInput.value = expectedIsObject ? EXPECTED_OBJ_HINT : (obj.expected ?? "");
       requiredAnyInput.value = Array.isArray(obj.requiredAny) ? obj.requiredAny.join(", ") : "";
       promptArea.value = promptText(obj.prompt);
     }
@@ -359,15 +367,19 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
         `<span class="dev-group-chip"><b>${escapeHtml(g)}</b><button type="button" class="linklike" data-rename-group="${escapeHtml(g)}">重命名</button><button type="button" class="linklike" data-del-group="${escapeHtml(g)}">删除</button></span>`,
     );
     const bankChips = bankOnly.map(
-      (g) => `<span class="dev-group-chip dev-group-chip--builtin"><b>${escapeHtml(g)}</b><small class="dev-group-builtin">题库默认</small></span>`,
+      (g) =>
+        `<span class="dev-group-chip dev-group-chip--builtin"><b>${escapeHtml(g)}</b><small class="dev-group-builtin">题库默认</small></span>`,
     );
     groupListBox.innerHTML = customChips.length + bankChips.length ? [...customChips, ...bankChips].join("") : "（暂无分组）";
-    groupListBox.querySelectorAll("[data-rename-group]").forEach((b) => b.addEventListener("click", () => renameGroup(b.dataset.renameGroup)));
+    groupListBox
+      .querySelectorAll("[data-rename-group]")
+      .forEach((b) => b.addEventListener("click", () => renameGroup(b.dataset.renameGroup)));
     groupListBox.querySelectorAll("[data-del-group]").forEach((b) => b.addEventListener("click", () => deleteGroup(b.dataset.delGroup)));
     // 筛选下拉（保留当前选中）：同样并入 bank 默认组，让「编程硬核」等可按组筛选。
     const cur = groupFilterSel.value;
     const filterGroups = [...new Set([...scenarioGroups, ...sceneGroups])];
-    groupFilterSel.innerHTML = `<option value="">全部分组</option>` + filterGroups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
+    groupFilterSel.innerHTML =
+      `<option value="">全部分组</option>` + filterGroups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
     groupFilterSel.value = filterGroups.includes(cur) ? cur : "";
   }
   async function addGroup() {
