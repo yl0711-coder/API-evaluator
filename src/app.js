@@ -33,6 +33,7 @@ import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "
 import { requireElement, requireElements } from "./dom-utils.js";
 import { installAppearance } from "./appearance.js";
 import { createManual } from "./manual.js";
+import { createHighRiskBanner } from "./high-risk-banner.js";
 import { createKeyModal } from "./key-modal.js";
 import { renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
@@ -82,10 +83,6 @@ const modelTargetForm = requireElement("#model-target-form");
 const modelTargetList = requireElement("#model-target-list");
 const modelTargetChannelSelect = requireElement("#model-target-channel");
 const modelTagFilter = requireElement("#model-tag-filter");
-// 高危报告横幅元素：必须在此顶部声明。启动流程（顶层 await 块）会 await loadHighRiskAlerts()→renderHighRiskBanner()，
-// 那时若本 const 仍在文件下方未执行，就处于暂时性死区(TDZ)，会抛「Cannot access 'highRiskBanner' before initialization」
-// 并被启动 try/catch 兜成「连接本地服务失败」。不要把它挪回下面的高危提示代码块里。
-const highRiskBanner = requireElement("#high-risk-banner");
 const channelAdmin = createChannelAdmin({
   state,
   els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect, modelTagFilter },
@@ -295,6 +292,10 @@ installAppearance();
 
 // 操作手册页（渲染 + 目录 + scrollspy）：见 src/manual.js。懒加载由下方 showPage 派发。
 const manual = createManual({ state });
+
+// 高危报告横幅（顶部红底提示）：见 src/high-risk-banner.js。
+// 三个刷新时机由 app.js 触发：启动后、设置开关变化、测试完成后；另有 60s 低频轮询（见文件末）。
+const highRiskBanner = createHighRiskBanner({ state });
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-go-page]");
@@ -1264,7 +1265,7 @@ try {
     channelAdmin.loadChannels(),
     channelAdmin.loadModelTargets(),
   ]);
-  await loadHighRiskAlerts(); // 启动时按开关拉一次高危报告横幅（此时 state.settings 已就绪）
+  await highRiskBanner.load(); // 启动时按开关拉一次高危报告横幅（此时 state.settings 已就绪）
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
   // 给非技术用户一个可读的兜底，而不是空白。
@@ -1425,7 +1426,7 @@ settingsForm.addEventListener("submit", async (event) => {
     await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
     await loadSettings(); // 刷新令牌「已配置」占位符状态
     channelAdmin.renderTagOptions(); // 自定义标签变化 → 模型表单勾选项即时并入
-    await loadHighRiskAlerts(); // 高危报告提示开关变化 → 即时显示/收起横幅
+    await highRiskBanner.load(); // 高危报告提示开关变化 → 即时显示/收起横幅
     toast("设置已保存。");
   } catch (error) {
     toast(`保存设置失败：${error.message}`, true);
@@ -1473,77 +1474,11 @@ function renderResultsViews() {
   renderTaskEvents();
   renderDashboard();
   renderDeliveryViews();
-  void loadHighRiskAlerts(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
+  void highRiskBanner.load(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
 }
-
-// —— 高危报告提示：网站顶部红底横幅，逐条列出未读高危报告，点开即消 ——
-// （元素引用 highRiskBanner 已在文件顶部声明，避免启动时的暂时性死区 TDZ，见那里的注释。）
-
-async function loadHighRiskAlerts() {
-  if (!state.settings?.enableHighRiskAlert) {
-    state.highRiskAlerts = [];
-    renderHighRiskBanner();
-    return;
-  }
-  try {
-    const r = await api("/api/high-risk-alerts");
-    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : [];
-  } catch {
-    /* 拉取失败不阻断；下次刷新再试 */
-  }
-  renderHighRiskBanner();
-}
-
-function renderHighRiskBanner() {
-  const alerts = state.settings?.enableHighRiskAlert ? state.highRiskAlerts || [] : [];
-  if (!alerts.length) {
-    highRiskBanner.classList.add("hidden");
-    highRiskBanner.innerHTML = "";
-    return;
-  }
-  const items = alerts
-    .map(
-      (a) =>
-        `<div class="high-risk-banner__item"><span>⚠ ${escapeHtml(a.label || "报告")}：${escapeHtml(a.reason || "高危")}</span><button type="button" data-hazard-open="${escapeHtml(a.reportId)}">查看</button></div>`,
-    )
-    .join("");
-  highRiskBanner.innerHTML =
-    `<div class="high-risk-banner__head"><span>高危报告提示（${alerts.length}）</span><button type="button" data-hazard-ack-all>全部忽略</button></div>` +
-    `<div class="high-risk-banner__list">${items}</div>`;
-  highRiskBanner.classList.remove("hidden");
-}
-
-async function ackHazard(reportId) {
-  try {
-    const r = await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ reportId }) });
-    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId);
-  } catch {
-    state.highRiskAlerts = (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId); // 本地兜底移除
-  }
-  renderHighRiskBanner();
-}
-
-highRiskBanner.addEventListener("click", async (event) => {
-  const openBtn = event.target.closest?.("[data-hazard-open]");
-  if (openBtn) {
-    const reportId = openBtn.dataset.hazardOpen;
-    openReportOverlay(reportId, { title: reportId }); // 点开即消
-    await ackHazard(reportId);
-    return;
-  }
-  if (event.target.closest?.("[data-hazard-ack-all]")) {
-    try {
-      await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ all: true }) });
-    } catch {
-      /* 忽略：本地也清空 */
-    }
-    state.highRiskAlerts = [];
-    renderHighRiskBanner();
-  }
-});
 
 // 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
-setInterval(() => void loadHighRiskAlerts(), 60_000);
+setInterval(() => void highRiskBanner.load(), 60_000);
 
 // 总览用的"可运行测试目标"：统一走 resolveRunnableTargets（单一事实源）。
 function runnableTargets() {
