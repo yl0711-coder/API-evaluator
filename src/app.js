@@ -35,6 +35,7 @@ import { renderTrendChart } from "../shared/trend-chart.mjs";
 import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "./workflow-guide.js";
 import { buildDemoData } from "./demo-data.js";
 import { requireElement, requireElements } from "./dom-utils.js";
+import { installAppearance } from "./appearance.js";
 import { createKeyModal } from "./key-modal.js";
 import { renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
@@ -300,69 +301,9 @@ navButtons.forEach((button) => {
   });
 });
 
-// 侧边栏折叠：切换 #app.sidebar-collapsed，并把状态持久化到本机
-const SIDEBAR_COLLAPSED_KEY = "evaluator:sidebar-collapsed";
-const readSidebarCollapsed = () => {
-  try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
-  } catch {
-    return false;
-  }
-};
-const writeSidebarCollapsed = (on) => {
-  try {
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, on ? "1" : "0");
-  } catch {
-    /* 隐私模式：忽略 */
-  }
-};
-
-const appEl = requireElement("#app");
-const sidebarToggle = requireElement("#sidebar-toggle");
-function applySidebarCollapsed(on) {
-  appEl.classList.toggle("sidebar-collapsed", on);
-  sidebarToggle.setAttribute("aria-expanded", String(!on));
-  const label = on ? "展开侧边栏" : "收起侧边栏";
-  sidebarToggle.setAttribute("aria-label", label);
-  sidebarToggle.title = label;
-}
-applySidebarCollapsed(readSidebarCollapsed());
-sidebarToggle.addEventListener("click", () => {
-  const on = !appEl.classList.contains("sidebar-collapsed");
-  applySidebarCollapsed(on);
-  writeSidebarCollapsed(on);
-});
-
-// 外观：更好的光影（背景橙色渐变流光）。纯本机显示偏好，存 localStorage、即时生效，
-// 与服务器设置无关（不走「保存设置」流程）。
-const BETTER_LIGHTING_KEY = "evaluator:better-lighting";
-const readBetterLighting = () => {
-  try {
-    return localStorage.getItem(BETTER_LIGHTING_KEY) === "1";
-  } catch {
-    return false;
-  }
-};
-const writeBetterLighting = (on) => {
-  try {
-    localStorage.setItem(BETTER_LIGHTING_KEY, on ? "1" : "0");
-  } catch {
-    /* 隐私模式：忽略 */
-  }
-};
-const betterLightingToggle = requireElement("#set-better-lighting");
-function applyBetterLighting(on) {
-  document.body.classList.toggle("better-lighting", on);
-  betterLightingToggle.checked = on;
-}
-applyBetterLighting(readBetterLighting());
-betterLightingToggle.addEventListener("change", (event) => {
-  // 它在 #settings-form 内，但即时生效、不走「保存设置」：阻止冒泡，
-  // 免得表单的 change 监听把它误标为「设置未保存」。
-  event.stopPropagation();
-  applyBetterLighting(betterLightingToggle.checked);
-  writeBetterLighting(betterLightingToggle.checked);
-});
+// 本机显示偏好（侧边栏折叠 + 更好的光影）：见 src/appearance.js。
+// 启动即应用，无需 showPage 派发——它们是全局外观，不属于任何一页。
+installAppearance();
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-go-page]");
