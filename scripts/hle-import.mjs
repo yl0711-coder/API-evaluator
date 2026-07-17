@@ -57,7 +57,6 @@ const ANSWER_DISCIPLINE =
   "Reason briefly (a few sentences at most) so your output is not cut off, then put ONLY " +
   "your final answer (no extra words) inside <solution></solution> tags. " +
   "The <solution> block must be the last thing you output.";
-const ANSWER_SUFFIX = "\n\n---\n" + ANSWER_DISCIPLINE;
 
 // 有效数字位数：去符号/小数点/前导零后剩余数字位数（对本题库的数值答案足够）。
 function countSigFigs(mantissa) {

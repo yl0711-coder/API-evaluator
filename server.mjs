@@ -83,7 +83,7 @@ import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobV
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
-import { appendJsonLine, compactDate, hasProxyEnv, requiredString, safeJson, sendJson } from "./server/utils.mjs";
+import { appendJsonLine, compactDate, hasProxyEnv, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
 import {
   authenticate,

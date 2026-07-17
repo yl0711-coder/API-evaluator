@@ -57,8 +57,8 @@ function withTag(scenario) {
   return { ...scenario, tag };
 }
 
-// —— 分组解析：每个场景一个分组。显式 group 优先；否则按 bank 归入初始 5 组（与 scenarioGroups 默认清单一致）。——
-const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic", "编程硬核"];
+// —— 分组解析：每个场景一个分组。显式 group 优先；否则按 bank 归入下方 BANK_GROUP 的目标分组
+// （与 settings-store.mjs 的 DEFAULT_SCENARIO_GROUPS 默认清单一致，那份是唯一的活定义）。——
 const BANK_GROUP = {
   basic: "基础",
   coding: "基础",

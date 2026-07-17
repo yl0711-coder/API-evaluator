@@ -866,7 +866,6 @@ createTaskFormController({
 // —— 压力测试：闭环/开环 + 负载扫描，走 task-manager 后台 + 进度轮询 + 可取消（仅超管，入口 data-requires-admin）——
 const LOAD_PROFILE_LABEL = { simple: "简单", think: "轻思考", coding: "编程" };
 const loadTestModeSelect = requireElement("#load-test-mode");
-const loadTestLoadsInput = requireElement("#load-test-loads");
 const loadTestLoadLabel = requireElement("#load-test-load-label");
 const loadTestMaxInFlightField = requireElement("#load-test-maxinflight-field");
 const loadTestBurstField = requireElement("#load-test-burst-field");
@@ -2065,22 +2064,6 @@ function renderStabilitySummary(result) {
 
 function renderScenarioSummary(result) {
   renderScenarioSummaryPanel(scenarioSummary, result);
-}
-
-async function copyReportText(kind) {
-  const text = state.latestReportCopies[kind] || "";
-  if (!text) {
-    toast("当前没有可复制的报告。", true);
-    return;
-  }
-
-  // copyText 失败会抛错：必须接住并提示，否则点击 handler 的 promise 静默拒绝，用户什么都看不到。
-  try {
-    await copyText(text);
-    toast("摘要和报告路径已复制。");
-  } catch (error) {
-    toast(`复制失败：${error.message}`, true);
-  }
 }
 
 function getCopyableReportText(result, fallbackText) {

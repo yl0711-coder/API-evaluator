@@ -117,6 +117,11 @@ export function createAutoTestConfig({ state, confirm }) {
     formTitle.textContent = "新建自动测试作业";
   }
   resetBtn.addEventListener("click", resetForm);
+  // 「刷新」按钮：此前 reloadBtn 取到了却从未绑事件，页面上的按钮点了没反应（Biome noUnusedVariables 发现）。
+  // 绑 loadJobs 而非 load：按钮位于作业列表标题栏（index.html 的 .atc-list-head），作用域就是这张列表；
+  // load() 还会 cascade.refresh(...) 重渲染渠道/模型下拉，会清掉用户正在填的表单选择。
+  // 对照 developer.js:488 的同款按钮——那个刷新的是整页，故绑 load。
+  reloadBtn.addEventListener("click", loadJobs);
 
   // 表单 → 作业载荷。稳定性额外带测试文案（prompt）与预设 id；场景不再带重复次数（默认 1）。
   function collect() {

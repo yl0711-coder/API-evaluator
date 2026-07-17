@@ -6,7 +6,7 @@
 //   node scripts/compare-eval-reports.mjs "<文件夹A>" "<文件夹B>"
 // 不传参时默认对比 Evaluation Report/新建文件夹 与 Evaluation Report/新建文件夹 (2)。
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { aggregateSubject, buildComparison, formatCompareReportMarkdown } from "../server/report-compare.mjs";
 
