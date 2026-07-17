@@ -410,6 +410,59 @@ export function scenarioDataFromSummary(summary) {
 
 const numOrNull = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
+// —— 稳定性(run)报告：用结构化 summary 覆盖那些靠 kv() 查中文标签得来的数值 ——
+// 入参 base ＝ parseRunReport(md) 的结果；summary ＝ test_runs.raw_json。
+// 返回 base 的副本，数值字段改用库里的原生值。
+//
+// 为什么是「覆盖」而非「完全取代」（与 scenario 的做法不同）：
+//   parseRunReport 的 16 个数值字段靠 kv(s4,"平均首包") 这类中文标签取值，标签一改就返回 null——
+//   这些字段库里都有（已核实 compare 可读的 38 份 run 报告 100% 齐全），故全部改从库里取。
+//   但 latencySamples/latencyRounds 是逐轮原始样本，被 slimSummaryForStorage 砍掉了，库里没有；
+//   而它们要喂 bootstrapDiffCI 算两模型延迟差的置信区间，是对比的统计核心，不能丢。
+//   逐轮数据只在 test_requests 里，取它就得按 case_id 过滤——那张表是所有请求的共享日志，
+//   混着准入探测、指纹探测，以及 ai-report-analysis（生成报告里那段 AI 分析的 LLM 调用，
+//   34 个 run 中招）。差分实验实测：不过滤就会把 23 秒的 AI 调用当成一次测试轮，
+//   平均耗时从 9285ms 变成 12733ms —— 那是在造一个新的静默算错。
+//   故本次不碰 test_requests：样本继续从 md 的「单轮明细」表拿。
+//
+// 残留耦合与它为何可接受：单轮明细表仍靠 3 个表头（结果/总耗时/首包）解析。
+//   但此时聚合值已来自库，万一表头变了 → latencyRounds 为空 → latencyStatsFrom 会
+//   自动回退到这些聚合值并标 recomputed:false（那是它本就有的兜底）。
+//   即：从「静默算错」变成「优雅降级为正确的聚合值」，只损失 bootstrap 置信区间。
+//   契约测试 tests/report-compare-contract.test.mjs 另行钉住这 3 个表头。
+//
+// 不覆盖的字段（库里没有对应结构化值，仍从 md 来）：
+//   ci95Text / baselineText / baselineRegressed / billingAudit / tokenInflation —— 均为文本或从文本反推。
+export function overlayRunDataFromSummary(base, summary) {
+  if (!base || !summary || typeof summary !== "object") return base;
+  const pick = (key, fallback) => (typeof summary[key] === "number" && Number.isFinite(summary[key]) ? summary[key] : fallback);
+  const rounds = pick("rounds", base.rounds);
+  const rate = typeof summary.successRate === "number" ? summary.successRate : base.rate;
+  const succ = pick("successCount", base.succ);
+  return {
+    ...base,
+    rate,
+    succ,
+    // total：md 的成功率写作「80% (8/10)」，pctCount 从括号里取分母；库里对应 rounds。
+    total: pick("rounds", base.total),
+    avgFirstByteMs: pick("avgFirstByteMs", base.avgFirstByteMs),
+    avgTotalMs: pick("avgTotalMs", base.avgTotalMs),
+    p50TotalMs: pick("p50TotalMs", base.p50TotalMs),
+    p95TotalMs: pick("p95TotalMs", base.p95TotalMs),
+    p99TotalMs: pick("p99TotalMs", base.p99TotalMs),
+    minMs: pick("minTotalMs", base.minMs),
+    maxMs: pick("maxTotalMs", base.maxMs),
+    avgOutputChars: pick("avgOutputChars", base.avgOutputChars),
+    inputTokens: pick("inputTokens", base.inputTokens),
+    outputTokens: pick("outputTokens", base.outputTokens),
+    estCost: pick("estimatedCost", base.estCost),
+    rounds,
+    concurrency: pick("concurrency", base.concurrency),
+    // errorCounts：库里是 { normalized_error: count } 对象，与 parseErrorDist 的产出同形。
+    errorCounts: summary.errorCounts && typeof summary.errorCounts === "object" ? summary.errorCounts : base.errorCounts,
+  };
+}
+
 export function parseAdmissionReport(md) {
   const s1 = section(md, "准入结论");
   const s3 = section(md, "关键指标");
@@ -476,7 +529,11 @@ export function parseAdmissionReport(md) {
 // md 解析保留为兜底——老报告、孤儿报告、库不可用时仍要能对比。
 function parseOne(name, md, summary) {
   const type = detectReportType(name, md);
-  if (type === "run") return { name, type, data: parseRunReport(md) };
+  if (type === "run") {
+    // 稳定性：数值字段改从库里取（覆盖），逐轮样本仍从 md 拿 —— 原因见 overlayRunDataFromSummary。
+    const base = parseRunReport(md);
+    return { name, type, data: summary ? overlayRunDataFromSummary(base, summary) : base, source: summary ? "db+md" : "md" };
+  }
   if (type === "scenario") {
     const structured = summary ? scenarioDataFromSummary(summary) : null;
     return { name, type, data: structured || parseScenarioReport(md), source: structured ? "db" : "md" };

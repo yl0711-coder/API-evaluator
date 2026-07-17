@@ -14,8 +14,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatScenarioReport } from "../server/reporting.mjs";
-import { parseScenarioReport, scenarioDataFromSummary } from "../server/report-compare.mjs";
+import { formatScenarioReport, formatStabilityReport } from "../server/reporting.mjs";
+import { parseScenarioReport, parseRunReport, scenarioDataFromSummary, overlayRunDataFromSummary } from "../server/report-compare.mjs";
 
 // 最小可用的场景 summary。字段取自真实的 test_runs.raw_json 结构
 // （results[].scenarios[] 各含 scenarioId/scenarioName/category/count/successCount/
@@ -142,4 +142,110 @@ test("结构化路：summary 无 results 时返回 null（调用方据此回退�
   assert.equal(scenarioDataFromSummary(null), null);
   assert.equal(scenarioDataFromSummary({}), null);
   assert.equal(scenarioDataFromSummary({ results: [] }), null);
+});
+
+// —— 稳定性(run)报告 ——
+// parseRunReport 的 16 个数值字段靠 kv(s4,"平均首包") 这类中文标签取值，标签一改就返回 null、
+// 静默算错。overlayRunDataFromSummary 改从 test_runs.raw_json 取这些值。
+// 本组测试钉住：两条路必须给出同一批数字。
+
+function buildRunSummary() {
+  return {
+    runId: "run-contract-test",
+    type: "stability",
+    profileId: "p1",
+    profileName: "契约测试渠道 / model-x",
+    profileRole: "target",
+    provider: "test",
+    model: "model-x",
+    protocol: "openai_chat",
+    channelCode: "test",
+    startedAt: "2026-07-17T00:00:00.000Z",
+    endedAt: "2026-07-17T00:02:00.000Z",
+    durationMs: 120000,
+    rounds: 10,
+    concurrency: 2,
+    successCount: 8,
+    failureCount: 2,
+    successRate: 0.8,
+    successRateText: "80% (8/10)",
+    successRateCi: { ci95Lower: 0.49, ci95Upper: 0.94, method: "wilson" },
+    avgFirstByteMs: 1200,
+    avgTotalMs: 3400,
+    p50TotalMs: 3000,
+    p95TotalMs: 8000,
+    p99TotalMs: 9500,
+    minTotalMs: 900,
+    maxTotalMs: 9800,
+    avgOutputChars: 512,
+    inputTokens: 1150,
+    outputTokens: 2300,
+    estimatedCost: 0.0123,
+    estimatedRevenue: 0.02,
+    estimatedGrossProfit: 0.0077,
+    estimatedGrossMargin: 0.385,
+    errorCounts: { timeout: 2 },
+    diagnostics: [],
+    recommendation: { level: "warn", title: "需关注", detail: "成功率偏低。" },
+    promptPreview: "ping",
+    actualConsumption: { inputTokens: 1150, outputTokens: 2300, estimatedCost: 0.0123, hasPrices: true, currency: "USD" },
+  };
+}
+
+// records：单轮明细表的数据源。给 2 条足够渲染出表格，让 parseRunReport 有东西可解析。
+function buildRunRecords() {
+  return [
+    { caseId: "round-1", success: true, statusCode: 200, firstByteMs: 900, totalMs: 3000, outputChars: 500 },
+    { caseId: "round-2", success: false, statusCode: 504, firstByteMs: null, totalMs: 9800, normalizedError: "timeout", outputChars: 0 },
+  ];
+}
+
+test("契约：run 报告的数值字段，md 解析路 与 库覆盖路 一致", () => {
+  const summary = buildRunSummary();
+  const md = formatStabilityReport(summary, buildRunRecords(), {});
+  const viaMd = parseRunReport(md);
+  const merged = overlayRunDataFromSummary(viaMd, summary);
+
+  // 这些字段在 md 里靠中文标签取；覆盖后应等于 summary 里的原生值。
+  const checks = [
+    ["rate", 0.8],
+    ["succ", 8],
+    ["total", 10],
+    ["avgFirstByteMs", 1200],
+    ["avgTotalMs", 3400],
+    ["p50TotalMs", 3000],
+    ["p95TotalMs", 8000],
+    ["p99TotalMs", 9500],
+    ["minMs", 900],
+    ["maxMs", 9800],
+    ["avgOutputChars", 512],
+    ["inputTokens", 1150],
+    ["outputTokens", 2300],
+    ["rounds", 10],
+    ["concurrency", 2],
+  ];
+  for (const [field, expected] of checks) {
+    assert.equal(merged[field], expected, `覆盖后的 ${field} 应等于 summary 原生值`);
+    // 关键：md 路也必须解出同一个值 —— 否则说明两条路语义已漂移（或 reporting 的标签变了）
+    assert.equal(viaMd[field], expected, `md 解析出的 ${field} 应与 summary 一致（不一致＝标签漂移或口径分歧）`);
+  }
+  assert.deepEqual(merged.errorCounts, { timeout: 2 }, "errorCounts 应取库里的对象");
+});
+
+test("契约：逐轮样本仍来自 md（库里没有），覆盖不得把它们弄丢", () => {
+  const summary = buildRunSummary();
+  const md = formatStabilityReport(summary, buildRunRecords(), {});
+  const viaMd = parseRunReport(md);
+  const merged = overlayRunDataFromSummary(viaMd, summary);
+  // latencySamples 要喂 bootstrapDiffCI 算延迟差置信区间，是对比的统计核心，不能被覆盖掉。
+  assert.ok(viaMd.latencySamples.length > 0, "md 应解析出逐轮样本");
+  assert.deepEqual(merged.latencySamples, viaMd.latencySamples, "覆盖不得改动 latencySamples");
+  assert.deepEqual(merged.latencyRounds, viaMd.latencyRounds, "覆盖不得改动 latencyRounds");
+});
+
+test("覆盖路：无 summary 时原样返回（调用方据此保持改动前的行为）", () => {
+  const base = { type: "run", rate: 0.5, avgTotalMs: 100 };
+  assert.equal(overlayRunDataFromSummary(base, null), base);
+  assert.equal(overlayRunDataFromSummary(base, undefined), base);
+  assert.equal(overlayRunDataFromSummary(null, {}), null);
 });
