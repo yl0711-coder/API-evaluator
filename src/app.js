@@ -32,7 +32,6 @@ import {
 import { renderRequestList, renderTaskEventList, renderTestRunList } from "./history-view.js";
 import { renderTrendChart } from "../shared/trend-chart.mjs";
 import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "./workflow-guide.js";
-import { buildDemoData } from "./demo-data.js";
 import { requireElement, requireElements } from "./dom-utils.js";
 import { installAppearance } from "./appearance.js";
 import { createManual } from "./manual.js";
@@ -75,7 +74,6 @@ const state = {
   activeTasks: {},
   projectInfo: loadProjectInfo(),
   latestStandardProfileId: "",
-  demoMode: false,
   health: null,
 };
 
@@ -255,7 +253,6 @@ const statTodosChips = requireElement("#stat-todos-chips");
 const dashboardRecent = requireElement("#dashboard-recent");
 const nextAction = requireElement("#next-action");
 const workflowSteps = requireElements(".workflow-step");
-const demoModeBanner = requireElement("#demo-mode-banner");
 const quickFailureActions = requireElement("#quick-failure-actions");
 const keyModal = requireElement("#key-modal");
 const keyModalForm = requireElement("#key-modal-form");
@@ -313,8 +310,6 @@ document.addEventListener("click", (event) => {
   showPage(button.dataset.goPage);
 });
 
-requireElement("#load-demo-data").addEventListener("click", enableDemoMode);
-requireElement("#exit-demo-mode").addEventListener("click", disableDemoMode);
 requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
 });
@@ -1337,12 +1332,6 @@ function showPage(page) {
 }
 
 async function loadProfiles() {
-  if (state.demoMode) {
-    renderProfileOptions();
-    renderDashboard();
-    updateEstimates();
-    return;
-  }
   state.profiles = await api("/api/profiles");
   renderProfileOptions();
   renderDashboard();
@@ -1463,12 +1452,6 @@ settingsForm.addEventListener("submit", async (event) => {
 });
 
 async function loadRequests() {
-  if (state.demoMode) {
-    renderRequests();
-    renderDashboard();
-    renderDeliveryViews();
-    return;
-  }
   state.requests = await api("/api/requests/recent");
   renderRequests();
   renderDashboard();
@@ -1476,12 +1459,6 @@ async function loadRequests() {
 }
 
 async function loadTestRuns() {
-  if (state.demoMode) {
-    renderTestRuns();
-    renderDashboard();
-    renderDeliveryViews();
-    return;
-  }
   state.testRuns = await api("/api/test-runs/recent");
   renderTestRuns();
   renderDashboard();
@@ -1489,11 +1466,6 @@ async function loadTestRuns() {
 }
 
 async function loadTaskEvents() {
-  if (state.demoMode) {
-    renderTaskEvents();
-    renderDeliveryViews();
-    return;
-  }
   state.taskEvents = await api("/api/tasks/recent");
   renderTaskEvents();
   renderDeliveryViews();
@@ -1503,16 +1475,14 @@ async function loadTaskEvents() {
 // loadTaskEvents]) 会触发 renderDeliveryViews ×3 / renderDashboard ×2，整页
 // innerHTML 重建多次（抖动、丢滚动位置、打断正在复制的 <pre>）。
 async function loadResultsBundle() {
-  if (!state.demoMode) {
-    const [requests, testRuns, taskEvents] = await Promise.all([
-      api("/api/requests/recent"),
-      api("/api/test-runs/recent"),
-      api("/api/tasks/recent"),
-    ]);
-    state.requests = requests;
-    state.testRuns = testRuns;
-    state.taskEvents = taskEvents;
-  }
+  const [requests, testRuns, taskEvents] = await Promise.all([
+    api("/api/requests/recent"),
+    api("/api/test-runs/recent"),
+    api("/api/tasks/recent"),
+  ]);
+  state.requests = requests;
+  state.testRuns = testRuns;
+  state.taskEvents = taskEvents;
   renderResultsViews();
 }
 
@@ -1593,43 +1563,6 @@ highRiskBanner.addEventListener("click", async (event) => {
 
 // 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
 setInterval(() => void loadHighRiskAlerts(), 60_000);
-
-function enableDemoMode() {
-  const demoData = buildDemoData();
-  state.demoMode = true;
-  state.profiles = demoData.profiles.map((item) => ({ ...item }));
-  state.requests = demoData.requests.map((item) => ({ ...item }));
-  state.testRuns = demoData.testRuns.map((item) => ({ ...item }));
-  state.taskEvents = demoData.taskEvents.map((item) => ({ ...item }));
-  demoModeBanner.classList.remove("hidden");
-  renderProfileOptions();
-  renderRequests();
-  renderTestRuns();
-  renderTaskEvents();
-  renderDashboard();
-  renderDeliveryViews();
-  showPage("reports");
-  toast("已进入演示模式，不会发起真实请求。");
-}
-
-async function disableDemoMode() {
-  state.demoMode = false;
-  demoModeBanner.classList.add("hidden");
-  await Promise.all([loadProfiles(), loadRequests(), loadTestRuns(), loadTaskEvents()]);
-  showPage("dashboard");
-  toast("已退出演示模式，恢复本机真实数据。");
-}
-
-// 演示模式下统一拦截所有写操作（删除/导出/导入/改 Key 等）。
-// demo 数据 id 是假的，放行会打到后端，假 id 碰撞真实配置时可能误删，违背“不写本机”承诺。
-// 被拦截返回 true（调用方据此 return）。
-function assertNotDemo(actionLabel = "这个操作") {
-  if (state.demoMode) {
-    toast(`演示模式不能${actionLabel}。请退出演示模式后再操作。`, true);
-    return true;
-  }
-  return false;
-}
 
 // 总览用的"可运行测试目标"：统一走 resolveRunnableTargets（单一事实源）。
 function runnableTargets() {
@@ -1803,7 +1736,6 @@ function renderWorkflowGuide() {
 }
 
 async function updateProfileKey(profileId) {
-  if (assertNotDemo("保存 Key")) return;
   const apiKey = await keyPrompt.requestApiKey();
   if (!apiKey) {
     return;

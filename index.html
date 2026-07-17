@@ -51,14 +51,6 @@
       <main class="main">
         <div id="high-risk-banner" class="high-risk-banner hidden" role="alert"></div>
 
-        <div id="demo-mode-banner" class="demo-banner hidden">
-          <div>
-            <strong>正在查看演示数据</strong>
-            <span>这些数据只用于熟悉界面，不会发起真实请求，也不会写入本机配置。</span>
-          </div>
-          <button id="exit-demo-mode" class="secondary" type="button">退出演示模式</button>
-        </div>
-
         <section class="page active" id="dashboard">
           <div class="dash">
             <!-- 空状态：无被测配置时显示（app.js 切换）-->
@@ -73,7 +65,7 @@
                 <span class="ms"><b>4</b> 标准评测</span>
               </div>
               <button class="primary" type="button" data-go-page="channels" data-requires-admin>配置第一个渠道 →</button>
-              <div class="links">先不配置？<button id="load-demo-data" class="linklike" type="button">查看演示数据</button> · <button class="linklike" type="button" data-go-page="manual">打开操作手册</button></div>
+              <div class="links">先不配置？<button class="linklike" type="button" data-go-page="manual">打开操作手册</button></div>
             </div>
 
             <!-- 常态：有配置时显示 -->
