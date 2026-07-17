@@ -1,5 +1,3 @@
-import { formatNumber } from "./client-utils.js";
-
 export function recommendationClass(level) {
   return (
     {
@@ -8,34 +6,6 @@ export function recommendationClass(level) {
       fail: "fail",
     }[level] || "muted"
   );
-}
-
-// 预测 vs 实际消耗（跑前预估 token/请求 vs 跑后真实 token/成本，含裁判审计）。
-export function formatConsumptionLines(result) {
-  const lines = [];
-  const p = result?.predictedConsumption;
-  if (p && (Number.isFinite(Number(p.requests)) || Number.isFinite(Number(p.highTokens)))) {
-    const bits = [];
-    if (Number.isFinite(Number(p.requests))) bits.push(`${p.requests} 次请求`);
-    if (Number.isFinite(Number(p.lowTokens)) && Number.isFinite(Number(p.highTokens))) {
-      bits.push(`预计 ${formatNumber(p.lowTokens)}–${formatNumber(p.highTokens)} tokens`);
-    }
-    lines.push(`预测消耗：${bits.join(" · ")}`);
-  }
-  const actualCost = result?.actualConsumption?.totalCost ?? result?.estimatedCost ?? null;
-  const judge = result?.actualConsumption?.judge || null;
-  const bits = [];
-  const inTok = Number(result?.inputTokens);
-  const outTok = Number(result?.outputTokens);
-  if (Number.isFinite(inTok) || Number.isFinite(outTok)) {
-    bits.push(`输入 ${formatNumber(inTok || 0)} / 输出 ${formatNumber(outTok || 0)} tokens`);
-  }
-  if (typeof actualCost === "number" && Number.isFinite(actualCost)) {
-    bits.push(`成本 $${formatCost(actualCost)}`);
-    if (judge && typeof judge.cost === "number") bits.push(`含裁判 ${judge.calls} 次 / $${formatCost(judge.cost)}`);
-  }
-  if (bits.length) lines.push(`实际消耗：${bits.join(" · ")}`);
-  return lines;
 }
 
 export function formatTaskType(type) {
@@ -97,22 +67,6 @@ export function taskStatusClass(status) {
   );
 }
 
-export function formatResult(result) {
-  const statusText = result.success ? "这条配置可以正常请求。" : "这条配置暂时不能正常使用。";
-  const issueText = result.success ? "没有发现明显问题。" : `问题类型：${result.normalizedError || "未知错误"}。`;
-  const lines = [
-    `结论：${result.success ? "可继续测试" : "先不要继续测试"}`,
-    `说明：${statusText}`,
-    `问题：${issueText}`,
-    `耗时：${result.totalMs ?? "-"} ms`,
-    `输出长度：${result.outputChars ?? 0} 字符`,
-    "",
-    "响应摘要：",
-    result.responseSummary || result.rawError || "-",
-  ];
-  return lines.join("\n");
-}
-
 export function formatBatchResult(result) {
   const lines = [
     `批次：${result.batchId}`,
@@ -121,47 +75,6 @@ export function formatBatchResult(result) {
     `每个 API 轮数：${result.rounds}`,
     `总耗时：${result.durationMs} ms`,
     `报告文件：${result.reportPath || "-"}`,
-    `JSON 原始结果：${result.rawJsonPath || "-"}`,
-  ];
-  return lines.join("\n");
-}
-
-export function formatStabilityResult(result) {
-  const lines = [
-    `测试 ID：${result.runId || "-"}`,
-    `被测 API：${result.profileName || "-"}`,
-    `模型：${result.model || "-"}`,
-    `测试轮数：${result.rounds ?? "-"}`,
-    `成功率：${result.successRateText || "-"}`,
-    `平均耗时：${result.avgTotalMs || "-"} ms`,
-    `慢请求参考：${result.p95TotalMs ?? "-"} ms`,
-    `结论：${result.recommendation?.title || "-"}`,
-    `说明：${result.recommendation?.detail || "-"}`,
-    ...formatConsumptionLines(result),
-    `Markdown 报告：${result.reportPath || "-"}`,
-    `HTML 报告：${result.reportHtmlPath || "-"}`,
-    ...(result.aiAnalysisHtmlPath ? [`AI 分析报告（独立 HTML）：${result.aiAnalysisHtmlPath}`] : []),
-    `JSON 原始结果：${result.rawJsonPath || "-"}`,
-  ];
-  return lines.join("\n");
-}
-
-export function formatScenarioResult(result) {
-  const reports = Array.isArray(result.reports) ? result.reports.filter(Boolean) : [];
-  const reportLines = reports.length
-    ? [`每模型报告（共 ${reports.length} 篇，见报告中心/浮层）：`, ...reports.map((r) => `- ${r.label || r.model || "报告"}`)]
-    : [
-        `报告文件：${result.reportPath || "-"}`,
-        ...(result.aiAnalysisHtmlPath ? [`AI 分析报告（独立 HTML）：${result.aiAnalysisHtmlPath}`] : []),
-      ];
-  const lines = [
-    `测试 ID：${result.runId}`,
-    `被测 API：${result.profileCount}`,
-    `测试场景：${result.scenarioCount}`,
-    `每个场景重复次数：${result.repeats}`,
-    `总耗时：${result.durationMs} ms`,
-    ...formatConsumptionLines(result),
-    ...reportLines,
     `JSON 原始结果：${result.rawJsonPath || "-"}`,
   ];
   return lines.join("\n");

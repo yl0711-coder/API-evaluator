@@ -26,8 +26,6 @@ import {
   formatBatchAdmissionResult,
   formatClientLogAnalysisResult,
   formatSupplierEvidenceResult,
-  formatScenarioResult,
-  formatStabilityResult,
 } from "./formatters.js";
 import { renderRequestList, renderTaskEventList, renderTestRunList } from "./history-view.js";
 import { renderTrendChart } from "../shared/trend-chart.mjs";
@@ -67,14 +65,8 @@ const state = {
   highRiskAlerts: [], // 高危报告提示：未读高危报告清单（来自 /api/high-risk-alerts）
   scenarios: [],
   manualLoaded: false,
-  latestReportCopies: {
-    stability: "",
-    scenario: "",
-  },
   activeTasks: {},
   projectInfo: loadProjectInfo(),
-  latestStandardProfileId: "",
-  health: null,
 };
 
 const pages = requireElements(".page");
@@ -788,11 +780,8 @@ createTaskFormController({
   preparePayload: (payload) => payload,
   beforeStart: (payload) => {
     stabilitySummary.innerHTML = `<p class="muted">正在进行 ${payload.rounds} 轮测试。请不要关闭窗口。</p>`;
-    state.latestReportCopies.stability = "";
   },
   onSuccess: async (result) => {
-    const copyableSummary = getCopyableReportText(result, formatStabilityResult(result));
-    state.latestReportCopies.stability = copyableSummary;
     renderStabilitySummary(result);
     await loadResultsBundle();
     toast("稳定性测试完成。");
@@ -1006,11 +995,8 @@ createTaskFormController({
   },
   beforeStart: (payload) => {
     scenarioSummary.innerHTML = `<p class="muted">正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。</p>`;
-    state.latestReportCopies.scenario = "";
   },
   onSuccess: async (result) => {
-    const copyableSummary = getCopyableReportText(result, formatScenarioResult(result));
-    state.latestReportCopies.scenario = copyableSummary;
     renderScenarioSummary(result);
     await loadResultsBundle();
     toast("场景测试完成。");
@@ -1269,7 +1255,6 @@ wireUnauthorizedRedirect();
 
 try {
   await Promise.all([
-    loadHealth(),
     loadProfiles(),
     loadScenarios(),
     loadRequests(),
@@ -1343,10 +1328,6 @@ async function loadScenarios() {
   renderScenarioOptions();
   channelAdmin.renderTagOptions(); // 场景库就绪后渲染「配置模型」的标签勾选项。
   updateEstimates();
-}
-
-async function loadHealth() {
-  state.health = await api("/api/health");
 }
 
 // —— 设置页：AI 总结模型 / 场景题库开关（脱离环境变量，存本机）——

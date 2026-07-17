@@ -33,7 +33,6 @@ export function createStandardEvalController({
     if (running) return; // 防双击/确认框 await 期间重复提交（最贵流程，重复=重复扣额度）
     const payload = Object.fromEntries(new FormData(form).entries());
     const scenarioIds = pickStandardScenarioIds(state.scenarios);
-    state.latestStandardProfileId = payload.profileId || "";
     if (!payload.profileId) {
       toast("请先选择一个被测 API。", true);
       return;
