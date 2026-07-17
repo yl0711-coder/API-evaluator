@@ -48,6 +48,7 @@ import {
   pruneReports,
   queryLastTestedByProfile,
   queryRecentReports,
+  queryReportSummariesByBase,
   queryRegressionAlerts,
   querySpendSummary,
 } from "./server/db.mjs";
@@ -238,7 +239,25 @@ async function loadBalancedCompareFiles(A, B) {
       userMessage: "两个对象没有可对比的共同报告：没有同名场景，稳定性 / 准入也未双方都有。请让两者至少跑一个相同的场景，或同一类测试。",
     };
   }
+  // 给每份报告挂上当初生成它的结构化 summary（test_runs.raw_json），让场景报告不必再从
+  // 渲染后的 markdown 表格里反解析数字（B2）。取不到的照旧解析 md —— 老报告/孤儿报告/库不可用都得能对比。
+  // 放在平衡之后：此时只剩真正参与对比的报告，查库量最小。
+  await attachSummaries([...balA, ...balB]);
   return { balA, balB };
+}
+
+// 按报告文件名批量取结构化 summary 并挂到 file.summary 上（原地改）。
+// 整体 try 兜底：对比功能不该因为库读不到而挂掉——最坏就是全部回退解析 md，即改动前的行为。
+async function attachSummaries(files) {
+  try {
+    const byBase = await queryReportSummariesByBase(files.map((f) => f.name));
+    for (const f of files) {
+      const s = byBase.get(f.name);
+      if (s) f.summary = s;
+    }
+  } catch (error) {
+    console.warn(`[compare] 读结构化报告数据失败，回退解析 markdown：${error?.message || error}`);
+  }
 }
 
 const httpServer = createServer(async (req, res) => {

@@ -8,6 +8,9 @@
 // 指纹横向对照（与同模型其它渠道是否一致）、准入分项、逐场景失败原因、按难度档位拆解，以支撑有深度的对比。
 // 缺失值 `-` 一律解析为 null（不当 0）。
 import { compareProportions, mcnemarTest, pairedTTest, wilcoxonSignedRank, wilsonInterval } from "./stats.mjs";
+// 「场景结论」与报告里显示的那列同源：调同一个纯函数，而非解析它渲染出的文字（见 scenarioDataFromSummary）。
+// reporting.mjs 无顶层 I/O（实测 import 14ms、不碰盘），故本模块仍是纯函数、可离线单测。
+import { buildScenarioReviewAdvice } from "./reporting.mjs";
 
 // —— 对比专用统计量（配对分析 / 效果量 / 两样本 bootstrap）——
 // 依据 Miller 2024《Adding Error Bars to Evals》：同名场景是「配对」样本，应用配对差值（含相关项）
@@ -357,6 +360,56 @@ export function parseScenarioReport(md) {
   return { type: "scenario", repeats, scenarios };
 }
 
+// —— 场景报告：从结构化 summary 直接构造（不解析 markdown）——
+// 数据源＝test_runs.raw_json，即当初喂给 formatScenarioReport 的同一个 summary 对象。
+// 这条路取代 parseScenarioReport 成为主路径；md 解析退居兜底（老报告/孤儿报告仍走它）。
+//
+// 为什么值得换：parseScenarioReport 靠中文表头找列（colIndex(headers,"平均质量分")），
+// 表头一改就返回 -1、整条链静默降级成 null，对比结果悄悄算错且不报错（B2）。
+// 而这些数字本来就以原生数值存在库里，没必要从渲染后的表格里再猜回来。
+//
+// 实证（227 份真实报告的差分实验）：compare 实际会读到的 145 份场景报告全部单 API、
+// 100% 有 raw_json；两条路取出的 成功率/质量分/耗时/P95 零分歧。
+// 唯一的表示差异是「全失败场景」——md 写「-」解析得 null，库里存 0，库侧更精确。
+//
+// 返回值刻意与 parseScenarioReport 逐字段同形，便于二者互换与等价测试。
+export function scenarioDataFromSummary(summary) {
+  if (!summary || typeof summary !== "object") return null;
+  const results = Array.isArray(summary.results) ? summary.results : [];
+  if (!results.length) return null;
+  const repeats = Number(summary.repeats) || 1;
+  const scenarios = [];
+  for (const result of results) {
+    for (const s of result.scenarios || []) {
+      const name = s.scenarioName;
+      if (!name) continue;
+      // 与 reporting 同源：问题摘要列＝`issues.join("; ") || "-"`（见 reporting.mjs 场景明细表构造）。
+      // 空 issues 必须给 "-" 而非 ""：下游 aggregateSubject 用 `rows.map(r=>r.issue).filter(Boolean)[0]`
+      // 挑代表值，"-" 是 truthy 而 "" 是 falsy，两者会选出不同的行 —— 给 "" 就是静默改行为。
+      // （契约测试第一次跑就抓到了这点。）
+      const issue = (Array.isArray(s.issues) ? s.issues.join("; ") : "") || "-";
+      const rate = typeof s.successRate === "number" ? s.successRate : null;
+      scenarios.push({
+        name,
+        tier: scenarioTier(name),
+        rate,
+        succ: rate == null ? null : Math.round(rate * repeats),
+        total: repeats,
+        quality: numOrNull(s.avgQualityScore),
+        avgMs: numOrNull(s.avgTotalMs),
+        p95: numOrNull(s.p95TotalMs),
+        issue,
+        // 场景结论：调 reporting 的同一个纯函数，而不是解析它渲染出的那列文字。
+        conclusion: buildScenarioReviewAdvice(s).verdict || "",
+        errored: isErrorIssue(issue),
+      });
+    }
+  }
+  return { type: "scenario", repeats, scenarios };
+}
+
+const numOrNull = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
 export function parseAdmissionReport(md) {
   const s1 = section(md, "准入结论");
   const s3 = section(md, "关键指标");
@@ -415,10 +468,19 @@ export function parseAdmissionReport(md) {
   };
 }
 
-function parseOne(name, md) {
+// summary：该报告对应的结构化数据（test_runs.raw_json），由调用方从库里取来挂在 file 上；
+// 取不到就是 undefined。目前只有场景报告走结构化路，其余仍解析 markdown。
+//
+// 为什么场景报告优先读结构化数据：解析 md 靠中文表头找列，表头一改就静默降级成 null、
+// 对比结果悄悄算错且不报错（B2）。而这些数字本来就以原生数值存在库里。
+// md 解析保留为兜底——老报告、孤儿报告、库不可用时仍要能对比。
+function parseOne(name, md, summary) {
   const type = detectReportType(name, md);
   if (type === "run") return { name, type, data: parseRunReport(md) };
-  if (type === "scenario") return { name, type, data: parseScenarioReport(md) };
+  if (type === "scenario") {
+    const structured = summary ? scenarioDataFromSummary(summary) : null;
+    return { name, type, data: structured || parseScenarioReport(md), source: structured ? "db" : "md" };
+  }
   if (type === "admission") return { name, type, data: parseAdmissionReport(md) };
   return { name, type, data: null };
 }
@@ -490,8 +552,11 @@ export function commonScenarioNames(filesA, filesB) {
 // scenarioFilter?: Set<string> —— 若给定，只保留名在其中的场景【行】（在按名归组后过滤，
 // 因此对「一份报告含多个场景」也精确到单个场景）。scenarioPass / tiers / quality 等一切场景派生量
 // 都随之只算被选场景，令「用户自选场景」在多场景报告下也能真正生效。
+// files: [{ name, md, mtimeMs, summary? }] —— summary 为该报告的结构化数据（test_runs.raw_json），
+// 由调用方（server.mjs 的 loadBalancedCompareFiles）从库里取；没有则回退解析 md。
+// 本模块不连库，保持纯函数、可离线单测。
 export function aggregateSubject({ files = [], label, scenarioFilter } = {}) {
-  const parsed = files.map((f) => parseOne(f.name, f.md));
+  const parsed = files.map((f) => parseOne(f.name, f.md, f.summary));
   const runs = parsed.filter((p) => p.type === "run").map((p) => p.data);
   const scens = parsed.filter((p) => p.type === "scenario").map((p) => p.data);
   const adms = parsed.filter((p) => p.type === "admission").map((p) => p.data);

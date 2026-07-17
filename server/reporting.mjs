@@ -1270,7 +1270,11 @@ function buildScenarioInsights(summary) {
   ];
 }
 
-function buildScenarioReviewAdvice(scenario) {
+// 导出给 report-compare 复用：模型对比需要同一个「场景结论」。
+// 让两边调同一个函数，而不是让 compare 去解析本函数渲染进 markdown 表格的那列文字——
+// 后者是字符串耦合，改一个字就静默失效（B2）。本函数是纯函数，只读 scenario 的
+// successRate / category / avgQualityScore / issues 四个字段，这四个在 test_runs.raw_json 里都有。
+export function buildScenarioReviewAdvice(scenario) {
   const issues = scenario.issues || [];
   if (scenario.successRate < 1) {
     return {
