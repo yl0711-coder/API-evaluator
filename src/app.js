@@ -34,6 +34,7 @@ import { createManual } from "./manual.js";
 import { createDashboard } from "./dashboard.js";
 import { createSettings } from "./settings.js";
 import { createTrend } from "./trend.js";
+import { createClientReplay } from "./client-replay.js";
 import { createHighRiskBanner } from "./high-risk-banner.js";
 import { createReportBrowser } from "./report-browser.js";
 import { createKeyModal } from "./key-modal.js";
@@ -385,6 +386,37 @@ createTrend({
   deps: { api, escapeHtml, renderTrendChart, createCascadeTargetPicker },
 });
 
+// 客户端回放页（日志分析 / 导入 / 回放）：见 src/client-replay.js。
+// 模块自管事件监听器，app.js 无需持有其返回值。
+createClientReplay({
+  state,
+  els: {
+    clientLogForm,
+    clientLogSubmit,
+    clientEvidenceSubmit,
+    clientLogDirectoryImport,
+    clientLogResult,
+    clientLogFile,
+    clientReplayForm,
+    clientReplayProfileSelect,
+    clientReplaySubmit,
+    clientReplayResult,
+    clientReplayExtract,
+    clientReplayBatch,
+  },
+  onProfileData,
+  deps: {
+    api,
+    toast,
+    confirmAction,
+    loadTestRuns,
+    renderDeliveryViews,
+    formatClientLogAnalysisResult,
+    formatSupplierEvidenceResult,
+    renderRunTargetSelectOptions,
+  },
+});
+
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-go-page]");
   if (!button) return;
@@ -409,13 +441,6 @@ batchTemplate.addEventListener("change", applyBatchTemplate);
 standardPromptPreset.addEventListener("change", applyStandardPromptPreset);
 stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
-clientLogForm.addEventListener("submit", analyzeClientLogs);
-clientEvidenceSubmit.addEventListener("click", generateSupplierEvidence);
-clientLogFile.addEventListener("change", importClientLogFile);
-clientLogDirectoryImport.addEventListener("click", importClientLogDirectory);
-clientReplayExtract.addEventListener("click", extractReplayRequestFromLogs);
-clientReplayForm.addEventListener("submit", replayClientRequest);
-clientReplayBatch.addEventListener("click", replayClientRequestsFromLogs);
 // input 事件每敲一个字符就触发，updateEstimates 会重建面板 innerHTML（闪烁、低端机
 // 输入延迟）。去抖 200ms，只在停止输入后渲染一次。
 function debounce(fn, ms = 200) {
@@ -826,248 +851,6 @@ createTaskFormController({
   idleButtonText: "开始场景测试",
 });
 
-async function analyzeClientLogs(event) {
-  event.preventDefault();
-  const payload = Object.fromEntries(new FormData(clientLogForm).entries());
-  if (!String(payload.logText || "").trim()) {
-    toast("请先粘贴需要分析的客户端日志。", true);
-    return;
-  }
-  clientLogSubmit.disabled = true;
-  clientLogSubmit.textContent = "正在生成报告...";
-  clientLogResult.textContent = "正在解析日志并生成报告。";
-  try {
-    const result = await api("/api/client-logs/analyze", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    clientLogResult.textContent = formatClientLogAnalysisResult(result);
-    await loadTestRuns();
-    renderDeliveryViews();
-    toast("客户端日志分析报告已生成。");
-  } catch (error) {
-    clientLogResult.textContent = `客户端日志分析失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientLogSubmit.disabled = false;
-    clientLogSubmit.textContent = "生成客户端日志分析报告";
-  }
-}
-
-async function generateSupplierEvidence() {
-  const payload = Object.fromEntries(new FormData(clientLogForm).entries());
-  if (!String(payload.logText || "").trim()) {
-    toast("请先粘贴需要整理的客户端日志。", true);
-    return;
-  }
-  clientEvidenceSubmit.disabled = true;
-  clientEvidenceSubmit.textContent = "正在生成证据包...";
-  clientLogResult.textContent = "正在整理给上游排查使用的脱敏证据包。";
-  try {
-    const result = await api("/api/client-logs/supplier-evidence", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    clientLogResult.textContent = formatSupplierEvidenceResult(result);
-    await loadTestRuns();
-    renderDeliveryViews();
-    toast("上游排查证据包已生成。");
-  } catch (error) {
-    clientLogResult.textContent = `生成上游排查证据包失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientEvidenceSubmit.disabled = false;
-    clientEvidenceSubmit.textContent = "生成上游排查证据包";
-  }
-}
-
-async function importClientLogFile() {
-  const file = clientLogFile.files?.[0];
-  if (!file) return;
-  try {
-    const text = await file.text();
-    clientLogForm.elements.sourceName.value ||= file.name;
-    clientLogForm.elements.logText.value = text;
-    clientLogResult.textContent = `已导入 ${file.name}，大小 ${Math.round(file.size / 1024)} KB。确认内容后点击“生成客户端日志分析报告”。`;
-  } catch (error) {
-    clientLogResult.textContent = `读取日志文件失败：${error.message}`;
-    toast("读取日志文件失败。", true);
-  } finally {
-    clientLogFile.value = ""; // 清空，使同一文件改动后可再次选择、重新触发 change 导入
-  }
-}
-
-async function importClientLogDirectory() {
-  const directoryPath = String(clientLogForm.elements.directoryPath.value || "").trim();
-  if (!directoryPath) {
-    toast("请先填写本机日志目录路径。", true);
-    return;
-  }
-  clientLogDirectoryImport.disabled = true;
-  clientLogDirectoryImport.textContent = "正在读取目录...";
-  clientLogResult.textContent = "正在读取本机日志目录。";
-  try {
-    const result = await api("/api/client-logs/import-directory", {
-      method: "POST",
-      body: JSON.stringify({
-        directoryPath,
-        maxFiles: 30,
-      }),
-    });
-    clientLogForm.elements.sourceName.value ||= result.sourceName || "客户端日志目录";
-    clientLogForm.elements.logText.value = result.logText || "";
-    clientLogResult.textContent = [
-      `已读取目录：${result.directoryPath || directoryPath}`,
-      `文件数量：${result.fileCount}`,
-      `读取大小：${Math.round((result.totalBytes || 0) / 1024)} KB`,
-      result.truncated ? "提示：部分文件或内容已按安全上限截断。" : "提示：目录内容已读取完成。",
-      "确认日志内容后，可以生成分析报告或上游排查证据包。",
-    ].join("\n");
-    toast("日志目录读取完成。");
-  } catch (error) {
-    clientLogResult.textContent = `读取日志目录失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientLogDirectoryImport.disabled = false;
-    clientLogDirectoryImport.textContent = "从本机目录读取日志";
-  }
-}
-
-async function extractReplayRequestFromLogs() {
-  const logText = String(clientLogForm.elements.logText.value || "").trim();
-  if (!logText) {
-    toast("请先粘贴或导入客户端日志。", true);
-    return;
-  }
-  clientReplayExtract.disabled = true;
-  clientReplayExtract.textContent = "正在提取...";
-  try {
-    const result = await api("/api/client-logs/replay-candidates", {
-      method: "POST",
-      body: JSON.stringify({
-        sourceName: clientLogForm.elements.sourceName.value,
-        logText,
-      }),
-    });
-    const candidate = result.candidates?.[0];
-    if (!candidate) {
-      clientReplayResult.textContent = "没有找到可回放请求。请确认日志里包含 request.body 或 body 字段。";
-      toast("没有找到可回放请求。", true);
-      return;
-    }
-    clientReplayForm.elements.requestJson.value = candidate.requestJson;
-    clientReplayForm.elements.sourceName.value ||= `${candidate.client || "客户端"} ${candidate.model || ""} 请求回放`.trim();
-    clientReplayResult.textContent = [
-      "已提取第一条可回放请求。",
-      `Request ID：${candidate.requestId || "-"}`,
-      `客户端：${candidate.client || "-"}`,
-      `模型：${candidate.model || "-"}`,
-      `路径：${candidate.path || "-"}`,
-      `候选数量：${result.count}`,
-      "请确认请求内容和成本后，再点击“回放这条请求”。",
-    ].join("\n");
-    toast("已提取可回放请求。");
-  } catch (error) {
-    clientReplayResult.textContent = `提取可回放请求失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientReplayExtract.disabled = false;
-    clientReplayExtract.textContent = "从上方日志提取第一条可回放请求";
-  }
-}
-
-async function replayClientRequest(event) {
-  event.preventDefault();
-  const payload = Object.fromEntries(new FormData(clientReplayForm).entries());
-  if (!payload.profileId) {
-    toast("请先选择回放使用的 API。", true);
-    return;
-  }
-  if (!String(payload.requestJson || "").trim()) {
-    toast("请先粘贴单条请求 JSON。", true);
-    return;
-  }
-  const confirmed = await confirmAction({
-    title: "确认回放真实客户端请求",
-    message: "这会真实调用所选 API，并消耗对应额度。请确认请求内容已经脱敏，且成本可接受。",
-    confirmLabel: "确认回放",
-    cancelLabel: "取消",
-  });
-  if (!confirmed) return;
-
-  clientReplaySubmit.disabled = true;
-  clientReplaySubmit.textContent = "正在回放...";
-  clientReplayResult.textContent = "正在请求 API 并生成回放报告。";
-  try {
-    const result = await api("/api/client-logs/replay", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    clientReplayResult.textContent = formatClientLogAnalysisResult(result);
-    await loadTestRuns();
-    renderDeliveryViews();
-    toast("真实客户端请求回放完成。");
-  } catch (error) {
-    clientReplayResult.textContent = `请求回放失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientReplaySubmit.disabled = false;
-    clientReplaySubmit.textContent = "回放这条请求";
-  }
-}
-
-async function replayClientRequestsFromLogs() {
-  const payload = Object.fromEntries(new FormData(clientReplayForm).entries());
-  const logText = String(clientLogForm.elements.logText.value || "").trim();
-  if (!payload.profileId) {
-    toast("请先选择回放使用的 API。", true);
-    return;
-  }
-  if (!logText) {
-    toast("请先在上方粘贴、导入或读取客户端日志。", true);
-    return;
-  }
-  const maxReplayCount = Math.min(10, Math.max(1, Number.parseInt(String(payload.maxReplayCount || "3"), 10) || 3));
-  const confirmed = await confirmAction({
-    title: "确认批量回放真实客户端请求",
-    message: `这会从上方日志中提取候选请求，并最多真实回放 ${maxReplayCount} 条，会消耗对应额度。建议只用于复现 524、504、Content block not found 等关键问题。`,
-    confirmLabel: "确认批量回放",
-    cancelLabel: "取消",
-  });
-  if (!confirmed) return;
-
-  clientReplayBatch.disabled = true;
-  clientReplayBatch.textContent = "正在批量回放...";
-  clientReplayResult.textContent = "正在提取候选请求并按上限批量回放。";
-  try {
-    const result = await api("/api/client-logs/replay-batch", {
-      method: "POST",
-      body: JSON.stringify({
-        ...payload,
-        sourceName: payload.sourceName || clientLogForm.elements.sourceName.value || "批量真实客户端请求回放",
-        logText,
-        maxReplayCount,
-      }),
-    });
-    clientReplayResult.textContent = [
-      formatClientLogAnalysisResult(result),
-      "",
-      `候选请求数：${result.replayCandidateCount ?? "-"}`,
-      `实际回放数：${result.replayedCount ?? "-"}`,
-      `回放上限：${result.replayLimit ?? maxReplayCount}`,
-    ].join("\n");
-    await loadTestRuns();
-    renderDeliveryViews();
-    toast("批量真实客户端请求回放完成。");
-  } catch (error) {
-    clientReplayResult.textContent = `批量请求回放失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientReplayBatch.disabled = false;
-    clientReplayBatch.textContent = "批量回放上方日志候选请求";
-  }
-}
-
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
 reportBrowser.setCanConfig(authUser?.canConfig); // 报告删除按钮的可见性依据（服务端另有强制鉴权）
@@ -1221,7 +1004,7 @@ _onProfileData.push((data) => loadTestCascade.refresh(data));
 _onProfileData.push((data) => admissionBatchPicker.refresh(data));
 _onProfileData.push((data) => batchPicker.refresh(data));
 _onProfileData.push((data) => scenarioPicker.refresh(data));
-_onProfileData.push((data) => renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] }));
+
 _onProfileData.push((data) => autoTestConfig.refreshTargets(data));
 _onProfileData.push((data) => modelCompare.refreshTargets(data));
 
