@@ -31,6 +31,7 @@ import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "
 import { requireElement, requireElements } from "./dom-utils.js";
 import { installAppearance } from "./appearance.js";
 import { createManual } from "./manual.js";
+import { createDashboard } from "./dashboard.js";
 import { createHighRiskBanner } from "./high-risk-banner.js";
 import { createReportBrowser } from "./report-browser.js";
 import { createKeyModal } from "./key-modal.js";
@@ -300,6 +301,26 @@ const highRiskBanner = createHighRiskBanner({ state });
 // 它自己接管 toggle 展开事件，故不进 showPage 的懒加载派发。
 // 删除按钮的可见性依赖 canConfig，须等认证完成后经 setCanConfig 推入（见下方顶层 await 之后）。
 const reportBrowser = createReportBrowser({ state });
+
+// 仪表盘（渠道健康 / 结论分布 / 待办 / 最近报告 / 工作流引导）：见 src/dashboard.js。
+const dashboard = createDashboard({
+  state,
+  els: {
+    dashboardEmpty,
+    dashboardPopulated,
+    statChannels,
+    statChannelsChips,
+    statChannelsBars,
+    statVerdicts,
+    statVerdictsChips,
+    statTodos,
+    statTodosChips,
+    dashboardRecent,
+    nextAction,
+    workflowSteps,
+  },
+  deps: { escapeHtml, resolveRunnableTargets, buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml, showPage },
+});
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-go-page]");
@@ -1127,7 +1148,7 @@ function showPage(page) {
 async function loadProfiles() {
   state.profiles = await api("/api/profiles");
   renderProfileOptions();
-  renderDashboard();
+  dashboard.render();
   updateEstimates();
 }
 
@@ -1243,14 +1264,14 @@ settingsForm.addEventListener("submit", async (event) => {
 async function loadRequests() {
   state.requests = await api("/api/requests/recent");
   renderRequests();
-  renderDashboard();
+  dashboard.render();
   renderDeliveryViews();
 }
 
 async function loadTestRuns() {
   state.testRuns = await api("/api/test-runs/recent");
   renderTestRuns();
-  renderDashboard();
+  dashboard.render();
   renderDeliveryViews();
 }
 
@@ -1279,184 +1300,13 @@ function renderResultsViews() {
   renderRequests();
   renderTestRuns();
   renderTaskEvents();
-  renderDashboard();
+  dashboard.render();
   renderDeliveryViews();
   void highRiskBanner.load(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
 }
 
 // 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
 setInterval(() => void highRiskBanner.load(), 60_000);
-
-// 总览用的"可运行测试目标"：统一走 resolveRunnableTargets（单一事实源）。
-function runnableTargets() {
-  return resolveRunnableTargets(state);
-}
-
-function renderDashboard() {
-  const hasProfiles = runnableTargets().length > 0;
-  dashboardEmpty.classList.toggle("hidden", hasProfiles);
-  dashboardPopulated.classList.toggle("hidden", !hasProfiles);
-  renderWorkflowGuide();
-  renderDashboardStatus();
-  renderDashboardRecent();
-}
-
-// recommendation.level → 结论展示（pass/watch/fail）
-function dashVerdict(run) {
-  const level = run?.recommendation?.level;
-  if (level === "pass") return { cls: "good", label: "推荐" };
-  if (level === "watch") return { cls: "warn", label: "观察" };
-  if (level === "fail") return { cls: "bad", label: "不推荐" };
-  return null;
-}
-
-function dashTypeLabel(type) {
-  const map = {
-    admission: "准入评测",
-    "batch-admission": "批量准入",
-    "batch-stability": "批量稳定性",
-    scenario: "场景测试",
-    stability: "稳定性测试",
-    "load-test": "压力测试",
-  };
-  return map[type] || "稳定性测试";
-}
-
-function dashFormatMs(ms) {
-  const n = Number(ms);
-  if (!Number.isFinite(n)) return "";
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`;
-}
-
-function dashRelTime(iso) {
-  if (!iso) return "";
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "";
-  const diff = Date.now() - t;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return `${Math.floor(diff / 86_400_000)} 天前`;
-}
-
-function renderDashboardStatus() {
-  const targets = runnableTargets();
-  const runs = state.testRuns || []; // newest-first
-
-  // 渠道健康：每个被测渠道按最近一次有结论的运行聚合；无运行 → 未测
-  const latest = new Map();
-  for (const run of runs) {
-    const id = run.profileId || run.profileName;
-    if (id && !latest.has(id)) latest.set(id, run);
-  }
-  let good = 0;
-  let warn = 0;
-  let bad = 0;
-  let idle = 0;
-  for (const p of targets) {
-    const v = dashVerdict(latest.get(p.id) || latest.get(p.name));
-    if (!v) idle += 1;
-    else if (v.cls === "good") good += 1;
-    else if (v.cls === "warn") warn += 1;
-    else bad += 1;
-  }
-  statChannels.innerHTML = `${targets.length} <em>个测试目标</em>`;
-  // 健康占比条：按 正常/观察/异常/未测 的数量做 flex 比例
-  statChannelsBars.innerHTML =
-    targets.length === 0
-      ? `<i style="flex:1;background:var(--line)"></i>`
-      : [
-          good ? `<i style="flex:${good};background:var(--good)"></i>` : "",
-          warn ? `<i style="flex:${warn};background:var(--accent)"></i>` : "",
-          bad ? `<i style="flex:${bad};background:var(--bad)"></i>` : "",
-          idle ? `<i style="flex:${idle};background:var(--muted)"></i>` : "",
-        ]
-          .filter(Boolean)
-          .join("");
-  statChannelsChips.innerHTML =
-    targets.length === 0
-      ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无被测渠道</span>`
-      : [
-          good ? `<span class="chip good"><i></i>${good} 正常</span>` : "",
-          warn ? `<span class="chip warn"><i></i>${warn} 需观察</span>` : "",
-          bad ? `<span class="chip bad"><i></i>${bad} 异常</span>` : "",
-          idle ? `<span class="chip idle muted-chip"><i></i>${idle} 未测</span>` : "",
-        ]
-          .filter(Boolean)
-          .join("");
-
-  // 最近结论：按 recommendation.level 统计
-  let pass = 0;
-  let watchN = 0;
-  let fail = 0;
-  for (const run of runs) {
-    const v = dashVerdict(run);
-    if (v?.cls === "good") pass += 1;
-    else if (v?.cls === "warn") watchN += 1;
-    else if (v?.cls === "bad") fail += 1;
-  }
-  statVerdicts.innerHTML = `${runs.length} <em>份报告</em>`;
-  statVerdictsChips.innerHTML =
-    runs.length === 0
-      ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>还没有报告</span>`
-      : `<span class="chip good"><i></i>推荐 ${pass}</span><span class="chip warn"><i></i>观察 ${watchN}</span><span class="chip bad"><i></i>不推荐 ${fail}</span>`;
-
-  // 待办：疑似计费（tokenAuditFindings 含 high/medium）+ 待复测（最近为观察的渠道）
-  let billing = 0;
-  for (const run of runs) {
-    const findings = run.tokenAuditFindings || [];
-    if (findings.some((f) => f && (f.level === "high" || f.level === "medium"))) billing += 1;
-  }
-  const todoCount = warn + billing;
-  statTodos.innerHTML = `${todoCount} <em>项</em>`;
-  statTodosChips.innerHTML =
-    todoCount === 0
-      ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无待办</span>`
-      : [
-          warn ? `<span class="chip blue"><i></i>${warn} 待复测</span>` : "",
-          billing ? `<span class="chip bad"><i></i>${billing} 疑似计费异常</span>` : "",
-        ]
-          .filter(Boolean)
-          .join("");
-}
-
-function renderDashboardRecent() {
-  const runs = (state.testRuns || []).slice(0, 5);
-  if (runs.length === 0) {
-    dashboardRecent.innerHTML = `<p class="muted" style="padding:10px 12px">还没有测试报告。完成一次准入或标准评测后，这里会显示最近结论。</p>`;
-    return;
-  }
-  dashboardRecent.innerHTML = runs
-    .map((run) => {
-      const v = dashVerdict(run);
-      const pill = v ? `<span class="verdict-pill ${v.cls}">${v.label}</span>` : `<span class="verdict-pill idle">—</span>`;
-      const metricBits = [];
-      if (run.successRateText) metricBits.push(escapeHtml(run.successRateText));
-      if (run.p95TotalMs) metricBits.push(`P95 ${dashFormatMs(run.p95TotalMs)}`);
-      return `<div class="rep-row" data-go-page="reports">
-      <div class="who"><b>${escapeHtml(run.profileName || "未命名渠道")}</b><small>${escapeHtml(run.model || "")}</small></div>
-      <div class="kind">${escapeHtml(dashTypeLabel(run.type))}</div>
-      ${pill}
-      <div class="when">${escapeHtml(dashRelTime(run.endedAt || run.startedAt))}</div>
-      <div class="go">›</div>
-    </div>`;
-    })
-    .join("");
-}
-
-function renderWorkflowGuide() {
-  const status = buildWorkflowStatus(state);
-  const next = getNextWorkflowStep(status);
-
-  nextAction.innerHTML = renderNextActionHtml(next);
-  nextAction.querySelector("[data-go-page]").addEventListener("click", () => showPage(next.page));
-
-  workflowSteps.forEach((step) => {
-    const key = step.dataset.step;
-    step.classList.toggle("done", Boolean(status[key]));
-    step.classList.toggle("current", key === next.step);
-  });
-}
 
 async function updateProfileKey(profileId) {
   const apiKey = await keyPrompt.requestApiKey();
