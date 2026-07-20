@@ -33,6 +33,7 @@ import { installAppearance } from "./appearance.js";
 import { createManual } from "./manual.js";
 import { createDashboard } from "./dashboard.js";
 import { createSettings } from "./settings.js";
+import { createTestForms } from "./test-forms.js";
 import { createTrend } from "./trend.js";
 import { createClientReplay } from "./client-replay.js";
 import { createLoadTest } from "./load-test.js";
@@ -500,18 +501,65 @@ function debounce(fn, ms = 200) {
     timer = setTimeout(() => fn(...args), ms);
   };
 }
-const updateEstimatesDebounced = debounce(updateEstimates, 200);
-stabilityTestForm.addEventListener("input", updateEstimatesDebounced);
-batchTestForm.addEventListener("input", updateEstimatesDebounced);
-scenarioTestForm.addEventListener("input", updateEstimatesDebounced);
-admissionTestForm.addEventListener("input", updateEstimatesDebounced);
-admissionBatchForm.addEventListener("input", updateEstimatesDebounced);
-admissionProfileSelect.addEventListener("change", updateEstimates);
-admissionBatchProfileSelect.addEventListener("change", updateEstimates);
-stabilityProfileSelect.addEventListener("change", updateEstimates);
-batchProfileSelect.addEventListener("change", updateEstimates);
-scenarioProfileSelect.addEventListener("change", updateEstimates);
-scenarioCaseSelect.addEventListener("change", updateEstimates);
+
+const testForms = createTestForms({
+  state,
+  els: {
+    admissionTestForm: admissionTestForm,
+    admissionProfileSelect: admissionProfileSelect,
+    admissionSubmit: admissionSubmit,
+    admissionEstimate: admissionEstimate,
+    admissionResult: admissionResult,
+    admissionBatchForm: admissionBatchForm,
+    admissionBatchProfileSelect: admissionBatchProfileSelect,
+    admissionBatchSubmit: admissionBatchSubmit,
+    admissionBatchEstimate: admissionBatchEstimate,
+    admissionBatchProgress: admissionBatchProgress,
+    admissionBatchResult: admissionBatchResult,
+    stabilityTestForm: stabilityTestForm,
+    stabilityProfileSelect: stabilityProfileSelect,
+    stabilitySubmit: stabilitySubmit,
+    stabilitySummary: stabilitySummary,
+    stabilityEstimate: stabilityEstimate,
+    stabilityProgress: stabilityProgress,
+    batchTestForm: batchTestForm,
+    batchProfileSelect: batchProfileSelect,
+    batchSubmit: batchSubmit,
+    batchTestResult: batchTestResult,
+    batchEstimate: batchEstimate,
+    batchProgress: batchProgress,
+    scenarioTestForm: scenarioTestForm,
+    scenarioProfileSelect: scenarioProfileSelect,
+    scenarioCaseSelect: scenarioCaseSelect,
+    scenarioSubmit: scenarioSubmit,
+    scenarioSummary: scenarioSummary,
+    scenarioEstimate: scenarioEstimate,
+    scenarioProgress: scenarioProgress,
+  },
+  deps: {
+    api,
+    toast,
+    escapeHtml,
+    createTaskFormController,
+    requireSelectedValues,
+    confirmAction,
+    confirmExecution,
+    estimateAdmissionCost,
+    estimateAdmissionBatchCost,
+    estimateStabilityCost,
+    estimateBatchCost,
+    estimateScenarioCost,
+    renderAdmissionResult,
+    renderStabilitySummaryPanel,
+    renderScenarioSummaryPanel,
+    formatBatchResult,
+    formatBatchAdmissionResult,
+    updateEstimateLabels,
+    loadResultsBundle,
+    debounce,
+  },
+});
+
 hydrateProjectInfoForm();
 hydratePromptPresetSelects();
 
@@ -597,149 +645,9 @@ createStandardEvalController({
   stabilityTemplate,
   applyStabilityTemplate,
   scenarioProfileSelect,
-  updateEstimates,
+  updateEstimates: testForms.updateEstimates,
 });
 
-let admissionRunning = false;
-admissionTestForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (admissionRunning) return; // 防双击/确认框 await 期间重复提交（重复=重复扣额度）
-  const payload = Object.fromEntries(new FormData(admissionTestForm).entries());
-  payload.modelName = findProfileModelName(payload.profileId);
-  const estimate = estimateAdmissionCost(payload);
-  payload.predicted = estimate; // 跑前预测随 payload 记录，供报告对比
-  admissionRunning = true;
-  const confirmed = await confirmAction(confirmExecution("模型准入评测", estimate));
-  if (!confirmed) {
-    admissionRunning = false;
-    return;
-  }
-
-  admissionSubmit.disabled = true;
-  admissionSubmit.textContent = "准入评测中...";
-  admissionResult.innerHTML = `<p class="muted">正在执行准入评测。请不要关闭窗口。</p>`;
-  try {
-    const result = await api("/api/tests/admission", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    admissionResult.innerHTML = renderAdmissionResult(result);
-    await loadResultsBundle();
-    toast("准入评测完成。");
-  } catch (error) {
-    admissionResult.innerHTML = `<p class="fail">准入评测失败：${escapeHtml(error.message)}</p>`;
-    toast(error.message, true);
-  } finally {
-    admissionRunning = false;
-    admissionSubmit.disabled = false;
-    admissionSubmit.textContent = "开始准入评测";
-  }
-});
-
-createTaskFormController({
-  form: admissionBatchForm,
-  submitButton: admissionBatchSubmit,
-  resultElement: admissionBatchResult,
-  progressElement: admissionBatchProgress,
-  state,
-  slot: "admissionBatch",
-  taskType: "batch-admission",
-  confirmRun: (payload) => confirmAction(confirmExecution("批量准入对比", estimateAdmissionBatchCost(payload))),
-  predict: (payload) => estimateAdmissionBatchCost(payload),
-  preparePayload: (payload) => {
-    const profileIds = requireSelectedValues(admissionBatchProfileSelect, "请至少选择一个被测 API。");
-    return profileIds ? { ...payload, profileIds } : null;
-  },
-  beforeStart: (payload) => {
-    admissionBatchResult.textContent = `正在对 ${payload.profileIds.length} 个 API 执行准入评测。请不要关闭窗口。`;
-  },
-  onSuccess: async (result) => {
-    const copyableSummary = getCopyableReportText(result, formatBatchAdmissionResult(result));
-    admissionBatchResult.textContent = copyableSummary;
-    await loadResultsBundle();
-    toast("批量准入对比完成。");
-  },
-  failurePrefix: "批量准入对比失败",
-  idleButtonText: "开始批量准入对比",
-});
-
-createTaskFormController({
-  form: stabilityTestForm,
-  submitButton: stabilitySubmit,
-  resultElement: stabilitySummary,
-  progressElement: stabilityProgress,
-  state,
-  slot: "stability",
-  taskType: "stability",
-  confirmRun: (payload) => confirmAction(confirmExecution("稳定性测试", estimateStabilityCost(payload))),
-  predict: (payload) => estimateStabilityCost(payload),
-  preparePayload: (payload) => payload,
-  beforeStart: (payload) => {
-    stabilitySummary.innerHTML = `<p class="muted">正在进行 ${payload.rounds} 轮测试。请不要关闭窗口。</p>`;
-  },
-  onSuccess: async (result) => {
-    renderStabilitySummary(result);
-    await loadResultsBundle();
-    toast("稳定性测试完成。");
-  },
-  failurePrefix: "稳定性测试失败",
-  idleButtonText: "开始稳定性测试",
-});
-
-createTaskFormController({
-  form: batchTestForm,
-  submitButton: batchSubmit,
-  resultElement: batchTestResult,
-  progressElement: batchProgress,
-  state,
-  slot: "batch",
-  taskType: "batch-stability",
-  confirmRun: (payload) => confirmAction(confirmExecution("批量并发测试", estimateBatchCost(payload))),
-  predict: (payload) => estimateBatchCost(payload),
-  preparePayload: (payload) => {
-    const profileIds = requireSelectedValues(batchProfileSelect, "请至少选择一个被测 API。");
-    return profileIds ? { ...payload, profileIds } : null;
-  },
-  beforeStart: (payload) => {
-    batchTestResult.textContent = `正在测试 ${payload.profileIds.length} 个 API。测试期间可以等待，不要关闭窗口。`;
-  },
-  onSuccess: async (result) => {
-    const copyableSummary = getCopyableReportText(result, formatBatchResult(result));
-    batchTestResult.textContent = copyableSummary;
-    await loadResultsBundle();
-    toast("批量测试完成。");
-  },
-  failurePrefix: "批量测试失败",
-  idleButtonText: "开始批量测试",
-});
-
-createTaskFormController({
-  form: scenarioTestForm,
-  submitButton: scenarioSubmit,
-  resultElement: scenarioSummary,
-  progressElement: scenarioProgress,
-  state,
-  slot: "scenario",
-  taskType: "scenario",
-  confirmRun: (payload) => confirmAction(confirmExecution("复杂场景测试", estimateScenarioCost(payload, state.scenarios))),
-  predict: (payload) => estimateScenarioCost(payload, state.scenarios),
-  preparePayload: (payload) => {
-    const profileIds = requireSelectedValues(scenarioProfileSelect, "请至少选择一个被测 API。");
-    if (!profileIds) return null;
-    const scenarioIds = requireSelectedValues(scenarioCaseSelect, "请至少选择一个测试场景。");
-    return scenarioIds ? { ...payload, profileIds, scenarioIds } : null;
-  },
-  beforeStart: (payload) => {
-    scenarioSummary.innerHTML = `<p class="muted">正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。</p>`;
-  },
-  onSuccess: async (result) => {
-    renderScenarioSummary(result);
-    await loadResultsBundle();
-    toast("场景测试完成。");
-  },
-  failurePrefix: "场景测试失败",
-  idleButtonText: "开始场景测试",
-});
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
@@ -814,14 +722,14 @@ async function loadProfiles() {
   state.profiles = await api("/api/profiles");
   renderProfileOptions();
   dashboard.render();
-  updateEstimates();
+  testForms.updateEstimates();
 }
 
 async function loadScenarios() {
   state.scenarios = await api("/api/scenarios");
   renderScenarioOptions();
   channelAdmin.renderTagOptions(); // 场景库就绪后渲染「配置模型」的标签勾选项。
-  updateEstimates();
+  testForms.updateEstimates();
 }
 
 async function loadRequests() {
@@ -900,6 +808,7 @@ function renderScenarioOptions() {
   const defaultScenarioId = state.scenarios.some((scenario) => scenario.id === "connectivity-basic")
     ? "connectivity-basic"
     : state.scenarios[0].id;
+  // scenario.id 由场景库（server/scenarios/）定义，不是用户输入——同字段名安全级别，故不转义
   scenarioCaseSelect.innerHTML = state.scenarios
     .map(
       (scenario) =>
@@ -934,21 +843,6 @@ function renderDeliveryViews() {
   });
 }
 
-function renderStabilitySummary(result) {
-  renderStabilitySummaryPanel(stabilitySummary, result);
-}
-
-function renderScenarioSummary(result) {
-  renderScenarioSummaryPanel(scenarioSummary, result);
-}
-
-function getCopyableReportText(result, fallbackText) {
-  const markdown = String(result?.reportMarkdown || "");
-  if (markdown && !markdown.includes("报告内容已写入本地报告文件")) {
-    return markdown;
-  }
-  return fallbackText;
-}
 
 async function copyHandoffTemplate() {
   const text = handoffTemplate?.textContent || "";
@@ -968,7 +862,7 @@ function applyStabilityTemplate() {
   applyStabilityTemplateToForm({
     form: stabilityTestForm,
     template: stabilityTemplate,
-    updateEstimates,
+    updateEstimates: testForms.updateEstimates,
   });
 }
 
@@ -976,7 +870,7 @@ function applyBatchTemplate() {
   applyBatchTemplateToForm({
     form: batchTestForm,
     template: batchTemplate,
-    updateEstimates,
+    updateEstimates: testForms.updateEstimates,
   });
 }
 
@@ -986,7 +880,7 @@ function applyStandardPromptPreset() {
     form: standardEvalForm,
     select: standardPromptPreset,
     hint: standardPromptHint,
-    updateEstimates,
+    updateEstimates: testForms.updateEstimates,
   });
 }
 
@@ -996,7 +890,7 @@ function applyStabilityPromptPreset() {
     form: stabilityTestForm,
     select: stabilityPromptPreset,
     hint: stabilityPromptHint,
-    updateEstimates,
+    updateEstimates: testForms.updateEstimates,
   });
 }
 
@@ -1006,7 +900,7 @@ function applyBatchPromptPreset() {
     form: batchTestForm,
     select: batchPromptPreset,
     hint: batchPromptHint,
-    updateEstimates,
+    updateEstimates: testForms.updateEstimates,
   });
 }
 
@@ -1024,39 +918,6 @@ function hydratePromptPresetSelects() {
   applyBatchPromptPreset();
 }
 
-function updateEstimates() {
-  admissionEstimate.textContent = formatEstimateForAdmission();
-  admissionBatchEstimate.textContent = formatEstimateForAdmissionBatch();
-  updateEstimateLabels({
-    stabilityForm: stabilityTestForm,
-    stabilityEstimate,
-    batchForm: batchTestForm,
-    batchProfileSelect,
-    batchEstimate,
-    scenarioForm: scenarioTestForm,
-    scenarioProfileSelect,
-    scenarioCaseSelect,
-    scenarioEstimate,
-    scenarios: state.scenarios,
-  });
-}
-
-function formatEstimateForAdmission() {
-  const payload = Object.fromEntries(new FormData(admissionTestForm).entries());
-  payload.modelName = findProfileModelName(payload.profileId);
-  return confirmExecution("估算", estimateAdmissionCost(payload)).message;
-}
-
-function formatEstimateForAdmissionBatch() {
-  const payload = Object.fromEntries(new FormData(admissionBatchForm).entries());
-  payload.profileIds = Array.from(admissionBatchProfileSelect.selectedOptions).map((option) => option.value);
-  payload.modelNames = payload.profileIds.map(findProfileModelName);
-  return confirmExecution("估算", estimateAdmissionBatchCost(payload)).message;
-}
-
-function findProfileModelName(profileId) {
-  return state.profiles.find((profile) => profile.id === profileId)?.defaultModel || "";
-}
 
 async function exportSupportBundle() {
   try {

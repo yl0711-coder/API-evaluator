@@ -35,6 +35,7 @@ export function createChannelAdmin({ state, els, onChange }) {
 
   function channelRow(channel) {
     // 未配置 Key 的渠道无法调用，状态显示「未配置」；配好 Key 后才按 enabled/disabled 显示启用/已禁用。
+    // status pill 是硬编码 HTML 片段，不是用户数据——刻意不转义
     const status = !channel.hasKey
       ? `<span class="chan-pill warn">未配置</span>`
       : channel.status === "disabled"
@@ -57,6 +58,7 @@ export function createChannelAdmin({ state, els, onChange }) {
   }
   function renderChannelOptions() {
     const list = (state.channels || []).filter((c) => c.status !== "disabled");
+    // c.id 来自后端渠道数据（非用户输入），安全级别等同于字段名，故不转义
     els.modelTargetChannelSelect.innerHTML = list.length
       ? list.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}（${escapeHtml(protocolLabel(c.protocol))}）</option>`).join("")
       : `<option value="">请先在“渠道管理”添加渠道</option>`;

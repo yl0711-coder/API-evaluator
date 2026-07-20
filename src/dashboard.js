@@ -82,7 +82,7 @@ export function createDashboard({ state, els, deps }) {
       else bad += 1;
     }
     els.statChannels.innerHTML = `${targets.length} <em>个测试目标</em>`;
-    // 健康占比条：按 正常/观察/异常/未测 的数量做 flex 比例
+    // 健康占比条：按 正常/观察/异常/未测 的数量做 flex 比例——<i> 标签是硬编码 UI 结构
     els.statChannelsBars.innerHTML =
       targets.length === 0
         ? `<i style="flex:1;background:var(--line)"></i>`
@@ -94,6 +94,7 @@ export function createDashboard({ state, els, deps }) {
           ]
             .filter(Boolean)
             .join("");
+    // stat chips 内含 <i><span> 硬编码 UI 结构——good/warn/bad/idle 是数字，无需转义
     els.statChannelsChips.innerHTML =
       targets.length === 0
         ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无被测渠道</span>`

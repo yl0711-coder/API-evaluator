@@ -154,7 +154,13 @@ export { escapeHtml };
 
 /**
  * 标签模板：自动对插值做 HTML 转义。
+ *
  * 用法：html`<b>${userName}</b>` —— userName 中的 `<` `>` `&` 等自动转义。
+ *
+ * **不要**在插值是刻意 HTML 片段（pill 徽章、链接、按钮等硬编码标签）时使用
+ * ——html 会把它们转义成可见文本。这类场景在代码里有注释标注"刻意不转义"。
+ * 对应文件：batch-target-picker.js、channel-admin.js、auto-test-config.js、
+ * developer.js、history-view.js、scenario-view.js、dashboard.js 等。
  */
 export function html(strings, ...values) {
   return strings.reduce((out, s, i) => {

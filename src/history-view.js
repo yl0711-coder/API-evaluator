@@ -78,6 +78,8 @@ export function renderTaskEventList({ tasks, container }) {
     .join("");
 }
 
+// renderTestRunRow 返回完整 HTML 行（含 <div><span><strong> 结构），调用方直接赋给 innerHTML。
+// 所有数据字段已通过 escapeHtml() 转义，HTML 标签是硬编码结构，不是用户数据。
 function renderTestRunRow(run) {
   if (run.type === "admission") {
     return `

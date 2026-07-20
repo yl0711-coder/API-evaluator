@@ -55,6 +55,7 @@ export function createLoadTest({ state, els, onProfileData, deps }) {
     const modeLabel = result.mode === "open" ? `开环 · 速率 ${result.offered} req/s` : `闭环 · 并发 ${result.offered}`;
     const sent = result.sentRequests || 0;
     const notReturned = (e.timeout || 0) + (e.http_5xx || 0) + (e.network_error || 0) + (e.other || 0);
+    // <small class="fail"> 是硬编码标签，插值是数字——刻意不转义
     const biasNote =
       notReturned > 0
         ? `<small class="fail">⚠️ 另有 ${notReturned} 条（${Math.round(sent ? (notReturned / sent) * 100 : 0)}%）超时/失败未返回、未计入延迟，真实尾延迟更差</small>`

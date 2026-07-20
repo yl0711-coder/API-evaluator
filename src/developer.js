@@ -362,6 +362,7 @@ export function createDeveloper({ state, onTagsSaved, confirm }) {
     const sceneGroups = [...new Set((allScenarios || []).map((s) => s.resolvedGroup).filter(Boolean))];
     const bankOnly = sceneGroups.filter((g) => !scenarioGroups.includes(g));
     // 分组列表：自定义分组（可重命名/删除）+ bank 默认组（只读，标「题库默认」——由题库归属决定，删/改无意义）。
+    // customChips / bankChips 是完整 HTML 片段（含 <span><button> 等），不是文本——刻意不转义
     const customChips = scenarioGroups.map(
       (g) =>
         `<span class="dev-group-chip"><b>${escapeHtml(g)}</b><button type="button" class="linklike" data-rename-group="${escapeHtml(g)}">重命名</button><button type="button" class="linklike" data-del-group="${escapeHtml(g)}">删除</button></span>`,

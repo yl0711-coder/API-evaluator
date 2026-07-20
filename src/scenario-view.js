@@ -31,7 +31,7 @@ export function renderScenarioSummary(container, result) {
     `;
   });
 
-  // 每模型一篇：列出各模型报告链接（点开新标签查看）；无 reports 时回落单篇路径展示。
+  // reportCard 内含 <a> 链接标签和 escapeHtml() 转义过的数据——HTML 标签刻意不转义
   const reports = Array.isArray(result.reports) ? result.reports.filter((r) => r && r.id) : [];
   const reportCard = reports.length
     ? `

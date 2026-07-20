@@ -90,6 +90,7 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
     return idx.targetsForModel(anchor.value).map((t) => ({
       id: t.id,
       label: t.channel.name,
+      // pill 是硬编码 HTML 片段，不是用户数据——刻意不转义
       pill: t.channel.status === "disabled" ? '<span class="pill bad">已禁用</span>' : '<span class="pill good">启用</span>',
     }));
   }

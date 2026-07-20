@@ -275,6 +275,7 @@ export function createAutoTestConfig({ state, confirm }) {
     const card = document.createElement("div");
     card.className = "atc-job-card";
     const statusText = job.lastStatus ? STATUS_LABEL[job.lastStatus] || job.lastStatus : "尚未运行";
+    // reportLink 和 targetWarn 是硬编码 HTML，不是用户数据——刻意不转义
     const reportLink =
       job.lastReportId && job.lastStatus === "success"
         ? `<a href="/api/reports/${encodeURIComponent(job.lastReportId)}/view" target="_blank" rel="noopener">查看报告</a>`
