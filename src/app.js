@@ -1471,24 +1471,25 @@ async function updateProfileKey(profileId) {
   toast("Key 已更新。建议马上跑一次快速测试。");
 }
 
+// 注册表：渠道/模型/Profile 数据变化时，逐一通知已注册的刷新回调。
+// 原为硬编码 12 个消费者的扇出列表；改成注册制后，未来模块可自注册而不改此函数。
+const _onProfileData = [];
+_onProfileData.push((data) => admissionCascade.refresh(data));
+_onProfileData.push((data) => standardCascade.refresh(data));
+_onProfileData.push((data) => quickVerifyCascade.refresh(data));
+_onProfileData.push((data) => stabilityCascade.refresh(data));
+_onProfileData.push((data) => loadTestCascade.refresh(data));
+_onProfileData.push((data) => trendCascade.refresh(data));
+_onProfileData.push((data) => admissionBatchPicker.refresh(data));
+_onProfileData.push((data) => batchPicker.refresh(data));
+_onProfileData.push((data) => scenarioPicker.refresh(data));
+_onProfileData.push((data) => renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] }));
+_onProfileData.push((data) => autoTestConfig.refreshTargets(data));
+_onProfileData.push((data) => modelCompare.refreshTargets(data));
+
 function renderProfileOptions() {
   const data = { modelTargets: state.modelTargets, channels: state.channels, profiles: state.profiles };
-  // 单选运行页:级联(渠道 → 模型)
-  admissionCascade.refresh(data);
-  standardCascade.refresh(data);
-  quickVerifyCascade.refresh(data);
-  stabilityCascade.refresh(data);
-  loadTestCascade.refresh(data);
-  trendCascade.refresh(data);
-  // 批量页:两维度选择器(渠道体检 / 渠道选优)
-  admissionBatchPicker.refresh(data);
-  batchPicker.refresh(data);
-  scenarioPicker.refresh(data);
-  // 客户端回放:仍沿用平铺单选列表
-  renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] });
-  // 自动测试配置页的渠道→模型级联
-  autoTestConfig.refreshTargets(data);
-  modelCompare.refreshTargets(data);
+  for (const fn of _onProfileData) fn(data);
 }
 
 function renderScenarioOptions() {
