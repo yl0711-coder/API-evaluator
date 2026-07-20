@@ -110,6 +110,9 @@ const developer = createDeveloper({
 const autoTestConfig = createAutoTestConfig({ state, confirm: (opts) => confirmAction(opts) });
 // 「模型比对」（登录即可用）：依据两个模型各自最近的报告做统计对比，产出对比报告。
 const modelCompare = createModelCompare({ state });
+// 注册到 _onProfileData（必须在顶层 await 之前）。
+_onProfileData.push((data) => autoTestConfig.refreshTargets(data));
+_onProfileData.push((data) => modelCompare.refreshTargets(data));
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
 requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
@@ -189,6 +192,11 @@ const admissionCascade = createCascadeTargetPicker(requireElement("#admission-ch
 const standardCascade = createCascadeTargetPicker(requireElement("#standard-channel-select"), standardProfileSelect);
 const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
 const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
+// 注册到 _onProfileData（必须在顶层 await 之前，确保首次 loadProfiles 能刷到）。
+_onProfileData.push((data) => admissionCascade.refresh(data));
+_onProfileData.push((data) => standardCascade.refresh(data));
+_onProfileData.push((data) => quickVerifyCascade.refresh(data));
+_onProfileData.push((data) => stabilityCascade.refresh(data));
 const loadTestChannelSelect = requireElement("#load-test-channel-select");
 const trendChannelSelect = requireElement("#trend-channel-select");
 
@@ -218,6 +226,10 @@ const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-
 });
 const batchPicker = createBatchTargetPicker(requireElement("#batch-picker"), { hiddenSelect: batchProfileSelect });
 const scenarioPicker = createBatchTargetPicker(requireElement("#scenario-picker"), { hiddenSelect: scenarioProfileSelect });
+// 注册到 _onProfileData（必须在顶层 await 之前）。
+_onProfileData.push((data) => admissionBatchPicker.refresh(data));
+_onProfileData.push((data) => batchPicker.refresh(data));
+_onProfileData.push((data) => scenarioPicker.refresh(data));
 // 「选择测试场景」复用 .batch-picker 勾选样式,真值写回隐藏的 scenarioCaseSelect。
 const scenarioCasePicker = createScenarioCasePicker(requireElement("#scenario-case-picker"), scenarioCaseSelect);
 
@@ -871,19 +883,6 @@ async function updateProfileKey(profileId) {
   await loadProfiles();
   toast("Key 已更新。建议马上跑一次快速测试。");
 }
-
-// 注册表已移至文件顶部（紧接 state 定义之后），此处仅保留各消费者的注册语句。
-_onProfileData.push((data) => admissionCascade.refresh(data));
-_onProfileData.push((data) => standardCascade.refresh(data));
-_onProfileData.push((data) => quickVerifyCascade.refresh(data));
-_onProfileData.push((data) => stabilityCascade.refresh(data));
-
-_onProfileData.push((data) => admissionBatchPicker.refresh(data));
-_onProfileData.push((data) => batchPicker.refresh(data));
-_onProfileData.push((data) => scenarioPicker.refresh(data));
-
-_onProfileData.push((data) => autoTestConfig.refreshTargets(data));
-_onProfileData.push((data) => modelCompare.refreshTargets(data));
 
 function renderProfileOptions() {
   const data = { modelTargets: state.modelTargets, channels: state.channels, profiles: state.profiles };
