@@ -33,6 +33,7 @@ import { installAppearance } from "./appearance.js";
 import { createManual } from "./manual.js";
 import { createDashboard } from "./dashboard.js";
 import { createSettings } from "./settings.js";
+import { createTrend } from "./trend.js";
 import { createHighRiskBanner } from "./high-risk-banner.js";
 import { createReportBrowser } from "./report-browser.js";
 import { createKeyModal } from "./key-modal.js";
@@ -121,9 +122,6 @@ const trendChart = requireElement("#trend-chart");
 const trendRegression = requireElement("#trend-regression");
 const trendTable = requireElement("#trend-table");
 const trendAlerts = requireElement("#trend-alerts");
-let trendXMode = "count"; // 趋势图 x 轴：'count'(按轮次) | 'hour'(按小时聚合)
-let trendWindowHours = 0; // 按时间模式的时间范围：0=全部，或 3/6/12/24/48/168 小时
-let trendLastRounds = []; // 最近一次拉到的逐轮数据，切换 x 轴时复用、不重复请求
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
@@ -185,7 +183,7 @@ const standardCascade = createCascadeTargetPicker(requireElement("#standard-chan
 const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
 const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
 const loadTestCascade = createCascadeTargetPicker(requireElement("#load-test-channel-select"), loadTestProfileSelect);
-const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-select"), trendProfileSelect);
+const trendChannelSelect = requireElement("#trend-channel-select");
 
 // 程序化跳转回填代理:控制器里 `xxxProfileSelect.value = id` 时,写入走级联(同步渠道+模型下拉),
 // 读取仍取模型选中值。传给会做跳转回填的控制器(profile / standard-eval)。
@@ -368,6 +366,25 @@ const settings = createSettings({
   deps: { api, toast, createCascadeTargetPicker, channelAdmin, highRiskBanner, loadScenarios, onProfileData },
 });
 
+// 趋势图页（逐轮质量/延迟趋势 + 退化检测 + 历史告警）：见 src/trend.js。
+// 模块自管事件监听器（nav 按钮点击 / 选择器切换），app.js 无需持有其返回值。
+createTrend({
+  state,
+  els: {
+    trendChannelSelect,
+    trendProfileSelect,
+    trendXModeSelect,
+    trendWindowSelect,
+    trendWindowField,
+    trendChart,
+    trendRegression,
+    trendTable,
+    trendAlerts,
+  },
+  onProfileData,
+  deps: { api, escapeHtml, renderTrendChart, createCascadeTargetPicker },
+});
+
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-go-page]");
   if (!button) return;
@@ -462,77 +479,6 @@ function formatQuickVerify(result) {
   lines.push("注：黑盒概率判断，结论为「疑似 / 需上游解释」，不等于铁证。");
   return lines.join("\n");
 }
-
-async function updateTrendView(profileId) {
-  if (!profileId) return;
-  trendChart.innerHTML = "加载中...";
-  trendTable.textContent = "加载中...";
-  trendAlerts.textContent = "加载中...";
-  trendRegression.classList.add("hidden");
-  try {
-    const data = await api(`/api/trend?profileId=${encodeURIComponent(profileId)}`);
-    const series = data.series || [];
-    trendLastRounds = data.rounds || [];
-    redrawTrendChart();
-    const reg = data.regression;
-    if (reg && reg.status === "regressed") {
-      trendRegression.classList.remove("hidden");
-      trendRegression.innerHTML = `<strong>⚠️ 疑似退化（${reg.severity}）</strong><br>${(reg.changes || []).map((c) => escapeHtml(c.detail)).join("<br>")}`;
-    } else if (reg && reg.status === "stable") {
-      trendRegression.classList.remove("hidden");
-      trendRegression.textContent = "✅ 与基线一致，未见退化";
-    }
-    trendTable.textContent = series.length
-      ? series
-          .slice()
-          .reverse()
-          .map(
-            (p) =>
-              `${String(p.at || "")
-                .replace("T", " ")
-                .slice(
-                  0,
-                  19,
-                )} | ${p.type} | 成功率 ${p.successRate != null ? Math.round(p.successRate * 100) + "%" : "-"} | P95 ${p.p95Ms ?? "-"}ms${p.grade ? " | " + p.grade : ""}${p.cost != null ? " | $" + p.cost : ""}`,
-          )
-          .join("\n")
-      : "暂无历史。";
-    const alerts = data.alerts || [];
-    trendAlerts.textContent = alerts.length
-      ? alerts
-          .map(
-            (a) =>
-              `${String(a.created_at || "")
-                .replace("T", " ")
-                .slice(0, 19)} | ${a.severity} | ${a.summary}`,
-          )
-          .join("\n")
-      : "暂无告警。";
-  } catch (error) {
-    trendChart.textContent = `加载失败：${error.message}`;
-  }
-}
-
-// 用当前 x 轴 / 时间范围重绘（复用最近一次逐轮数据，不重复请求）。时间范围只在按时间模式生效。
-function redrawTrendChart() {
-  trendChart.innerHTML = renderTrendChart(trendLastRounds, trendXMode, {
-    windowHours: trendXMode === "hour" ? trendWindowHours : 0,
-  });
-}
-
-trendProfileSelect.addEventListener("change", () => updateTrendView(trendProfileSelect.value));
-document.querySelector('.nav-button[data-page="trend"]')?.addEventListener("click", () => updateTrendView(trendProfileSelect.value));
-// 切换 x 轴（按轮次 / 按小时）：时间范围选择器仅在「按时间」时显示；切换即重绘。
-trendXModeSelect.addEventListener("change", () => {
-  trendXMode = trendXModeSelect.value === "hour" ? "hour" : "count";
-  trendWindowField.classList.toggle("hidden", trendXMode !== "hour");
-  redrawTrendChart();
-});
-// 切换时间范围（3/6/12/24/48/168 小时或全部）：仅重绘。
-trendWindowSelect.addEventListener("change", () => {
-  trendWindowHours = Number(trendWindowSelect.value) || 0;
-  redrawTrendChart();
-});
 
 quickVerifySubmit.addEventListener("click", async () => {
   const profileId = quickVerifyProfileSelect.value;
@@ -1271,7 +1217,7 @@ _onProfileData.push((data) => standardCascade.refresh(data));
 _onProfileData.push((data) => quickVerifyCascade.refresh(data));
 _onProfileData.push((data) => stabilityCascade.refresh(data));
 _onProfileData.push((data) => loadTestCascade.refresh(data));
-_onProfileData.push((data) => trendCascade.refresh(data));
+
 _onProfileData.push((data) => admissionBatchPicker.refresh(data));
 _onProfileData.push((data) => batchPicker.refresh(data));
 _onProfileData.push((data) => scenarioPicker.refresh(data));
