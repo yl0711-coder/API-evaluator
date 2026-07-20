@@ -32,6 +32,7 @@ import { requireElement, requireElements } from "./dom-utils.js";
 import { installAppearance } from "./appearance.js";
 import { createManual } from "./manual.js";
 import { createDashboard } from "./dashboard.js";
+import { createSettings } from "./settings.js";
 import { createHighRiskBanner } from "./high-risk-banner.js";
 import { createReportBrowser } from "./report-browser.js";
 import { createKeyModal } from "./key-modal.js";
@@ -70,10 +71,14 @@ const state = {
   projectInfo: loadProjectInfo(),
 };
 
+// 渠道/模型/Profile 数据变化注册表：模块可自注册 refresh(data) 回调。
+const _onProfileData = [];
+function onProfileData(fn) {
+  _onProfileData.push(fn);
+}
+
 const pages = requireElements(".page");
 const navButtons = requireElements(".nav-button");
-// 设置页「未保存改动」追踪：早声明，避免在启动期（顶层 await 暂停）被 showPage 引用时命中 TDZ。
-let settingsDirty = false;
 let currentPage = "dashboard";
 const projectInfoForm = requireElement("#project-info-form");
 const projectInfoSummary = requireElement("#project-info-summary");
@@ -320,6 +325,47 @@ const dashboard = createDashboard({
     workflowSteps,
   },
   deps: { escapeHtml, resolveRunnableTargets, buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml, showPage },
+});
+
+// 设置页所需 DOM 元素（requireElement 留在 app.js，通过 els 传入工厂）。
+// 对应的选择器被 selector-contract 测试所追踪——删了这里就会漏掉。
+const settingsForm = requireElement("#settings-form");
+const setAiSpecified = requireElement("#set-ai-specified");
+const setAiChannel = requireElement("#set-ai-channel");
+const setAiModel = requireElement("#set-ai-model");
+const setLivebench = requireElement("#set-livebench");
+const setSafety = requireElement("#set-safety");
+const setHle = requireElement("#set-hle");
+const setHardcoreLogic = requireElement("#set-hardcore-logic");
+const setCodingHard = requireElement("#set-coding-hard");
+const setAutoTag = requireElement("#set-auto-tag");
+const setNewapiBase = requireElement("#set-newapi-base");
+const setNewapiToken = requireElement("#set-newapi-token");
+const setNewapiUserid = requireElement("#set-newapi-userid");
+const setTestCycleDays = requireElement("#set-test-cycle-days");
+const setHighRiskAlert = requireElement("#set-high-risk-alert");
+
+// 设置页（AI 总结 / 题库开关 / new-api 网关 / 高危提示等）：见 src/settings.js。
+const settings = createSettings({
+  state,
+  els: {
+    settingsForm,
+    setAiSpecified,
+    setAiChannel,
+    setAiModel,
+    setLivebench,
+    setSafety,
+    setHle,
+    setHardcoreLogic,
+    setCodingHard,
+    setAutoTag,
+    setNewapiBase,
+    setNewapiToken,
+    setNewapiUserid,
+    setTestCycleDays,
+    setHighRiskAlert,
+  },
+  deps: { api, toast, createCascadeTargetPicker, channelAdmin, highRiskBanner, loadScenarios, onProfileData },
 });
 
 document.addEventListener("click", (event) => {
@@ -1089,7 +1135,7 @@ try {
     loadRequests(),
     loadTestRuns(),
     loadTaskEvents(),
-    preloadSettings(),
+    settings.preload(),
     channelAdmin.loadChannels(),
     channelAdmin.loadModelTargets(),
   ]);
@@ -1117,10 +1163,10 @@ function renderStartupError(error) {
 }
 
 function showPage(page) {
-  // 离开设置页且有未保存改动 → 提示。loadSettings 会在重新进入时重置 dirty（丢弃未保存改动）。
-  if (currentPage === "settings" && page !== "settings" && settingsDirty) {
+  // 离开设置页且有未保存改动 → 提示。settings.load 会在重新进入时重置 dirty（丢弃未保存改动）。
+  if (currentPage === "settings" && page !== "settings" && settings.isDirty()) {
     toast("设置未保存。", true);
-    settingsDirty = false;
+    settings.markClean();
   }
   currentPage = page;
   navButtons.forEach((item) => item.classList.toggle("active", item.dataset.page === page));
@@ -1131,7 +1177,7 @@ function showPage(page) {
     manual.load();
   }
   if (page === "settings") {
-    loadSettings();
+    settings.load();
   }
   // 「测试场景维护」页（原开发者页）：与全站统一风格，保留侧边栏，进入时加载数据。
   if (page === "developer") {
@@ -1158,108 +1204,6 @@ async function loadScenarios() {
   channelAdmin.renderTagOptions(); // 场景库就绪后渲染「配置模型」的标签勾选项。
   updateEstimates();
 }
-
-// —— 设置页：AI 总结模型 / 场景题库开关（脱离环境变量，存本机）——
-const settingsForm = requireElement("#settings-form");
-const setAiSpecified = requireElement("#set-ai-specified");
-const setAiChannel = requireElement("#set-ai-channel");
-const setAiModel = requireElement("#set-ai-model");
-const setLivebench = requireElement("#set-livebench");
-const setSafety = requireElement("#set-safety");
-const setHle = requireElement("#set-hle");
-const setHardcoreLogic = requireElement("#set-hardcore-logic");
-const setCodingHard = requireElement("#set-coding-hard");
-const setAutoTag = requireElement("#set-auto-tag");
-const setNewapiBase = requireElement("#set-newapi-base");
-const setNewapiToken = requireElement("#set-newapi-token");
-const setNewapiUserid = requireElement("#set-newapi-userid");
-const setTestCycleDays = requireElement("#set-test-cycle-days");
-const setHighRiskAlert = requireElement("#set-high-risk-alert");
-// 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
-const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
-
-// 自定义能力标签已迁至「开发者界面」（src/developer.js），设置页不再承载。
-
-// 「指定模型」勾选门控两级下拉：未勾=都禁用（AI 用被测模型）；勾上=渠道可选，模型随级联。
-function applyAiSpecifiedGate() {
-  const on = setAiSpecified.checked;
-  setAiChannel.disabled = !on;
-  if (!on) setAiModel.disabled = true;
-  else if (setAiChannel.value) setAiModel.disabled = false;
-}
-setAiSpecified.addEventListener("change", applyAiSpecifiedGate);
-
-// 启动预载：只把设置塞进 state（供各处读设置开关），不碰下面才声明的 set-* 元素，避免 TDZ。
-// 函数声明会提升，可在上方启动 Promise.all 里调用。
-async function preloadSettings() {
-  try {
-    state.settings = await api("/api/settings");
-  } catch {
-    /* 启动期设置加载失败不阻断首屏；进设置页会再试 */
-  }
-}
-
-async function loadSettings() {
-  try {
-    const s = await api("/api/settings");
-    state.settings = s; // 缓存设置供各处读取开关
-    setLivebench.checked = Boolean(s.enableLivebench);
-    setSafety.checked = Boolean(s.enableSafety);
-    setHle.checked = Boolean(s.enableHle);
-    setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
-    setCodingHard.checked = Boolean(s.enableCodingHard);
-    setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
-    setTestCycleDays.value = Number(s.testCycleDays) > 0 ? String(Math.trunc(s.testCycleDays)) : ""; // 0/空 → 空框（占位符 0）
-    setHighRiskAlert.checked = s.enableHighRiskAlert === true;
-    // new-api 网关：网址/用户ID 回填；令牌不回显，按已配置状态切占位符、清空输入值。
-    setNewapiBase.value = s.newapiBaseUrl || "";
-    setNewapiUserid.value = s.newapiUserId || "";
-    setNewapiToken.value = "";
-    setNewapiToken.placeholder = s.newapiImportTokenSet ? "已配置（留空不改）" : "未配置";
-    settingsAiCascade.refresh({ channels: state.channels, modelTargets: state.modelTargets, profiles: state.profiles });
-    settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
-    setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
-    applyAiSpecifiedGate();
-    settingsDirty = false; // 刚载入官方值，不算「未保存改动」
-  } catch (error) {
-    toast(`加载设置失败：${error.message}`, true);
-  }
-}
-
-// 用户改动任一设置项（复选框/AI 模型选择等）→ 标记未保存。程序化赋值（loadSettings）不触发 change，故不会误标。
-settingsForm.addEventListener("change", () => {
-  settingsDirty = true;
-});
-
-settingsForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const payload = {
-    aiAnalysisModelTargetId: setAiSpecified.checked ? settingsAiCascade.value || "" : "",
-    enableLivebench: setLivebench.checked,
-    enableSafety: setSafety.checked,
-    enableHle: setHle.checked,
-    enableHardcoreLogic: setHardcoreLogic.checked,
-    enableCodingHard: setCodingHard.checked,
-    enableAutoTag: setAutoTag.checked,
-    testCycleDays: Math.max(0, Math.trunc(Number(setTestCycleDays.value) || 0)),
-    enableHighRiskAlert: setHighRiskAlert.checked,
-    newapiBaseUrl: setNewapiBase.value.trim(),
-    newapiUserId: setNewapiUserid.value.trim(),
-    newapiImportToken: setNewapiToken.value, // 空串→后端保留原令牌
-  };
-  try {
-    const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
-    state.settings = saved; // 即时生效：删除流随即按新开关走
-    settingsDirty = false; // 已保存，清除未保存标记
-    await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
-    await loadSettings(); // 刷新令牌「已配置」占位符状态
-    channelAdmin.renderTagOptions(); // 自定义标签变化 → 模型表单勾选项即时并入
-    await highRiskBanner.load(); // 高危报告提示开关变化 → 即时显示/收起横幅
-    toast("设置已保存。");
-  } catch (error) {
-    toast(`保存设置失败：${error.message}`, true);
-  }
-});
 
 async function loadRequests() {
   state.requests = await api("/api/requests/recent");
@@ -1321,9 +1265,7 @@ async function updateProfileKey(profileId) {
   toast("Key 已更新。建议马上跑一次快速测试。");
 }
 
-// 注册表：渠道/模型/Profile 数据变化时，逐一通知已注册的刷新回调。
-// 原为硬编码 12 个消费者的扇出列表；改成注册制后，未来模块可自注册而不改此函数。
-const _onProfileData = [];
+// 注册表已移至文件顶部（紧接 state 定义之后），此处仅保留各消费者的注册语句。
 _onProfileData.push((data) => admissionCascade.refresh(data));
 _onProfileData.push((data) => standardCascade.refresh(data));
 _onProfileData.push((data) => quickVerifyCascade.refresh(data));
