@@ -10,6 +10,7 @@ import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
 import { loadRunnableProfiles } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
 import { computeEarnedTags, applyEarnedTags } from "./scenario-tag-award.mjs";
+import { P95_LATENCY_OK_MS, P95_LATENCY_SLOW_MS } from "./constants.mjs";
 import { evaluateScenarioOutput } from "./scenario-evaluator.mjs";
 // readProfileApiKey / assertPublicTarget 已随 runUpstreamProbe 迁至 upstream-transport.mjs
 import {
@@ -844,7 +845,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     ["auth_failed", "model_not_found", "content_block_not_found", "upstream_5xx"].includes(code),
   );
   const identityPenalty = identityCheck?.status === "conflict" ? 15 : identityCheck?.status === "unknown" ? 3 : 0;
-  const latencyPenalty = p95TotalMs && p95TotalMs > 45000 ? 10 : p95TotalMs && p95TotalMs > 15000 ? 5 : 0;
+  const latencyPenalty = p95TotalMs && p95TotalMs > P95_LATENCY_SLOW_MS ? 10 : p95TotalMs && p95TotalMs > P95_LATENCY_OK_MS ? 5 : 0;
   const tokenAudit = buildTokenAudit(records);
   const billingAudit = auditBillingDimensions(records, { model: profile.defaultModel });
   const fingerprintSummary = buildFingerprintProbeSummary(records);
@@ -979,7 +980,7 @@ function buildAdmissionRecommendation(grade, { severeError, successRate, p95Tota
       detail: `检测到关键错误 ${severeError}。建议先确认协议类型、模型名、Key 权限和上游渠道状态。`,
     };
   }
-  if (p95TotalMs && p95TotalMs > 45000) {
+  if (p95TotalMs && p95TotalMs > P95_LATENCY_SLOW_MS) {
     return {
       level: "watch",
       title: "链路较慢，需要观察",

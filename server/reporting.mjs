@@ -3,6 +3,7 @@
 // Markdown 报告正文。权威性头与免责见 report-authority.mjs，文件落盘见 report-files.mjs。
 import { ERROR_DIAGNOSTICS } from "./diagnostics.mjs";
 import { escapeMarkdownTable, formatPercent, redactSensitiveText } from "./utils.mjs";
+import { P95_LATENCY_OK_MS, P95_LATENCY_SLOW_MS } from "./constants.mjs";
 import { compareProportions } from "./stats.mjs";
 
 // 报告权威性层与文件 I/O 已拆到独立模块。此处 import 供内部 formatter 调用，
@@ -36,7 +37,7 @@ export {
 };
 
 export function buildScenarioRecommendation(successRate, avgQualityScore, p95TotalMs, errorCounts = {}) {
-  if (successRate >= 0.95 && avgQualityScore >= 80 && (!p95TotalMs || p95TotalMs <= 45000)) {
+  if (successRate >= 0.95 && avgQualityScore >= 80 && (!p95TotalMs || p95TotalMs <= P95_LATENCY_SLOW_MS)) {
     return {
       level: "pass",
       title: "复杂场景表现可用",
@@ -67,7 +68,7 @@ export function buildScenarioRecommendation(successRate, avgQualityScore, p95Tot
 }
 
 export function buildRecommendation(successRate, p95TotalMs, errorCounts) {
-  if (successRate >= 0.95 && (!p95TotalMs || p95TotalMs <= 15000)) {
+  if (successRate >= 0.95 && (!p95TotalMs || p95TotalMs <= P95_LATENCY_OK_MS)) {
     return {
       level: "pass",
       title: "可进入进一步质量测试",
@@ -1190,9 +1191,9 @@ function buildStabilityInsights(summary) {
   const latencyText =
     p95 === null
       ? "没有足够成功请求计算慢请求参考。"
-      : p95 <= 15000
+      : p95 <= P95_LATENCY_OK_MS
         ? `P95 为 ${p95} ms，慢请求压力较低。`
-        : p95 <= 45000
+        : p95 <= P95_LATENCY_SLOW_MS
           ? `P95 为 ${p95} ms，存在慢请求，需要观察。`
           : `P95 为 ${p95} ms，尾部延迟较高，不适合低延迟业务。`;
   const successText =
@@ -1219,7 +1220,7 @@ function buildBatchInsights(summary, rankedResults) {
   const risky = summary.results.filter((result) => result.error || result.successRate < 0.8);
   const best = rankedResults[0];
   const runnerUp = rankedResults[1];
-  const slow = summary.results.filter((result) => !result.error && Number(result.p95TotalMs) > 45000);
+  const slow = summary.results.filter((result) => !result.error && Number(result.p95TotalMs) > P95_LATENCY_SLOW_MS);
 
   // 红线：渠道对比 CI 重叠 / 不显著时不下"A 优于 B"。
   let significanceLine = null;
@@ -1239,7 +1240,7 @@ function buildBatchInsights(summary, rankedResults) {
       ? `- 当前最优：${best.profileName}，成功率 ${best.successRateText}，P95 ${best.p95TotalMs ?? "-"} ms。`
       : "- 当前最优：没有可用候选。",
     ...(significanceLine ? [significanceLine] : []),
-    slow.length ? `- 慢请求：${slow.length} 个 API 的 P95 超过 45000 ms，不适合低延迟业务。` : "- 慢请求：未发现明显高 P95 候选。",
+    slow.length ? `- 慢请求：${slow.length} 个 API 的 P95 超过 ${P95_LATENCY_SLOW_MS} ms，不适合低延迟业务。` : "- 慢请求：未发现明显高 P95 候选。",
     risky.length
       ? `- 下一步：先处理 ${risky.length} 个失败或低成功率配置，再对候选 API 做场景测试。`
       : "- 下一步：可以选择排名靠前的 API 继续做复杂场景或内容安全复测。",
@@ -1416,7 +1417,7 @@ function buildReportConclusion({ successRate, p95TotalMs, avgQualityScore, error
     return `本轮复杂场景测试风险较高，成功率 ${successText}，平均质量分 ${avgQualityScore}。主要失败类型是 ${mainError}（${diagnosis.title}），暂不建议直接交给真实业务使用。`;
   }
 
-  if (successRate >= 0.95 && (!p95TotalMs || p95TotalMs <= 15000)) {
+  if (successRate >= 0.95 && (!p95TotalMs || p95TotalMs <= P95_LATENCY_OK_MS)) {
     return `本轮稳定性表现正常，成功率 ${successText}，慢请求参考 P95 为 ${p95TotalMs ?? "-"} ms，可以继续做复杂场景和人工质量复核。`;
   }
   if (successRate >= 0.8) {

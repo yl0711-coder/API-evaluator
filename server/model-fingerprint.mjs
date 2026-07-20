@@ -2,6 +2,7 @@
 // 模型身份与纯度：从模型名推断家族、构造行为指纹探针、做 token 计费审计与纯度评估，
 // 给出"自述模型 vs 实际表现"是否一致的概率性判断（疑似换模型/降级/灌水，非事实认定）。
 import { formatPercent, sumNullable } from "./utils.mjs";
+import { P95_LATENCY_SLOW_MS } from "./constants.mjs";
 
 export const FINGERPRINT_LIBRARY_VERSION = "2026.06.01";
 
@@ -427,7 +428,7 @@ export function buildPurityAssessment({
     addEvidence(evidence, "基础可用性", `准入成功率为 ${formatPercent(successRate)}。`, "pass");
   }
 
-  if (p95TotalMs && p95TotalMs > 45000) {
+  if (p95TotalMs && p95TotalMs > P95_LATENCY_SLOW_MS) {
     score -= 10;
     addRisk(riskFlags, "high_tail_latency", "尾部延迟高", `P95 为 ${p95TotalMs} ms，复杂任务可能容易超时。`, "medium");
   }

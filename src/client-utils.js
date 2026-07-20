@@ -152,6 +152,18 @@ export function toast(message, error = false) {
 // `import { escapeHtml } from "./client-utils.js"` 不变。
 export { escapeHtml };
 
+/**
+ * 标签模板：自动对插值做 HTML 转义。
+ * 用法：html`<b>${userName}</b>` —— userName 中的 `<` `>` `&` 等自动转义。
+ */
+export function html(strings, ...values) {
+  return strings.reduce((out, s, i) => {
+    const v = values[i];
+    const escaped = v === undefined || v === null ? "" : escapeHtml(String(v));
+    return out + s + escaped;
+  }, "");
+}
+
 // 协议代码 -> 中文展示名。渠道/模型/profile 各处共用，避免多份分支漂移。
 export function protocolLabel(protocol) {
   if (protocol === "claude_messages") return "Claude Messages";
