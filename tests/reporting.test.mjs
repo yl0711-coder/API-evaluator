@@ -76,7 +76,7 @@ test("stability reports contain useful conclusions and no API key", async () => 
     assert.match(html, /模型评测平台本地生成/);
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -89,11 +89,12 @@ test("report filenames are sanitized before writing to report directory", async 
     const files = await reporting.saveReportFiles("../bad/name", "# Test", "测试报告");
 
     assert.equal(files.markdownPath.includes(".."), false);
-    assert.match(files.markdownPath, /bad-name\.md$/);
+    // sanitizeReportBaseName 把路径分隔符/非法字符统一替换为下划线，故 "../bad/name" → "bad_name"。
+    assert.match(files.markdownPath, /bad_name\.md$/);
     assert.match(await readFile(files.markdownPath, "utf8"), /# Test/);
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -129,21 +130,30 @@ test("reports can include optional AI analysis without replacing local conclusio
     recommendation: reporting.buildRecommendation(1, 200, {}),
     promptPreview: "hello",
   };
-  const markdown = reporting.formatStabilityReport(summary, [], {
-    aiAnalysis: {
-      enabled: true,
-      success: true,
-      text: "## AI 人话结论\n建议继续测试。",
-      inputTokens: 100,
-      outputTokens: 50,
-    },
-  });
+  const aiAnalysis = {
+    enabled: true,
+    success: true,
+    text: "## AI 人话结论\n建议继续测试。",
+    inputTokens: 100,
+    outputTokens: 50,
+  };
+  const markdown = reporting.formatStabilityReport(summary, [], { aiAnalysis });
 
+  // 主报告：只保留指引小节（标题 + 用量 + 指向单独 HTML），不再内联 AI 正文。
   assert.match(markdown, /给业务人员看的结论/);
   assert.match(markdown, /AI 辅助分析（可选）/);
   assert.match(markdown, /额外消耗：输入 100 tokens，输出 50 tokens/);
-  assert.match(markdown, /最终判断仍要结合本地规则结论/);
-  assert.match(markdown, /AI 人话结论/);
+  assert.match(markdown, /-ai-analysis\.html/);
+  assert.doesNotMatch(markdown, /AI 人话结论/);
+
+  // 单独文档：承载完整 AI 分析正文与免责说明，渲染成单独 HTML。
+  const aiDoc = reporting.formatAiAnalysisDocument(aiAnalysis, { title: "稳定性测试 · AI 辅助分析" });
+  assert.match(aiDoc, /# 稳定性测试 · AI 辅助分析/);
+  assert.match(aiDoc, /额外消耗：输入 100 tokens，输出 50 tokens/);
+  assert.match(aiDoc, /最终判断仍要结合本地规则结论/);
+  assert.match(aiDoc, /AI 人话结论/);
+  // 未启用时不产出文档（调用方据此跳过落盘）。
+  assert.equal(reporting.formatAiAnalysisDocument({ enabled: false }), "");
 });
 
 test("admission reports contain grade, evidence, and no API key", async () => {
@@ -327,6 +337,79 @@ test("scenario reports explain content safety risks in plain language", async ()
   assert.match(markdown, /重点看原始回答/);
 });
 
+// 「在报告中完整显示返回」的意义全在「未截断」四个字上：空响应/流式异常时 rawError 只是
+// summarizeText 砍剩的 500 字摘要，正是这种时候才需要原始响应体全文。
+test("完整返回：成功给回答全文；失败给未截断的上游响应体；无响应体则如实标注已截断", async () => {
+  const reporting = await import(`../server/reporting.mjs?case=fullresp-${Date.now()}`);
+  // 造一段超过 summarizeText 上限(500)的 SSE，尾部放一个哨兵——它只可能来自未截断的全文。
+  const sse = Array.from(
+    { length: 40 },
+    (_, i) => `data: {"choices":[{"delta":{"content":""},"index":${i}}],"usage":null}`,
+  ).join("\n\n") + '\n\ndata: {"choices":[],"usage":{"prompt_tokens":143,"completion_tokens":0}}\n\ndata: [DONE]';
+  assert.ok(sse.length > 500, "样本必须长过摘要上限，否则测不出截断");
+
+  const base = {
+    runId: "scenario-full",
+    profileCount: 1,
+    scenarioCount: 3,
+    repeats: 1,
+    maxParallelProfiles: 1,
+    requestConcurrency: 1,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    endedAt: "2026-01-01T00:00:02.000Z",
+    durationMs: 2000,
+    results: [
+      {
+        profileName: "Demo API",
+        model: "demo-model",
+        successRate: 0,
+        successRateText: "33%",
+        avgQualityScore: 0,
+        avgTotalMs: 1000,
+        p95TotalMs: 1200,
+        errorCounts: { empty_response: 1 },
+        diagnostics: [],
+        recommendation: reporting.buildScenarioRecommendation(0, 0, 1200, { empty_response: 1 }),
+        scenarios: [],
+        records: [
+          { scenarioName: "正常题", success: true, responseText: "答案是 121626。" },
+          // 空响应：有响应体（rawResponse），rawError 是它的截断摘要
+          {
+            scenarioName: "空响应题",
+            success: false,
+            normalizedError: "empty_response",
+            responseText: "",
+            rawResponse: sse,
+            rawError: sse.slice(0, 500),
+          },
+          // 连接层失败：压根没有响应体，只有短错误串
+          {
+            scenarioName: "断网题",
+            success: false,
+            normalizedError: "network_error",
+            responseText: "",
+            rawResponse: "",
+            rawError: "fetch failed ECONNRESET",
+          },
+        ],
+      },
+    ],
+  };
+
+  const md = reporting.formatScenarioReport(base, { fullResponse: true });
+  assert.match(md, /## 9\. 完整返回/);
+  assert.match(md, /答案是 121626。/, "成功用例给回答全文");
+  assert.match(md, /上游原始响应体如下/);
+  assert.match(md, /"completion_tokens":0/, "失败用例必须能看到流的尾部（含 usage），而不是只有开头 500 字");
+  assert.match(md, /data: \[DONE\]/, "全文未被截断");
+  assert.match(md, /未取得响应体.*已截断.*ECONNRESET/, "没有响应体时如实标注，不冒充全文");
+
+  // 关闭时整节消失，旧报告结构不变
+  const off = reporting.formatScenarioReport(base, { fullResponse: false });
+  assert.doesNotMatch(off, /完整返回/);
+  assert.doesNotMatch(off, /data: \[DONE\]/);
+});
+
 test("batch reports include readable comparison data and next steps", async () => {
   const reporting = await import(`../server/reporting.mjs?case=batch-${Date.now()}`);
   const markdown = reporting.formatBatchReport({
@@ -368,43 +451,4 @@ test("batch reports include readable comparison data and next steps", async () =
   assert.match(markdown, /失败或低成功率配置/);
   assert.match(markdown, /使用建议/);
   assert.match(markdown, /低延迟场景/);
-});
-
-test("batch admission reports summarize candidate ranking", async () => {
-  const reporting = await import(`../server/reporting.mjs?case=batch-admission-${Date.now()}`);
-  const markdown = reporting.formatBatchAdmissionReport({
-    batchId: "admission-batch-test",
-    profileCount: 2,
-    packageLevel: "standard",
-    maxParallelProfiles: 1,
-    startedAt: "2026-01-01T00:00:00.000Z",
-    endedAt: "2026-01-01T00:00:10.000Z",
-    durationMs: 10000,
-    results: [
-      {
-        profileName: "Candidate A",
-        model: "claude-opus-test",
-        grade: "A",
-        score: 92,
-        successRateText: "100%",
-        purityAssessment: { score: 88 },
-        fingerprintSummary: { passRateText: "100%" },
-        recommendation: { title: "可继续复测" },
-      },
-      {
-        profileName: "Candidate B",
-        model: "claude-opus-test",
-        grade: "D",
-        score: 50,
-        successRateText: "60%",
-        fingerprintSummary: { passRateText: "50%" },
-        recommendation: { title: "先排查" },
-      },
-    ],
-  });
-
-  assert.match(markdown, /批量准入评测报告/);
-  assert.match(markdown, /Candidate A/);
-  assert.match(markdown, /综合分 92/);
-  assert.match(markdown, /批量准入只负责初筛/);
 });

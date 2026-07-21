@@ -6,6 +6,8 @@
 //            mysql2 是核心依赖（已随镜像带上），import 即用。
 // 通用：任何 new-api 用户配自己的来源即可复用（channels 表结构来自 new-api 开源，版本兼容见 README）。
 import { envCompat } from "./env-compat.mjs";
+import { readConfig } from "./newapi-tag-writer.mjs";
+import { assertPublicTarget } from "./egress-guard.mjs";
 
 export function importSourceMode() {
   return String(envCompat("IMPORT_SOURCE") || "").toLowerCase();
@@ -30,16 +32,39 @@ export async function fetchNewapiChannels() {
 }
 
 async function fetchViaApi() {
-  const base = String(envCompat("NEWAPI_BASE_URL") || "").replace(/\/+$/, "");
-  const token = envCompat("NEWAPI_IMPORT_TOKEN");
-  if (!base || !token) throw new Error("api 模式需要 EVALUATOR_NEWAPI_BASE_URL + EVALUATOR_NEWAPI_IMPORT_TOKEN（new-api 管理员 access token）。");
+  // 复用统一配置读取（设置页优先、env 兜底）；New-Api-User 缺失会被判未登录返回 401，默认管理员 1。
+  const { base, token, userId } = readConfig();
+  if (!base || !token) throw new Error("api 模式需要先在『设置』页填写 new-api 网址与系统访问令牌（new-api 管理员 access token）。");
+  const headers = { Authorization: token, "New-Api-User": userId };
   const PAGE_SIZE = 100;
   const PAGE_CAP = 50; // 最多 5000 个渠道；超出则只导前 5000 并告警，避免无界翻页
+  const PAGE_TIMEOUT_MS = Number(process.env.EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS) > 0 ? Number(process.env.EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS) : 15_000;
   const rows = [];
   let truncated = false;
+  // 出站守卫：这是全站第三个出站点，此前漏在守卫之外（P2-1）。base 是超管在设置页填的 new-api
+  // 网址，填成内网/元数据地址会让评测机去打内网。host 跨页不变，故校验一次即可。守卫 + redirect:"error"
+  // + 每页超时三项都与另两个出站点（test-runner / client-replay）对齐。
+  await assertPublicTarget(`${base}/api/channel/`);
   for (let page = 0; page < PAGE_CAP; page += 1) {
-    const res = await fetch(`${base}/api/channel/?p=${page}&page_size=${PAGE_SIZE}`, { headers: { Authorization: token } });
-    if (!res.ok) throw new Error(`new-api 渠道接口返回 ${res.status}（确认 token 有管理员权限）。`);
+    // 每页独立超时：undici 的 fetch 无默认响应超时，new-api 主机挂起会让本导入请求无限期吊住
+    // （最多 PAGE_CAP 页逐页累加），故与 test-runner / client-replay 一样带 AbortSignal 兜底。
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT_MS);
+    let res;
+    try {
+      // redirect:"error"：上游 302 到内网同样是绕过守卫的出站，禁止跟随（与 test-runner / client-replay 一致）。
+      res = await fetch(`${base}/api/channel/?p=${page}&page_size=${PAGE_SIZE}`, {
+        headers,
+        redirect: "error",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error(`new-api 渠道接口超时（${PAGE_TIMEOUT_MS}ms 未响应）：请确认 new-api 网址可达。`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) throw new Error(`new-api 渠道接口返回 ${res.status}（确认系统访问令牌与 New-Api-User 有管理员权限）。`);
     const body = await res.json().catch(() => null);
     const items = Array.isArray(body?.data) ? body.data : Array.isArray(body?.data?.items) ? body.data.items : [];
     if (!items.length) break;

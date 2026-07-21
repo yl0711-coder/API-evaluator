@@ -6,7 +6,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.example.com",
     modelPlaceholder: "claude-sonnet-4-5 / gpt-5 / gemini-2.5-pro / deepseek-chat / glm-4.6 / kimi-k2",
     maxTokens: "512",
-    timeoutMs: "60000",
+    timeoutMs: "300000",
     notes: "适合大多数中转站，几乎所有文本模型都走这个。Base URL 只填网关基础地址，不要填 /v1/chat/completions。",
   },
   claude_native: {
@@ -16,7 +16,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.anthropic.com",
     modelPlaceholder: "claude-sonnet-4-5",
     maxTokens: "512",
-    timeoutMs: "120000",
+    timeoutMs: "300000",
     notes: "只有明确使用 Anthropic Claude Messages 原生接口时选择。中转站通常不要选这个。",
   },
   openai_official: {
@@ -26,7 +26,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.openai.com",
     modelPlaceholder: "gpt-5 / gpt-4.1 / gpt-5-codex / o3",
     maxTokens: "512",
-    timeoutMs: "60000",
+    timeoutMs: "300000",
     notes: "适合 OpenAI Chat Completions 兼容路径（含 gpt / codex / o 系列）。Base URL 不需要填写 /v1/chat/completions。",
   },
   deepseek_openai_compatible: {
@@ -36,7 +36,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.deepseek.com",
     modelPlaceholder: "deepseek-chat / deepseek-reasoner",
     maxTokens: "1024",
-    timeoutMs: "120000",
+    timeoutMs: "300000",
     notes: "推理模型响应可能更慢，复杂测试建议把超时调到 120000ms。直连可用标准 /v1 路径。",
   },
   gemini_openai_compatible: {
@@ -46,7 +46,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
     modelPlaceholder: "gemini-2.5-pro / gemini-2.5-flash",
     maxTokens: "1024",
-    timeoutMs: "60000",
+    timeoutMs: "300000",
     notes: "经中转站测最省心。直连 Google 需用其 OpenAI 兼容端点（/v1beta/openai），路径与标准 /v1 不同。",
   },
   kimi_openai_compatible: {
@@ -56,7 +56,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.moonshot.cn",
     modelPlaceholder: "kimi-k2-0905-preview / moonshot-v1-32k",
     maxTokens: "1024",
-    timeoutMs: "60000",
+    timeoutMs: "300000",
     notes: "Moonshot 直连可用标准 /v1 路径；经中转站同样适用。",
   },
   doubao_openai_compatible: {
@@ -66,7 +66,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
     modelPlaceholder: "doubao-seed-1-6 / doubao-pro（或接入点 ep-...）",
     maxTokens: "1024",
-    timeoutMs: "60000",
+    timeoutMs: "300000",
     notes: "经中转站测最省心。火山方舟直连路径为 /api/v3，与标准 /v1 不同。",
   },
   glm_openai_compatible: {
@@ -76,7 +76,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
     modelPlaceholder: "glm-4.6 / glm-4-plus",
     maxTokens: "1024",
-    timeoutMs: "60000",
+    timeoutMs: "300000",
     notes: "经中转站测最省心。智谱直连路径为 /api/paas/v4，与标准 /v1 不同。",
   },
   qwen_openai_compatible: {
@@ -86,7 +86,7 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
     modelPlaceholder: "qwen-max / qwen-plus / qwen3-...",
     maxTokens: "1024",
-    timeoutMs: "60000",
+    timeoutMs: "300000",
     notes: "经中转站测最省心。阿里 DashScope 直连用其 OpenAI 兼容端点（/compatible-mode/v1），路径与标准 /v1 不同。",
   },
   grok_openai_compatible: {
@@ -96,65 +96,8 @@ export const PROFILE_TEMPLATES = {
     baseUrlPlaceholder: "https://api.x.ai",
     modelPlaceholder: "grok-4 / grok-3",
     maxTokens: "1024",
-    timeoutMs: "60000",
+    timeoutMs: "300000",
     notes: "xAI 直连可用标准 /v1 路径；经中转站同样适用。其余少见模型（Mistral / Llama / 文心 / 混元 / MiniMax 等）直接用最上面的通用「AI 中转站 / OpenAI 兼容」即可。",
-  },
-};
-
-export const SCENARIO_PACKS = {
-  "scenario-small": {
-    label: "低成本初筛包",
-    categories: ["connectivity", "speed", "structured"],
-    limit: 3,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合第一次验证，只确认连通、速度和结构化输出。",
-  },
-  "scenario-coding": {
-    label: "编程能力包",
-    categories: ["coding", "reasoning"],
-    limit: 4,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合测试代码排错、工程分析和复杂决策。",
-  },
-  "scenario-long-context": {
-    label: "长上下文包",
-    categories: ["long_context", "reasoning", "writing"],
-    limit: 4,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "适合验证大输入、资料归纳和业务说明能力，token 消耗较高。",
-  },
-  "scenario-safety": {
-    label: "内容安全合规包",
-    categories: ["safety"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "1",
-    requestConcurrency: "1",
-    note: "用于低风险探测色情、暴力、血腥、政治谣言等内容是否被安全拒绝或改写。不会发送露骨细节。",
-  },
-  "scenario-basic": {
-    label: "基础能力全量包",
-    categories: ["connectivity", "speed", "structured", "coding", "long_context", "reasoning", "writing"],
-    limit: Infinity,
-    repeats: "1",
-    maxParallelProfiles: "2",
-    requestConcurrency: "1",
-    note: "适合稳定性已通过后的基础能力评估。",
-  },
-  "scenario-deep": {
-    label: "候选深度复测包",
-    categories: ["connectivity", "speed", "structured", "coding", "long_context", "reasoning", "writing"],
-    limit: Infinity,
-    repeats: "2",
-    maxParallelProfiles: "2",
-    requestConcurrency: "1",
-    note: "适合准备推荐某个候选渠道前复测，成本更高。",
   },
 };
 
@@ -314,7 +257,7 @@ export function validateProfileConfig(payload) {
     issues.push({
       level: "warning",
       title: "超时时间偏短",
-      detail: "低于 30000ms 容易把慢响应误判成失败。复杂任务建议 60000-120000ms。",
+      detail: "低于 30000ms 容易把慢响应误判成失败。默认 300000ms（5 分钟）；复杂/推理任务保持 180000-300000ms。",
     });
   }
 
@@ -331,18 +274,6 @@ export function validateProfileConfig(payload) {
     hasBlockers: issues.some((issue) => issue.level === "blocker"),
     hasWarnings: issues.some((issue) => issue.level === "warning"),
   };
-}
-
-export function getScenarioPack(templateKey) {
-  return SCENARIO_PACKS[templateKey] || SCENARIO_PACKS["scenario-basic"];
-}
-
-export function pickScenarioIdsForPack(scenarios, templateKey) {
-  const pack = getScenarioPack(templateKey);
-  const source = pack.categories.length
-    ? scenarios.filter((scenario) => pack.categories.includes(scenario.category))
-    : scenarios;
-  return source.slice(0, pack.limit).map((scenario) => scenario.id);
 }
 
 export function normalizeErrorKey(errorLike) {

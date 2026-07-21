@@ -1,5 +1,7 @@
 // Browser-only helpers shared by the single-page UI. Keeping these pure or
 // DOM-local makes src/app.js easier to read and reduces accidental coupling.
+import { escapeHtml } from "../shared/escape.mjs";
+
 export function formatNumber(value) {
   return Number.isFinite(Number(value)) ? Math.round(Number(value)).toLocaleString("zh-CN") : "-";
 }
@@ -145,13 +147,10 @@ export function toast(message, error = false) {
   }, 2600);
 }
 
-export function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+// escapeHtml 的规范实现已抽到 shared/escape.mjs（供后端 shared/trend-chart.mjs 复用，避免后端 import
+// 前端 src/）。此处本地 import 供内部使用，并 re-export，保持前端各处
+// `import { escapeHtml } from "./client-utils.js"` 不变。
+export { escapeHtml };
 
 // 协议代码 -> 中文展示名。渠道/模型/profile 各处共用，避免多份分支漂移。
 export function protocolLabel(protocol) {

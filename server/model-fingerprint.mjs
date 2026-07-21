@@ -350,6 +350,7 @@ export function buildPurityAssessment({
   errorCounts = {},
   tokenAudit,
   fingerprintSummary,
+  tierDiscrimination,
 }) {
   const expectedFamily = inferModelFamily(modelName) || identityCheck?.expectedFamily || "unknown";
   const evidence = [];
@@ -443,6 +444,26 @@ export function buildPurityAssessment({
         `${fingerprintSummary.passedCount}/${fingerprintSummary.totalCount} 个指纹探针通过。失败项：${fingerprintSummary.failedNames.join("、") || "无明细"}。`,
         fingerprintSummary.passRate < 0.5 ? "high" : "medium",
       );
+    }
+  }
+
+  // 档位降级（声称 Sonnet 行为像 Haiku 等）：似然比分类器结论接入纯度评估。
+  if (tierDiscrimination) {
+    if (tierDiscrimination.status === "suspected_downgrade") {
+      const conf = tierDiscrimination.confidence;
+      score -= conf === "high" ? 25 : conf === "medium" ? 14 : 6;
+      addRisk(
+        riskFlags,
+        "tier_downgrade",
+        "疑似档位降级",
+        tierDiscrimination.verdict,
+        conf === "high" ? "high" : conf === "medium" ? "medium" : "low",
+      );
+    } else if (tierDiscrimination.status === "consistent") {
+      addEvidence(evidence, "档位一致性", tierDiscrimination.verdict, "pass");
+    } else if (tierDiscrimination.verdict) {
+      // 不确定 / 截断 / 高于声称 / 未校准：作 watch 证据呈现，不扣分。
+      addEvidence(evidence, "档位判别", tierDiscrimination.verdict, "watch");
     }
   }
 
@@ -564,12 +585,25 @@ export function evaluateFingerprintProbe(testCase, text) {
 function classifyPurity(score, riskFlags) {
   const highRisk = riskFlags.some((item) => item.severity === "high");
   const hasIdentityConflict = riskFlags.some((item) => item.code === "identity_conflict");
+  // medium 也触发：中转锚定参考会把置信封顶 medium，但「后验 100%/margin 大」的强信号正属此列，
+  // 不该因非官方就降级成普通风险。low（如 Opus/Sonnet 弱判别）才只留风险标记、不强改分类。
+  const hasTierDowngrade = riskFlags.some(
+    (item) => item.code === "tier_downgrade" && (item.severity === "high" || item.severity === "medium"),
+  );
   if (hasIdentityConflict) {
     return {
       code: "suspected_model_mismatch",
       title: "疑似模型不匹配",
       confidence: score >= 60 ? "medium" : "high",
       nextAction: "暂停开放，要求上游解释模型来源，并用同模型其他渠道做横向复测。",
+    };
+  }
+  if (hasTierDowngrade) {
+    return {
+      code: "suspected_tier_downgrade",
+      title: "疑似档位降级",
+      confidence: "medium",
+      nextAction: "暂停开放，要求上游解释实际服务的模型档位，并用官方/可信渠道横向复测同档模型。",
     };
   }
   if (score >= 85 && !highRisk) {

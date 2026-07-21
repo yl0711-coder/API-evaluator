@@ -77,6 +77,32 @@ test("prompt preset application locks generated prompts and unlocks custom input
   assert.match(hint.textContent, /可以编辑/);
 });
 
+test("getPromptPreset：单参形式 → 落到 stability 库", () => {
+  // 一参调用 getPromptPreset(id)：kind 默认 stability。
+  assert.equal(getPromptPreset("basic").id, "basic");
+  assert.match(getPromptPreset("basic").prompt, /稳定性测试/);
+});
+
+test("getPromptPreset：未知 kind → 回落 STABILITY；未知 id → 回落 presets[0]", () => {
+  // 未知 kind 两参：kind 查不到 → STABILITY 库，再按 id 取。
+  assert.equal(getPromptPreset("不存在kind", "coding").id, "coding", "回落 STABILITY 后仍按 id 命中");
+  // 未知 id：find 落空 → 返回该库首项（stability 的 basic）。
+  assert.equal(getPromptPreset("stability", "不存在id").id, STABILITY_PROMPT_PRESETS[0].id);
+  assert.equal(getPromptPreset("quick", "不存在id").id, QUICK_PROMPT_PRESETS[0].id, "quick 库回落其首项");
+});
+
+test("renderPromptPresetOptions：单参形式渲染 stability 且选中该 id", () => {
+  const html = renderPromptPresetOptions("coding"); // 首参非 kind → 视为 selectedId，库回落 stability
+  assert.match(html, /编程场景/, "渲染 stability 选项");
+  assert.match(html, /value="coding" selected/);
+});
+
+test("renderPromptPresetOptions：未知 kind 不抛错，回落 STABILITY 渲染", () => {
+  const html = renderPromptPresetOptions("不存在kind", "coding");
+  assert.match(html, /基础稳定性/, "回落 STABILITY 库");
+  assert.equal(/ selected/.test(html), false, "无匹配项 → 无 selected（首参被当作 selectedId）");
+});
+
 function createClassList() {
   const values = new Set();
   return {

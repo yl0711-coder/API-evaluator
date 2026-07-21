@@ -1,0 +1,133 @@
+// server/auto-test-store.mjs
+// 自动测试作业存储（纯 JSON，仿 model-target-store）：超管在「自动测试配置」页配置的定时测试作业，
+// 按 id 存进持久卷 /data 下的 AUTO_TEST_JOBS_FILE。作业只是纯数据，绝不含密钥（targetId 指向 model-target，
+// 密钥在渠道加密库）。load/save 用 writeJsonAtomic 原子写，防写一半崩溃损坏 JSON。
+import crypto from "node:crypto";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { AUTO_TEST_JOBS_FILE } from "./paths.mjs";
+import { writeJsonAtomic } from "./utils.mjs";
+
+// 支持的测试种类：均有独立后端 runner 入口（见 auto-test-scheduler 的 kind→runner 映射）。
+export const AUTO_TEST_KINDS = ["quick", "admission", "stability", "scenario"];
+
+let jobsFile = AUTO_TEST_JOBS_FILE;
+
+export function __setJobsFileForTest(file) {
+  jobsFile = file || AUTO_TEST_JOBS_FILE;
+}
+
+export async function loadJobs() {
+  try {
+    if (!existsSync(jobsFile)) return [];
+    const raw = JSON.parse((await readFile(jobsFile, "utf8")) || "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw.map((job) => normalizeJob(job, job)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export async function saveJobs(jobs) {
+  await writeJsonAtomic(jobsFile, Array.isArray(jobs) ? jobs : []);
+}
+
+// 抛出此错误的 updateJobs mutator 表示"校验失败、勿保存"，端点据此回 400。
+export class JobValidationError extends Error {}
+
+// 串行化的读改写：load → mutator(jobs)（原地改数组）→ save，全程一把锁排队。
+// 消除并发写竞争——调度器回写 lastRunAt 与端点增删改共用同一条链，绝不互相覆盖。
+// mutator 可返回一个值（如刚 upsert 的作业），updateJobs 解析为该值；mutator 抛错则不落盘。
+let writeChain = Promise.resolve();
+export function updateJobs(mutator) {
+  const runOnce = async () => {
+    const jobs = await loadJobs();
+    const value = await mutator(jobs); // 原地改 jobs；抛错 → 下面 saveJobs 不执行
+    await saveJobs(jobs);
+    return value;
+  };
+  const next = writeChain.then(runOnce, runOnce); // 无论前一次成败都接着排队
+  writeChain = next.then(
+    () => {},
+    () => {},
+  ); // 链本身吞掉结果/错误，各调用方只看自己的 next
+  return next;
+}
+
+export function __resetWriteChainForTest() {
+  writeChain = Promise.resolve();
+}
+
+// 下次运行时刻：从基准时刻（默认现在）推 periodHours 小时（支持小数，最短 0.5 小时）。
+export function computeNextRunAt(periodHours, fromMs = Date.now()) {
+  const hours = Math.max(0.5, Number(periodHours) || 0.5);
+  return new Date(fromMs + hours * 3600 * 1000).toISOString();
+}
+
+// 规范化：只认已知字段 + 类型强制，杜绝脏数据。existing 用于保留运行态字段（lastRunAt 等）与 id/createdAt。
+export function normalizeJob(raw, existing = null) {
+  if (!raw || typeof raw !== "object") return null;
+  const id = String(raw.id ?? existing?.id ?? "").trim() || `atj_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const kind = AUTO_TEST_KINDS.includes(raw.kind) ? raw.kind : String(existing?.kind || "quick");
+  // 周期允许小数、最短 0.5 小时；无效/非正 → 默认 24。保留两位小数避免浮点噪声。
+  const rawPeriod = Number(raw.periodHours ?? existing?.periodHours);
+  const periodHours = Number.isFinite(rawPeriod) && rawPeriod > 0 ? Math.max(0.5, Math.round(rawPeriod * 100) / 100) : 24;
+  const scenarioIds = Array.isArray(raw.scenarioIds)
+    ? [...new Set(raw.scenarioIds.map((x) => String(x ?? "").trim()).filter(Boolean))]
+    : Array.isArray(existing?.scenarioIds)
+      ? existing.scenarioIds
+      : [];
+  const rawOptions = raw.options && typeof raw.options === "object" ? raw.options : existing?.options || {};
+  const options = normalizeOptions(rawOptions);
+  return {
+    id,
+    name: String(raw.name ?? existing?.name ?? "").trim().slice(0, 120),
+    targetId: String(raw.targetId ?? existing?.targetId ?? "").trim(),
+    kind,
+    periodHours,
+    scenarioIds,
+    options,
+    enabled: raw.enabled === undefined ? existing?.enabled !== false : Boolean(raw.enabled),
+    createdAt: existing?.createdAt || raw.createdAt || new Date().toISOString(),
+    // 运行态字段：仅由调度器写；规范化时保留既有值（新建时为空）。
+    lastRunAt: existing?.lastRunAt ?? raw.lastRunAt ?? null,
+    nextRunAt: raw.nextRunAt ?? existing?.nextRunAt ?? null,
+    lastStatus: existing?.lastStatus ?? raw.lastStatus ?? null,
+    lastReportId: existing?.lastReportId ?? raw.lastReportId ?? null,
+    lastError: existing?.lastError ?? raw.lastError ?? null,
+    // 连续失败计数 + 自动停用时刻（熔断用）：同为运行态，须在此保留，否则每次 load 归一化会丢失、熔断永不生效。
+    consecutiveFailures: clampFailures(existing?.consecutiveFailures ?? raw.consecutiveFailures),
+    autoDisabledAt: existing?.autoDisabledAt ?? raw.autoDisabledAt ?? null,
+  };
+}
+
+function clampFailures(v) {
+  const n = Math.trunc(Number(v));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function normalizeOptions(raw) {
+  const clampInt = (v, min, max, dflt) => {
+    const n = Math.floor(Number(v));
+    if (!Number.isFinite(n)) return dflt;
+    return Math.min(max, Math.max(min, n));
+  };
+  return {
+    rounds: clampInt(raw.rounds, 1, 100, 10),
+    concurrency: clampInt(raw.concurrency, 1, 5, 1),
+    repeats: clampInt(raw.repeats, 1, 5, 1),
+    packageLevel: ["quick", "standard", "deep"].includes(raw.packageLevel) ? raw.packageLevel : "standard",
+    // 稳定性「测试文案场景」：预设 id + 解析后的文案（空 → runner 用内置默认）。文案截断防超长。
+    promptPresetId: typeof raw.promptPresetId === "string" && raw.promptPresetId ? raw.promptPresetId.slice(0, 64) : "basic",
+    prompt: typeof raw.prompt === "string" ? raw.prompt.slice(0, 4000) : "",
+  };
+}
+
+// 校验：返回可读错误串，null 表示通过。referential 校验（targetId 是否可运行）在端点层做。
+export function validateJob(job) {
+  if (!job || typeof job !== "object") return "作业必须是对象。";
+  if (!job.targetId) return "请选择被测渠道与模型。";
+  if (!AUTO_TEST_KINDS.includes(job.kind)) return "测试种类不合法。";
+  if (!(Number.isFinite(job.periodHours) && job.periodHours >= 0.5)) return "测试周期必须是不小于 0.5 的数（小时）。";
+  return null;
+}

@@ -36,6 +36,6 @@ test("data store migrates legacy app-data into the visible data layout", async (
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
     delete process.env.EVALUATOR_LEGACY_DATA_DIR;
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });

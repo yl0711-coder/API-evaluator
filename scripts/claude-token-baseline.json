@@ -1,0 +1,289 @@
+{
+  "schema": "claude-token-baseline/v2",
+  "_generated": "本文件由 scripts/claude-token-baseline.mjs 生成,请勿手工编辑;改探针或换源后重跑覆盖。",
+  "_disclaimer": "这里的 token 数不保证等于 Claude 官方分词器的精确值——基线可能建立在某个可信上游通道之上。指纹判定依赖的是『被测渠道的 token 数与本基线成线性关系(slope≈1 且 R²≈1)』,而非绝对相等;线性关系若成立即说明二者同一分词器家族。",
+  "mode": "chat",
+  "sourceOfficial": false,
+  "anthropicVersion": "2023-06-01",
+  "probeVersion": "2026.06.17",
+  "createdAt": "2026-06-17T03:59:57.200Z",
+  "probeCount": 14,
+  "tokenizerGroups": [
+    [
+      "claude-opus-4-8"
+    ],
+    [
+      "claude-opus-4-6",
+      "claude-sonnet-4-6"
+    ]
+  ],
+  "baselines": [
+    {
+      "model": "claude-opus-4-8",
+      "probes": [
+        {
+          "id": "p01-en-short",
+          "category": "english",
+          "charLength": 85,
+          "inputTokens": 65
+        },
+        {
+          "id": "p02-en-long",
+          "category": "english",
+          "charLength": 381,
+          "inputTokens": 137
+        },
+        {
+          "id": "p03-zh-short",
+          "category": "cjk",
+          "charLength": 25,
+          "inputTokens": 60
+        },
+        {
+          "id": "p04-zh-long",
+          "category": "cjk",
+          "charLength": 164,
+          "inputTokens": 182
+        },
+        {
+          "id": "p05-emoji",
+          "category": "emoji",
+          "charLength": 42,
+          "inputTokens": 128
+        },
+        {
+          "id": "p06-mixed",
+          "category": "mixed",
+          "charLength": 93,
+          "inputTokens": 94
+        },
+        {
+          "id": "p07-code-json",
+          "category": "code",
+          "charLength": 173,
+          "inputTokens": 120
+        },
+        {
+          "id": "p08-code-py",
+          "category": "code",
+          "charLength": 185,
+          "inputTokens": 127
+        },
+        {
+          "id": "p09-digits",
+          "category": "digits",
+          "charLength": 102,
+          "inputTokens": 67
+        },
+        {
+          "id": "p10-whitespace",
+          "category": "whitespace",
+          "charLength": 63,
+          "inputTokens": 61
+        },
+        {
+          "id": "p11-unicode-rare",
+          "category": "unicode",
+          "charLength": 57,
+          "inputTokens": 132
+        },
+        {
+          "id": "p12-url-path",
+          "category": "url",
+          "charLength": 121,
+          "inputTokens": 94
+        },
+        {
+          "id": "p13-repeat",
+          "category": "repeat",
+          "charLength": 132,
+          "inputTokens": 92
+        },
+        {
+          "id": "p14-markdown",
+          "category": "markdown",
+          "charLength": 145,
+          "inputTokens": 124
+        }
+      ]
+    },
+    {
+      "model": "claude-opus-4-6",
+      "probes": [
+        {
+          "id": "p01-en-short",
+          "category": "english",
+          "charLength": 85,
+          "inputTokens": 44
+        },
+        {
+          "id": "p02-en-long",
+          "category": "english",
+          "charLength": 381,
+          "inputTokens": 92
+        },
+        {
+          "id": "p03-zh-short",
+          "category": "cjk",
+          "charLength": 25,
+          "inputTokens": 53
+        },
+        {
+          "id": "p04-zh-long",
+          "category": "cjk",
+          "charLength": 164,
+          "inputTokens": 173
+        },
+        {
+          "id": "p05-emoji",
+          "category": "emoji",
+          "charLength": 42,
+          "inputTokens": 121
+        },
+        {
+          "id": "p06-mixed",
+          "category": "mixed",
+          "charLength": 93,
+          "inputTokens": 82
+        },
+        {
+          "id": "p07-code-json",
+          "category": "code",
+          "charLength": 173,
+          "inputTokens": 89
+        },
+        {
+          "id": "p08-code-py",
+          "category": "code",
+          "charLength": 185,
+          "inputTokens": 100
+        },
+        {
+          "id": "p09-digits",
+          "category": "digits",
+          "charLength": 102,
+          "inputTokens": 60
+        },
+        {
+          "id": "p10-whitespace",
+          "category": "whitespace",
+          "charLength": 63,
+          "inputTokens": 42
+        },
+        {
+          "id": "p11-unicode-rare",
+          "category": "unicode",
+          "charLength": 57,
+          "inputTokens": 123
+        },
+        {
+          "id": "p12-url-path",
+          "category": "url",
+          "charLength": 121,
+          "inputTokens": 73
+        },
+        {
+          "id": "p13-repeat",
+          "category": "repeat",
+          "charLength": 132,
+          "inputTokens": 52
+        },
+        {
+          "id": "p14-markdown",
+          "category": "markdown",
+          "charLength": 145,
+          "inputTokens": 110
+        }
+      ]
+    },
+    {
+      "model": "claude-sonnet-4-6",
+      "probes": [
+        {
+          "id": "p01-en-short",
+          "category": "english",
+          "charLength": 85,
+          "inputTokens": 44
+        },
+        {
+          "id": "p02-en-long",
+          "category": "english",
+          "charLength": 381,
+          "inputTokens": 92
+        },
+        {
+          "id": "p03-zh-short",
+          "category": "cjk",
+          "charLength": 25,
+          "inputTokens": 53
+        },
+        {
+          "id": "p04-zh-long",
+          "category": "cjk",
+          "charLength": 164,
+          "inputTokens": 173
+        },
+        {
+          "id": "p05-emoji",
+          "category": "emoji",
+          "charLength": 42,
+          "inputTokens": 121
+        },
+        {
+          "id": "p06-mixed",
+          "category": "mixed",
+          "charLength": 93,
+          "inputTokens": 82
+        },
+        {
+          "id": "p07-code-json",
+          "category": "code",
+          "charLength": 173,
+          "inputTokens": 89
+        },
+        {
+          "id": "p08-code-py",
+          "category": "code",
+          "charLength": 185,
+          "inputTokens": 100
+        },
+        {
+          "id": "p09-digits",
+          "category": "digits",
+          "charLength": 102,
+          "inputTokens": 60
+        },
+        {
+          "id": "p10-whitespace",
+          "category": "whitespace",
+          "charLength": 63,
+          "inputTokens": 42
+        },
+        {
+          "id": "p11-unicode-rare",
+          "category": "unicode",
+          "charLength": 57,
+          "inputTokens": 123
+        },
+        {
+          "id": "p12-url-path",
+          "category": "url",
+          "charLength": 121,
+          "inputTokens": 73
+        },
+        {
+          "id": "p13-repeat",
+          "category": "repeat",
+          "charLength": 132,
+          "inputTokens": 52
+        },
+        {
+          "id": "p14-markdown",
+          "category": "markdown",
+          "charLength": 145,
+          "inputTokens": 110
+        }
+      ]
+    }
+  ]
+}

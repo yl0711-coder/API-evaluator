@@ -4,6 +4,9 @@ name: docker-build
 # - On push to main/dev and on version tags (v*), build + push.
 #   main -> :main, dev -> :dev (test image), tag -> :X.Y.Z (release image), plus :sha-<short>.
 # - On pull requests, build only (no push) as a sanity check.
+# Gate: the `build` job depends on `test` (node --check + node --test). Tests have no
+# branch-protection on tags, so this in-workflow `needs` is the only way to stop a red
+# release tag from ever producing/pushing an image.
 
 on:
   push:
@@ -16,8 +19,23 @@ env:
   IMAGE_NAME: ${{ github.repository }} # e.g. yl0711-coder/API-evaluator -> ghcr.io/yl0711-coder/api-evaluator
 
 jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm rebuild esbuild
+      - run: node --check server.mjs
+      - run: node --test tests/*.test.mjs
+
   build:
-    runs-on: ubuntu-latest
+    needs: test
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write

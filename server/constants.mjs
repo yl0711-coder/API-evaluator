@@ -1,5 +1,5 @@
 export { ERROR_DIAGNOSTICS } from "./diagnostics.mjs";
-export { TEST_SCENARIOS } from "./scenarios/index.mjs";
+export { TEST_SCENARIOS, getTestScenarios } from "./scenarios/index.mjs";
 
 export const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
