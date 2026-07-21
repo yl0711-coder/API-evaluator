@@ -1240,7 +1240,9 @@ function buildBatchInsights(summary, rankedResults) {
       ? `- 当前最优：${best.profileName}，成功率 ${best.successRateText}，P95 ${best.p95TotalMs ?? "-"} ms。`
       : "- 当前最优：没有可用候选。",
     ...(significanceLine ? [significanceLine] : []),
-    slow.length ? `- 慢请求：${slow.length} 个 API 的 P95 超过 ${P95_LATENCY_SLOW_MS} ms，不适合低延迟业务。` : "- 慢请求：未发现明显高 P95 候选。",
+    slow.length
+      ? `- 慢请求：${slow.length} 个 API 的 P95 超过 ${P95_LATENCY_SLOW_MS} ms，不适合低延迟业务。`
+      : "- 慢请求：未发现明显高 P95 候选。",
     risky.length
       ? `- 下一步：先处理 ${risky.length} 个失败或低成功率配置，再对候选 API 做场景测试。`
       : "- 下一步：可以选择排名靠前的 API 继续做复杂场景或内容安全复测。",

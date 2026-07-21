@@ -56,22 +56,18 @@ app.js 在 line ~745 有 `await ensureAuthenticated()`。**所有 `_onProfileDat
 
 ### 16 号报告剩余项（按优先级）
 
-| 项 | 内容 | 位置 | 说明 |
+| 项 | 状态 | 位置 | 说明 |
 |---|---|---|---|
-| **B3** | 收敛评分阈值常量 | `server/` 多处 | `45000` 硬编码两遍等 |
-| **C1 余** | app.js 还能拆的块 | `src/app.js` | 趋势图/压测/客户端回放/设置/仪表盘已拆。剩余：stability/batch/scenario/admission 的表单控制器（各 ~80-120 行），但都依赖共享的 `createTaskFormController` 和 `updateEstimates` |
-| **C2** | 收敛 37 处手拼 innerHTML | `src/` 多处 | 写成带转义的模板 helper |
-| **D1** | 29 个测试文件碰 process.env 没隔离复位 | `tests/` | 偶发 tokenizer flake（本会话 3 次全量均未复现） |
+| **B3** | ✅ 已完成（07-21） | `server/constants.mjs` | `45000`/`15000` 收敛为 `P95_LATENCY_SLOW_MS`/`P95_LATENCY_OK_MS`，3 文件 11 处引用 |
+| **C1 余** | ✅ 已完成（07-21） | `src/test-forms.js` | 5 个表单控制器拆出（准入单/批量、稳定性、批量并发、场景）。app.js 降到 929 行。**剩余块拆分收益递减，不建议续拆**（详见记忆 [app-js-split-progress]） |
+| **C2** | ⛔ 判定不做（07-21） | — | 审计后判定机械替换会更复杂、前 AI 已翻车回滚。改为给 ~10 处「刻意不转义」加注释。**别再重启**（详见记忆 [c2-innerHTML-decision]） |
+| **D1** | 未做 | `tests/` | 29 个测试文件碰 process.env 没隔离复位；偶发 tokenizer flake（多次全量均未复现，隐患但不紧急） |
 
-### 前端运行时验证
+### 前端运行时验证 ✅ 已完成（07-21）
 
-拆出的 9 个模块通过了静态守卫和构建，但**没有人打开浏览器验证过功能**。需要逐页确认：
-- 侧栏折叠 / 「更好的光影」
-- 手册页目录跳转与 scrollspy
-- 高危横幅的显示、ack、60s 轮询
-- 报告文件面板的展开、筛选、分页、删除
-- 仪表盘的正确渲染
-- 所有测试表单的级联选择器正常工作
+拆出的 12 个模块通过了静态守卫和构建。07-21 用户手动逐页验证：应用能启动、能登录、**所有页面功能正常、无应用层（`index-*.js`）报错、无 TDZ 白屏**。侧栏折叠 / 光影切换、手册 scrollspy、高危横幅、报告面板、仪表盘、各测试表单级联选择器均正常。
+
+控制台里的 `content_main.js`/`content-script-vimeo.js`/`api.ipify.org` 报错全是浏览器扩展噪音，与应用无关（用无痕窗口可屏蔽扩展验证）。
 
 ---
 

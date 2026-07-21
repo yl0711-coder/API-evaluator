@@ -648,7 +648,6 @@ createStandardEvalController({
   updateEstimates: testForms.updateEstimates,
 });
 
-
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
 reportBrowser.setCanConfig(authUser?.canConfig); // 报告删除按钮的可见性依据（服务端另有强制鉴权）
@@ -843,7 +842,6 @@ function renderDeliveryViews() {
   });
 }
 
-
 async function copyHandoffTemplate() {
   const text = handoffTemplate?.textContent || "";
   if (!text.trim() || text.includes("等待生成")) {
@@ -917,7 +915,6 @@ function hydratePromptPresetSelects() {
   applyStabilityPromptPreset();
   applyBatchPromptPreset();
 }
-
 
 async function exportSupportBundle() {
   try {
