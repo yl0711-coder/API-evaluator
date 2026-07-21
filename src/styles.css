@@ -4129,6 +4129,21 @@ textarea:focus {
   width: 100%;
   box-sizing: border-box;
 }
+/* cron 下拉式构造器：自定义星期（复选框横向平铺换行）与自定义时段（起/止两个小时下拉并排）。 */
+#auto-test-config .atc-weekday-picker {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+#auto-test-config .atc-hours-picker {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+}
+#auto-test-config .atc-cron-preview-line {
+  grid-column: 1 / -1;
+}
 /* 场景选择复用「场景测试」页的 .batch-picker（样式全站共享），此处无需自定义。 */
 /* 作业列表卡片 */
 #atc-job-list {

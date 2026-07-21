@@ -969,9 +969,10 @@ async function handleAutoTestJobUpsert(req, res) {
       const err = validateJob(next);
       if (err) throw new JobValidationError(err);
       if (!runnableIds.has(next.targetId)) throw new JobValidationError("被测目标不存在或不可运行（渠道可能已删除/停用）。");
-      // 新建、或改动周期/由停用转启用后：重算 nextRunAt；已有且未改则沿用旧值。停用则清空。
-      const cadenceChanged = !existing || existing.periodHours !== next.periodHours || (!existing.enabled && next.enabled);
-      if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next.periodHours);
+      // 新建、或改动节奏（周期/cron）/由停用转启用后：重算 nextRunAt；已有且未改则沿用旧值。停用则清空。
+      const cadenceChanged =
+        !existing || existing.periodHours !== next.periodHours || existing.cron !== next.cron || (!existing.enabled && next.enabled);
+      if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next);
       if (!next.enabled) next.nextRunAt = null;
       // 由停用转启用（含熔断自动停用后的人工复活）：清零连续失败熔断状态，让作业重新开始计数。
       if (existing && !existing.enabled && next.enabled) {

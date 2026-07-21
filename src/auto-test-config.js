@@ -9,6 +9,7 @@ import { createCascadeTargetPicker } from "./target-picker.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
 import { renderPromptPresetOptions, getPromptPreset } from "./prompt-presets.js";
 import { openReportOverlay } from "./report-overlay.js";
+import { buildCron, describeSchedule, parseScheduleFromCron } from "./cron-ui.js";
 
 const KIND_LABEL = {
   quick: "快速测试",
@@ -32,7 +33,23 @@ export function createAutoTestConfig({ state, confirm }) {
   const channelSelect = requireElement("#atc-channel-select");
   const modelSelect = requireElement("#atc-model-select");
   const kindSelect = requireElement("#atc-kind");
+  const scheduleModeSelect = requireElement("#atc-schedule-mode");
   const periodInput = requireElement("#atc-period");
+  const periodLabel = requireElement("#atc-period-label");
+  const cronInput = requireElement("#atc-cron");
+  const cronBuilder = requireElement("#atc-cron-builder");
+  const cronDaysSelect = requireElement("#atc-cron-days");
+  const cronDaysCustom = requireElement("#atc-cron-days-custom");
+  const cronPeriodSelect = requireElement("#atc-cron-period");
+  const cronPeriodLabel = requireElement("#atc-cron-period-label");
+  const cronHoursCustom = requireElement("#atc-cron-hours-custom");
+  const cronStartHour = requireElement("#atc-cron-start-hour");
+  const cronEndHour = requireElement("#atc-cron-end-hour");
+  const cronFreqSelect = requireElement("#atc-cron-freq");
+  const cronOnceLabel = requireElement("#atc-cron-once");
+  const cronOnceHour = requireElement("#atc-cron-once-hour");
+  const cronPreview = requireElement("#atc-cron-preview");
+  const cronDowChecks = [0, 1, 2, 3, 4, 5, 6].map((d) => requireElement(`#atc-dow-${d}`));
   const enabledInput = requireElement("#atc-enabled");
   const roundsSelect = requireElement("#atc-rounds");
   const concurrencySelect = requireElement("#atc-concurrency");
@@ -69,6 +86,67 @@ export function createAutoTestConfig({ state, confirm }) {
   promptPresetSelect.addEventListener("change", applyPromptPreset);
   applyPromptPreset(); // 初始化：把默认预设文案填进 textarea（即便当前隐藏）
 
+  // 小时下拉（0-23）填充：起/止/每天几点 三处共用。
+  for (const sel of [cronStartHour, cronEndHour, cronOnceHour]) {
+    sel.innerHTML = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, "0")}:00</option>`).join("");
+  }
+
+  // 调度方式切换：间隔 / cron 二选一，显隐对应输入。
+  // 用 .hidden class（styles.css 里 display:none !important）而非 hidden 属性：
+  // #atc-cron-builder 带 .atc-opt（CSS display:grid），hidden 属性的 UA display:none 优先级压不过它，
+  // 会导致切到「固定间隔」时 cron 构造器仍显示。与压测页「工作负载模型」同款 classList.toggle 惯用法。
+  function syncScheduleMode() {
+    const isCron = scheduleModeSelect.value === "cron";
+    cronBuilder.classList.toggle("hidden", !isCron);
+    periodLabel.classList.toggle("hidden", isCron);
+    if (isCron) syncCronBuilder();
+  }
+  scheduleModeSelect.addEventListener("change", syncScheduleMode);
+  syncScheduleMode(); // 初始化即对齐（同 load-test 的 syncLoadTestMode()）
+
+  // 从下拉读出选择对象（喂给 cron-ui 的纯函数）。
+  function readCronSelection() {
+    return {
+      days: cronDaysSelect.value,
+      daysCustom: cronDowChecks.filter((c) => c.checked).map((c) => Number(c.value)),
+      period: cronPeriodSelect.value,
+      startHour: Number(cronStartHour.value),
+      endHour: Number(cronEndHour.value),
+      freq: cronFreqSelect.value,
+      onceHour: Number(cronOnceHour.value),
+    };
+  }
+
+  // 下拉 → 隐藏 cron input + 预览；并按选项显隐自定义展开 / 每天一次钟点。
+  function syncCronBuilder() {
+    const isOnce = cronFreqSelect.value === "once";
+    // 同上：.atc-weekday-picker / .atc-hours-picker 带 CSS display:flex，须用 .hidden class 才压得住。
+    cronDaysCustom.classList.toggle("hidden", cronDaysSelect.value !== "custom");
+    // 每天一次时时段无意义（只需钟点）：隐藏时段，显示「每天几点」。
+    cronPeriodLabel.classList.toggle("hidden", isOnce);
+    cronHoursCustom.classList.toggle("hidden", isOnce || cronPeriodSelect.value !== "custom");
+    cronOnceLabel.classList.toggle("hidden", !isOnce);
+    const sel = readCronSelection();
+    cronInput.value = buildCron(sel);
+    cronPreview.textContent = `${describeSchedule(sel)}（${cronInput.value}）`;
+  }
+  for (const el of [cronDaysSelect, cronPeriodSelect, cronFreqSelect, cronStartHour, cronEndHour, cronOnceHour, ...cronDowChecks]) {
+    el.addEventListener("change", syncCronBuilder);
+  }
+
+  // 反解析既有作业的 cron → 回填下拉。认不得的（旧手写/外部）→ 尽量回填 + 提示核对，绝不丢数据。
+  function applyCronToBuilder(cron) {
+    const s = parseScheduleFromCron(cron);
+    cronDaysSelect.value = s.days;
+    for (const c of cronDowChecks) c.checked = s.daysCustom.includes(Number(c.value));
+    cronPeriodSelect.value = s.period;
+    cronStartHour.value = String(s.startHour);
+    cronEndHour.value = String(s.endHour);
+    cronFreqSelect.value = s.freq;
+    cronOnceHour.value = String(s.onceHour);
+    if (!s.matched) toast(`原定时「${cron}」较特殊，已按最接近的选项回填，请核对。`, true);
+  }
+
   // 按测试种类显隐对应选项区（种类为空 → 全部隐藏，满足“选定后再显示”）。
   // 用内联 style.display 而非 hidden 属性：本页 CSS 给这些块设了 id 选择器的 display（网格/边框），
   // 会盖过 [hidden]；内联样式优先级最高，才切得动（与 developer.js 同一处理）。
@@ -104,7 +182,17 @@ export function createAutoTestConfig({ state, confirm }) {
     jobIdInput.value = "";
     nameInput.value = "";
     kindSelect.value = "";
+    scheduleModeSelect.value = "interval";
     periodInput.value = "24";
+    // cron 下拉复位默认：每天 / 全天 / 每小时。
+    cronDaysSelect.value = "everyday";
+    cronPeriodSelect.value = "allday";
+    cronFreqSelect.value = "hourly";
+    cronStartHour.value = "0";
+    cronEndHour.value = "23";
+    cronOnceHour.value = "9";
+    for (const c of cronDowChecks) c.checked = false;
+    syncScheduleMode();
     enabledInput.checked = true;
     roundsSelect.value = "10";
     concurrencySelect.value = "1";
@@ -125,12 +213,15 @@ export function createAutoTestConfig({ state, confirm }) {
 
   // 表单 → 作业载荷。稳定性额外带测试文案（prompt）与预设 id；场景不再带重复次数（默认 1）。
   function collect() {
+    const isCron = scheduleModeSelect.value === "cron";
     return {
       id: jobIdInput.value || undefined,
       name: nameInput.value.trim(),
       targetId: cascade.value,
       kind: kindSelect.value,
-      periodHours: Math.max(0.5, Number(periodInput.value) || 0.5),
+      // 调度：cron 模式带表达式（periodHours 留兜底值），间隔模式清空 cron。
+      cron: isCron ? cronInput.value.trim() : "",
+      periodHours: Math.max(0.1, Number(periodInput.value) || 0.1),
       scenarioIds: kindSelect.value === "scenario" ? selectedScenarioIds() : [],
       options: {
         rounds: Number(roundsSelect.value) || 10,
@@ -154,6 +245,10 @@ export function createAutoTestConfig({ state, confirm }) {
       toast("请选择被测渠道与模型。", true);
       return;
     }
+    if (scheduleModeSelect.value === "cron" && !body.cron) {
+      toast("定时设置不完整，请检查星期/时段/频率选择。", true);
+      return;
+    }
     try {
       await api("/api/auto-test-jobs", { method: "POST", body: JSON.stringify(body) });
       toast(body.id ? "作业已更新。" : "作业已创建。");
@@ -169,7 +264,11 @@ export function createAutoTestConfig({ state, confirm }) {
     jobIdInput.value = job.id;
     nameInput.value = job.name || "";
     kindSelect.value = job.kind;
+    // 有 cron → cron 模式；否则间隔模式。
+    scheduleModeSelect.value = job.cron ? "cron" : "interval";
     periodInput.value = String(job.periodHours || 24);
+    if (job.cron) applyCronToBuilder(job.cron);
+    syncScheduleMode();
     enabledInput.checked = job.enabled !== false;
     const o = job.options || {};
     roundsSelect.value = String(o.rounds || 10);
@@ -286,7 +385,7 @@ export function createAutoTestConfig({ state, confirm }) {
       <div class="atc-job-head">
         <b>${escapeHtml(job.name || KIND_LABEL[job.kind] || job.kind)}</b>
         <span class="pill">${escapeHtml(KIND_LABEL[job.kind] || job.kind)}</span>
-        <span class="pill">每 ${Number(job.periodHours)} 小时</span>
+        <span class="pill">${job.cron ? `定时 ${escapeHtml(job.cron)}` : `每 ${Number(job.periodHours)} 小时`}</span>
         <span class="pill ${job.enabled ? "" : "muted"}">${job.enabled ? "已启用" : "已停用"}</span>${targetWarn}
       </div>
       <div class="atc-job-meta">

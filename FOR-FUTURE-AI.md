@@ -21,6 +21,7 @@ API-evaluator：一个评测 LLM API 质量的本地工具。Node.js 原生运�
 5. **拆 app.js**：2193 → 955 行（-56%），拆出 9 个模块（appearance/manual/high-risk-banner/report-browser/dashboard/settings/trend/client-replay/load-test）
 6. **B1**：拆 `runUpstreamProbe` → `server/upstream-transport.mjs`
 7. **skill 提炼**：`.claude/skills/equivalence-change/SKILL.md`（不入库，本地）和 `product-testing/SKILL.md`
+8. **crontab 风格定时调度**（2026-07-21）：自动测试作业新增 cron 调度，与「每 N 小时」间隔并存。零依赖引擎 `server/cron-schedule.mjs`（固定北京时间 UTC+8、分钟步进扫描）；下拉式 UI `src/cron-ui.js`（星期×时段×频率，非手写 cron）。见记忆 [cron-scheduling-feature]
 
 ---
 

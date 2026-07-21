@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { AUTO_TEST_JOBS_FILE } from "./paths.mjs";
 import { writeJsonAtomic } from "./utils.mjs";
+import { parseCron, cronNextAfter } from "./cron-schedule.mjs";
 
 // 支持的测试种类：均有独立后端 runner 入口（见 auto-test-scheduler 的 kind→runner 映射）。
 export const AUTO_TEST_KINDS = ["quick", "admission", "stability", "scenario"];
@@ -58,9 +59,26 @@ export function __resetWriteChainForTest() {
   writeChain = Promise.resolve();
 }
 
-// 下次运行时刻：从基准时刻（默认现在）推 periodHours 小时（支持小数，最短 0.5 小时）。
-export function computeNextRunAt(periodHours, fromMs = Date.now()) {
-  const hours = Math.max(0.5, Number(periodHours) || 0.5);
+// 下次运行时刻。双模式：
+//   - 数字入参 computeNextRunAt(periodHours, fromMs)：间隔模式，推 periodHours 小时（老调用，保持兼容）。
+//   - 对象入参 computeNextRunAt(job, fromMs)：有 job.cron 走 cron；否则退回 job.periodHours 间隔。
+// cron 无匹配（理论上 366 天内不触发）时回退成 24h 间隔，绝不返回 null 卡死调度。
+export function computeNextRunAt(jobOrPeriod, fromMs = Date.now()) {
+  if (jobOrPeriod && typeof jobOrPeriod === "object") {
+    const job = jobOrPeriod;
+    if (job.cron) {
+      const next = cronNextAfter(job.cron, fromMs);
+      if (next != null) return new Date(next).toISOString();
+      // cron 解析出但 366 天无匹配（不该发生）：退回 24h，留一条兜底触发。
+      return new Date(fromMs + 24 * 3600 * 1000).toISOString();
+    }
+    return intervalNextRunAt(job.periodHours, fromMs);
+  }
+  return intervalNextRunAt(jobOrPeriod, fromMs);
+}
+
+function intervalNextRunAt(periodHours, fromMs) {
+  const hours = Math.max(0.1, Number(periodHours) || 0.1);
   return new Date(fromMs + hours * 3600 * 1000).toISOString();
 }
 
@@ -69,9 +87,9 @@ export function normalizeJob(raw, existing = null) {
   if (!raw || typeof raw !== "object") return null;
   const id = String(raw.id ?? existing?.id ?? "").trim() || `atj_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const kind = AUTO_TEST_KINDS.includes(raw.kind) ? raw.kind : String(existing?.kind || "quick");
-  // 周期允许小数、最短 0.5 小时；无效/非正 → 默认 24。保留两位小数避免浮点噪声。
+  // 周期允许小数、最短 0.1 小时（6 分钟）；无效/非正 → 默认 24。保留两位小数避免浮点噪声。
   const rawPeriod = Number(raw.periodHours ?? existing?.periodHours);
-  const periodHours = Number.isFinite(rawPeriod) && rawPeriod > 0 ? Math.max(0.5, Math.round(rawPeriod * 100) / 100) : 24;
+  const periodHours = Number.isFinite(rawPeriod) && rawPeriod > 0 ? Math.max(0.1, Math.round(rawPeriod * 100) / 100) : 24;
   const scenarioIds = Array.isArray(raw.scenarioIds)
     ? [...new Set(raw.scenarioIds.map((x) => String(x ?? "").trim()).filter(Boolean))]
     : Array.isArray(existing?.scenarioIds)
@@ -79,6 +97,10 @@ export function normalizeJob(raw, existing = null) {
       : [];
   const rawOptions = raw.options && typeof raw.options === "object" ? raw.options : existing?.options || {};
   const options = normalizeOptions(rawOptions);
+  // cron 表达式（可选）：非空即启用 cron 调度、periodHours 作后备保留。空串=用间隔模式。
+  const cron = String(raw.cron ?? existing?.cron ?? "")
+    .trim()
+    .slice(0, 120);
   return {
     id,
     name: String(raw.name ?? existing?.name ?? "")
@@ -87,6 +109,7 @@ export function normalizeJob(raw, existing = null) {
     targetId: String(raw.targetId ?? existing?.targetId ?? "").trim(),
     kind,
     periodHours,
+    cron,
     scenarioIds,
     options,
     enabled: raw.enabled === undefined ? existing?.enabled !== false : Boolean(raw.enabled),
@@ -130,6 +153,16 @@ export function validateJob(job) {
   if (!job || typeof job !== "object") return "作业必须是对象。";
   if (!job.targetId) return "请选择被测渠道与模型。";
   if (!AUTO_TEST_KINDS.includes(job.kind)) return "测试种类不合法。";
-  if (!(Number.isFinite(job.periodHours) && job.periodHours >= 0.5)) return "测试周期必须是不小于 0.5 的数（小时）。";
+  // cron 模式：校验表达式合法即可，periodHours 只作后备不强校验。
+  if (job.cron) {
+    try {
+      parseCron(job.cron);
+    } catch (error) {
+      return `定时表达式不合法：${error.message}`;
+    }
+    return null;
+  }
+  // 间隔模式：要求 periodHours ≥ 0.1（6 分钟）。
+  if (!(Number.isFinite(job.periodHours) && job.periodHours >= 0.1)) return "测试周期必须是不小于 0.1 的数（小时）。";
   return null;
 }

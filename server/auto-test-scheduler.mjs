@@ -127,7 +127,7 @@ export function createAutoTestScheduler({
       try {
         const startedMs = now();
         const startedIso = new Date(startedMs).toISOString();
-        const nextRunAt = computeNextRunAt(job.periodHours, startedMs);
+        const nextRunAt = computeNextRunAt(job, startedMs);
         await patchJob(job.id, { lastStatus: "running" });
         try {
           const result = await run();
