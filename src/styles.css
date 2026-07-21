@@ -694,6 +694,12 @@ code {
   align-items: start;
 }
 
+/* 稳定性测试表单：「测试轮数」改为输入框后带 field-hint 更高，默认 align-items: stretch
+   会把同行「并发数」一列连同其下拉一起拉高、下拉随之下移错位。改顶端对齐（同上两处）。 */
+#stability-test-form {
+  align-items: start;
+}
+
 /* 分区标题块（h3 + 说明）在两列网格里跨整行，否则说明只占左半列、观感割裂。 */
 .form-grid > .form-section-title {
   grid-column: 1 / -1;

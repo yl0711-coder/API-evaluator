@@ -525,12 +525,8 @@
             </label>
             <label>
               测试轮数
-              <select name="rounds">
-                <option value="1">1 轮：快速功能测试</option>
-                <option value="3">3 轮：冒烟验证</option>
-                <option value="10" selected>10 轮：基础稳定性</option>
-                <option value="30">30 轮：较完整稳定性</option>
-              </select>
+              <input type="number" name="rounds" id="stability-rounds" min="1" max="100" step="1" value="10" />
+              <small class="field-hint">1-100 轮，默认 10 轮（基础稳定性）。</small>
             </label>
             <label>
               并发数
