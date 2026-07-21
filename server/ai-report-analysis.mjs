@@ -12,22 +12,23 @@ export function isAiReportAnalysisEnabled(value) {
 export function buildAiReportAnalysisPrompt({ reportType, summary }) {
   const compact = compactReportData(reportType, summary);
   return [
-    "你是一名 AI API 评测报告分析员。请根据下面的脱敏测试摘要，输出一份中文 Markdown 分析。",
+    "你是一名 AI API 评测报告分析员，面向不懂技术的负责人。",
+    "请基于下面这份脱敏测试摘要，写一份中文 Markdown 分析，帮助读者判断该 API 渠道当前能不能用。",
     "",
     "要求：",
     "- 只依据给出的摘要数据，不要编造不存在的请求、错误、价格或业务背景。",
-    "- 先给非技术人员能看懂的人话结论，再给技术人员看的数据依据。",
-    "- 明确说明是否推荐继续测试、观察、暂不推荐。",
+    "- 每个部分都力求叫非技术人员也能看懂",
+    "- 明确给出推荐倾向：继续测试、继续观察、还是暂不推荐。",
     "- 如果数据不足，要明确写“数据不足”，不要强行下结论。",
     "- 如果看到内容安全场景风险，要提醒必须人工复核原始回答。",
     "- 不要输出 API Key、密钥、鉴权信息，也不要要求用户提供密钥。",
     "- 控制在 800 字以内。",
     "",
-    "输出结构必须是：",
-    "## AI 人话结论",
-    "## AI 数据依据",
-    "## AI 风险点",
-    "## AI 下一步建议",
+    "输出结构必须严格使用以下四个二级标题，顺序不变：",
+    "## 结论",
+    "## 数据依据",
+    "## 风险点",
+    "## 下一步建议",
     "",
     "脱敏测试摘要 JSON：",
     "```json",
@@ -67,7 +68,63 @@ function compactReportData(reportType, summary) {
   if (reportType === "scenario") {
     return compactScenarioSummary(summary);
   }
+  if (reportType === "admission") {
+    return compactAdmissionSummary(summary);
+  }
   return { reportType, summary: summarizeText(JSON.stringify(summary || {})) };
+}
+
+function compactAdmissionSummary(summary) {
+  return {
+    reportType: "模型准入评测",
+    apiName: summary.profileName,
+    provider: summary.provider,
+    model: summary.model,
+    protocol: summary.protocol,
+    packageLevel: summary.packageLevel,
+    grade: summary.grade,
+    score: summary.score,
+    successRate: summary.successRateText,
+    requestCount: summary.requestCount,
+    successCount: summary.successCount,
+    passRate: summary.passRate,
+    avgTotalMs: summary.avgTotalMs,
+    p95TotalMs: summary.p95TotalMs,
+    inputTokens: summary.inputTokens,
+    outputTokens: summary.outputTokens,
+    jsonPassed: summary.jsonPassed,
+    toolCallPassed: summary.toolCallPassed,
+    streamPassed: summary.streamPassed,
+    identityPassed: summary.identityPassed,
+    identityStatus: summary.identityCheck?.status || null,
+    purity: compactPurity(summary.purityAssessment),
+    tierDiscrimination: compactTier(summary.tierDiscrimination),
+    recommendation: summary.recommendation?.title,
+    nextAction: summary.nextAction,
+    errorCounts: summary.errorCounts || {},
+  };
+}
+
+// 模型纯度初判压缩：只留标题、分数与风险点标题，丢弃明细证据。
+function compactPurity(purity) {
+  if (!purity) return null;
+  return {
+    title: purity.title,
+    score: purity.score,
+    riskFlags: (purity.riskFlags || []).map((flag) => flag.title || flag.code).filter(Boolean),
+  };
+}
+
+// 档位降级判别压缩：声称档 / 行为最像档 / 判词 / 置信度。
+function compactTier(tier) {
+  if (!tier) return null;
+  return {
+    claimedTier: tier.claimedTier,
+    likelyTier: tier.likelyTier ?? null,
+    status: tier.status,
+    verdict: tier.verdict,
+    confidence: tier.confidence,
+  };
 }
 
 function compactStabilitySummary(summary) {

@@ -21,6 +21,17 @@ export function renderInsightCards(runs, { compact }) {
     return `<p class="muted">还没有可分析的测试结果。普通操作员建议先完成标准评测。</p>`;
   }
 
+  // 报告结论卡片上方：最近一次请求是否成功。
+  const requestFailed = Boolean(runs.latestRequest && !runs.latestRequest.success);
+  const statusLine = runs.latestRequest
+    ? `<p class="insight-request-status ${requestFailed ? "fail" : "pass"}">${requestFailed ? "最近一次请求失败" : "最近一次请求成功"}</p>`
+    : "";
+
+  // 最近一次请求失败 → 报告结论卡片所有内容都显示“最近一次请求失败”。
+  if (requestFailed) {
+    return statusLine + renderRequestFailedCard();
+  }
+
   const cards = [];
   if (runs.latestAdmission) {
     cards.push(renderAdmissionInsight(runs.latestAdmission));
@@ -31,13 +42,15 @@ export function renderInsightCards(runs, { compact }) {
   if (runs.latestScenario) {
     cards.push(renderScenarioInsight(runs.latestScenario));
   }
-  if (runs.latestRequest) {
-    cards.push(renderRequestInsight(runs.latestRequest));
+  // 极简结论卡：取代原“最近请求”卡的位置，展示结论 / 原因 / 下一步。
+  const conclusion = derivePlainConclusion(runs);
+  if (conclusion) {
+    cards.push(renderConclusionInsight(conclusion));
   }
   if (!compact) {
     cards.push(renderOperatorAdvice(runs));
   }
-  return cards.join("");
+  return statusLine + cards.join("");
 }
 
 export function buildRankingRows(testRuns) {
@@ -329,34 +342,35 @@ export function renderModelComparisonList(groups) {
     .join("");
 }
 
-export function renderPlainConclusion(runs) {
+// 规则化人话结论的数据（供极简结论卡与结论面板共用）。无可用结论时返回 null。
+export function derivePlainConclusion(runs) {
   if (!runs.latest && !runs.latestStability && !runs.latestScenario && !runs.latestRequest) {
-    return `<p class="muted">还没有测试结果。普通操作员先完成标准评测。</p>`;
+    return null;
   }
 
   if (runs.interruptedTasks.length > 0) {
-    return renderPlainConclusionCard({
+    return {
       level: "fail",
       title: "不推荐交付",
       reason: "有测试任务中断，当前结果不完整。",
       next: "重新执行中断的测试，再复制交付模板。",
       evidence: `中断任务 ${runs.interruptedTasks.length} 个`,
-    });
+    };
   }
 
   if (runs.failedRequests.length > 0 && !runs.latestStability && !runs.latestScenario) {
-    return renderPlainConclusionCard({
+    return {
       level: "fail",
       title: "不推荐",
       reason: "最近请求失败，配置或渠道还没有跑通。",
       next: "回 API 配置检查 URL、协议、模型名和 Key，然后重新快速测试。",
       evidence: runs.failedRequests[0]?.normalizedError || runs.failedRequests[0]?.rawError || "请求失败",
-    });
+    };
   }
 
   if (runs.latestStability) {
     const level = runs.latestStability.recommendation?.level || "watch";
-    return renderPlainConclusionCard({
+    return {
       level,
       title: level === "pass" ? "推荐进入下一轮" : level === "fail" ? "不推荐" : "观察",
       reason: runs.latestStability.recommendation?.title || "需要查看报告。",
@@ -367,12 +381,12 @@ export function renderPlainConclusion(runs) {
           ? "查看错误类型，修配置或换渠道后再复测。"
           : "建议再跑 10 轮稳定性或人工查看报告明细。",
       evidence: `成功率 ${runs.latestStability.successRateText || "-"} / 慢请求参考 ${runs.latestStability.p95TotalMs ?? "-"} ms`,
-    });
+    };
   }
 
   if (runs.latestAdmission) {
     const level = runs.latestAdmission.recommendation?.level || "watch";
-    return renderPlainConclusionCard({
+    return {
       level,
       title: level === "pass" ? "可进入标准评测" : level === "fail" ? "暂不推荐接入" : "需要观察",
       reason: runs.latestAdmission.recommendation?.title || "需要查看准入报告。",
@@ -381,20 +395,31 @@ export function renderPlainConclusion(runs) {
           ? "继续跑标准评测，确认稳定性和复杂场景表现。"
           : "先复核协议、模型名、工具调用和上游配置，再重新做准入评测。",
       evidence: `准入等级 ${runs.latestAdmission.grade || "-"} / 成功率 ${runs.latestAdmission.successRateText || "-"}`,
-    });
+    };
   }
 
   if (runs.latestRequest) {
-    return renderPlainConclusionCard({
+    return {
       level: runs.latestRequest.success ? "watch" : "fail",
       title: runs.latestRequest.success ? "只证明能连通" : "不推荐",
       reason: runs.latestRequest.success ? "最近一次快速测试成功，但还没有稳定性结论。" : "最近一次快速测试失败。",
       next: runs.latestRequest.success ? "继续跑标准评测，生成可交付结论。" : "先修配置，再重新快速测试。",
       evidence: `最近请求：${runs.latestRequest.success ? "成功" : "失败"}`,
-    });
+    };
   }
 
-  return `<p class="muted">暂无可用结论。</p>`;
+  return null;
+}
+
+export function renderPlainConclusion(runs) {
+  if (!runs.latest && !runs.latestStability && !runs.latestScenario && !runs.latestRequest) {
+    return `<p class="muted">还没有测试结果。普通操作员先完成标准评测。</p>`;
+  }
+  const conclusion = derivePlainConclusion(runs);
+  if (!conclusion) {
+    return `<p class="muted">暂无可用结论。</p>`;
+  }
+  return renderPlainConclusionCard(conclusion);
 }
 
 export function buildHandoffTemplate(runs, projectInfo = {}, rankingRows = []) {
@@ -655,7 +680,7 @@ function renderAdmissionInsight(run) {
     <article class="insight-card ${recommendationClass(level)}-card">
       <span>准入结论</span>
       <strong>${escapeHtml(run.recommendation?.title || "需要查看准入报告")}</strong>
-      <p>准入等级 ${escapeHtml(run.grade || "-")}，综合分 ${run.score ?? "-"}，成功率 ${escapeHtml(run.successRateText || "-")}。</p>
+      <p>准入等级 ${escapeHtml(run.grade || "-")}，成功率 ${escapeHtml(run.successRateText || "-")}。</p>
       <small>工具调用 ${run.toolCallPassed ? "通过" : "未通过或未测试"} / JSON 结构 ${run.jsonPassed ? "通过" : "未通过或未测试"}</small>
       <small>报告：${escapeHtml(run.reportHtmlPath || run.reportPath || "-")}</small>
     </article>
@@ -680,14 +705,26 @@ function renderScenarioInsight(run) {
   `;
 }
 
-function renderRequestInsight(request) {
-  const level = request.success ? "pass" : "fail";
+// 极简结论卡：沿用原“最近请求”卡的格式，展示 结论 / 原因 / 下一步。
+function renderConclusionInsight(conclusion) {
   return `
-    <article class="insight-card ${recommendationClass(level)}-card">
-      <span>最近请求</span>
-      <strong>${request.success ? "最近一次请求成功" : "最近一次请求失败"}</strong>
-      <p>${escapeHtml(request.normalizedError || request.responseSummary || request.rawError || "-")}</p>
-      <small>${escapeHtml(request.profileName || "-")} / 请求状态 ${request.statusCode ?? "-"} / 总耗时 ${request.totalMs ?? "-"} ms</small>
+    <article class="insight-card ${recommendationClass(conclusion.level)}-card">
+      <span>极简结论</span>
+      <strong>${escapeHtml(conclusion.title || "-")}</strong>
+      <p>${escapeHtml(conclusion.reason || "-")}</p>
+      <small>下一步：${escapeHtml(conclusion.next || "-")}</small>
+    </article>
+  `;
+}
+
+// 最近一次请求失败时的卡片：所有内容都显示“最近一次请求失败”。
+function renderRequestFailedCard() {
+  return `
+    <article class="insight-card fail-card">
+      <span>最近一次请求失败</span>
+      <strong>最近一次请求失败</strong>
+      <p>最近一次请求失败</p>
+      <small>最近一次请求失败</small>
     </article>
   `;
 }

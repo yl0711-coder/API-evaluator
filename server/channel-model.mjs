@@ -49,15 +49,19 @@ const pricingFields = (src, existing = {}) => ({
 export function normalizeChannel(body, existing = null) {
   const id = String(body.id || existing?.id || crypto.randomUUID());
   const now = new Date().toISOString();
+  const name = requiredString(body.name ?? existing?.name, "渠道名称");
+  // 曾用名：改名时把旧名并入（去重、排除当前名），供报告按名字匹配时归并改名前的历史。
+  const aliases = dedupeTags([
+    ...(Array.isArray(existing?.aliases) ? existing.aliases : []),
+    ...(existing?.name && existing.name !== name ? [existing.name] : []),
+  ]).filter((a) => a !== name);
   return {
     id,
-    name: requiredString(body.name ?? existing?.name, "渠道名称"),
+    name,
+    aliases,
     provider: String(body.provider ?? existing?.provider ?? "").trim(),
     baseUrl: normalizeBaseUrl(body.baseUrl ?? existing?.baseUrl),
     protocol: normalizeProtocol(body.protocol ?? existing?.protocol),
-    maxTokens: toFinite(body.maxTokens ?? existing?.maxTokens, 512),
-    timeoutMs: toFinite(body.timeoutMs ?? existing?.timeoutMs, 60000),
-    ...pricingFields(body, existing || {}),
     models: normalizeModelList(body.models ?? existing?.models),
     status: normalizeChannelStatus(body.status ?? existing?.status),
     source: body.source || existing?.source || "manual", // manual | newapi
@@ -68,15 +72,44 @@ export function normalizeChannel(body, existing = null) {
   };
 }
 
+// 标签数组去空白、去重、保序。
+function dedupeTags(input) {
+  const seen = new Set();
+  const out = [];
+  for (const item of Array.isArray(input) ? input : []) {
+    const v = String(item || "").trim();
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
+  }
+  return out;
+}
+
 // 规范化一个测试模型目标：引用渠道 + 模型名。
+// 标签为纯本地概念（单一状态）：tags=该模型在本渠道下被授予的能力标签，不再与 new-api 联动、不再跨渠道统一。
 export function normalizeModelTarget(body, existing = null) {
   const now = new Date().toISOString();
+  // 场景测验夺标得到的能力标签：编辑模型目标（POST 全量覆盖）时保留，别被清空。
+  const tags = dedupeTags(Array.isArray(body.tags) ? body.tags : existing?.tags);
+  const model = requiredString(body.model ?? existing?.model, "模型名");
+  // 曾用名：改模型名时把旧名并入（去重、排除当前名），供报告按名字匹配时归并改名前的历史。
+  const aliases = dedupeTags([
+    ...(Array.isArray(existing?.aliases) ? existing.aliases : []),
+    ...(existing?.model && existing.model !== model ? [existing.model] : []),
+  ]).filter((a) => a !== model);
   return {
     id: String(body.id || existing?.id || crypto.randomUUID()),
     channelId: requiredString(body.channelId ?? existing?.channelId, "渠道"),
-    model: requiredString(body.model ?? existing?.model, "模型名"),
+    model,
     note: String(body.note ?? existing?.note ?? "").trim(),
+    // v0.3.x 后：最大输出/超时/单价从渠道层下沉到模型目标层——每个「渠道+模型」各自独立配置。
+    maxTokens: toFinite(body.maxTokens ?? existing?.maxTokens, 512),
+    timeoutMs: toFinite(body.timeoutMs ?? existing?.timeoutMs, 300000),
+    ...pricingFields(body, existing || {}),
     source: body.source || existing?.source || "manual",
+    tags,
+    aliases,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
@@ -106,12 +139,13 @@ export function resolveTestTarget(modelTarget, channel) {
     hasKey: Boolean(channel.hasKey || channel.apiKeyRef),
     protocol: channel.protocol,
     defaultModel: modelTarget.model,
-    maxTokens: channel.maxTokens,
-    timeoutMs: channel.timeoutMs,
-    inputPricePerMTokens: channel.inputPricePerMTokens,
-    outputPricePerMTokens: channel.outputPricePerMTokens,
-    inputSellPricePerMTokens: channel.inputSellPricePerMTokens,
-    outputSellPricePerMTokens: channel.outputSellPricePerMTokens,
+    // 最大输出/超时/单价已下沉到模型目标层，从 modelTarget 取（不再来自 channel）。
+    maxTokens: modelTarget.maxTokens,
+    timeoutMs: modelTarget.timeoutMs,
+    inputPricePerMTokens: modelTarget.inputPricePerMTokens,
+    outputPricePerMTokens: modelTarget.outputPricePerMTokens,
+    inputSellPricePerMTokens: modelTarget.inputSellPricePerMTokens,
+    outputSellPricePerMTokens: modelTarget.outputSellPricePerMTokens,
     channelId: channel.id,
     channelStatus: channel.status,
   };
@@ -136,9 +170,6 @@ export function migrateProfileToChannelAndTarget(profile) {
     hasKey: Boolean(profile.hasKey || profile.apiKeyRef),
     keyHash: profile.keyHash || null,
     protocol: normalizeProtocol(profile.protocol),
-    maxTokens: Number(profile.maxTokens || 512),
-    timeoutMs: Number(profile.timeoutMs || 60000),
-    ...pricingFields(profile),
     models: profile.defaultModel ? [String(profile.defaultModel)] : [],
     status: "enabled",
     source: "manual",
@@ -152,6 +183,10 @@ export function migrateProfileToChannelAndTarget(profile) {
     channelId,
     model: String(profile.defaultModel || ""),
     note: "",
+    // 经济字段（最大输出/超时/单价）随模型目标走，跟随下沉后的数据模型。
+    maxTokens: Number(profile.maxTokens || 512),
+    timeoutMs: Number(profile.timeoutMs || 300000),
+    ...pricingFields(profile),
     createdAt: profile.createdAt || new Date().toISOString(),
     updatedAt: profile.updatedAt || new Date().toISOString(),
   };

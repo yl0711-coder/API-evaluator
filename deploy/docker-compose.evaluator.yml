@@ -10,9 +10,12 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: api-evaluator:latest
+    image: api-evaluator:0.6.2
     container_name: api-evaluator
     restart: unless-stopped
+    # autoheal 看门狗据此标签认领本容器：健康检查判 unhealthy 时自动 restart（compose 自身不会因 unhealthy 重启）。
+    labels:
+      - "autoheal=true"
     # 不映射宿主端口：只经反向代理在 docker 网络内访问，缩小暴露面
     expose:
       - "5180"
@@ -29,12 +32,14 @@ services:
     # 小机另可设 EVALUATOR_MAX_CONCURRENT_TASKS=2 / EVALUATOR_OFFLINE_TOKENIZER=off（见 README）。
     mem_limit: 512m
     cpus: "0.75"
+    # 健康检查同时校验 HTTP 存活与调度器活性：autoTest.stale=true（心跳超时=定时器僵死）也判 unhealthy，
+    # 使「进程活着但自动测试停摆」这类静默故障可被 autoheal 感知并重启。start_period 覆盖首个 tick + 对账。
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5180/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5180/api/health').then(async r=>{const j=await r.json().catch(()=>({}));process.exit(r.ok&&!(j.autoTest&&j.autoTest.stale)?0:1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 40s
     logging:
       driver: json-file
       options:
@@ -42,6 +47,27 @@ services:
         max-file: "3"
     networks:
       - evaluator_net
+
+  # 看门狗：compose（非 Swarm）的 restart 策略只对「进程退出」生效，不会因 unhealthy 重启。
+  # autoheal 监听 docker 事件，把带 autoheal=true 标签且转为 unhealthy 的容器 restart 掉——
+  # 这才补上「进程活着但健康检查失败（含调度器僵死）」这一层的自动恢复。只读挂载 docker.sock。
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    container_name: api-evaluator-autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal # 只认领带 autoheal=true 的容器，不误伤同机其它服务
+      AUTOHEAL_INTERVAL: "15" # 每 15s 巡检一次容器健康状态
+      AUTOHEAL_START_PERIOD: "40" # 与被测容器 start_period 对齐，启动期不误杀
+      DOCKER_SOCK: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # 独立 docker 网络。把你的反向代理加入本网络（或把本服务接入反代所在网络），
 # 才能用容器名 evaluator:5180 反代。

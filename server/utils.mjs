@@ -1,7 +1,8 @@
 // server/utils.mjs
 // 通用纯函数工具：JSON 安全解析、文本脱敏与摘要、JSONL 追加写与尾部读取（带大小封顶）、
 // 数值/百分比统计与格式化等，供各模块复用。
-import { appendFile, open, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { HttpRequestError } from "./http-request.mjs";
 
 export const DEFAULT_JSONL_MAX_BYTES = 8 * 1024 * 1024;
@@ -42,6 +43,29 @@ export function redactSensitiveText(text) {
     (value, pattern) => value.replace(pattern, "[redacted-secret]"),
     String(text || ""),
   );
+}
+
+// 原子写：建目录 → 写【唯一】同目录临时文件 → rename 到位。rename 在同一文件系统上是原子的，
+// 【进程】写一半崩溃时目标文件要么是旧内容完好、要么是新内容完好，绝不留下半截文件——
+// 否则加载器 try/catch 会把损坏文件静默回落成空/默认（密钥库损坏更会令全部渠道 Key 变不可读）。
+// 注：这里不 fsync 临时文件 / 目录，故只保证抗【进程崩溃】，不保证抗【主机断电】——掉电可能丢失
+// 尚在页缓存里的数据或 rename。本平台的容错前提是重启/重部署（进程级），断电级持久化不在保证范围内。
+// 临时名带 pid + 递增序号：并发写同一文件时各用各的临时文件、互不覆盖；失败时清掉残留临时文件。
+let atomicWriteSeq = 0;
+export async function writeFileAtomic(file, data, options = "utf8") {
+  await mkdir(dirname(file), { recursive: true });
+  atomicWriteSeq = (atomicWriteSeq + 1) % 0xffffff;
+  const tmp = `${file}.${process.pid}.${atomicWriteSeq}.tmp`;
+  try {
+    await writeFile(tmp, data, options);
+    await rename(tmp, file);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+export function writeJsonAtomic(file, value) {
+  return writeFileAtomic(file, JSON.stringify(value, null, 2), "utf8");
 }
 
 export async function appendJsonLine(file, value, { maxBytes = DEFAULT_JSONL_MAX_BYTES, tailBytes = DEFAULT_JSONL_TAIL_BYTES } = {}) {

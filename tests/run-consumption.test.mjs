@@ -56,6 +56,6 @@ test("spend_ledger 往返 + querySpendSummary 累计", async () => {
     assert.equal(Math.round(s.totalEstimatedCost * 10000) / 10000, 0.03); // 0.02 + 0.01
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });

@@ -77,3 +77,44 @@ test("buildImportPlan：重复导入幂等 —— upsert 渠道、保留凭证�
   assert.equal(ch.apiKeyRef, "profile:newapi-1:api-key"); // 凭证保留
   assert.equal(ch.keyHash, "hh");
 });
+
+test("buildImportPlan：已推送的本地渠道（UUID id + newapiChannelId）按 newapiChannelId 命中，不再重复建", () => {
+  // 模拟：本地手动渠道推送到 new-api 后，本地 id 仍是 UUID、但带 newapiChannelId=44，且其下已有模型目标。
+  const localId = "11111111-2222-3333-4444-555555555555";
+  const existingChannels = [
+    { id: localId, name: "我的渠道", provider: "DeepSeek", baseUrl: "https://up.test", protocol: "openai_compatible", models: ["m1", "m2"], status: "enabled", source: "manual", newapiChannelId: 44, apiKeyRef: "profile:" + localId + ":api-key", hasKey: true, createdAt: "2026-01-01T00:00:00.000Z" },
+  ];
+  const existingTargets = [
+    { id: "t-m1", channelId: localId, model: "m1", source: "manual" },
+    { id: "t-m2", channelId: localId, model: "m2", source: "manual" },
+  ];
+  // 导入 new-api 渠道 44（同一渠道），含一个新模型 m3。
+  const rows = [{ id: 44, type: 43, name: "我的渠道", base_url: "https://up.test", models: "m1,m2,m3", status: 1 }];
+  const plan = buildImportPlan({ rows, existingChannels, existingTargets });
+
+  assert.equal(plan.summary.imported, 0, "不应新建渠道");
+  assert.equal(plan.summary.updated, 1, "应 upsert 已存在渠道");
+  assert.equal(plan.channels.length, 1, "渠道不重复（仍 1 个）");
+  assert.equal(plan.channels[0].id, localId, "保留本地 UUID id，不改成 newapi-44");
+  assert.equal(plan.channels[0].apiKeyRef, "profile:" + localId + ":api-key", "凭证保留");
+  // 模型目标：m1/m2 不重复，仅新增 m3
+  assert.equal(plan.summary.newTargets, 1);
+  assert.equal(plan.targets.length, 3);
+  assert.equal(plan.targets.filter((t) => t.model === "m1").length, 1, "m1 不重复");
+  assert.equal(plan.targets.some((t) => t.model === "m3" && t.channelId === localId), true, "m3 挂在同一本地渠道下");
+});
+
+test("buildImportPlan：标签已下线——导入不带入 new-api 标签、不动本地标签、汇总无 taggedTargets", () => {
+  const rows = [{ id: 1, type: 1, name: "A", base_url: "https://a.test", models: "gpt-4o,claude", status: 1 }];
+  // 已有本地渠道（含夺标得到的本地标签），导入后本地标签应原样保留。
+  const existingChannels = [{ id: "newapi-1", name: "A", protocol: "openai_compatible", models: ["gpt-4o"], status: "enabled", source: "newapi", newapiChannelId: 1 }];
+  const existingTargets = [{ id: "tx", channelId: "newapi-1", model: "gpt-4o", tags: ["本地夺标"], source: "newapi" }];
+  const plan = buildImportPlan({ rows, existingChannels, existingTargets });
+
+  const tx = plan.targets.find((t) => t.id === "tx");
+  assert.deepEqual(tx.tags, ["本地夺标"], "已有模型的本地标签原样保留");
+  // 新导入的模型目标不带任何标签字段（标签纯本地、由用户/夺标产生）。
+  const claude = plan.targets.find((t) => t.channelId === "newapi-1" && t.model === "claude");
+  assert.equal(claude.tags, undefined, "新导入模型目标不含 new-api 标签");
+  assert.equal("taggedTargets" in plan.summary, false, "汇总不再含 taggedTargets");
+});

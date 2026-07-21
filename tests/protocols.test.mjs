@@ -181,6 +181,34 @@ test("extracts output text and usage from common response formats", () => {
   });
 });
 
+// 把 Claude 包成 OpenAI 形状的中转会回「内容分片数组」而非字符串。此前 String(数组) 得到
+// "[object Object]"——非空，于是空回复归一不会触发，这串垃圾会被当成模型答案存进报告并拿去打分。
+test("extractOutputText：OpenAI 形状的数组 content → 拼出真文本，绝不能是 [object Object]", () => {
+  assert.equal(
+    extractOutputText("openai_compatible", {
+      choices: [{ message: { content: [{ type: "text", text: "第一段" }, { type: "text", text: "第二段" }] } }],
+    }),
+    "第一段\n第二段",
+  );
+});
+
+test("extractOutputText：数组 content 里的思考块不计入可见输出（与 Claude 口径一致）", () => {
+  assert.equal(
+    extractOutputText("openai_compatible", {
+      choices: [{ message: { content: [{ type: "thinking", text: "我先想想" }, { type: "text", text: "答案" }] } }],
+    }),
+    "答案",
+  );
+});
+
+test("extractOutputText：字符串 content 与空值行为不变（防回归）", () => {
+  assert.equal(extractOutputText("openai_compatible", { choices: [{ message: { content: "  文本  " } }] }), "文本");
+  assert.equal(extractOutputText("openai_compatible", { choices: [{ message: { content: null } }] }), "");
+  assert.equal(extractOutputText("openai_compatible", { choices: [{ message: { content: [] } }] }), "");
+  // 数组里没有任何可见文本 → 空串，交由上层判 empty_response（而非留下垃圾串）
+  assert.equal(extractOutputText("openai_compatible", { choices: [{ message: { content: [{ type: "image_url" }] } }] }), "");
+});
+
 test("extractUsage captures Anthropic cache fields", () => {
   assert.deepEqual(
     extractUsage({

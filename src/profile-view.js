@@ -120,23 +120,6 @@ export function renderRunTargetSelectOptions({ modelTargets = [], channels = [],
   });
 }
 
-export function renderProfileSelectOptions({ profiles, selects }) {
-  const targets = profiles.filter((profile) => profile.role === "target" || profile.role === "baseline");
-  if (targets.length === 0) {
-    selects.forEach((select) => {
-      select.innerHTML = `<option value="">请先新增被测 API</option>`;
-    });
-    return;
-  }
-
-  const options = targets
-    .map((profile) => `<option value="${profile.id}">${escapeHtml(profile.name)} / ${escapeHtml(profile.defaultModel)}${profile.role === "baseline" ? " / 可信基线" : ""}</option>`)
-    .join("");
-  selects.forEach((select) => {
-    select.innerHTML = options;
-  });
-}
-
 function roleLabel(role) {
   if (role === "judge") return "主 API";
   if (role === "baseline") return "可信基线";

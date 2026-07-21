@@ -5,8 +5,9 @@ node_modules/
 # Build output (the Docker image / CI builds this from source)
 dist/
 
-# Internal/dev docs — not published; public docs live in README only
-docs/
+# Internal/dev docs at repo root — not published; public docs live in README only.
+# Anchored with a leading slash so it does NOT match src/docs/ (bundled by the frontend via ?raw import).
+/docs/
 
 # Local environment & secrets — NEVER commit
 .env
@@ -27,3 +28,18 @@ app-data/
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code local config (keep shareable skills under .claude/skills/)
+.claude/settings.local.json
+.claude/
+
+# Local-only reference material & personal notes (not project source)
+*.pdf
+*.docx
+注意事项.txt
+
+AI配置模型与渠道操作指南.md
+AI批量写入模型标签指南.md
+--env-file
+
+*记.md

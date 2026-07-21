@@ -1,6 +1,6 @@
 {
   "name": "api-evaluator",
-  "version": "0.4.0",
+  "version": "0.6.2",
   "private": false,
   "description": "Self-hosted evaluation platform for any OpenAI-compatible / Claude-compatible API gateway or relay: connectivity, stability, scenario and admission tests with cost estimates and exportable reports.",
   "license": "MIT",
@@ -31,7 +31,10 @@
     "start": "node server.mjs",
     "build": "vite build",
     "check": "node --check server.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "compare:eval": "node scripts/compare-eval-reports.mjs",
+    "check:egress": "node scripts/check-egress-mitigation.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "fingerprint:baseline": "node --env-file=.env.evaluator scripts/claude-token-baseline.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

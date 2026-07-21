@@ -10,6 +10,12 @@ import { copyText } from "./clipboard.js";
 import { api, cancelRemoteTask } from "./api-client.js";
 import { applyRoleVisibility, ensureAuthenticated, wireUnauthorizedRedirect } from "./auth-gate.js";
 import { createConfirmDialog } from "./confirm-dialog.js";
+import { openReportOverlay } from "./report-overlay.js";
+import { parseReportId, matchesReportFilter, computeDateBounds, reportChannelModelOptions } from "./report-id.js";
+import { createDeveloper } from "./developer.js";
+import { createAutoTestConfig } from "./auto-test-config.js";
+import { createModelCompare } from "./model-compare.js";
+import { MANUAL_MARKDOWN } from "./manual-content.js";
 import {
   confirmExecution,
   estimateAdmissionBatchCost,
@@ -18,6 +24,7 @@ import {
   estimateBatchCost,
   estimateScenarioCost,
   estimateStabilityCost,
+  estimateLoadTestCost,
 } from "./cost-estimates.js";
 import { renderDeliveryPanels } from "./delivery-panel.js";
 import {
@@ -29,32 +36,29 @@ import {
   formatStabilityResult,
 } from "./formatters.js";
 import { renderRequestList, renderTaskEventList, renderTestRunList } from "./history-view.js";
+import { renderTrendChart } from "../shared/trend-chart.mjs";
 import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "./workflow-guide.js";
 import { buildDemoData } from "./demo-data.js";
 import { requireElement, requireElements } from "./dom-utils.js";
 import { createKeyModal } from "./key-modal.js";
-import { renderPageHelp as renderPageHelpPanel } from "./page-help.js";
-import { renderProfileConfigCheck as renderProfileConfigCheckPanel } from "./profile-config-check.js";
-import { renderMissingKeyPanel, renderProfileList, renderRunTargetSelectOptions } from "./profile-view.js";
+import { renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createBatchTargetPicker } from "./batch-target-picker.js";
+import { createScenarioCasePicker } from "./scenario-case-picker.js";
 import {
   applyPromptPresetToForm,
   renderPromptPresetOptions,
 } from "./prompt-presets.js";
-import { createProfileController } from "./profile-controller.js";
 import { createChannelAdmin } from "./channel-admin.js";
-import { createQuickTestController } from "./quick-test-controller.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
 import { renderStabilitySummary as renderStabilitySummaryPanel } from "./stability-view.js";
+import { renderScenarioSummary as renderScenarioSummaryPanel } from "./scenario-view.js";
 import { updateEstimateLabels } from "./test-estimates.js";
 import { createTaskFormController, requireSelectedValues } from "./test-form-controller.js";
 import {
   applyBatchTemplate as applyBatchTemplateToForm,
-  applyProfileTemplate as applyProfileTemplateToForm,
-  applyScenarioTemplate as applyScenarioTemplateToForm,
   applyStabilityTemplate as applyStabilityTemplateToForm,
 } from "./test-templates.js";
 import {
@@ -72,6 +76,7 @@ const state = {
   requests: [],
   testRuns: [],
   taskEvents: [],
+  highRiskAlerts: [], // 高危报告提示：未读高危报告清单（来自 /api/high-risk-alerts）
   scenarios: [],
   manualLoaded: false,
   latestReportCopies: {
@@ -87,40 +92,57 @@ const state = {
 
 const pages = requireElements(".page");
 const navButtons = requireElements(".nav-button");
+// 设置页「未保存改动」追踪：早声明，避免在启动期（顶层 await 暂停）被 showPage 引用时命中 TDZ。
+let settingsDirty = false;
+let currentPage = "dashboard";
 const projectInfoForm = requireElement("#project-info-form");
 const projectInfoSummary = requireElement("#project-info-summary");
-const profileForm = requireElement("#profile-form");
-const profileList = requireElement("#profile-list");
-const profileTemplate = requireElement("#profile-template");
-const profileCheckResult = requireElement("#profile-check-result");
 const channelForm = requireElement("#channel-form");
 const channelList = requireElement("#channel-list");
 const modelTargetForm = requireElement("#model-target-form");
 const modelTargetList = requireElement("#model-target-list");
 const modelTargetChannelSelect = requireElement("#model-target-channel");
+const modelTagFilter = requireElement("#model-tag-filter");
+// 高危报告横幅元素：必须在此顶部声明。启动流程（顶层 await 块）会 await loadHighRiskAlerts()→renderHighRiskBanner()，
+// 那时若本 const 仍在文件下方未执行，就处于暂时性死区(TDZ)，会抛「Cannot access 'highRiskBanner' before initialization」
+// 并被启动 try/catch 兜成「连接本地服务失败」。不要把它挪回下面的高危提示代码块里。
+const highRiskBanner = requireElement("#high-risk-banner");
 const channelAdmin = createChannelAdmin({
   state,
-  els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect },
+  els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect, modelTagFilter },
   onChange: () => renderProfileOptions(),
 });
 channelForm.addEventListener("submit", channelAdmin.saveChannel);
 modelTargetForm.addEventListener("submit", channelAdmin.saveModelTarget);
+
+// 「开发者界面」（仅超管）：场景测试源数据增删改 + 自定义能力标签。标签保存后刷新模型表单勾选项。
+const developer = createDeveloper({
+  state,
+  onTagsSaved: () => channelAdmin.renderTagOptions(),
+  // 删除标签前的危险确认框（与模型管理删除同款）。confirmAction 在后文声明，删除点击在初始化之后，闭包取值时已就绪。
+  confirm: (opts) => confirmAction(opts),
+});
+// 「自动测试配置」（仅超管）：定时自动测试作业的增删改查。confirmAction 在后文声明，闭包取值时已就绪。
+const autoTestConfig = createAutoTestConfig({ state, confirm: (opts) => confirmAction(opts) });
+// 「模型比对」（登录即可用）：依据两个模型各自最近的报告做统计对比，产出对比报告。
+const modelCompare = createModelCompare({ state });
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
-requireElement("#reload-model-targets").addEventListener("click", () => channelAdmin.loadModelTargets());
-const quickTestForm = requireElement("#quick-test-form");
-const quickProfileSelect = requireElement("#quick-profile-select");
-const quickTestResult = requireElement("#quick-test-result");
+requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
 const quickVerifyProfileSelect = requireElement("#quickverify-profile-select");
 const quickVerifySubmit = requireElement("#quickverify-submit");
 const quickVerifyResult = requireElement("#quickverify-result");
 const trendProfileSelect = requireElement("#trend-profile-select");
+const trendXModeSelect = requireElement("#trend-xmode");
+const trendWindowSelect = requireElement("#trend-window");
+const trendWindowField = requireElement("#trend-window-field");
 const trendChart = requireElement("#trend-chart");
 const trendRegression = requireElement("#trend-regression");
 const trendTable = requireElement("#trend-table");
 const trendAlerts = requireElement("#trend-alerts");
-const quickPromptPreset = requireElement("#quick-prompt-preset");
-const quickPromptHint = requireElement("#quick-prompt-hint");
+let trendXMode = "count"; // 趋势图 x 轴：'count'(按轮次) | 'hour'(按小时聚合)
+let trendWindowHours = 0; // 按时间模式的时间范围：0=全部，或 3/6/12/24/48/168 小时
+let trendLastRounds = []; // 最近一次拉到的逐轮数据，切换 x 轴时复用、不重复请求
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
@@ -147,7 +169,11 @@ const stabilityTestForm = requireElement("#stability-test-form");
 const stabilityProfileSelect = requireElement("#stability-profile-select");
 const stabilitySubmit = requireElement("#stability-submit");
 const stabilitySummary = requireElement("#stability-summary");
-const stabilityReport = requireElement("#stability-report");
+const loadTestForm = requireElement("#load-test-form");
+const loadTestProfileSelect = requireElement("#load-test-profile-select");
+const loadTestSubmit = requireElement("#load-test-submit");
+const loadTestSummary = requireElement("#load-test-summary");
+const loadTestEstimate = requireElement("#load-test-estimate");
 const batchTestForm = requireElement("#batch-test-form");
 const batchProfileSelect = requireElement("#batch-profile-select");
 const batchSubmit = requireElement("#batch-submit");
@@ -156,7 +182,7 @@ const scenarioTestForm = requireElement("#scenario-test-form");
 const scenarioProfileSelect = requireElement("#scenario-profile-select");
 const scenarioCaseSelect = requireElement("#scenario-case-select");
 const scenarioSubmit = requireElement("#scenario-submit");
-const scenarioTestResult = requireElement("#scenario-test-result");
+const scenarioSummary = requireElement("#scenario-summary");
 const testRunList = requireElement("#test-run-list");
 const clientLogForm = requireElement("#client-log-form");
 const clientLogSubmit = requireElement("#client-log-submit");
@@ -175,14 +201,14 @@ const clientReplayBatch = requireElement("#client-replay-batch");
 // 模型下拉沿用原 *-profile-select(仍 name="profileId"),所以表单提交与后端不变。
 const admissionCascade = createCascadeTargetPicker(requireElement("#admission-channel-select"), admissionProfileSelect);
 const standardCascade = createCascadeTargetPicker(requireElement("#standard-channel-select"), standardProfileSelect);
-const quickCascade = createCascadeTargetPicker(requireElement("#quick-channel-select"), quickProfileSelect);
 const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
 const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
+const loadTestCascade = createCascadeTargetPicker(requireElement("#load-test-channel-select"), loadTestProfileSelect);
 const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-select"), trendProfileSelect);
 
 // 程序化跳转回填代理:控制器里 `xxxProfileSelect.value = id` 时,写入走级联(同步渠道+模型下拉),
 // 读取仍取模型选中值。传给会做跳转回填的控制器(profile / standard-eval)。
-const quickProfileTarget = { get value() { return quickProfileSelect.value; }, set value(v) { quickCascade.setValue(v); } };
+const quickVerifyProfileTarget = { get value() { return quickVerifyProfileSelect.value; }, set value(v) { quickVerifyCascade.setValue(v); } };
 const stabilityProfileTarget = { get value() { return stabilityProfileSelect.value; }, set value(v) { stabilityCascade.setValue(v); } };
 
 // 批量两维度选择器(渠道体检 A / 渠道选优 B),3 个批量页各一个。选中项同步到隐藏的
@@ -190,6 +216,8 @@ const stabilityProfileTarget = { get value() { return stabilityProfileSelect.val
 const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-batch-picker"), { hiddenSelect: admissionBatchProfileSelect });
 const batchPicker = createBatchTargetPicker(requireElement("#batch-picker"), { hiddenSelect: batchProfileSelect });
 const scenarioPicker = createBatchTargetPicker(requireElement("#scenario-picker"), { hiddenSelect: scenarioProfileSelect });
+// 「选择测试场景」复用 .batch-picker 勾选样式,真值写回隐藏的 scenarioCaseSelect。
+const scenarioCasePicker = createScenarioCasePicker(requireElement("#scenario-case-picker"), scenarioCaseSelect);
 
 const taskEventList = requireElement("#task-event-list");
 const stabilityTemplate = requireElement("#stability-template");
@@ -198,21 +226,18 @@ const stabilityPromptPreset = requireElement("#stability-prompt-preset");
 const stabilityPromptHint = requireElement("#stability-prompt-hint");
 const batchPromptPreset = requireElement("#batch-prompt-preset");
 const batchPromptHint = requireElement("#batch-prompt-hint");
-const scenarioTemplate = requireElement("#scenario-template");
-const scenarioTemplateHint = requireElement("#scenario-template-hint");
 const stabilityEstimate = requireElement("#stability-estimate");
 const batchEstimate = requireElement("#batch-estimate");
 const scenarioEstimate = requireElement("#scenario-estimate");
 const stabilityProgress = requireElement("#stability-progress");
+const loadTestProgress = requireElement("#load-test-progress");
 const batchProgress = requireElement("#batch-progress");
 const scenarioProgress = requireElement("#scenario-progress");
 const reportInsights = requireElement("#report-insights");
-const plainConclusion = requireElement("#plain-conclusion");
 const rankingList = requireElement("#ranking-list");
 const modelComparisonList = requireElement("#model-comparison-list");
 const handoffSummary = requireElement("#handoff-summary");
 const handoffTemplate = requireElement("#handoff-template");
-const pageHelpContent = requireElement("#page-help-content");
 const manualContent = requireElement("#manual-content");
 const dashboardEmpty = requireElement("#dashboard-empty");
 const dashboardPopulated = requireElement("#dashboard-populated");
@@ -226,9 +251,7 @@ const statTodosChips = requireElement("#stat-todos-chips");
 const dashboardRecent = requireElement("#dashboard-recent");
 const nextAction = requireElement("#next-action");
 const workflowSteps = requireElements(".workflow-step");
-const editionBanner = requireElement("#edition-banner");
 const demoModeBanner = requireElement("#demo-mode-banner");
-const missingKeyGuide = requireElement("#missing-key-guide");
 const quickFailureActions = requireElement("#quick-failure-actions");
 const keyModal = requireElement("#key-modal");
 const keyModalForm = requireElement("#key-modal-form");
@@ -240,6 +263,7 @@ const confirmAction = createConfirmDialog({
   messageElement: requireElement("#confirm-modal-message"),
   confirmButton: requireElement("#confirm-modal-ok"),
   cancelButton: requireElement("#confirm-modal-cancel"),
+  closeButton: requireElement("#confirm-modal-close"),
 });
 const keyPrompt = createKeyModal({
   modal: keyModal,
@@ -249,10 +273,10 @@ const keyPrompt = createKeyModal({
 });
 const quickFailurePanel = createQuickFailurePanel({
   container: quickFailureActions,
-  getDefaultProfileId: () => quickProfileSelect.value,
+  getDefaultProfileId: () => quickVerifyProfileSelect.value,
   updateProfileKey,
-  retryQuickTest: () => quickTestForm.requestSubmit(),
-  openProfiles: () => showPage("profiles"),
+  retryQuickTest: () => quickVerifySubmit.click(),
+  openProfiles: () => showPage("channels"),
   openStandardEval: (profileId) => {
     if (profileId) standardCascade.setValue(profileId);
     showPage("standard-eval");
@@ -265,25 +289,75 @@ const quickFailurePanel = createQuickFailurePanel({
     showPage("stability-test");
   },
 });
-const profileController = createProfileController({
-  state,
-  profileForm,
-  profileTemplate,
-  demoModeBanner,
-  renderProfileConfigCheck,
-  loadProfiles,
-  loadRequests,
-  quickProfileSelect: quickProfileTarget,
-  quickTestResult,
-  quickFailurePanel,
-  showPage,
-  confirmAction,
-});
 
 navButtons.forEach((button) => {
   button.addEventListener("click", () => {
     showPage(button.dataset.page);
   });
+});
+
+// 侧边栏折叠：切换 #app.sidebar-collapsed，并把状态持久化到本机
+const SIDEBAR_COLLAPSED_KEY = "evaluator:sidebar-collapsed";
+const readSidebarCollapsed = () => {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const writeSidebarCollapsed = (on) => {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, on ? "1" : "0");
+  } catch {
+    /* 隐私模式：忽略 */
+  }
+};
+
+const appEl = requireElement("#app");
+const sidebarToggle = requireElement("#sidebar-toggle");
+function applySidebarCollapsed(on) {
+  appEl.classList.toggle("sidebar-collapsed", on);
+  sidebarToggle.setAttribute("aria-expanded", String(!on));
+  const label = on ? "展开侧边栏" : "收起侧边栏";
+  sidebarToggle.setAttribute("aria-label", label);
+  sidebarToggle.title = label;
+}
+applySidebarCollapsed(readSidebarCollapsed());
+sidebarToggle.addEventListener("click", () => {
+  const on = !appEl.classList.contains("sidebar-collapsed");
+  applySidebarCollapsed(on);
+  writeSidebarCollapsed(on);
+});
+
+// 外观：更好的光影（背景橙色渐变流光）。纯本机显示偏好，存 localStorage、即时生效，
+// 与服务器设置无关（不走「保存设置」流程）。
+const BETTER_LIGHTING_KEY = "evaluator:better-lighting";
+const readBetterLighting = () => {
+  try {
+    return localStorage.getItem(BETTER_LIGHTING_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const writeBetterLighting = (on) => {
+  try {
+    localStorage.setItem(BETTER_LIGHTING_KEY, on ? "1" : "0");
+  } catch {
+    /* 隐私模式：忽略 */
+  }
+};
+const betterLightingToggle = requireElement("#set-better-lighting");
+function applyBetterLighting(on) {
+  document.body.classList.toggle("better-lighting", on);
+  betterLightingToggle.checked = on;
+}
+applyBetterLighting(readBetterLighting());
+betterLightingToggle.addEventListener("change", (event) => {
+  // 它在 #settings-form 内，但即时生效、不走「保存设置」：阻止冒泡，
+  // 免得表单的 change 监听把它误标为「设置未保存」。
+  event.stopPropagation();
+  applyBetterLighting(betterLightingToggle.checked);
+  writeBetterLighting(betterLightingToggle.checked);
 });
 
 document.addEventListener("click", (event) => {
@@ -292,41 +366,225 @@ document.addEventListener("click", (event) => {
   showPage(button.dataset.goPage);
 });
 
-requireElement("#toggle-page-help").addEventListener("click", () => {
-  pageHelpContent.classList.toggle("hidden");
-});
 requireElement("#load-demo-data").addEventListener("click", enableDemoMode);
 requireElement("#exit-demo-mode").addEventListener("click", disableDemoMode);
-requireElement("#reload-profiles").addEventListener("click", loadProfiles);
 requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
 });
-requireElement("#copy-stability-report").addEventListener("click", () => copyReportText("stability"));
-requireElement("#copy-scenario-report").addEventListener("click", () => copyReportText("scenario"));
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
-requireElement("#reload-manual").addEventListener("click", loadManual);
-requireElement("#export-profiles").addEventListener("click", exportProfiles);
 requireElement("#export-support-bundle").addEventListener("click", exportSupportBundle);
-requireElement("#save-profile-only").addEventListener("click", saveProfileOnly);
-requireElement("#import-profiles-button").addEventListener("click", () => {
-  if (assertNotDemo("导入配置")) return;
-  requireElement("#import-profiles-file").click();
+
+// 「查看报告」：列出「评测数据/报告」里的报告文件（每页 10 个，分页 + 新格式按渠道/模型/种类/日期筛选）。
+const reportFilesPanel = requireElement("#report-files-panel");
+const reportFilesList = requireElement("#report-files-list");
+const rfFilterChannel = requireElement("#rf-filter-channel");
+const rfFilterModel = requireElement("#rf-filter-model");
+const rfFilterType = requireElement("#rf-filter-type");
+const rfFilterDateFrom = requireElement("#rf-filter-date-from");
+const rfFilterDateTo = requireElement("#rf-filter-date-to");
+const REPORT_FILTERS = [rfFilterChannel, rfFilterModel, rfFilterType, rfFilterDateFrom, rfFilterDateTo];
+const REPORT_TYPE_LABELS = {
+  admission: "准入评测",
+  "admission-batch": "批量准入",
+  scenario: "场景测试",
+  run: "稳定性测试",
+  compare: "模型对比",
+  autodigest: "自动巡检",
+  load: "压力测试", // runId 前缀 buildReportId("load", ...)
+  "load-test": "压力测试",
+  batch: "批量稳定性",
+  quickverify: "快速验证",
+  supplier: "上游证据包",
+  client: "客户端回放",
+  replay: "客户端回放",
+};
+const REPORT_PAGE_SIZE = 10;
+let reportFiles = []; // 每条已附 parsed = parseReportId(id)
+let reportFilesPage = 0;
+let currentUserCanConfig = false; // 是否超级管理员（role≥100）：仅其可见/可用报告删除按钮（安全另在服务端强制）
+let reportDateMin = ""; // 报告实际日期范围（YYYY-MM-DD），给日期框设 min/max 用
+let reportDateMax = "";
+
+// 令「终止」日历不早于「起始」、「起始」不晚于「终止」（同时夹在报告日期范围内）。
+function syncDateBounds() {
+  const { toMin, fromMax } = computeDateBounds(rfFilterDateFrom.value, rfFilterDateTo.value, reportDateMin, reportDateMax);
+  rfFilterDateTo.min = toMin;
+  rfFilterDateFrom.max = fromMax;
+}
+
+// 展开「全部报告文件」面板时自动加载（已无独立「查看报告」按钮）。
+reportFilesPanel.addEventListener("toggle", () => {
+  if (reportFilesPanel.open) loadReportFiles();
 });
-requireElement("#import-profiles-file").addEventListener("change", profileController.importProfiles);
+// 点日期框即弹出原生日历选择器（不必只点小图标）。
+for (const dateInput of [rfFilterDateFrom, rfFilterDateTo]) {
+  dateInput.addEventListener("click", () => {
+    try {
+      dateInput.showPicker?.();
+    } catch {
+      /* 未由用户手势激活 / 不支持 → 忽略，仍可用默认日历图标 */
+    }
+  });
+}
+REPORT_FILTERS.forEach((sel) =>
+  sel.addEventListener("change", () => {
+    // 渠道↔模型联动：重算两下拉可选项（保留仍有效的选中值）。内部亦会 syncDateBounds 收紧日历范围。
+    populateReportFilters();
+    reportFilesPage = 0;
+    renderReportFilesPage();
+  }),
+);
+reportFilesList.addEventListener("click", (event) => {
+  const pager = event.target.closest?.("[data-report-page]");
+  if (pager) {
+    const totalPages = Math.max(1, Math.ceil(filteredReportFiles().length / REPORT_PAGE_SIZE));
+    reportFilesPage =
+      pager.dataset.reportPage === "next"
+        ? Math.min(reportFilesPage + 1, totalPages - 1)
+        : Math.max(reportFilesPage - 1, 0);
+    renderReportFilesPage();
+    return;
+  }
+  const del = event.target.closest?.("[data-report-del]");
+  if (del) {
+    const id = del.dataset.reportDel;
+    if (!confirm(`确认删除报告「${id}」？此操作不可撤销。`)) return;
+    api(`/api/reports/files/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(() => loadReportFiles())
+      .catch((error) => alert(`删除失败：${error.message}`));
+    return;
+  }
+  const btn = event.target.closest?.("[data-report-id]");
+  if (btn) openReportOverlay(btn.dataset.reportId, { title: btn.dataset.reportId });
+});
+
+function reportKindLabel(id) {
+  if (/[-_]ai-analysis$/i.test(id)) return "AI 分析";
+  const parsed = parseReportId(id);
+  const token = parsed.isNew ? parsed.type : String(id).split("-")[0];
+  return REPORT_TYPE_LABELS[token] || "报告";
+}
+function formatBytes(bytes) {
+  return bytes >= 1024 ? `${Math.round(bytes / 1024)} KB` : `${bytes} B`;
+}
+function formatReportDate(yyyymmdd) {
+  return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
+}
+// 报告归并映射：{曾用名→当前名}（渠道名、模型名各一份），据当前渠道/模型的 aliases 生成。
+// 让改名前落盘的历史报告（文件名是旧名）在筛选/下拉里归并到当前对象。
+function reportAliasMaps() {
+  const channel = {};
+  for (const c of state.channels || []) {
+    for (const a of Array.isArray(c.aliases) ? c.aliases : []) if (a && c.name) channel[a] = c.name;
+  }
+  const model = {};
+  for (const t of state.modelTargets || []) {
+    for (const a of Array.isArray(t.aliases) ? t.aliases : []) if (a && t.model) model[a] = t.model;
+  }
+  return { channel, model };
+}
+// 任一筛选生效 → 只留 isNew 且四项都匹配；无任何筛选 → 全部（新+老）。老报告不参与筛选。
+function filteredReportFiles() {
+  const filter = {
+    channel: rfFilterChannel.value,
+    model: rfFilterModel.value,
+    type: rfFilterType.value,
+    from: rfFilterDateFrom.value.replace(/-/g, ""), // YYYY-MM-DD → YYYYMMDD
+    to: rfFilterDateTo.value.replace(/-/g, ""),
+  };
+  const aliasMaps = reportAliasMaps();
+  return reportFiles.filter((f) => matchesReportFilter(f.parsed, filter, aliasMaps));
+}
+// 据新格式报告去重值填充四个下拉（保留当前选中值）。
+// 渠道/模型互相联动：渠道选项据「当前所选模型」收窄、模型选项据「当前所选渠道」收窄（见 reportChannelModelOptions）。
+function populateReportFilters() {
+  // 用「当前选中值」做交叉约束，故须在重填（改动 select 内容）之前先读取。
+  const { channels, models } = reportChannelModelOptions(
+    reportFiles.map((f) => f.parsed),
+    { channel: rfFilterChannel.value, model: rfFilterModel.value },
+    reportAliasMaps(),
+  );
+  const types = new Set();
+  const dates = new Set();
+  for (const f of reportFiles) {
+    const p = f.parsed;
+    if (!p.isNew) continue;
+    if (p.type) types.add(p.type);
+    if (p.date) dates.add(p.date);
+  }
+  const fill = (sel, allLabel, items, label = (x) => x) => {
+    const cur = sel.value;
+    sel.innerHTML =
+      `<option value="">${allLabel}</option>` +
+      items.map((x) => `<option value="${escapeHtml(x)}"${x === cur ? " selected" : ""}>${escapeHtml(label(x))}</option>`).join("");
+  };
+  fill(rfFilterChannel, "全部渠道", channels);
+  fill(rfFilterModel, "全部模型", models);
+  fill(rfFilterType, "全部种类", [...types].sort(), (t) => REPORT_TYPE_LABELS[t] || t);
+  // 日期范围用原生日期控件：按报告实际日期范围设 min/max（不填充下拉项）。
+  const ds = [...dates].sort();
+  reportDateMin = ds.length ? formatReportDate(ds[0]) : "";
+  reportDateMax = ds.length ? formatReportDate(ds[ds.length - 1]) : "";
+  syncDateBounds();
+}
+function renderReportFilesPage() {
+  const list = filteredReportFiles();
+  if (!list.length) {
+    reportFilesList.innerHTML = reportFiles.length
+      ? `<p class="muted">没有符合筛选条件的报告。</p>`
+      : `<p class="muted">暂无报告（「评测数据/报告」为空）。</p>`;
+    return;
+  }
+  const totalPages = Math.max(1, Math.ceil(list.length / REPORT_PAGE_SIZE));
+  reportFilesPage = Math.min(Math.max(reportFilesPage, 0), totalPages - 1);
+  const start = reportFilesPage * REPORT_PAGE_SIZE;
+  const rows = list
+    .slice(start, start + REPORT_PAGE_SIZE)
+    .map(
+      (f) => `
+        <div class="row report-file-row">
+          <div><strong>${escapeHtml(reportKindLabel(f.id))}</strong><br /><small>${escapeHtml(f.id)}</small></div>
+          <small>${escapeHtml(new Date(f.mtimeMs).toLocaleString("zh-CN"))}</small>
+          <small>${formatBytes(f.sizeBytes)}</small>
+          <div class="report-file-actions">
+            <button class="secondary" type="button" data-report-id="${escapeHtml(f.id)}">查看</button>
+            ${currentUserCanConfig ? `<button class="danger" type="button" data-report-del="${escapeHtml(f.id)}">删除</button>` : ""}
+          </div>
+        </div>`,
+    )
+    .join("");
+  const pager = `
+    <div class="report-files-pager">
+      <button class="secondary" type="button" data-report-page="prev"${reportFilesPage === 0 ? " disabled" : ""}>上一页</button>
+      <span class="muted">第 ${reportFilesPage + 1} / ${totalPages} 页 · 共 ${list.length} 个</span>
+      <button class="secondary" type="button" data-report-page="next"${reportFilesPage >= totalPages - 1 ? " disabled" : ""}>下一页</button>
+    </div>`;
+  reportFilesList.innerHTML = rows + pager;
+}
+async function loadReportFiles() {
+  reportFilesList.innerHTML = `<p class="muted">加载中…</p>`;
+  try {
+    const files = await api("/api/reports/files");
+    reportFiles = files.map((f) => ({ ...f, parsed: parseReportId(f.id) }));
+    reportFilesPage = 0;
+    populateReportFilters();
+    renderReportFilesPage();
+  } catch (error) {
+    reportFilesList.innerHTML = `<p class="muted">加载报告列表失败：${escapeHtml(error.message)}</p>`;
+  }
+}
 requireElement("#cancel-stability-task").addEventListener("click", () => cancelRemoteTask(state, "stability"));
+requireElement("#cancel-load-test-task").addEventListener("click", () => cancelRemoteTask(state, "loadTest"));
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
 requireElement("#cancel-standard-task").addEventListener("click", () => cancelRemoteTask(state, "standard"));
 stabilityTemplate.addEventListener("change", applyStabilityTemplate);
 batchTemplate.addEventListener("change", applyBatchTemplate);
-quickPromptPreset.addEventListener("change", applyQuickPromptPreset);
 standardPromptPreset.addEventListener("change", applyStandardPromptPreset);
 stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
-scenarioTemplate.addEventListener("change", applyScenarioTemplate);
-profileTemplate.addEventListener("change", applyProfileTemplate);
 clientLogForm.addEventListener("submit", analyzeClientLogs);
 clientEvidenceSubmit.addEventListener("click", generateSupplierEvidence);
 clientLogFile.addEventListener("change", importClientLogFile);
@@ -334,8 +592,8 @@ clientLogDirectoryImport.addEventListener("click", importClientLogDirectory);
 clientReplayExtract.addEventListener("click", extractReplayRequestFromLogs);
 clientReplayForm.addEventListener("submit", replayClientRequest);
 clientReplayBatch.addEventListener("click", replayClientRequestsFromLogs);
-// input 事件每敲一个字符就触发，updateEstimates/renderProfileConfigCheck 会重建
-// 面板 innerHTML（闪烁、低端机输入延迟）。去抖 200ms，只在停止输入后渲染一次。
+// input 事件每敲一个字符就触发，updateEstimates 会重建面板 innerHTML（闪烁、低端机
+// 输入延迟）。去抖 200ms，只在停止输入后渲染一次。
 function debounce(fn, ms = 200) {
   let timer = null;
   return (...args) => {
@@ -344,13 +602,11 @@ function debounce(fn, ms = 200) {
   };
 }
 const updateEstimatesDebounced = debounce(updateEstimates, 200);
-const renderProfileConfigCheckDebounced = debounce(renderProfileConfigCheck, 200);
 stabilityTestForm.addEventListener("input", updateEstimatesDebounced);
 batchTestForm.addEventListener("input", updateEstimatesDebounced);
 scenarioTestForm.addEventListener("input", updateEstimatesDebounced);
 admissionTestForm.addEventListener("input", updateEstimatesDebounced);
 admissionBatchForm.addEventListener("input", updateEstimatesDebounced);
-profileForm.addEventListener("input", renderProfileConfigCheckDebounced);
 admissionProfileSelect.addEventListener("change", updateEstimates);
 admissionBatchProfileSelect.addEventListener("change", updateEstimates);
 stabilityProfileSelect.addEventListener("change", updateEstimates);
@@ -359,7 +615,6 @@ scenarioProfileSelect.addEventListener("change", updateEstimates);
 scenarioCaseSelect.addEventListener("change", updateEstimates);
 hydrateProjectInfoForm();
 hydratePromptPresetSelects();
-renderProfileConfigCheck();
 
 projectInfoForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -367,27 +622,6 @@ projectInfoForm.addEventListener("submit", (event) => {
   saveProjectInfo(state.projectInfo);
   renderDeliveryViews();
   toast("本次测试信息已保存。");
-});
-
-profileForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  await profileController.saveAndTestProfile();
-});
-
-async function saveProfileOnly() {
-  try {
-    await profileController.saveProfileFromForm({ resetAfterSave: true });
-    toast("API 配置已保存。");
-  } catch (error) {
-    toast(error.message, true);
-  }
-}
-
-createQuickTestController({
-  form: quickTestForm,
-  resultElement: quickTestResult,
-  quickFailurePanel,
-  afterRequest: loadRequests,
 });
 
 function formatQuickVerify(result) {
@@ -422,35 +656,6 @@ function formatQuickVerify(result) {
   return lines.join("\n");
 }
 
-function renderTrendChart(series) {
-  const pts = (series || []).filter((p) => p.successRate !== null);
-  if (pts.length < 1) return "暂无历史数据。";
-  const W = 640;
-  const H = 200;
-  const pad = { l: 42, r: 16, t: 16, b: 24 };
-  const innerW = W - pad.l - pad.r;
-  const innerH = H - pad.t - pad.b;
-  const n = pts.length;
-  const px = (i) => pad.l + (n === 1 ? innerW / 2 : (innerW * i) / (n - 1));
-  const py = (sr) => pad.t + innerH * (1 - sr);
-  const grid = [0, 0.5, 1]
-    .map(
-      (v) =>
-        `<line x1="${pad.l}" y1="${py(v).toFixed(1)}" x2="${W - pad.r}" y2="${py(v).toFixed(1)}" stroke="#25334a"/>` +
-        `<text x="${pad.l - 6}" y="${(py(v) + 4).toFixed(1)}" fill="#91a0b7" font-size="11" text-anchor="end">${v * 100}%</text>`,
-    )
-    .join("");
-  const line = `<polyline points="${pts.map((p, i) => `${px(i).toFixed(1)},${py(p.successRate).toFixed(1)}`).join(" ")}" fill="none" stroke="#f6b56b" stroke-width="2"/>`;
-  const dots = pts
-    .map((p, i) => {
-      const color = p.successRate >= 0.95 ? "#7bd88f" : p.successRate >= 0.8 ? "#f6b56b" : "#ff8a8a";
-      const tip = `${String(p.at || "").replace("T", " ").slice(0, 19)} · ${Math.round(p.successRate * 100)}% · P95 ${p.p95Ms ?? "-"}ms${p.grade ? " · " + p.grade : ""}`;
-      return `<circle cx="${px(i).toFixed(1)}" cy="${py(p.successRate).toFixed(1)}" r="3.5" fill="${color}"><title>${escapeHtml(tip)}</title></circle>`;
-    })
-    .join("");
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="成功率趋势">${grid}${line}${dots}</svg>`;
-}
-
 async function updateTrendView(profileId) {
   if (!profileId) return;
   trendChart.innerHTML = "加载中...";
@@ -460,7 +665,8 @@ async function updateTrendView(profileId) {
   try {
     const data = await api(`/api/trend?profileId=${encodeURIComponent(profileId)}`);
     const series = data.series || [];
-    trendChart.innerHTML = renderTrendChart(series);
+    trendLastRounds = data.rounds || [];
+    redrawTrendChart();
     const reg = data.regression;
     if (reg && reg.status === "regressed") {
       trendRegression.classList.remove("hidden");
@@ -488,8 +694,26 @@ async function updateTrendView(profileId) {
   }
 }
 
+// 用当前 x 轴 / 时间范围重绘（复用最近一次逐轮数据，不重复请求）。时间范围只在按时间模式生效。
+function redrawTrendChart() {
+  trendChart.innerHTML = renderTrendChart(trendLastRounds, trendXMode, {
+    windowHours: trendXMode === "hour" ? trendWindowHours : 0,
+  });
+}
+
 trendProfileSelect.addEventListener("change", () => updateTrendView(trendProfileSelect.value));
 document.querySelector('.nav-button[data-page="trend"]')?.addEventListener("click", () => updateTrendView(trendProfileSelect.value));
+// 切换 x 轴（按轮次 / 按小时）：时间范围选择器仅在「按时间」时显示；切换即重绘。
+trendXModeSelect.addEventListener("change", () => {
+  trendXMode = trendXModeSelect.value === "hour" ? "hour" : "count";
+  trendWindowField.classList.toggle("hidden", trendXMode !== "hour");
+  redrawTrendChart();
+});
+// 切换时间范围（3/6/12/24/48/168 小时或全部）：仅重绘。
+trendWindowSelect.addEventListener("change", () => {
+  trendWindowHours = Number(trendWindowSelect.value) || 0;
+  redrawTrendChart();
+});
 
 quickVerifySubmit.addEventListener("click", async () => {
   const profileId = quickVerifyProfileSelect.value;
@@ -499,6 +723,7 @@ quickVerifySubmit.addEventListener("click", async () => {
   }
   quickVerifySubmit.disabled = true;
   quickVerifyResult.textContent = "快检中，请稍候...";
+  quickFailurePanel.clear();
   try {
     const result = await api("/api/tests/quick-verify", {
       method: "POST",
@@ -508,6 +733,7 @@ quickVerifySubmit.addEventListener("click", async () => {
     await loadRequests();
   } catch (error) {
     quickVerifyResult.textContent = `快检失败：${error.message}`;
+    quickFailurePanel.render(error, profileId);
   } finally {
     quickVerifySubmit.disabled = false;
   }
@@ -526,12 +752,10 @@ createStandardEvalController({
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),
   refreshResults: () => loadResultsBundle(),
   showPage,
-  quickProfileSelect: quickProfileTarget,
+  quickProfileSelect: quickVerifyProfileTarget,
   stabilityProfileSelect: stabilityProfileTarget,
   stabilityTemplate,
   applyStabilityTemplate,
-  scenarioTemplate,
-  applyScenarioTemplate,
   scenarioProfileSelect,
   updateEstimates,
 });
@@ -612,19 +836,172 @@ createTaskFormController({
   preparePayload: (payload) => payload,
   beforeStart: (payload) => {
     stabilitySummary.innerHTML = `<p class="muted">正在进行 ${payload.rounds} 轮测试。请不要关闭窗口。</p>`;
-    stabilityReport.textContent = "测试完成后会自动生成报告。";
     state.latestReportCopies.stability = "";
   },
   onSuccess: async (result) => {
     const copyableSummary = getCopyableReportText(result, formatStabilityResult(result));
     state.latestReportCopies.stability = copyableSummary;
     renderStabilitySummary(result);
-    stabilityReport.textContent = copyableSummary;
     await loadResultsBundle();
     toast("稳定性测试完成。");
   },
   failurePrefix: "稳定性测试失败",
   idleButtonText: "开始稳定性测试",
+});
+
+// —— 压力测试：闭环/开环 + 负载扫描，走 task-manager 后台 + 进度轮询 + 可取消（仅超管，入口 data-requires-admin）——
+const LOAD_PROFILE_LABEL = { simple: "简单", think: "轻思考", coding: "编程" };
+const loadTestModeSelect = requireElement("#load-test-mode");
+const loadTestLoadsInput = requireElement("#load-test-loads");
+const loadTestLoadLabel = requireElement("#load-test-load-label");
+const loadTestMaxInFlightField = requireElement("#load-test-maxinflight-field");
+const loadTestBurstField = requireElement("#load-test-burst-field");
+const loadTestIntervalField = requireElement("#load-test-interval-field");
+const lms = (v) => (Number.isFinite(v) ? `${(v / 1000).toFixed(2)}s` : "—");
+
+// 负载值文本 → 数字数组（逗号分隔，去空去非法）。多个即为扫描。
+function parseLoads(raw) {
+  return String(raw || "")
+    .split(/[,，\s]+/)
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+// 模式变化：切换负载值标签（并发/速率）、显隐开环在飞上限与闭环测试间隔。
+function syncLoadTestMode() {
+  const open = loadTestModeSelect.value === "open";
+  loadTestLoadLabel.textContent = open ? "负载值（速率 req/s）" : "负载值（并发数，可逗号扫描）";
+  loadTestMaxInFlightField.classList.toggle("hidden", !open); // 在飞上限仅开环
+  loadTestBurstField.classList.toggle("hidden", !open); // 发送周期（突发）仅开环
+  loadTestIntervalField.classList.toggle("hidden", open); // 测试间隔（思考时间）仅闭环
+}
+loadTestModeSelect.addEventListener("change", syncLoadTestMode);
+syncLoadTestMode();
+
+const loadTestErrText = (e) =>
+  `429×${e.http_429 || 0}　5xx×${e.http_5xx || 0}　超时×${e.timeout || 0}　网络×${e.network_error || 0}　发生器受限×${e.gen_saturated || 0}`;
+// 单点结果卡片。
+function renderLoadTestSingle(result) {
+  const L = result.latency || {};
+  const e = result.errors || {};
+  const okRate = result.successRate || 0;
+  const rateCls = okRate >= 0.99 ? "" : "fail";
+  const errBad = (e.http_429 || 0) + (e.http_5xx || 0) + (e.timeout || 0) + (e.gen_saturated || 0) > 0 ? "fail" : "";
+  const modeLabel = result.mode === "open" ? `开环 · 速率 ${result.offered} req/s` : `闭环 · 并发 ${result.offered}`;
+  const sent = result.sentRequests || 0;
+  const notReturned = (e.timeout || 0) + (e.http_5xx || 0) + (e.network_error || 0) + (e.other || 0);
+  const biasNote = notReturned > 0 ? `<small class="fail">⚠️ 另有 ${notReturned} 条（${Math.round(sent ? (notReturned / sent) * 100 : 0)}%）超时/失败未返回、未计入延迟，真实尾延迟更差</small>` : "";
+  loadTestSummary.innerHTML = `
+    <article class="summary-card">
+      <span>吞吐 QPS</span>
+      <strong>${escapeHtml(String(result.qps ?? "—"))} req/s</strong>
+      <small>稳态完成 ${result.sentRequests ?? "—"}（预热 ${result.warmupRequests ?? 0} 不计）</small>
+      ${result.outputTokens > 0 ? `<small>输出吞吐 ${escapeHtml(String(result.tokensPerSecond ?? "—"))} tok/s（单请求均速 ${escapeHtml(String(result.perReqTokensPerSec ?? "—"))} tok/s）</small>` : ""}
+    </article>
+    <article class="summary-card">
+      <span>成功率</span>
+      <strong class="${rateCls}">${Math.round(okRate * 100)}%</strong>
+      <small>成功 ${result.successCount ?? "—"} / ${result.sentRequests ?? "—"}</small>
+    </article>
+    <article class="summary-card">
+      <span>延迟分位（成功）</span>
+      <strong>p95 ${lms(L.p95)}</strong>
+      <small>p50 ${lms(L.p50)}　p90 ${lms(L.p90)}　p99 ${lms(L.p99)}　max ${lms(L.max)}</small>
+      ${biasNote}
+    </article>
+    <article class="summary-card wide-summary">
+      <span>错误构成</span>
+      <strong class="${errBad}">${escapeHtml(loadTestErrText(e))}</strong>
+      <small>${escapeHtml(modeLabel)} · 负载档 ${escapeHtml(result.promptProfile || "-")} · 稳态 ${result.durationSec}s · ramp-up ${result.warmupSec}s</small>
+      <small>HTML 报告：${escapeHtml(result.reportHtmlPath || "-")}</small>
+    </article>
+  `;
+}
+// 扫描结果：曲线表格 + 拐点(D)。
+function renderLoadTestSweep(result) {
+  const unit = result.mode === "open" ? "速率(req/s)" : "并发";
+  const rows = (result.sweep || [])
+    .map((p, i) => {
+      const hit = i === result.knee?.index ? ' class="fail"' : "";
+      return `<tr${hit}><td>${p.offered}</td><td>${p.qps}</td><td>${Math.round((p.successRate || 0) * 100)}%</td><td>${lms(p.latency.p95)}</td><td>${lms(p.latency.p99)}</td><td>${p.errors.http_429}</td><td>${(p.errors.timeout || 0) + (p.errors.http_5xx || 0)}</td><td>${p.genSaturated || 0}</td></tr>`;
+    })
+    .join("");
+  const knee = result.knee || {};
+  const kneePoint = (result.sweep || [])[knee.index] || {};
+  loadTestSummary.innerHTML = `
+    <article class="summary-card wide-summary">
+      <span>饱和拐点（推荐可用容量）</span>
+      <strong>${unit} = ${kneePoint.offered ?? "—"}</strong>
+      <small>${escapeHtml(knee.reason || "")}</small>
+      <small>该点：QPS ${kneePoint.qps ?? "—"}　成功率 ${Math.round((kneePoint.successRate || 0) * 100)}%　p99 ${lms(kneePoint.latency?.p99)}</small>
+      <small>HTML 报告：${escapeHtml(result.reportHtmlPath || "-")}</small>
+    </article>
+    <article class="summary-card wide-summary" style="overflow-x:auto;">
+      <span>负载 → 吞吐 / 尾延迟曲线</span>
+      <table class="mini-table">
+        <thead><tr><th>${unit}</th><th>QPS</th><th>成功率</th><th>p95</th><th>p99</th><th>429</th><th>超时+5xx</th><th>发生器受限</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </article>
+  `;
+}
+// 表单参数变化时更新预估框（选完参数即知这一轮大概发多少请求）。
+function updateLoadTestEstimate() {
+  const raw = Object.fromEntries(new FormData(loadTestForm).entries());
+  const loads = parseLoads(raw.loads);
+  const est = estimateLoadTestCost({ ...raw, loads });
+  const sweepNote = loads.length > 1 ? `扫描 ${loads.length} 个负载点，` : "";
+  loadTestEstimate.textContent = `${sweepNote}预计约发出 ${est.requests} 个真实请求（${LOAD_PROFILE_LABEL[raw.promptProfile] || "简单"}档）。全部真实计费，请谨慎。`;
+}
+loadTestForm.addEventListener("change", updateLoadTestEstimate);
+loadTestForm.addEventListener("input", updateLoadTestEstimate);
+updateLoadTestEstimate();
+
+createTaskFormController({
+  form: loadTestForm,
+  submitButton: loadTestSubmit,
+  resultElement: loadTestSummary,
+  progressElement: loadTestProgress,
+  state,
+  slot: "loadTest",
+  taskType: "load-test",
+  confirmRun: (payload) => confirmAction(confirmExecution("压力测试", estimateLoadTestCost(payload))),
+  predict: (payload) => estimateLoadTestCost(payload),
+  preparePayload: (raw) => {
+    if (!raw.profileId) {
+      toast("请先选择被测渠道与模型。", true);
+      return null;
+    }
+    const loads = parseLoads(raw.loads);
+    if (!loads.length) {
+      toast("请填写负载值（并发数或速率），扫描用逗号分隔多个。", true);
+      return null;
+    }
+    return {
+      target: { profileId: raw.profileId },
+      mode: raw.mode === "open" ? "open" : "closed",
+      loads,
+      promptProfile: raw.promptProfile || "simple",
+      durationSec: Number(raw.durationSec) || 60,
+      warmupSec: Number(raw.warmupSec) || 0,
+      timeoutSec: Number(raw.timeoutSec) || 30,
+      maxInFlight: Number(raw.maxInFlight) || 300,
+      intervalSec: raw.mode === "open" ? 0 : Number(raw.intervalSec) || 0, // 思考时间仅闭环
+      burstPeriodSec: raw.mode === "open" ? Number(raw.burstPeriodSec) || 1 : 1, // 发送周期仅开环
+      stream: raw.streamRequest === "1", // 流式 SSE；开启后报告额外给出 TTFT
+    };
+  },
+  beforeStart: (payload) => {
+    const what = payload.loads.length > 1 ? `扫描 ${payload.loads.length} 个负载点` : `${payload.mode === "open" ? "速率" : "并发"} ${payload.loads[0]}`;
+    loadTestSummary.innerHTML = `<p class="muted">正在压测：${what}，每点稳态 ${payload.durationSec}s。测试期间请不要关闭窗口。</p>`;
+  },
+  onSuccess: async (result) => {
+    if (result.sweep) renderLoadTestSweep(result);
+    else renderLoadTestSingle(result);
+    await loadResultsBundle();
+    toast("压力测试完成。");
+  },
+  failurePrefix: "压力测试失败",
+  idleButtonText: "开始压力测试",
 });
 
 createTaskFormController({
@@ -657,7 +1034,7 @@ createTaskFormController({
 createTaskFormController({
   form: scenarioTestForm,
   submitButton: scenarioSubmit,
-  resultElement: scenarioTestResult,
+  resultElement: scenarioSummary,
   progressElement: scenarioProgress,
   state,
   slot: "scenario",
@@ -671,13 +1048,13 @@ createTaskFormController({
     return scenarioIds ? { ...payload, profileIds, scenarioIds } : null;
   },
   beforeStart: (payload) => {
-    scenarioTestResult.textContent = `正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。`;
+    scenarioSummary.innerHTML = `<p class="muted">正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。</p>`;
     state.latestReportCopies.scenario = "";
   },
   onSuccess: async (result) => {
     const copyableSummary = getCopyableReportText(result, formatScenarioResult(result));
     state.latestReportCopies.scenario = copyableSummary;
-    scenarioTestResult.textContent = copyableSummary;
+    renderScenarioSummary(result);
     await loadResultsBundle();
     toast("场景测试完成。");
   },
@@ -929,12 +1306,13 @@ async function replayClientRequestsFromLogs() {
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
+currentUserCanConfig = Boolean(authUser?.canConfig); // 报告删除按钮的可见性依据（服务端另有强制鉴权）
 applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
 try {
-  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
-  renderPageHelp("dashboard");
+  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), preloadSettings(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
+  await loadHighRiskAlerts(); // 启动时按开关拉一次高危报告横幅（此时 state.settings 已就绪）
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
   // 给非技术用户一个可读的兜底，而不是空白。
@@ -958,24 +1336,42 @@ function renderStartupError(error) {
 }
 
 function showPage(page) {
+  // 离开设置页且有未保存改动 → 提示。loadSettings 会在重新进入时重置 dirty（丢弃未保存改动）。
+  if (currentPage === "settings" && page !== "settings" && settingsDirty) {
+    toast("设置未保存。", true);
+    settingsDirty = false;
+  }
+  currentPage = page;
   navButtons.forEach((item) => item.classList.toggle("active", item.dataset.page === page));
   pages.forEach((item) => item.classList.toggle("active", item.id === page));
-  renderPageHelp(page);
+  // 切换页面后新页面从顶部开始，不保留上一页的滚动进度。
+  document.querySelector(".main")?.scrollTo(0, 0);
   if (page === "manual" && !state.manualLoaded) {
     loadManual();
+  }
+  if (page === "settings") {
+    loadSettings();
+  }
+  // 「测试场景维护」页（原开发者页）：与全站统一风格，保留侧边栏，进入时加载数据。
+  if (page === "developer") {
+    developer.load();
+  }
+  if (page === "auto-test-config") {
+    autoTestConfig.load();
+  }
+  if (page === "model-compare") {
+    modelCompare.load();
   }
 }
 
 async function loadProfiles() {
   if (state.demoMode) {
-    renderProfiles();
     renderProfileOptions();
     renderDashboard();
     updateEstimates();
     return;
   }
   state.profiles = await api("/api/profiles");
-  renderProfiles();
   renderProfileOptions();
   renderDashboard();
   updateEstimates();
@@ -984,43 +1380,243 @@ async function loadProfiles() {
 async function loadScenarios() {
   state.scenarios = await api("/api/scenarios");
   renderScenarioOptions();
-  applyScenarioTemplate();
+  channelAdmin.renderTagOptions(); // 场景库就绪后渲染「配置模型」的标签勾选项。
   updateEstimates();
 }
 
 async function loadHealth() {
   state.health = await api("/api/health");
-  renderEditionBanner();
-}
-
-function renderEditionBanner() {
-  const safetyEnabled = Boolean(state.health?.safetyScenariosEnabled);
-  editionBanner.classList.toggle("hidden", !safetyEnabled);
-  editionBanner.innerHTML = safetyEnabled
-    ? `<strong>安全场景模式</strong>已启用内容安全合规测试。建议仅由负责人或受训测试人员使用。`
-    : "";
 }
 
 function loadManual() {
-  const guide = [
-    "## 使用说明",
-    "",
-    "本平台用于评测接入的上游渠道模型。配置分两层、两种角色：",
-    "",
-    "1. **渠道管理（超管）**：配连接信息 Base URL + Key + 协议。Key 加密保存、不回显、管理员看不到。",
-    "   站点是 new-api 搭的，可「从 new-api 导入」一键同步渠道（启用/禁用状态一并带过来）。",
-    "2. **模型管理（管理员）**：选一个渠道 + 填一个模型名 = 一个测试目标。看不到 Key。运行测试时从这些目标里选。",
-    "3. **一键快检**（快速测试页）：少量探针快速看渠道真伪、token 是否虚报、本次真实消耗。",
-    "4. **准入评测**：给目标打 A–F 分级，判断是否值得进一步测试。",
-    "5. **标准评测 / 稳定性测试**：多轮 + 统计置信区间评估可用性；多渠道可批量横向对比。",
-    "6. **稳定性趋势**：同一目标历次测试的成功率曲线 + 掉级回归告警。",
-    "7. **报告中心 / 测试交付**：查看与导出报告。",
-    "",
-    "每个页面右上角都有「怎么用」帮助；更完整的部署与配置说明见项目 README。",
-  ].join("\n");
-  manualContent.innerHTML = renderMarkdown(guide);
+  manualContent.innerHTML = renderMarkdown(MANUAL_MARKDOWN);
+  buildManualToc();
   state.manualLoaded = true;
 }
+
+// 渲染后构建右侧「本页目录」并接上滚动高亮（scrollspy）。
+// 不改共享的 renderMarkdown，全部在 manual 页 DOM 上后处理。
+// 右侧目录「大标题」的矢量图标：按标题关键词匹配，stroke 用 currentColor
+// 以跟随目录文字颜色（平时暖白、高亮时变橙）。未匹配到的大标题用兜底井号图标。
+function tocIconFor(title) {
+  const svg = (paths) =>
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+  if (title.includes("快速上手")) {
+    return svg(
+      '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
+    );
+  }
+  if (title.includes("核心概念")) {
+    return svg(
+      '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
+    );
+  }
+  if (title.includes("逐页要点")) {
+    return svg(
+      '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+    );
+  }
+  return svg('<path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/>');
+}
+
+function buildManualToc() {
+  const toc = document.getElementById("manual-toc");
+  if (!toc) return;
+  const scroller = manualContent.closest(".main");
+  const TOC_SCROLL_OFFSET = 24; // 标题落点距容器顶端的留白
+  // 点击跳转期间锁住 scrollspy，避免平滑滚动过程中中途标题抢走高亮。
+  let spyLocked = false;
+  let spyTimer = 0;
+  // 目录自身是可滚动容器（overflow-y:auto）；高亮项将移出目录视口时把它带回来。
+  const tocScroller = toc.closest(".doc-toc");
+  function keepActiveVisible(link) {
+    if (!tocScroller || !link) return;
+    const pad = 8;
+    const cr = tocScroller.getBoundingClientRect();
+    const lr = link.getBoundingClientRect();
+    if (lr.top < cr.top + pad) {
+      tocScroller.scrollTop += lr.top - cr.top - pad;
+    } else if (lr.bottom > cr.bottom - pad) {
+      tocScroller.scrollTop += lr.bottom - cr.bottom + pad;
+    }
+  }
+  const headings = [...manualContent.querySelectorAll("h2, h3")];
+  let h2 = 0;
+  let h3 = 0;
+  const links = headings.map((el) => {
+    const level = el.tagName === "H2" ? 2 : 3;
+    if (level === 2) {
+      h2 += 1;
+      h3 = 0;
+      el.id = `sec-${h2}`;
+    } else {
+      h3 += 1;
+      el.id = `sec-${h2}-${h3}`;
+    }
+    const a = document.createElement("a");
+    a.href = `#${el.id}`;
+    a.className = "toc-link";
+    a.dataset.level = String(level);
+    a.dataset.target = el.id;
+    if (level === 2) {
+      const ico = document.createElement("span");
+      ico.className = "toc-ico";
+      ico.setAttribute("aria-hidden", "true");
+      ico.innerHTML = tocIconFor(el.textContent);
+      a.append(ico, document.createTextNode(el.textContent));
+    } else {
+      a.textContent = el.textContent;
+    }
+    a.addEventListener("click", (event) => {
+      event.preventDefault();
+      // 直接对真正的滚动容器 .main 做确定性偏移滚动，不依赖 scrollIntoView
+      // 的祖先启发式（#app 设了 overflow:hidden 会干扰其落点计算）。
+      if (scroller) {
+        const top =
+          scroller.scrollTop +
+          el.getBoundingClientRect().top -
+          scroller.getBoundingClientRect().top -
+          TOC_SCROLL_OFFSET;
+        scroller.scrollTo({ top, behavior: "smooth" });
+      } else {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      // 立即把高亮切到被点项，并锁住 scrollspy 直到平滑滚动结束，
+      // 否则中部/下方标题会在滚动过程中把高亮抢到目标下面几项。
+      for (const other of links) other.classList.toggle("is-active", other === a);
+      keepActiveVisible(a);
+      spyLocked = true;
+      clearTimeout(spyTimer);
+      spyTimer = setTimeout(() => {
+        spyLocked = false;
+      }, 700);
+      history.replaceState(null, "", `#${el.id}`);
+    });
+    return a;
+  });
+  toc.replaceChildren(...links);
+
+  // scrollspy：判定带贴视口顶部（顶部 0~20% 区间），让"当前章节"= 刚滚到
+  // 顶部的那个标题，点击跳转与手动滚动都一致。多个标题同时命中时取最靠上的。
+  const byId = new Map(links.map((a) => [a.dataset.target, a]));
+  const observer = new IntersectionObserver(
+    (entries) => {
+      if (spyLocked) return;
+      const hit = entries
+        .filter((e) => e.isIntersecting)
+        .sort((x, y) => x.boundingClientRect.top - y.boundingClientRect.top)[0];
+      if (!hit) return;
+      const active = byId.get(hit.target.id);
+      if (!active) return;
+      for (const a of links) a.classList.toggle("is-active", a === active);
+      keepActiveVisible(active);
+    },
+    { rootMargin: "0px 0px -80% 0px", threshold: 0 },
+  );
+  for (const el of headings) observer.observe(el);
+}
+
+// —— 设置页：AI 总结模型 / 场景题库开关（脱离环境变量，存本机）——
+const settingsForm = requireElement("#settings-form");
+const setAiSpecified = requireElement("#set-ai-specified");
+const setAiChannel = requireElement("#set-ai-channel");
+const setAiModel = requireElement("#set-ai-model");
+const setLivebench = requireElement("#set-livebench");
+const setSafety = requireElement("#set-safety");
+const setHle = requireElement("#set-hle");
+const setHardcoreLogic = requireElement("#set-hardcore-logic");
+const setCodingHard = requireElement("#set-coding-hard");
+const setAutoTag = requireElement("#set-auto-tag");
+const setNewapiBase = requireElement("#set-newapi-base");
+const setNewapiToken = requireElement("#set-newapi-token");
+const setNewapiUserid = requireElement("#set-newapi-userid");
+const setTestCycleDays = requireElement("#set-test-cycle-days");
+const setHighRiskAlert = requireElement("#set-high-risk-alert");
+// 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
+const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
+
+// 自定义能力标签已迁至「开发者界面」（src/developer.js），设置页不再承载。
+
+// 「指定模型」勾选门控两级下拉：未勾=都禁用（AI 用被测模型）；勾上=渠道可选，模型随级联。
+function applyAiSpecifiedGate() {
+  const on = setAiSpecified.checked;
+  setAiChannel.disabled = !on;
+  if (!on) setAiModel.disabled = true;
+  else if (setAiChannel.value) setAiModel.disabled = false;
+}
+setAiSpecified.addEventListener("change", applyAiSpecifiedGate);
+
+// 启动预载：只把设置塞进 state（供各处读设置开关），不碰下面才声明的 set-* 元素，避免 TDZ。
+// 函数声明会提升，可在上方启动 Promise.all 里调用。
+async function preloadSettings() {
+  try {
+    state.settings = await api("/api/settings");
+  } catch {
+    /* 启动期设置加载失败不阻断首屏；进设置页会再试 */
+  }
+}
+
+async function loadSettings() {
+  try {
+    const s = await api("/api/settings");
+    state.settings = s; // 缓存设置供各处读取开关
+    setLivebench.checked = Boolean(s.enableLivebench);
+    setSafety.checked = Boolean(s.enableSafety);
+    setHle.checked = Boolean(s.enableHle);
+    setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
+    setCodingHard.checked = Boolean(s.enableCodingHard);
+    setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
+    setTestCycleDays.value = Number(s.testCycleDays) > 0 ? String(Math.trunc(s.testCycleDays)) : ""; // 0/空 → 空框（占位符 0）
+    setHighRiskAlert.checked = s.enableHighRiskAlert === true;
+    // new-api 网关：网址/用户ID 回填；令牌不回显，按已配置状态切占位符、清空输入值。
+    setNewapiBase.value = s.newapiBaseUrl || "";
+    setNewapiUserid.value = s.newapiUserId || "";
+    setNewapiToken.value = "";
+    setNewapiToken.placeholder = s.newapiImportTokenSet ? "已配置（留空不改）" : "未配置";
+    settingsAiCascade.refresh({ channels: state.channels, modelTargets: state.modelTargets, profiles: state.profiles });
+    settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
+    setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
+    applyAiSpecifiedGate();
+    settingsDirty = false; // 刚载入官方值，不算「未保存改动」
+  } catch (error) {
+    toast(`加载设置失败：${error.message}`, true);
+  }
+}
+
+// 用户改动任一设置项（复选框/AI 模型选择等）→ 标记未保存。程序化赋值（loadSettings）不触发 change，故不会误标。
+settingsForm.addEventListener("change", () => {
+  settingsDirty = true;
+});
+
+settingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = {
+    aiAnalysisModelTargetId: setAiSpecified.checked ? settingsAiCascade.value || "" : "",
+    enableLivebench: setLivebench.checked,
+    enableSafety: setSafety.checked,
+    enableHle: setHle.checked,
+    enableHardcoreLogic: setHardcoreLogic.checked,
+    enableCodingHard: setCodingHard.checked,
+    enableAutoTag: setAutoTag.checked,
+    testCycleDays: Math.max(0, Math.trunc(Number(setTestCycleDays.value) || 0)),
+    enableHighRiskAlert: setHighRiskAlert.checked,
+    newapiBaseUrl: setNewapiBase.value.trim(),
+    newapiUserId: setNewapiUserid.value.trim(),
+    newapiImportToken: setNewapiToken.value, // 空串→后端保留原令牌
+  };
+  try {
+    const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+    state.settings = saved; // 即时生效：删除流随即按新开关走
+    settingsDirty = false; // 已保存，清除未保存标记
+    await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
+    await loadSettings(); // 刷新令牌「已配置」占位符状态
+    channelAdmin.renderTagOptions(); // 自定义标签变化 → 模型表单勾选项即时并入
+    await loadHighRiskAlerts(); // 高危报告提示开关变化 → 即时显示/收起横幅
+    toast("设置已保存。");
+  } catch (error) {
+    toast(`保存设置失败：${error.message}`, true);
+  }
+});
 
 async function loadRequests() {
   if (state.demoMode) {
@@ -1039,14 +1635,12 @@ async function loadTestRuns() {
   if (state.demoMode) {
     renderTestRuns();
     renderDashboard();
-    renderProfiles();
     renderDeliveryViews();
     return;
   }
   state.testRuns = await api("/api/test-runs/recent");
   renderTestRuns();
   renderDashboard();
-  renderProfiles();
   renderDeliveryViews();
 }
 
@@ -1082,14 +1676,80 @@ function renderResultsViews() {
   renderRequests();
   renderTestRuns();
   renderTaskEvents();
-  renderProfiles();
   renderDashboard();
   renderDeliveryViews();
+  void loadHighRiskAlerts(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
 }
 
-function renderPageHelp(page) {
-  renderPageHelpPanel(pageHelpContent, page);
+// —— 高危报告提示：网站顶部红底横幅，逐条列出未读高危报告，点开即消 ——
+// （元素引用 highRiskBanner 已在文件顶部声明，避免启动时的暂时性死区 TDZ，见那里的注释。）
+
+async function loadHighRiskAlerts() {
+  if (!state.settings?.enableHighRiskAlert) {
+    state.highRiskAlerts = [];
+    renderHighRiskBanner();
+    return;
+  }
+  try {
+    const r = await api("/api/high-risk-alerts");
+    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : [];
+  } catch {
+    /* 拉取失败不阻断；下次刷新再试 */
+  }
+  renderHighRiskBanner();
 }
+
+function renderHighRiskBanner() {
+  const alerts = state.settings?.enableHighRiskAlert ? state.highRiskAlerts || [] : [];
+  if (!alerts.length) {
+    highRiskBanner.classList.add("hidden");
+    highRiskBanner.innerHTML = "";
+    return;
+  }
+  const items = alerts
+    .map(
+      (a) =>
+        `<div class="high-risk-banner__item"><span>⚠ ${escapeHtml(a.label || "报告")}：${escapeHtml(a.reason || "高危")}</span><button type="button" data-hazard-open="${escapeHtml(a.reportId)}">查看</button></div>`,
+    )
+    .join("");
+  highRiskBanner.innerHTML =
+    `<div class="high-risk-banner__head"><span>高危报告提示（${alerts.length}）</span><button type="button" data-hazard-ack-all>全部忽略</button></div>` +
+    `<div class="high-risk-banner__list">${items}</div>`;
+  highRiskBanner.classList.remove("hidden");
+}
+
+async function ackHazard(reportId) {
+  try {
+    const r = await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ reportId }) });
+    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId);
+  } catch {
+    state.highRiskAlerts = (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId); // 本地兜底移除
+  }
+  renderHighRiskBanner();
+}
+
+highRiskBanner.addEventListener("click", async (event) => {
+  const openBtn = event.target.closest?.("[data-hazard-open]");
+  if (openBtn) {
+    const reportId = openBtn.dataset.hazardOpen;
+    openReportOverlay(reportId, { title: reportId }); // 点开即消
+    await ackHazard(reportId);
+    return;
+  }
+  if (event.target.closest?.("[data-hazard-ack-all]")) {
+    try {
+      await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ all: true }) });
+    } catch {
+      /* 忽略：本地也清空 */
+    }
+    state.highRiskAlerts = [];
+    renderHighRiskBanner();
+  }
+});
+
+// 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
+setInterval(() => void loadHighRiskAlerts(), 60_000);
+
 
 function enableDemoMode() {
   const demoData = buildDemoData();
@@ -1099,7 +1759,6 @@ function enableDemoMode() {
   state.testRuns = demoData.testRuns.map((item) => ({ ...item }));
   state.taskEvents = demoData.taskEvents.map((item) => ({ ...item }));
   demoModeBanner.classList.remove("hidden");
-  renderProfiles();
   renderProfileOptions();
   renderRequests();
   renderTestRuns();
@@ -1159,6 +1818,7 @@ function dashTypeLabel(type) {
     "batch-stability": "批量稳定性",
     scenario: "场景测试",
     stability: "稳定性测试",
+    "load-test": "压力测试",
   };
   return map[type] || "稳定性测试";
 }
@@ -1289,94 +1949,6 @@ function renderWorkflowGuide() {
   });
 }
 
-// 每个渠道的最近一次测试结论（profileId → {cls,label}），供配置页健康行用。
-// 与首页"渠道健康"卡同源（state.testRuns 按 profile 取最近 verdict）。
-function latestVerdictsByProfile() {
-  const map = {};
-  for (const run of state.testRuns || []) {
-    const id = run.profileId;
-    if (!id || map[id]) continue;
-    const v = dashVerdict(run);
-    if (v) map[id] = v;
-  }
-  return map;
-}
-
-function renderProfiles() {
-  renderMissingKeyGuide();
-  renderProfileList({
-    profiles: state.profiles,
-    list: profileList,
-    verdicts: latestVerdictsByProfile(),
-    onFocusForm: () => {
-      profileForm.scrollIntoView({ behavior: "smooth", block: "start" });
-      profileForm.elements.name.focus();
-    },
-    onDeleteProfile: async (profileId) => {
-      if (assertNotDemo("删除配置")) return;
-      const confirmed = await confirmAction({
-        title: "删除这个 API 配置？",
-        message: "删除后，这个配置不会再出现在测试列表里。",
-        detail: "如果只是 Key 失效，建议优先更新 Key，不一定要删除配置。",
-        confirmLabel: "确认删除",
-        cancelLabel: "保留配置",
-        tone: "danger",
-      });
-      if (!confirmed) {
-        return;
-      }
-      await api(`/api/profiles/${encodeURIComponent(profileId)}`, {
-        method: "DELETE",
-      });
-      await loadProfiles();
-    },
-    onUpdateKey: updateProfileKey,
-    onEditProfile: fillProfileFormForEdit,
-  });
-}
-
-// 把已有渠道载入表单做编辑（带 id → 保存时后端按 id 更新，不是新建）。
-// Key 留空表示保留原 Key（脱敏数据本就没有明文 Key）。
-function fillProfileFormForEdit(profileId) {
-  if (assertNotDemo("编辑配置")) return;
-  const profile = state.profiles.find((p) => p.id === profileId);
-  if (!profile) return;
-  const f = profileForm.elements;
-  const set = (name, val) => {
-    if (f[name] !== undefined && f[name] !== null) f[name].value = val ?? "";
-  };
-  set("id", profile.id);
-  set("name", profile.name);
-  set("provider", profile.provider);
-  set("baseUrl", profile.baseUrl);
-  set("defaultModel", profile.defaultModel);
-  set("protocol", profile.protocol);
-  set("role", profile.role);
-  set("channelCode", profile.channelCode);
-  set("maxTokens", profile.maxTokens);
-  set("timeoutMs", profile.timeoutMs);
-  set("inputPricePerMTokens", profile.inputPricePerMTokens);
-  set("outputPricePerMTokens", profile.outputPricePerMTokens);
-  set("inputSellPricePerMTokens", profile.inputSellPricePerMTokens);
-  set("outputSellPricePerMTokens", profile.outputSellPricePerMTokens);
-  set("notes", profile.notes);
-  if (f.apiKey) f.apiKey.value = ""; // 留空 = 不修改 Key
-  const advanced = profileForm.querySelector("details.advanced-settings");
-  if (advanced) advanced.open = true; // 展开高级设置，方便改角色/单价
-  renderProfileConfigCheck();
-  profileForm.scrollIntoView({ behavior: "smooth", block: "start" });
-  if (f.name) f.name.focus();
-  toast(`正在编辑「${profile.name}」。改完点“保存”。Key 留空表示不修改。`);
-}
-
-function renderMissingKeyGuide() {
-  renderMissingKeyPanel({
-    profiles: state.profiles,
-    container: missingKeyGuide,
-    onFillKey: updateProfileKey,
-  });
-}
-
 async function updateProfileKey(profileId) {
   if (assertNotDemo("保存 Key")) return;
   const apiKey = await keyPrompt.requestApiKey();
@@ -1396,9 +1968,9 @@ function renderProfileOptions() {
   // 单选运行页:级联(渠道 → 模型)
   admissionCascade.refresh(data);
   standardCascade.refresh(data);
-  quickCascade.refresh(data);
   quickVerifyCascade.refresh(data);
   stabilityCascade.refresh(data);
+  loadTestCascade.refresh(data);
   trendCascade.refresh(data);
   // 批量页:两维度选择器(渠道体检 / 渠道选优)
   admissionBatchPicker.refresh(data);
@@ -1406,32 +1978,29 @@ function renderProfileOptions() {
   scenarioPicker.refresh(data);
   // 客户端回放:仍沿用平铺单选列表
   renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] });
+  // 自动测试配置页的渠道→模型级联
+  autoTestConfig.refreshTargets(data);
+  modelCompare.refreshTargets(data);
 }
 
 function renderScenarioOptions() {
-  syncScenarioTemplateAvailability();
   if (state.scenarios.length === 0) {
     scenarioCaseSelect.innerHTML = `<option value="">暂无测试场景</option>`;
+    scenarioCasePicker.refresh();
     return;
   }
 
+  // 默认只勾选「连通性：基础响应」这一个场景；缺失时回落到第一个场景，避免默认零选。
+  const defaultScenarioId = state.scenarios.some((scenario) => scenario.id === "connectivity-basic")
+    ? "connectivity-basic"
+    : state.scenarios[0].id;
   scenarioCaseSelect.innerHTML = state.scenarios
     .map(
       (scenario) =>
-        `<option value="${scenario.id}" selected>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
+        `<option value="${scenario.id}" data-name="${escapeHtml(scenario.name)}" data-difficulty="${escapeHtml(scenario.difficulty)}" data-tag="${escapeHtml(scenario.tag || "")}" data-group="${escapeHtml(scenario.group || "")}"${scenario.id === defaultScenarioId ? " selected" : ""}>${escapeHtml(scenario.name)} / ${escapeHtml(scenario.difficulty)}</option>`,
     )
     .join("");
-}
-
-function syncScenarioTemplateAvailability() {
-  const hasSafetyScenarios = state.scenarios.some((scenario) => scenario.category === "safety");
-  const safetyOption = scenarioTemplate.querySelector('option[value="scenario-safety"]');
-  if (!safetyOption) return;
-  safetyOption.hidden = !hasSafetyScenarios;
-  safetyOption.disabled = !hasSafetyScenarios;
-  if (!hasSafetyScenarios && scenarioTemplate.value === "scenario-safety") {
-    scenarioTemplate.value = "scenario-basic";
-  }
+  scenarioCasePicker.refresh();
 }
 
 function renderRequests() {
@@ -1450,7 +2019,6 @@ function renderTaskEvents() {
 function renderDeliveryViews() {
   renderDeliveryPanels({
     state,
-    plainConclusion,
     projectInfoSummary,
     reportInsights,
     rankingList,
@@ -1464,12 +2032,8 @@ function renderStabilitySummary(result) {
   renderStabilitySummaryPanel(stabilitySummary, result);
 }
 
-function renderProfileConfigCheck(validation = null) {
-  renderProfileConfigCheckPanel({
-    form: profileForm,
-    container: profileCheckResult,
-    validation,
-  });
+function renderScenarioSummary(result) {
+  renderScenarioSummaryPanel(scenarioSummary, result);
 }
 
 async function copyReportText(kind) {
@@ -1479,8 +2043,13 @@ async function copyReportText(kind) {
     return;
   }
 
-  await copyText(text);
-  toast("摘要和报告路径已复制。");
+  // copyText 失败会抛错：必须接住并提示，否则点击 handler 的 promise 静默拒绝，用户什么都看不到。
+  try {
+    await copyText(text);
+    toast("摘要和报告路径已复制。");
+  } catch (error) {
+    toast(`复制失败：${error.message}`, true);
+  }
 }
 
 function getCopyableReportText(result, fallbackText) {
@@ -1497,8 +2066,12 @@ async function copyHandoffTemplate() {
     toast("当前没有可复制的交付模板。", true);
     return;
   }
-  await copyText(text);
-  toast("交付模板已复制。");
+  try {
+    await copyText(text);
+    toast("交付模板已复制。");
+  } catch (error) {
+    toast(`复制失败：${error.message}`, true);
+  }
 }
 
 function applyStabilityTemplate() {
@@ -1514,15 +2087,6 @@ function applyBatchTemplate() {
     form: batchTestForm,
     template: batchTemplate,
     updateEstimates,
-  });
-}
-
-function applyQuickPromptPreset() {
-  applyPromptPresetToForm({
-    kind: "quick",
-    form: quickTestForm,
-    select: quickPromptPreset,
-    hint: quickPromptHint,
   });
 }
 
@@ -1556,39 +2120,15 @@ function applyBatchPromptPreset() {
   });
 }
 
-function applyScenarioTemplate() {
-  applyScenarioTemplateToForm({
-    form: scenarioTestForm,
-    template: scenarioTemplate,
-    scenarios: state.scenarios,
-    scenarioSelect: scenarioCaseSelect,
-    hint: scenarioTemplateHint,
-    updateEstimates,
-  });
-}
-
-function applyProfileTemplate() {
-  applyProfileTemplateToForm({
-    form: profileForm,
-    templateSelect: profileTemplate,
-    onApplied: (template) => {
-      renderProfileConfigCheck();
-      toast(`已应用配置模板：${template.label}`);
-    },
-  });
-}
-
 function hydrateProjectInfoForm() {
   hydrateProjectInfoFormFields(projectInfoForm, state.projectInfo);
   renderDeliveryViews();
 }
 
 function hydratePromptPresetSelects() {
-  quickPromptPreset.innerHTML = renderPromptPresetOptions("quick", "connectivity");
   standardPromptPreset.innerHTML = renderPromptPresetOptions("standard", "default");
   stabilityPromptPreset.innerHTML = renderPromptPresetOptions("stability", "basic");
   batchPromptPreset.innerHTML = renderPromptPresetOptions("batch", "fair-basic");
-  applyQuickPromptPreset();
   applyStandardPromptPreset();
   applyStabilityPromptPreset();
   applyBatchPromptPreset();
@@ -1626,13 +2166,6 @@ function formatEstimateForAdmissionBatch() {
 
 function findProfileModelName(profileId) {
   return state.profiles.find((profile) => profile.id === profileId)?.defaultModel || "";
-}
-
-async function exportProfiles() {
-  if (assertNotDemo("导出配置")) return;
-  const data = await api("/api/profiles/export");
-  downloadText(`evaluator-profiles-${Date.now()}.json`, JSON.stringify(data, null, 2));
-  toast("配置已导出，导出文件不包含 API Key。");
 }
 
 async function exportSupportBundle() {

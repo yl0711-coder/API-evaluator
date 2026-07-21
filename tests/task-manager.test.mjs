@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import test from "node:test";
-import { assertTaskNotCancelled, createTaskManager } from "../server/task-manager.mjs";
+import test, { after } from "node:test";
+
+// server/paths.mjs 在「模块加载」时就把 DATA_DIR 冻结下来，而 task-manager.mjs → report-files.mjs
+// 会静态加载 paths.mjs。因此必须在导入 task-manager 之前就把 EVALUATOR_DATA_DIR 指向临时目录，
+// 否则下方「task recovery」用例里 ensureDataDir 与写事件文件会指向不同目录（Windows 上报 ENOENT）。
+const MODULE_DATA_DIR = mkdtempSync(join(tmpdir(), "evaluator-tm-datadir-"));
+const PREV_DATA_DIR = process.env.EVALUATOR_DATA_DIR;
+process.env.EVALUATOR_DATA_DIR = MODULE_DATA_DIR;
+const { assertTaskNotCancelled, createTaskManager } = await import("../server/task-manager.mjs");
+after(async () => {
+  if (PREV_DATA_DIR === undefined) delete process.env.EVALUATOR_DATA_DIR;
+  else process.env.EVALUATOR_DATA_DIR = PREV_DATA_DIR;
+  await rm(MODULE_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+});
 
 const execFileAsync = promisify(execFile);
 
@@ -52,7 +65,7 @@ test("task manager records completed tasks without leaking full payloads", async
     assert.match(raw, /"event":"completed"/);
     assert.doesNotMatch(raw, /sk-should-not-be-written-in-full/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -89,7 +102,7 @@ test("满槽时第二个任务进入排队(queued)，带位置与 ETA，前一�
     assert.equal(b.status, "completed");
   } finally {
     delete process.env.EVALUATOR_MAX_CONCURRENT_TASKS;
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -121,7 +134,7 @@ test("task manager cancels running tasks through the task context", async () => 
     assert.match(raw, /"event":"cancel_requested"/);
     assert.match(raw, /"event":"cancelled"/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -156,7 +169,7 @@ test("task manager runs batch admission tasks", async () => {
     assert.match(raw, /"type":"batch-admission"/);
     assert.match(raw, /"profileCount":2/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
@@ -193,44 +206,34 @@ test("task manager separates user-facing task errors from technical logs", async
     assert.match(taskEvents, /用户提示 err-test/);
     assert.doesNotMatch(taskEvents, /technical stack detail/);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
 
 test("recent task recovery marks previous running tasks as interrupted", async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "evaluator-recovery-test-"));
-  const oldDataDir = process.env.EVALUATOR_DATA_DIR;
-  process.env.EVALUATOR_DATA_DIR = dataDir;
-  try {
-    const dataStore = await import(`../server/data-store.mjs?case=${Date.now()}`);
-    const paths = await import(`../server/paths.mjs?case=${Date.now()}`);
-    await dataStore.ensureDataDir();
-    await writeFile(
-      paths.TASK_EVENTS_FILE,
-      `${JSON.stringify({
-        taskId: "task-running-before-crash",
-        type: "stability",
-        event: "started",
-        status: "running",
-        message: "任务已开始。",
-        loggedAt: "2026-05-20T10:00:00.000Z",
-      })}\n`,
-      "utf8",
-    );
+  // EVALUATOR_DATA_DIR 已在文件顶部（任何 paths.mjs 加载之前）指向临时目录，
+  // 于是 data-store 的 ensureDataDir 与下面写入的事件文件指向同一目录（同一 paths 实例）。
+  const dataStore = await import("../server/data-store.mjs");
+  const paths = await import("../server/paths.mjs");
+  await dataStore.ensureDataDir();
+  await writeFile(
+    paths.TASK_EVENTS_FILE,
+    `${JSON.stringify({
+      taskId: "task-running-before-crash",
+      type: "stability",
+      event: "started",
+      status: "running",
+      message: "任务已开始。",
+      loggedAt: "2026-05-20T10:00:00.000Z",
+    })}\n`,
+    "utf8",
+  );
 
-    const recentTasks = await dataStore.readRecentTasks(new Map(), (task) => task);
+  const recentTasks = await dataStore.readRecentTasks(new Map(), (task) => task);
 
-    assert.equal(recentTasks[0].status, "interrupted");
-    assert.equal(recentTasks[0].recoverable, false);
-    assert.match(recentTasks[0].message, /任务已中断/);
-  } finally {
-    if (oldDataDir === undefined) {
-      delete process.env.EVALUATOR_DATA_DIR;
-    } else {
-      process.env.EVALUATOR_DATA_DIR = oldDataDir;
-    }
-    await rm(dataDir, { recursive: true, force: true });
-  }
+  assert.equal(recentTasks[0].status, "interrupted");
+  assert.equal(recentTasks[0].recoverable, false);
+  assert.match(recentTasks[0].message, /任务已中断/);
 });
 
 async function waitFor(predicate) {

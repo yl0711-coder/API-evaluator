@@ -20,6 +20,31 @@ export function estimateStabilityCost(payload) {
   });
 }
 
+// 压力测试成本预估（校准前用文档 §4.1 的假设 L）：
+//   闭环：每点请求数 ≈ 并发 × 时长 / L；开环：每点 ≈ 速率 × 时长。扫描时对所有负载点求和。
+const LOAD_ASSUMED_L = { simple: 1.5, think: 6, coding: 12 }; // 秒/请求
+const LOAD_TOKENS = { simple: [30, 80], think: [300, 700], coding: [800, 1400] };
+export function estimateLoadTestCost(payload) {
+  const key = LOAD_ASSUMED_L[payload.promptProfile] ? payload.promptProfile : "simple";
+  const durationSec = Number(payload.durationSec || 60);
+  const open = payload.mode === "open";
+  const intervalSec = open ? 0 : Number(payload.intervalSec) || 0; // 闭环思考时间：拉长每请求周期
+  const burstPeriodSec = open ? Math.max(1, Number(payload.burstPeriodSec) || 1) : 1; // 开环发送周期：每 N 秒只发 1 秒
+  const loads = Array.isArray(payload.loads) && payload.loads.length ? payload.loads : [open ? 10 : 30];
+  const requests = Math.max(
+    1,
+    loads.reduce((sum, load) => sum + Math.round(open ? (Number(load) * durationSec) / burstPeriodSec : (Number(load) * durationSec) / (LOAD_ASSUMED_L[key] + intervalSec)), 0),
+  );
+  const [lo, hi] = LOAD_TOKENS[key];
+  return {
+    requests,
+    lowTokens: requests * lo,
+    highTokens: requests * hi,
+    risk: requests >= 2000 ? "高" : requests >= 500 ? "中高" : "中",
+    note: "压测请求数为估计值（校准前用假设延迟），实际以运行为准，且全部真实计费。扫描会对每个负载点累加。",
+  };
+}
+
 export function estimateStandardCost(payload, scenarioCount = 2) {
   const rounds = Number(payload.rounds || 3);
   const requests = 1 + rounds + scenarioCount;
@@ -38,29 +63,31 @@ export function estimateAdmissionCost(payload) {
   const familyProbeCount = packageLevel === "quick" ? 0 : knownModelFamily(payload.modelName) ? 1 : 0;
   const requests = (packageLevel === "deep" ? 12 : packageLevel === "quick" ? 5 : 11) + familyProbeCount;
   const normalRequests = Math.max(0, requests - 1);
-  return {
+  return withAiAnalysisEstimate(payload, {
     requests,
     lowTokens: TOKEN_ESTIMATES.short[0] * 2 + normalRequests * TOKEN_ESTIMATES.normal[0],
     highTokens: TOKEN_ESTIMATES.short[1] * 2 + normalRequests * TOKEN_ESTIMATES.normal[1],
     risk: packageLevel === "deep" ? "中" : "低",
     note: "准入评测会检查连通、结构化输出、标称一致性、工具调用、流式结构、任务行为和模型指纹探针，用于接入前初筛。",
-  };
+  });
 }
 
 export function estimateAdmissionBatchCost(payload) {
   const profiles = payload.profileIds?.length || 0;
   const modelNames = Array.isArray(payload.modelNames) ? payload.modelNames : [];
+  // 单渠道估算里关掉 AI 分析（批次只在总层做一次），避免逐渠道重复累加。
   const estimates = profiles > 0
-    ? Array.from({ length: profiles }, (_, index) => estimateAdmissionCost({ ...payload, modelName: modelNames[index] }))
+    ? Array.from({ length: profiles }, (_, index) =>
+        estimateAdmissionCost({ ...payload, modelName: modelNames[index], useAiReportAnalysis: "" }))
     : [];
   const requests = estimates.reduce((total, estimate) => total + estimate.requests, 0);
-  return {
+  return withAiAnalysisEstimate(payload, {
     requests,
     lowTokens: estimates.reduce((total, estimate) => total + estimate.lowTokens, 0),
     highTokens: estimates.reduce((total, estimate) => total + estimate.highTokens, 0),
     risk: requests >= 60 ? "中高" : requests >= 24 ? "中" : "低",
     note: "批量准入会对多个 API 逐个执行准入评测，用于同模型多渠道初筛。建议先选 2-3 个关键候选。",
-  };
+  });
 }
 
 export function estimateBatchCost(payload) {
@@ -146,7 +173,7 @@ function withAiAnalysisEstimate(payload, estimate, analysisRequests = 1) {
     lowTokens: estimate.lowTokens + extraLowTokens,
     highTokens: estimate.highTokens + extraHighTokens,
     risk: upgradeRisk(estimate.risk, extraHighTokens),
-    note: `${estimate.note} 已勾选 AI 分析，会额外调用 ${analysisRequests} 次当前 API/模型生成报告解读。`,
+    note: `${estimate.note} 已勾选 AI 分析，会额外调用 ${analysisRequests} 次 AI 分析模型（被测渠道，或在『设置』里指定）生成报告解读。`,
   };
 }
 

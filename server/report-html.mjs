@@ -1,6 +1,6 @@
 import { escapeHtmlText } from "./utils.mjs";
 
-export function renderReportHtml(markdown, title) {
+export function renderReportHtml(markdown, title, { chartNonce = "" } = {}) {
   const escapedTitle = escapeHtmlText(title || "测试报告");
   return [
     "<!doctype html>",
@@ -8,6 +8,9 @@ export function renderReportHtml(markdown, title) {
     "<head>",
     '<meta charset="UTF-8" />',
     '<meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+    // 内联 CSP：报告是纯静态 HTML+CSS、无脚本。除 HTTP /view 的响应头 CSP 外再加一道 <meta>，
+    // 使桌面 file:// 直开磁盘 .html（EVALUATOR_OPEN_REPORT / 手动打开）时脚本同样被拦，堵住 file:// 独立缺口。
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'\" />",
     `<title>${escapedTitle}</title>`,
     "<style>",
     "body{margin:0;padding:32px;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;background:#f6f7fb;color:#172033;line-height:1.75}",
@@ -20,15 +23,20 @@ export function renderReportHtml(markdown, title) {
     "</head>",
     "<body><main>",
     `<div class="meta">本报告由模型评测平台本地生成，不包含 API Key。</div>`,
-    renderMarkdownForReport(markdown),
+    renderMarkdownForReport(markdown, chartNonce),
     "</main></body></html>",
   ].join("\n");
 }
 
-function renderMarkdownForReport(markdown) {
+// chartNonce：仅由服务端在出「自动测试巡检」报告时生成的一次性随机串。只有围栏 info 串
+// 精确等于 `chart-svg:<chartNonce>` 才进入原样穿透态。不传 nonce（AI 辅助分析等所有其它报告）
+// 时任何围栏都不穿透——不可信上游模型输出（走 AI 辅助分析正文）因此无法伪造 SVG 穿透注入原始 HTML。
+function renderMarkdownForReport(markdown, chartNonce = "") {
   const lines = String(markdown || "").split(/\r?\n/);
   const html = [];
   let inCode = false;
+  let inRawSvg = false; // 可信图表穿透态：仅经 nonce 校验的平台图表围栏可进入
+  const trustedFence = chartNonce ? `chart-svg:${chartNonce}` : null;
   let table = [];
   const flushTable = () => {
     if (!table.length) return;
@@ -36,8 +44,23 @@ function renderMarkdownForReport(markdown) {
     table = [];
   };
   for (const line of lines) {
+    // 可信 SVG 穿透：图表由数字生成、内部文本已转义，安全内联；不走 escapeHtmlText 以免 <svg> 被转成字面量。
+    if (inRawSvg) {
+      if (line.startsWith("```")) {
+        inRawSvg = false;
+        continue;
+      }
+      html.push(line);
+      continue;
+    }
     if (line.startsWith("```")) {
       flushTable();
+      const info = line.slice(3).trim();
+      // 仅平台自带、经一次性 nonce 校验的图表围栏才穿透；无 nonce 或不匹配一律当普通代码块转义。
+      if (!inCode && trustedFence && info === trustedFence) {
+        inRawSvg = true;
+        continue;
+      }
       html.push(inCode ? "</code></pre>" : "<pre><code>");
       inCode = !inCode;
       continue;
@@ -46,7 +69,10 @@ function renderMarkdownForReport(markdown) {
       html.push(`${escapeHtmlText(line)}\n`);
       continue;
     }
-    if (line.trim().startsWith("|")) {
+    // 表格行：以 | 开头是标准 GFM 表头/分隔行；表格已开启后，正文里用 join(" | ")
+    // 生成、没有首尾竖线的数据行也接纳（Markdown 渲染器同样宽松，否则 HTML 会把这些行
+    // 漏成 <p> 段落、表体为空）。须先有以 | 开头的表头，避免把含竖线的普通正文误判成表格。
+    if (line.trim().startsWith("|") || (table.length && isLooseTableRow(line))) {
       table.push(line);
       continue;
     }
@@ -63,17 +89,37 @@ function renderMarkdownForReport(markdown) {
   return html.join("\n");
 }
 
+// 宽松表体行：含未转义竖线、且不是标题/列表/引用等正文结构。仅在表格已开启时使用，
+// 用于接纳 join(" | ") 生成、缺首尾竖线的数据行。
+function isLooseTableRow(line) {
+  const body = line.trim();
+  if (!body) return false;
+  if (body.startsWith("#") || body.startsWith("- ") || body.startsWith(">")) return false;
+  return /(?<!\\)\|/.test(body);
+}
+
+// GFM 分隔行：去掉首尾管道后，每个单元格只由 - : 和空白组成（如 ---、:---:、 --- ）。
+function isTableSeparator(line) {
+  const body = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return body.length > 0 && /^[\s:|-]+$/.test(body) && body.includes("-");
+}
+
+// 按「未转义的管道」切分单元格，再把 \| 还原成字面量 |。
+// 报告里的说明/摘要/证据列经 escapeMarkdownTable 把内容中的 | 转义成 \|，
+// 若直接 split("|") 会把一个单元格拆成多列，导致整张表错位。
+function splitTableCells(line) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.replace(/\\\|/g, "|").trim());
+}
+
 function renderReportTable(lines) {
   const rows = lines
-    .filter((line) => !/^\|\s*-+/.test(line))
-    .map((line) =>
-      line
-        .trim()
-        .replace(/^\|/, "")
-        .replace(/\|$/, "")
-        .split("|")
-        .map((cell) => formatReportInline(cell.trim())),
-    );
+    .filter((line) => !isTableSeparator(line))
+    .map((line) => splitTableCells(line).map((cell) => formatReportInline(cell)));
   if (!rows.length) return "";
   const [head, ...body] = rows;
   return [
@@ -86,6 +132,9 @@ function renderReportTable(lines) {
 
 function formatReportInline(text) {
   return escapeHtmlText(text)
+    // 多反引号代码段（如模型把 JSON 包进 ```json ... ```）：先按成对的反引号串收口，
+    // 否则单反引号规则只吃掉中间一对，留下散落的 `` 看起来像渲染坏了。
+    .replace(/(`{2,})\s*([\s\S]*?)\s*\1/g, (_, _ticks, inner) => `<code>${inner}</code>`)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 }

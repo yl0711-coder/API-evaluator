@@ -3,13 +3,12 @@
 // 判重按 url + model + key 哈希全等；Key 以哈希参与判重，明文不外泄。
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { PROFILES_FILE } from "./paths.mjs";
 import { loadModelConfigs, saveModelConfigs } from "./db.mjs";
 import { normalizePricePerMillion } from "./costing.mjs";
 import { buildApiKeyRef, getSecretStorageName, readProfileApiKey, saveProfileApiKey } from "./secret-store.mjs";
-import { requiredString } from "./utils.mjs";
+import { requiredString, writeJsonAtomic } from "./utils.mjs";
 
 // API Key 的单向指纹（sha256），用于"重复渠道"判定（url+模型+key 全一致即重复），不暴露 key。
 export function hashApiKey(key) {
@@ -69,7 +68,7 @@ export async function normalizeProfile(body, existingProfile = null) {
     defaultModel: requiredString(body.defaultModel, "默认模型"),
     channelCode: String(body.channelCode || "").trim(),
     maxTokens: Number(body.maxTokens || 512),
-    timeoutMs: Number(body.timeoutMs || 60000),
+    timeoutMs: Number(body.timeoutMs || 300000),
     inputPricePerMTokens: normalizePricePerMillion(body.inputPricePerMTokens),
     outputPricePerMTokens: normalizePricePerMillion(body.outputPricePerMTokens),
     inputSellPricePerMTokens: normalizePricePerMillion(body.inputSellPricePerMTokens),
@@ -125,7 +124,7 @@ export async function normalizeImportedProfiles(body, currentProfiles = []) {
       defaultModel: requiredString(item.defaultModel, "默认模型"),
       channelCode: String(item.channelCode || "").trim(),
       maxTokens: Number(item.maxTokens || 512),
-      timeoutMs: Number(item.timeoutMs || 60000),
+      timeoutMs: Number(item.timeoutMs || 300000),
       inputPricePerMTokens: normalizePricePerMillion(item.inputPricePerMTokens),
       outputPricePerMTokens: normalizePricePerMillion(item.outputPricePerMTokens),
       inputSellPricePerMTokens: normalizePricePerMillion(item.inputSellPricePerMTokens),
@@ -162,17 +161,13 @@ export function maskScenario(scenario) {
     id: scenario.id,
     name: scenario.name,
     category: scenario.category,
+    tag: scenario.tag || "",
+    group: scenario.group || "",
     difficulty: scenario.difficulty,
     minChars: scenario.minChars,
     expectsJson: Boolean(scenario.expectsJson),
     expectsSafetyRefusal: Boolean(scenario.expectsSafetyRefusal),
   };
-}
-
-export function maskKey(value) {
-  const text = String(value || "");
-  if (text.length <= 8) return "****";
-  return `${text.slice(0, 4)}...${text.slice(-4)}`;
 }
 
 export async function loadProfiles() {
@@ -195,8 +190,7 @@ export async function saveProfiles(profiles) {
   if (await saveModelConfigs(sanitized)) {
     return;
   }
-  await mkdir(dirname(PROFILES_FILE), { recursive: true });
-  await writeFile(PROFILES_FILE, JSON.stringify(sanitized, null, 2), "utf8");
+  await writeJsonAtomic(PROFILES_FILE, sanitized);
 }
 
 async function migrateProfileSecrets(profiles) {

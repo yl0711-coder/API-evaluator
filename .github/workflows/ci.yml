@@ -3,18 +3,19 @@ name: ci
 on:
   push:
     branches: ["main", "dev"]
+    tags: ["v*"]
   pull_request:
     branches: ["main", "dev"]
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.11.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm rebuild esbuild

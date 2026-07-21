@@ -7,14 +7,19 @@ import test from "node:test";
 import {
   closeDatabase,
   countRequests,
+  deleteReport,
   getDatabase,
   getDbHealth,
   importRequestsFromJsonl,
   isSqliteAvailable,
+  queryLastTestedByProfile,
+  queryRecentReports,
   queryRecentRequests,
   queryRecentTestRuns,
   queryRequestsByRun,
+  queryRoundSeriesByRunIds,
   queryRunsByProfile,
+  recordReport,
   recordRequest,
   recordTestRun,
 } from "../server/db.mjs";
@@ -216,6 +221,115 @@ test("queryRecentTestRuns and queryRunsByProfile read back runs", async () => {
     assert.equal(p1Runs.length, 2); // 重测信度可用：同 profile 的历次运行
     assert.equal(p1Runs[0].run_id, "r1");
     assert.equal(p1Runs[1].run_id, "r2");
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queryLastTestedByProfile：按 profile 取 MAX(logged_at)，多 profile 分别返回；无记录/无库 → {}", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "lasttest.db");
+  try {
+    // 空库 → 空对象
+    assert.deepEqual(await queryLastTestedByProfile({ path }), {});
+    // p1 两次（后者更晚，应胜出）、p2 一次
+    await recordRequest(makeRecord({ requestId: "p1a", profileId: "p1", loggedAt: "2026-06-01T00:00:00Z" }), { path });
+    await recordRequest(makeRecord({ requestId: "p1b", profileId: "p1", loggedAt: "2026-06-20T09:00:00Z" }), { path });
+    await recordRequest(makeRecord({ requestId: "p2a", profileId: "p2", loggedAt: "2026-06-10T00:00:00Z" }), { path });
+    const map = await queryLastTestedByProfile({ path });
+    assert.equal(map.p1, "2026-06-20T09:00:00Z", "p1 取最新一次");
+    assert.equal(map.p2, "2026-06-10T00:00:00Z");
+    assert.equal(Object.keys(map).length, 2);
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queryRoundSeriesByRunIds：按 run_id 集合取逐轮明细（升序、限定运行、跳过无耗时、空集合→[]）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "rounds.db");
+  try {
+    await recordRequest(makeRecord({ requestId: "a", runId: "runA", caseId: "case-1", totalMs: 1000, success: true, startedAt: "2026-06-02T00:00:00Z" }), { path });
+    await recordRequest(makeRecord({ requestId: "b", runId: "runA", caseId: "case-2", totalMs: 2000, success: false, startedAt: "2026-06-02T00:00:01Z" }), { path });
+    await recordRequest(makeRecord({ requestId: "c", runId: "runB", totalMs: 1500, success: true, startedAt: "2026-06-02T00:00:02Z" }), { path });
+    await recordRequest(makeRecord({ requestId: "d", runId: "runA", totalMs: undefined, success: true }), { path }); // 无耗时(NULL)→跳过
+    await recordRequest(makeRecord({ requestId: "e", runId: "runC", totalMs: 999, success: true }), { path }); // 不在集合里→排除
+
+    const rows = await queryRoundSeriesByRunIds(["runA", "runB"], { path });
+    assert.equal(rows.length, 3); // a,b (runA 有耗时) + c (runB)；d 无耗时跳过、e 不在集合
+    assert.equal(rows[0].runId, "runA");
+    assert.equal(rows[0].totalMs, 1000);
+    assert.equal(rows[0].success, 1);
+    assert.equal(rows[0].caseId, "case-1"); // 附带场景 id，供基础分组过滤
+    assert.equal(rows[1].caseId, "case-2");
+    assert.equal(rows[1].success, 0); // 升序：b 在 a 之后
+    assert.equal(rows[2].runId, "runB");
+    assert.equal(rows[2].totalMs, 1500);
+    assert.ok(rows.every((r) => r.runId !== "runC"), "限定到指定运行，排除 runC");
+
+    assert.deepEqual(await queryRoundSeriesByRunIds([], { path }), []); // 空集合
+    const onlyA = await queryRoundSeriesByRunIds(["runA"], { path });
+    assert.equal(onlyA.length, 2);
+    assert.ok(onlyA.every((r) => r.runId === "runA"));
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// 回归（P2-5）：超过 limit 时保留【最新】的轮次，而非最旧的。
+// 旧写法 `ORDER BY id ASC LIMIT` 砍掉 id 最大=最新的轮，趋势图/回归判定丢最近数据、静默漂移。
+test("queryRoundSeriesByRunIds：超出 limit 时保留最新轮次并保持升序（P2-5）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "rounds-limit.db");
+  try {
+    // 顺序插入 5 轮，startedAt 递增标识新旧（插入顺序=id 顺序）
+    for (let i = 0; i < 5; i += 1) {
+      await recordRequest(
+        makeRecord({ requestId: `r${i}`, runId: "big", totalMs: 100 + i, startedAt: `2026-06-02T00:00:0${i}Z` }),
+        { path },
+      );
+    }
+    const rows = await queryRoundSeriesByRunIds(["big"], { path, limit: 3 });
+    assert.equal(rows.length, 3);
+    // 应是最新 3 轮（i=2,3,4），且按时间升序排列供下游消费
+    assert.deepEqual(
+      rows.map((r) => r.startedAt),
+      ["2026-06-02T00:00:02Z", "2026-06-02T00:00:03Z", "2026-06-02T00:00:04Z"],
+    );
+    assert.deepEqual(rows.map((r) => r.totalMs), [102, 103, 104], "保留的是最新轮，不是最旧轮");
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("deleteReport：删存在的一条→true 且不再出现在列表；删不存在→false", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "reports.db");
+  try {
+    const rec = (reportId) => ({
+      reportId,
+      runId: reportId,
+      type: "stability",
+      title: reportId,
+      pathMd: `/x/${reportId}.md`,
+      pathHtml: `/x/${reportId}.html`,
+      createdAt: "2026-06-02T00:00:00Z",
+    });
+    await recordReport(rec("R1"), { path });
+    await recordReport(rec("R2"), { path });
+    assert.equal((await queryRecentReports(10, { path })).length, 2);
+
+    assert.equal(await deleteReport("R1", { path }), true);
+    const rest = await queryRecentReports(10, { path });
+    assert.equal(rest.length, 1);
+    assert.equal(rest[0].report_id, "R2");
+
+    // 删不存在的 id → false（无行受影响）
+    assert.equal(await deleteReport("nope", { path }), false);
   } finally {
     closeDatabase(path);
     await rm(dir, { recursive: true, force: true });

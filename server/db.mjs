@@ -362,6 +362,37 @@ export async function queryRequestsByRun(runId, { path } = {}) {
   return db.prepare("SELECT * FROM test_requests WHERE run_id = ? ORDER BY id ASC").all(runId);
 }
 
+// 指定若干 run 的逐轮明细（时间升序），供稳定性趋势按「每轮 1 点」加密 / 按小时聚合。
+// 只取有耗时的行；用 run_id IN(...) 把趋势限定到这些运行（调用方传稳定性运行 + 基础场景运行的 runId）。
+// 附带 caseId（=场景 id），供基础场景运行按分组过滤逐轮明细；稳定性运行忽略该字段即可。
+export async function queryRoundSeriesByRunIds(runIds, { limit = 4000, path } = {}) {
+  const ids = (runIds || []).filter(Boolean);
+  if (!ids.length) return [];
+  const db = await getDatabase(path);
+  if (!db) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  // 超过 limit 时保留【最新】的若干轮，而非最旧的（P2-5）：趋势图/回归判定都以最新点为准，
+  // 旧写法 `ORDER BY id ASC LIMIT` 砍掉的恰是 id 最大=最新的轮次，会静默丢最近数据。
+  // 故先按 id DESC 取最新 limit 条，再 reverse 回升序，交给下游按时间正序消费。
+  const rows = db
+    .prepare(
+      `SELECT started_at, total_ms, success, normalized_error, run_id, case_id
+       FROM test_requests
+       WHERE run_id IN (${placeholders}) AND total_ms IS NOT NULL
+       ORDER BY id DESC LIMIT ?`,
+    )
+    .all(...ids, Math.max(1, Math.floor(limit)))
+    .reverse();
+  return rows.map((r) => ({
+    startedAt: r.started_at || null,
+    totalMs: Number(r.total_ms),
+    success: r.success ? 1 : 0,
+    normalizedError: r.normalized_error || "", // 区分超时(timeout)与其它失败，供趋势图底部标注
+    runId: r.run_id || null,
+    caseId: r.case_id || null, // 场景 id（场景运行才有），供基础分组过滤
+  }));
+}
+
 export async function countRequests({ path } = {}) {
   const db = await getDatabase(path);
   if (!db) return 0;
@@ -412,6 +443,25 @@ export async function queryProfileRunSummaries(profileId, { limit = 200, path } 
   } catch (error) {
     noteDbError("queryProfileRunSummaries", error);
     return [];
+  }
+}
+
+// 每个模型目标(=profile_id)的最后一次测试时间（覆盖所有测试种类：准入/快速/稳定/场景/批量）。
+// 用 test_requests（逐请求、按 profile_id 建索引）聚合 MAX(logged_at)。logged_at 为 ISO 文本，
+// MAX 按字典序即时间序。DB 不可用/无记录 → {}。供「模型管理」卡片显示「上次测试」+ 判定「需测」。
+export async function queryLastTestedByProfile({ path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return {};
+    const rows = db
+      .prepare("SELECT profile_id, MAX(logged_at) AS last FROM test_requests WHERE profile_id IS NOT NULL GROUP BY profile_id")
+      .all();
+    const out = {};
+    for (const r of rows) if (r.profile_id && r.last) out[r.profile_id] = r.last;
+    return out;
+  } catch (error) {
+    noteDbError("queryLastTestedByProfile", error);
+    return {};
   }
 }
 
@@ -666,6 +716,20 @@ export async function queryRecentReports(limit = 100, { path } = {}) {
   return db.prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
 }
 
+// 删除单条报告元数据（供报告中心手动删除报告文件用）。文件删除交调用方做，db 只管元数据。
+// SQLite 不可用 → no-op 返回 false；返回是否确有一行被删。
+export async function deleteReport(reportId, { path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return false;
+    const info = db.prepare("DELETE FROM reports WHERE report_id = ?").run(String(reportId));
+    return info.changes > 0;
+  } catch (error) {
+    noteDbError("deleteReport", error);
+    return false;
+  }
+}
+
 // 留存清理：删除超过 retentionDays 或超出 maxTotal(保留最新)的报告记录。
 // 返回被删记录的文件路径(文件删除交调用方做，db 只管元数据)。
 export async function pruneReports({ retentionDays = 30, maxTotal = 2000, now, path } = {}) {
@@ -691,6 +755,38 @@ export async function pruneReports({ retentionDays = 30, maxTotal = 2000, now, p
   } catch (error) {
     noteDbError("pruneReports", error);
     return removed;
+  }
+}
+
+// 历史留存清理：给「只增不减」的历史表加与报告一致的「保留天数 + 上限（保留最新）」策略，
+// 防 evaluator.db 长期运行下把卷吃满。按各表的时间列判过期，按自增 id 判超量。
+// 表名/列名/上限均为下方硬编码常量（非用户输入），可安全内插进 SQL。
+const HISTORY_RETENTION = [
+  { table: "test_requests", tsColumn: "logged_at", maxTotal: 50000 },
+  { table: "test_runs", tsColumn: "logged_at", maxTotal: 10000 },
+  { table: "regression_alerts", tsColumn: "created_at", maxTotal: 5000 },
+  { table: "model_fingerprints", tsColumn: "created_at", maxTotal: 5000 },
+];
+
+export async function pruneHistory({ retentionDays = 90, now, path } = {}) {
+  const summary = {};
+  try {
+    const db = await getDatabase(path);
+    if (!db) return summary;
+    const cutoffIso = new Date((now ?? Date.now()) - retentionDays * 24 * 3600 * 1000).toISOString();
+    for (const { table, tsColumn, maxTotal } of HISTORY_RETENTION) {
+      // 过期：时间列早于 cutoff（NULL 时间不动，避免误删刚写入未落时间戳的行）。
+      const expired = db.prepare(`DELETE FROM ${table} WHERE ${tsColumn} IS NOT NULL AND ${tsColumn} < ?`).run(cutoffIso).changes;
+      // 超量：只保留 id 最大的 maxTotal 条（id 自增即时序），其余更旧的删掉。
+      const overflow = db
+        .prepare(`DELETE FROM ${table} WHERE id NOT IN (SELECT id FROM ${table} ORDER BY id DESC LIMIT ?)`)
+        .run(Math.max(0, Math.floor(maxTotal))).changes;
+      summary[table] = expired + overflow;
+    }
+    return summary;
+  } catch (error) {
+    noteDbError("pruneHistory", error);
+    return summary;
   }
 }
 
@@ -832,14 +928,22 @@ function safeParse(raw) {
   }
 }
 
-// test_runs.raw_json 只需汇总级字段；场景/批量 summary 里嵌的 records/results/cases/
-// reportMarkdown 可达数 MB，逐请求明细已在 test_requests 表，这里剥掉只留计数，
-// 避免单行膨胀拖慢 queryRecentTestRuns（一次 parse 20 行）。
+// test_runs.raw_json 只需汇总级字段；reportMarkdown / 顶层 records / cases 可达数 MB，
+// 逐请求明细已在 test_requests 表，这里剥掉只留计数，避免单行膨胀拖慢 queryRecentTestRuns。
+// results（场景/批量的每渠道汇总）要保留：报告中心卡片/排行榜靠它取 successRate、
+// avgQualityScore 等——但剥掉每个 result 内部的逐请求 records（大头），只留汇总级字段。
 function slimSummaryForStorage(summary) {
   if (!summary || typeof summary !== "object") return summary;
   const { reportMarkdown, records, results, cases, ...rest } = summary;
   if (Array.isArray(records)) rest.recordCount = records.length;
-  if (Array.isArray(results)) rest.resultCount = results.length;
   if (Array.isArray(cases)) rest.caseCount = rest.caseCount ?? cases.length;
+  if (Array.isArray(results)) {
+    rest.resultCount = results.length;
+    rest.results = results.map((item) => {
+      if (!item || typeof item !== "object") return item;
+      const { records: _itemRecords, ...keep } = item;
+      return keep;
+    });
+  }
   return rest;
 }

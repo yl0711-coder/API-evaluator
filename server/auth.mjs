@@ -13,6 +13,31 @@ const SESSION_COOKIE_NAME = "evaluator_session";
 function sessionSecret() {
   return process.env.EVALUATOR_SESSION_SECRET || "";
 }
+
+// 会话密钥强度门槛（字节）。会话 Cookie 用 HMAC-SHA256(secret) 自签，密钥太短可被离线爆破后
+// 伪造出任意角色（含超管）的会话——绕过整个鉴权。README 建议的 `openssl rand -hex 32` 产出 64 字符，
+// 远超此门槛；这里只拦「明显过弱」。
+export const MIN_SESSION_SECRET_BYTES = 32;
+
+// 启动时校验会话密钥强度（P3-2）。空 / 过短一律抛出可操作的运维提示。
+// 由 server.mjs 在 listen 前调用，让弱密钥变成「启动即失败」而非「线上可被伪造超管」。
+// 纯函数、不读全局状态，便于单测；签名/校验路径本身不调用它（保持可独立单测）。
+export function assertSessionSecretStrength() {
+  const secret = sessionSecret();
+  if (!secret) {
+    throw new Error(
+      "EVALUATOR_SESSION_SECRET 未配置：会话 Cookie 无法签名。请生成一个强随机密钥，例如 `openssl rand -hex 32`。",
+    );
+  }
+  const bytes = Buffer.byteLength(secret, "utf8");
+  if (bytes < MIN_SESSION_SECRET_BYTES) {
+    throw new Error(
+      `EVALUATOR_SESSION_SECRET 过弱（${bytes} 字节，至少需 ${MIN_SESSION_SECRET_BYTES} 字节）：` +
+        "太短的密钥可被离线爆破后伪造超管会话。请用 `openssl rand -hex 32` 重新生成。",
+    );
+  }
+  return true;
+}
 function sessionTtlMs() {
   const hours = Number(process.env.EVALUATOR_SESSION_TTL_HOURS || 12);
   return (Number.isFinite(hours) && hours > 0 ? hours : 12) * 3600 * 1000;
@@ -85,6 +110,10 @@ export function canWriteConfig(role) {
 }
 
 // —— Cookie 工具 ——
+// 单个值解不开不能连累整个请求：decodeURIComponent 遇非法百分号转义（"%zz"、裸 "%"）会抛
+// URIError，而本函数在鉴权前对每个请求都跑一遍——任何人随手带一个坏 cookie 就能把请求打成
+// 500 并写一条错误日志（匿名可达，无需登录）。故逐值兜住，解不开就按原文保留：
+// 会话 cookie 是签名令牌，原文自然验签失败 → 正常 401，不影响判定。
 export function parseCookies(header) {
   const out = {};
   if (!header || typeof header !== "string") return out;
@@ -93,7 +122,12 @@ export function parseCookies(header) {
     if (idx < 0) continue;
     const k = part.slice(0, idx).trim();
     const v = part.slice(idx + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+    if (!k) continue;
+    try {
+      out[k] = decodeURIComponent(v);
+    } catch {
+      out[k] = v;
+    }
   }
   return out;
 }
@@ -240,5 +274,3 @@ export async function authenticate(username, password, opts = {}) {
   }
   return authenticateLocal(username, password, opts);
 }
-
-export const SESSION_COOKIE = SESSION_COOKIE_NAME;

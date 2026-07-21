@@ -61,6 +61,26 @@ test("requiresAdmin 规则", () => {
   assert.equal(requiresAdmin("GET", "/api/profiles"), false);
   assert.equal(requiresAdmin("GET", "/api/support-bundle"), true);
   assert.equal(requiresAdmin("POST", "/api/tests/quick"), false);
+  // 设置读写都不再一刀切要超管：普通管理员可改「不影响 new-api」的设置，
+  // new-api 相关字段在端点内字段级门禁（见 server.mjs PUT /api/settings）。
+  assert.equal(requiresAdmin("GET", "/api/settings"), false);
+  assert.equal(requiresAdmin("PUT", "/api/settings"), false);
+});
+
+test("删除报告文件仅超管：DELETE /api/reports/* 需超管，GET 列表/查看不受影响", () => {
+  // 只有 DELETE 需超管
+  assert.equal(requiresAdmin("DELETE", "/api/reports/files/foo"), true);
+  // GET 列表 / 查看 不误伤
+  assert.equal(requiresAdmin("GET", "/api/reports/files"), false);
+  assert.equal(requiresAdmin("GET", "/api/reports/foo/view"), false);
+  assert.equal(requiresAdmin("GET", "/api/reports"), false);
+
+  // 普通用户(10) DELETE → 403 forbidden_admin；超管(100) → 放行
+  assert.equal(evaluateApiAccess({ method: "DELETE", pathname: "/api/reports/files/foo", session: user }).error, "forbidden_admin");
+  assert.equal(evaluateApiAccess({ method: "DELETE", pathname: "/api/reports/files/foo", session: admin }).allow, true);
+  // 普通用户看列表/查看 → 放行
+  assert.equal(evaluateApiAccess({ method: "GET", pathname: "/api/reports/files", session: user }).allow, true);
+  assert.equal(evaluateApiAccess({ method: "GET", pathname: "/api/reports/foo/view", session: user }).allow, true);
 });
 
 test("v0.3.0 渠道写=超管(100)，模型目标写=管理员(10)即可", () => {
@@ -68,7 +88,7 @@ test("v0.3.0 渠道写=超管(100)，模型目标写=管理员(10)即可", () =>
   assert.equal(requiresAdmin("POST", "/api/channels"), true);
   assert.equal(requiresAdmin("DELETE", "/api/channels/abc"), true);
   assert.equal(requiresAdmin("GET", "/api/channels"), false);
-  // 模型目标不持 key，管理员可写
+  // 模型目标不持 key，管理员可写（增删改）
   assert.equal(requiresAdmin("POST", "/api/model-targets"), false);
   assert.equal(requiresAdmin("DELETE", "/api/model-targets/x"), false);
 

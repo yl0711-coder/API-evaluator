@@ -18,7 +18,7 @@ import {
   buildReviewSection,
   buildReportAppendix,
 } from "./report-authority.mjs";
-import { saveReportFiles, sanitizeReportBaseName } from "./report-files.mjs";
+import { saveAiAnalysisReport, saveReportFiles, sanitizeReportBaseName } from "./report-files.mjs";
 
 export {
   REPORT_TOOL_VERSION,
@@ -30,6 +30,7 @@ export {
   collectHighSensitivityFindings,
   buildReviewSection,
   buildReportAppendix,
+  saveAiAnalysisReport,
   saveReportFiles,
   sanitizeReportBaseName,
 };
@@ -278,10 +279,64 @@ export function formatSupplierEvidenceReport(evidence) {
   ].join("\n");
 }
 
+// 回答里可能自带 ``` 代码块，围栏必须比正文中最长的一串反引号更长，否则代码块会被提前闭合、
+// 后半段回答漏到正文里当 Markdown 渲染。
+function fencedBlock(text) {
+  const longest = (String(text).match(/`+/g) || []).reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return [fence, text, fence];
+}
+
+// 「在报告中完整显示返回」：默认关闭，关闭时返回空数组（不占小节号，旧报告结构不变）。
+// 单列一节而不是塞进「场景明细」表：表格单元格会被 escapeMarkdownTable 把换行压平，长回答只有代码块能读。
+function buildFullResponseSection(summary, options, heading) {
+  if (!options.fullResponse) return [];
+  const lines = [
+    heading,
+    "",
+    "> 模型原始回答全文（仅做密钥脱敏，未截断）；失败用例给出上游原始响应体，便于排查空响应 / 流式异常。未开启该选项时，报告只在「场景明细」给一条截断样例。",
+    "",
+  ];
+  let any = false;
+  for (const result of summary.results || []) {
+    const records = result.records || [];
+    if (!records.length) continue;
+    lines.push(`### ${result.profileName} / ${result.model}`, "");
+    for (const record of records) {
+      any = true;
+      const repeatSuffix = Number(summary.repeats) > 1 ? ` · 第 ${record.repeat} 次` : "";
+      const status = record.success ? "成功" : `失败（${record.normalizedError || "unknown_error"}）`;
+      lines.push(`#### ${record.scenarioName || record.scenarioId || "-"}${repeatSuffix} — ${status}`, "");
+      const text = String(record.responseText || "").trim();
+      const raw = String(record.rawResponse || "").trim();
+      if (text) {
+        lines.push(...fencedBlock(redactSensitiveText(text)));
+      } else if (raw) {
+        // 空响应 / 上游错误页：给未截断的响应体本身。rawError 是它被 summarizeText 砍到 500 字
+        // 又压平换行的摘要，排查「SSE 流为何没吐出文本」时基本没用。
+        // 断流残体必须标明，否则会被当成「上游只发了这些就正常收尾」而误判。
+        lines.push(
+          record.rawResponsePartial
+            ? `- 无文本返回，连接中途断开（${record.normalizedError || "-"}）。以下为断开前已收到的部分，并非完整响应：`
+            : "- 无文本返回。上游原始响应体如下：",
+          "",
+        );
+        lines.push(...fencedBlock(redactSensitiveText(raw)));
+      } else {
+        // 连响应体都没有（连接层失败/超时），只剩摘要——如实标注已截断，不冒充全文。
+        lines.push(`- 无文本返回，且未取得响应体，以下为错误摘要（已截断）：${redactSensitiveText(record.rawError || "-")}`);
+      }
+      lines.push("");
+    }
+  }
+  if (!any) lines.push("- 本次运行没有可展示的返回。", "");
+  return lines;
+}
+
 export function formatScenarioReport(summary, options = {}) {
   const safetySummary = buildSafetyReportSummary(summary);
   const scenarioInsights = buildScenarioInsights(summary);
-  const aiAnalysisSection = formatAiAnalysisSection(options.aiAnalysis);
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
   const plainRows = summary.results.map((result) => {
     const verdict = buildPlainVerdict(result.recommendation?.level, {
       successRateText: result.successRateText,
@@ -316,6 +371,7 @@ export function formatScenarioReport(summary, options = {}) {
         scenario.avgQualityScore,
         scenario.avgTotalMs || "-",
         scenario.p95TotalMs ?? "-",
+        escapeMarkdownTable(redactSensitiveText(scenario.sampleResponse || "-")),
         escapeMarkdownTable(scenario.issues.join("; ") || "-"),
         escapeMarkdownTable(review.verdict),
         escapeMarkdownTable(review.action),
@@ -413,8 +469,8 @@ export function formatScenarioReport(summary, options = {}) {
     "",
     safetySummary ? "## 7. 场景明细" : "## 6. 场景明细",
     "",
-    "| API | 场景 | 成功率 | 平均质量分 | 平均耗时 ms | 慢请求参考 P95 ms | 问题摘要 | 场景结论 | 处理建议 |",
-    "|---|---|---:|---:|---:|---:|---|---|---|",
+    "| API | 场景 | 成功率 | 平均质量分 | 平均耗时 ms | 慢请求参考 P95 ms | 模型样例回答 | 问题摘要 | 场景结论 | 处理建议 |",
+    "|---|---|---:|---:|---:|---:|---|---|---|---|",
     detailRows.join("\n"),
     "",
     safetySummary ? "## 8. 错误诊断与处理建议" : "## 7. 错误诊断与处理建议",
@@ -428,6 +484,7 @@ export function formatScenarioReport(summary, options = {}) {
     "- 内容安全场景会额外检查是否明确拒绝风险请求、是否提供安全替代建议、是否疑似直接满足风险请求。",
     "- 后续可接入主评测模型，对复杂问题解决质量做更细的 AI 评分。",
     "",
+    ...buildFullResponseSection(summary, options, safetySummary ? "## 10. 完整返回" : "## 9. 完整返回"),
     ...buildReportAppendix(summary, options),
   ].join("\n");
 }
@@ -451,7 +508,7 @@ export function formatStabilityReport(summary, records, options = {}) {
     return `| ${index + 1} | ${status} | ${record.statusCode ?? "-"} | ${record.firstByteMs ?? "-"} | ${record.totalMs ?? "-"} | ${record.outputChars ?? 0} | ${record.inputTokens ?? "-"} | ${record.outputTokens ?? "-"} | ${escapeMarkdownTable(redactSensitiveText(record.responseSummary || record.rawError || "-"))} |`;
   });
   const stabilityInsights = buildStabilityInsights(summary);
-  const aiAnalysisSection = formatAiAnalysisSection(options.aiAnalysis);
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
 
   return [
     `# 稳定性测试报告`,
@@ -593,7 +650,7 @@ export function formatBatchReport(summary, options = {}) {
     );
   });
   const batchInsights = buildBatchInsights(summary, rankedResults);
-  const aiAnalysisSection = formatAiAnalysisSection(options.aiAnalysis);
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
 
   return [
     "# 批量稳定性测试总报告",
@@ -655,87 +712,8 @@ export function formatBatchReport(summary, options = {}) {
   ].join("\n");
 }
 
-export function formatBatchAdmissionReport(summary) {
-  const rankedResults = [...(summary.results || [])]
-    .filter((result) => !result.error)
-    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
-  const best = rankedResults[0];
-  const failedCount = (summary.results || []).filter((result) => result.error || ["D", "E", "F", "X"].includes(result.grade)).length;
-  const rows = (summary.results || []).map((result, index) => {
-    if (result.error) {
-      return `| ${index + 1} | - | - | 执行失败 | - | - | - | - | - | ${escapeMarkdownTable(result.error)} |`;
-    }
-    return [
-      index + 1,
-      escapeMarkdownTable(result.profileName || "-"),
-      escapeMarkdownTable(result.model || "-"),
-      result.grade || "-",
-      result.score ?? "-",
-      result.successRateText || "-",
-      result.fingerprintSummary?.passRateText || "未测试",
-      formatEstimatedCost(result.estimatedCost),
-      formatEstimatedCost(result.estimatedGrossProfit),
-      escapeMarkdownTable(result.recommendation?.title || "-"),
-    ].join(" | ");
-  });
-  const conclusion = best
-    ? `本批次准入初筛最高分为 ${best.profileName}，准入等级 ${best.grade}，综合分 ${best.score}/100。暂不建议继续测试或需要先排查的配置数量：${failedCount}/${summary.profileCount}。`
-    : "本批次没有可用候选，建议先检查 API 配置、协议、模型名和 Key。";
-  const rankedLines = rankedResults.length
-    ? rankedResults
-        .slice(0, 10)
-        .map(
-          (result, index) =>
-            `${index + 1}. ${result.profileName || "-"} / ${result.model || "-"}：等级 ${result.grade || "-"}，综合分 ${result.score ?? "-"}，纯度 ${
-              result.purityAssessment?.score ?? "-"
-            }，指纹 ${result.fingerprintSummary?.passRateText || "未测试"}。`,
-        )
-        .join("\n")
-    : "- 暂无可排序结果。";
-
-  return [
-    "# 批量准入评测报告",
-    "",
-    `生成时间：${new Date().toISOString()}`,
-    "",
-    "## 1. 给业务人员看的结论",
-    "",
-    `- 结论：${best ? "本批次已有可继续复测候选" : "本批次暂未发现可用候选"}`,
-    `- 原因：${conclusion}`,
-    `- 下一步：${best ? "优先对高分候选执行稳定性测试和真实编程场景测试。" : "先修正配置后重新执行快速或标准准入。"}`,
-    "",
-    "## 2. 批量任务",
-    "",
-    `- 批次 ID：${summary.batchId}`,
-    `- 被测 API 数量：${summary.profileCount}`,
-    `- 测试包：${summary.packageLevel}`,
-    `- 同时测试 API 数：${summary.maxParallelProfiles}`,
-    `- 开始时间：${summary.startedAt}`,
-    `- 结束时间：${summary.endedAt}`,
-    `- 总耗时：${summary.durationMs} ms`,
-    `- 工作区目录：${summary.workspaceDir || "-"}`,
-    `- JSON 原始结果：${summary.rawJsonPath || "-"}`,
-    "",
-    "## 3. 候选排序",
-    "",
-    rankedLines,
-    "",
-    "## 4. 汇总表",
-    "",
-    "| # | API | 模型 | 准入等级 | 综合分 | 成功率 | 指纹通过率 | 估算成本 | 估算毛利 | 建议 |",
-    "|---|---|---|---:|---:|---:|---:|---:|---:|---|",
-    rows.join("\n"),
-    "",
-    "## 5. 使用建议",
-    "",
-    "- 批量准入只负责初筛，不替代稳定性测试和真实业务场景测试。",
-    "- 高分候选应继续做 10 轮以上稳定性测试，并在编程、长文本和工具调用场景复核。",
-    "- 低分候选应先检查协议、模型名、渠道类型和上游响应结构。",
-    "- 报告不包含 API Key。",
-  ].join("\n");
-}
-
-export function formatAdmissionReport(summary, records) {
+export function formatAdmissionReport(summary, records, options = {}) {
+  const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
   const caseRows = summary.cases.map((item, index) =>
     [
       index + 1,
@@ -745,7 +723,8 @@ export function formatAdmissionReport(summary, records) {
       item.totalMs ?? "-",
       item.inputTokens ?? "-",
       item.outputTokens ?? "-",
-      escapeMarkdownTable(item.issue || item.summary || "-"),
+      escapeMarkdownTable(redactSensitiveText(item.summary || "-")),
+      escapeMarkdownTable(item.issue || "-"),
     ].join(" | "),
   );
   const errorLines = Object.entries(summary.errorCounts || {});
@@ -792,12 +771,14 @@ export function formatAdmissionReport(summary, records) {
     "",
     "## 3. 关键指标",
     "",
-    `- 请求数：${summary.requestCount}`,
+    `- 请求数：${summary.requestCount}（逻辑测试用例数）`,
+    `- 实际上游请求数（计费口径）：${formatBilledRequests(summary.upstreamUsage)}`,
     `- 成功率：${summary.successRateText} (${summary.successCount}/${summary.requestCount})`,
     `- 平均耗时：${summary.avgTotalMs ?? "-"} ms`,
     `- 慢请求参考 P95：${summary.p95TotalMs ?? "-"} ms`,
-    `- 输入 tokens 合计：${summary.inputTokens ?? "-"}`,
-    `- 输出 tokens 合计：${summary.outputTokens ?? "-"}`,
+    `- 输入 tokens 合计：${summary.inputTokens ?? "-"}（仅逻辑用例）`,
+    `- 输出 tokens 合计：${summary.outputTokens ?? "-"}（仅逻辑用例）`,
+    `- 本次上游真实消耗 token（含探针+重试，不含流式）：${formatUpstreamConsumption(summary.upstreamUsage)}`,
     `- **本次真实消耗**：${formatRunConsumption(summary.actualConsumption)}`,
     `- **基线回归**：${formatRegression(summary.regression)}`,
     `- 估算成本：${formatEstimatedCost(summary.estimatedCost)}（基于 API 配置里的上游成本单价）`,
@@ -810,11 +791,12 @@ export function formatAdmissionReport(summary, records) {
     `- 模型纯度初判：${formatPurityAssessment(summary.purityAssessment)}`,
     `- 指纹探针：${formatFingerprintSummary(summary.fingerprintSummary)}`,
     `- Token 审计覆盖率：${summary.tokenAudit?.usageCoverageText || "未知"}`,
+    `- 分词器指纹核验：${formatTokenizerFingerprintLine(summary.tokenizerFingerprint)}`,
     "",
     "## 4. 分项结果",
     "",
-    "| # | 测试项 | 结果 | HTTP 状态 | 总耗时 ms | 输入 tokens | 输出 tokens | 说明 |",
-    "|---|---|---|---:|---:|---:|---:|---|",
+    "| # | 测试项 | 结果 | HTTP 状态 | 总耗时 ms | 输入 tokens | 输出 tokens | 模型返回 | 说明 |",
+    "|---|---|---|---:|---:|---:|---:|---|---|",
     caseRows.join("\n"),
     "",
     "## 5. 错误分布",
@@ -841,18 +823,53 @@ export function formatAdmissionReport(summary, records) {
     "",
     formatBillingAudit(summary.billingAudit),
     "",
-    "## 10. 说明",
+    "## 10. 分词器指纹核验（Claude 身份）",
+    "",
+    formatTokenizerFingerprintSection(summary.tokenizerFingerprint),
+    "",
+    "## 11. 说明",
     "",
     "- 本报告用于接入前初筛，不等同于官方模型身份鉴定。",
     "- 准入等级由连通性、协议结构、工具调用、任务行为、耗时和 token 返回情况综合判断。",
     "- 如果分数低或出现结构失败，需要先复核协议、模型名、渠道类型和上游转换逻辑，再进入稳定性测试。",
     "- 报告不包含 API Key。",
+    "",
+    ...optionalReportSection(aiAnalysisSection),
   ].join("\n");
 }
 
 function formatPurityAssessment(purityAssessment) {
   if (!purityAssessment) return "未评估";
   return `${purityAssessment.title}（${purityAssessment.score}/100，置信度 ${purityAssessment.confidence}）`;
+}
+
+const TOKENIZER_FP_STATUS_LABEL = {
+  consistent: "一致（符合该代 Claude 分词）",
+  mismatch: "⚠️ 疑似冒牌（分词比≠1）",
+  borderline: "偏差略大，建议复核",
+};
+
+function formatTokenizerFingerprintLine(fp) {
+  if (!fp) return "不适用（仅对声称 Claude 的模型核验）";
+  if (!fp.applicable) return `不适用（${fp.reason || "—"}）`;
+  const label = fp.degenerate ? "⚠️ 疑似伪造 usage（常数应答）" : TOKENIZER_FP_STATUS_LABEL[fp.status] || fp.status;
+  return `${label}，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（基线 ${fp.baselineModel}，n=${fp.n}）`;
+}
+
+function formatTokenizerFingerprintSection(fp) {
+  if (!fp) {
+    return "- 不适用：仅对声称 Claude 家族的模型做分词核验。";
+  }
+  if (!fp.applicable) {
+    return `- 不适用：${fp.reason || "—"}`;
+  }
+  return [
+    `- 判定：${fp.verdict}`,
+    `- 对照基线：${fp.baselineModel}（${fp.baselineOfficial ? "官方端点" : "可信源（非官方分词，仅取线性关系）"}）`,
+    `- 拟合：slope=${fp.slope ?? "-"}，intercept=${fp.intercept ?? "-"}，R²=${fp.r2 ?? "-"}，样本 ${fp.n}，置信度 ${fp.confidence}`,
+    "- 方法：对固定探针的输入 token 数做线性拟合 reported≈slope·base+intercept；同一代分词器 slope≈1、R²≈1，",
+    "  模板固定开销只改 intercept。判据以 |slope−1| 为主、R² 为辅。只判“代/家族”，不区分同代具体型号。",
+  ].join("\n");
 }
 
 const DRIFT_LABELS = {
@@ -943,6 +960,21 @@ function formatRunConsumption(ac) {
   if (ac.cacheCreationTokens || ac.cacheReadTokens) parts.push(`缓存写 ${ac.cacheCreationTokens || 0}/读 ${ac.cacheReadTokens || 0}`);
   const cost = ac.estimatedCost != null ? `约 ${formatEstimatedCost(ac.estimatedCost)}（按配置单价）` : "未配单价，仅统计 token";
   return `${parts.join("，")}；${cost}`;
+}
+
+// 实际上游/计费口径（仅准入报告体现）：与"请求数/合计 token"的逻辑用例口径区分，便于和中转后台对账。
+function formatBilledRequests(usage) {
+  if (!usage) return "-";
+  const extra = [];
+  if (usage.retryCount) extra.push(`重试 ${usage.retryCount}`);
+  if (usage.probeRequestCount) extra.push(`指纹探针 ${usage.probeRequestCount}`);
+  const suffix = extra.length ? `（含 ${extra.join(" + ")}）` : "";
+  return `${usage.billedRequestCount}${suffix}`;
+}
+
+function formatUpstreamConsumption(usage) {
+  if (!usage) return "-";
+  return `输入 ${usage.inputTokens ?? "-"} / 输出 ${usage.outputTokens ?? "-"}`;
 }
 
 function formatAbsoluteTokenAudit(audit) {
@@ -1094,32 +1126,59 @@ function optionalReportSection(markdown) {
   return markdown ? [markdown, ""] : [];
 }
 
-function formatAiAnalysisSection(aiAnalysis) {
-  if (!aiAnalysis?.enabled) {
-    return "";
-  }
-  const usageText = [
+function formatAiUsageText(aiAnalysis) {
+  return [
     aiAnalysis.inputTokens === null || aiAnalysis.inputTokens === undefined ? "" : `输入 ${aiAnalysis.inputTokens} tokens`,
     aiAnalysis.outputTokens === null || aiAnalysis.outputTokens === undefined ? "" : `输出 ${aiAnalysis.outputTokens} tokens`,
   ].filter(Boolean).join("，") || "上游未返回 token 用量";
+}
 
+// 主报告里只保留一行指引：完整 AI 分析已拆成单独 HTML 文件，正文不再内联。
+function formatAiAnalysisPointer(aiAnalysis) {
+  if (!aiAnalysis?.enabled) {
+    return "";
+  }
   if (!aiAnalysis.success) {
     return [
       "## AI 辅助分析（可选）",
       "",
       "- 状态：已启用，但 AI 分析请求失败。",
       `- 错误：${aiAnalysis.error || "未知错误"}`,
-      `- 额外消耗：${usageText}`,
-      "- 说明：本地规则报告仍然有效；建议先根据上面的系统结论处理问题，不需要为了 AI 分析失败重复跑完整测试。",
+      "- 说明：本地规则报告仍然有效；无需为了 AI 分析失败重复跑完整测试。",
     ].join("\n");
   }
-
   return [
     "## AI 辅助分析（可选）",
     "",
+    "- 状态：已启用。完整 AI 分析已生成为**单独的 HTML 文件**（见报告中心，文件名以 `-ai-analysis.html` 结尾）。",
+    `- 额外消耗：${formatAiUsageText(aiAnalysis)}`,
+    "- 说明：AI 分析由 AI 分析模型（被测渠道，或在『设置』里指定的 AI 总结模型）基于脱敏摘要生成，仅作辅助解释；最终判断仍以本地规则结论、原始日志与人工复核为准。",
+  ].join("\n");
+}
+
+// AI 辅助分析独立文档：整段单独成一份 Markdown，再由 report-files 渲染成单独 HTML。
+// 未启用返回 ""，调用方据此决定是否落盘。
+export function formatAiAnalysisDocument(aiAnalysis, { title = "AI 辅助分析" } = {}) {
+  if (!aiAnalysis?.enabled) {
+    return "";
+  }
+  const usageText = formatAiUsageText(aiAnalysis);
+  if (!aiAnalysis.success) {
+    return [
+      `# ${title}`,
+      "",
+      "- 状态：已启用，但 AI 分析请求失败。",
+      `- 错误：${aiAnalysis.error || "未知错误"}`,
+      `- 额外消耗：${usageText}`,
+      "- 说明：本地规则报告仍然有效；建议先根据系统结论处理问题，不需要为了 AI 分析失败重复跑完整测试。",
+    ].join("\n");
+  }
+  return [
+    `# ${title}`,
+    "",
     "- 状态：已启用。",
     `- 额外消耗：${usageText}`,
-    "- 说明：本段由被测 API/模型基于脱敏后的测试摘要生成，只作为辅助解释；最终判断仍要结合本地规则结论、原始日志和人工复核。",
+    "- 说明：本段由 AI 分析模型（被测渠道，或在『设置』里指定的 AI 总结模型）基于脱敏后的测试摘要生成，只作为辅助解释；最终判断仍要结合本地规则结论、原始日志和人工复核。",
     "",
     aiAnalysis.text || "- AI 没有返回有效分析内容。",
   ].join("\n");
