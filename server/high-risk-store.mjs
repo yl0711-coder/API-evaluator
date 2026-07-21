@@ -36,12 +36,7 @@ function testTypeOf(result) {
 
 // 单篇报告（admission/stability/quickverify）的高危原因，非高危返回 null。
 function riskReasonSingle(result, type) {
-  if (type === "quick-verify") {
-    if (result.verdict?.level !== "suspect") return null;
-    // 连通失败单独点名（用户最关心"没能联通"）：判词以 verdict.reasons 为准，其余可疑归为通用可疑。
-    const connFailed = (result.verdict?.reasons || []).some((r) => typeof r === "string" && r.startsWith("连通失败"));
-    return connFailed ? "快速验证：连通失败" : "快速验证：疑似可疑";
-  }
+  if (type === "quick-verify") return result.verdict?.level === "suspect" ? "快速验证：疑似可疑" : null;
   if (type === "admission") {
     if (result.grade && BAD_GRADES.has(result.grade)) return `准入 ${result.grade} 级`;
     if (result.recommendation?.level === "fail") return "结论：不推荐";
@@ -67,16 +62,6 @@ function riskReasonReport(rep, type, digestByProfile) {
   return null;
 }
 
-// 展示用「渠道 / 模型」：渠道名按约定藏在 profileName（"渠道 / 模型"）首段，取不到再回退 channelCode；
-// 模型取 model。两者都在→拼「渠道 / 模型」，缺一显示另一个，都缺回退整个 profileName。只有模型名不够直观，故补渠道。
-function subjectOf(src) {
-  const model = String(src?.model || "").trim();
-  const head = String(src?.profileName || "").split(" / ")[0].trim();
-  const channel = head && head !== model ? head : String(src?.channelCode || "").trim();
-  if (channel && model) return `${channel} / ${model}`;
-  return model || channel || String(src?.profileName || "").trim();
-}
-
 // 从一次运行结果枚举出所有高危报告 { reportId, testType, label, reason }。
 // scenario / batch-admission 逐模型判（每模型一篇报告）；其余整篇判。空 reportId / 非高危跳过。
 export function collectHighRiskReports(result) {
@@ -94,7 +79,7 @@ export function collectHighRiskReports(result) {
   if (Array.isArray(result.reports) && result.reports.length) {
     const digestByProfile = new Map((result.profileDigest || []).map((d) => [d.profileId, d]));
     for (const rep of result.reports) {
-      push(rep.reportHtmlPath, subjectOf(rep), riskReasonReport(rep, type, digestByProfile));
+      push(rep.reportHtmlPath, rep.model || rep.profileName || "", riskReasonReport(rep, type, digestByProfile));
     }
     return out;
   }
@@ -108,7 +93,7 @@ export function collectHighRiskReports(result) {
   } else {
     reason = riskReasonSingle(result, type);
   }
-  push(result.reportHtmlPath, subjectOf(result), reason);
+  push(result.reportHtmlPath, result.model || result.profileName || "", reason);
   return out;
 }
 

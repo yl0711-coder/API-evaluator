@@ -35,13 +35,15 @@ export function openReportInBrowser(htmlPath, { enabled = isOpenReportEnabled(pr
   }
 }
 
-export async function saveReportFiles(baseName, markdown, title) {
+// chartNonce：仅「自动测试巡检」报告出报告时由服务端生成并传入，用于校验平台图表围栏的可信穿透
+// （见 report-html.mjs）。其它报告（含 AI 辅助分析）不传，任何 SVG 围栏都会被转义。
+export async function saveReportFiles(baseName, markdown, title, { chartNonce = "" } = {}) {
   await mkdir(REPORTS_DIR, { recursive: true });
   const safeBaseName = sanitizeReportBaseName(baseName);
   const markdownPath = join(REPORTS_DIR, `${safeBaseName}.md`);
   const htmlPath = join(REPORTS_DIR, `${safeBaseName}.html`);
   await writeFile(markdownPath, markdown, "utf8");
-  await writeFile(htmlPath, renderReportHtml(markdown, title), "utf8");
+  await writeFile(htmlPath, renderReportHtml(markdown, title, { chartNonce }), "utf8");
   // 登记报告元数据（共享报告中心 + 留存清理）。best-effort，不影响出报告。
   await recordReport({
     reportId: safeBaseName,
@@ -83,6 +85,9 @@ export function inferReportType(baseName) {
   const parts = name.split("_");
   const dateIdx = parts.findIndex((p) => /^\d{8}$/.test(p));
   const probe = dateIdx > 0 ? parts[dateIdx - 1] : name;
+  if (probe.includes("digest")) return "auto-digest"; // 自动测试巡检报告（autodigest_…）
+  if (probe.includes("compare")) return "compare"; // 模型对比报告
+  if (probe.includes("load")) return "load-test"; // 压力测试报告（buildReportId("load", ...)）
   if (probe.includes("scenario")) return "scenario";
   if (probe.includes("stability") || probe === "run") return "stability";
   if (probe.includes("admission")) return "admission"; // 先于 batch：admission-batch 归 admission（同旧行为）

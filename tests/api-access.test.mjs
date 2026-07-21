@@ -67,6 +67,22 @@ test("requiresAdmin 规则", () => {
   assert.equal(requiresAdmin("PUT", "/api/settings"), false);
 });
 
+test("删除报告文件仅超管：DELETE /api/reports/* 需超管，GET 列表/查看不受影响", () => {
+  // 只有 DELETE 需超管
+  assert.equal(requiresAdmin("DELETE", "/api/reports/files/foo"), true);
+  // GET 列表 / 查看 不误伤
+  assert.equal(requiresAdmin("GET", "/api/reports/files"), false);
+  assert.equal(requiresAdmin("GET", "/api/reports/foo/view"), false);
+  assert.equal(requiresAdmin("GET", "/api/reports"), false);
+
+  // 普通用户(10) DELETE → 403 forbidden_admin；超管(100) → 放行
+  assert.equal(evaluateApiAccess({ method: "DELETE", pathname: "/api/reports/files/foo", session: user }).error, "forbidden_admin");
+  assert.equal(evaluateApiAccess({ method: "DELETE", pathname: "/api/reports/files/foo", session: admin }).allow, true);
+  // 普通用户看列表/查看 → 放行
+  assert.equal(evaluateApiAccess({ method: "GET", pathname: "/api/reports/files", session: user }).allow, true);
+  assert.equal(evaluateApiAccess({ method: "GET", pathname: "/api/reports/foo/view", session: user }).allow, true);
+});
+
 test("v0.3.0 渠道写=超管(100)，模型目标写=管理员(10)即可", () => {
   // 渠道持 key，写操作仅超管
   assert.equal(requiresAdmin("POST", "/api/channels"), true);

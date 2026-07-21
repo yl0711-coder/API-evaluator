@@ -14,6 +14,7 @@ export function createTaskManager({
   runBatchAdmissionTest,
   runBatchStabilityTest,
   runScenarioTest,
+  runLoadTest, // 压力测试 runner（server/load-test.mjs）
   normalizeProfileIds,
   normalizeScenarioIds,
   logTechnicalError,
@@ -145,6 +146,8 @@ export function createTaskManager({
         result = await runBatchStabilityTest(payload, context);
       } else if (task.type === "scenario") {
         result = await runScenarioTest(payload, context);
+      } else if (task.type === "load-test") {
+        result = await runLoadTest(payload, context);
       } else {
         throw new Error("不支持的任务类型。");
       }
@@ -242,7 +245,7 @@ export function createTaskManager({
 }
 
 export function normalizeTaskType(type) {
-  if (type === "stability" || type === "batch-admission" || type === "batch-stability" || type === "scenario") {
+  if (type === "stability" || type === "batch-admission" || type === "batch-stability" || type === "scenario" || type === "load-test") {
     return type;
   }
   throw new Error("不支持的任务类型。");
@@ -251,6 +254,12 @@ export function normalizeTaskType(type) {
 export function estimateTaskUnits(type, payload, { normalizeProfileIds, normalizeScenarioIds }) {
   if (type === "stability") {
     return clampNumber(payload.rounds, 1, 100, 10);
+  }
+  if (type === "load-test") {
+    // 压测按时长推进进度：点数 ×(ramp-up + 稳态秒数)，非请求数。扫描时 loads 有多个点。
+    const points = Math.max(1, Math.min(8, Array.isArray(payload.loads) ? payload.loads.length : 1));
+    const perPoint = clampNumber(payload.warmupSec, 0, 30, 5) + clampNumber(payload.durationSec, 5, 600, 60);
+    return points * perPoint;
   }
   if (type === "batch-stability") {
     return normalizeProfileIds(payload.profileIds).length || 1;

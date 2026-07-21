@@ -21,11 +21,12 @@ export function createAutoTestScheduler({
   onRunComplete, // (result) => void：运行完成回调（用于高危报告提示等），best-effort
   logError,
   tickMs = 60_000,
-  maxConcurrent = Math.max(1, Number(process.env.EVALUATOR_AUTO_TEST_CONCURRENCY || 2)),
-  // 活性判定：距上次 tick 超过此毫秒数即判「僵死」（getStatus().stale=true），供健康检查+外部看门狗据此重启。
-  // 默认 5 个 tick 周期（60s→5min）：远大于单次 tick 的正常耗时，避免长 tick 造成误判。
+  // 活性判定：距上次 tick 超过此毫秒数即判「僵死」（getStatus().stale=true），供 /api/health 暴露、
+  // 容器健康检查 + 外部看门狗（autoheal）据此重启「进程活着但定时器僵死」的静默故障。
   staleAfterMs = tickMs * 5,
-  // 连续失败熔断：同一作业连续失败达此次数即自动停用，避免无效重跑（尤其 OOM 崩溃循环）。0=关闭。
+  maxConcurrent = Math.max(1, Number(process.env.EVALUATOR_AUTO_TEST_CONCURRENCY || 2)),
+  // 连续失败熔断阈值：作业连续失败达此次数即自动停用，避免被监控对象挂掉后无限空跑失败。
+  // 0 = 关闭熔断。默认 5，可用 EVALUATOR_AUTO_TEST_MAX_FAILURES 覆盖。
   maxConsecutiveFailures = Math.max(0, Number(process.env.EVALUATOR_AUTO_TEST_MAX_FAILURES || 5)),
   now = () => Date.now(),
 }) {
@@ -90,16 +91,17 @@ export function createAutoTestScheduler({
     });
   }
 
-  // 回写单条作业（读当前值改）：终态回写需基于「作业当前的连续失败计数」自增/清零，故用回调而非静态 patch。
-  function patchJobWith(id, fn) {
+  // 需按当前值增改（如累加 consecutiveFailures + 到阈值停用）时用的可变体，同样走串行化 updateJobs。
+  function patchJobWith(id, mutate) {
     return updateJobs((jobs) => {
       const target = jobs.find((j) => j.id === id);
-      if (target) fn(target);
+      if (target) mutate(target);
       return target || null;
     });
   }
 
-  // 连续失败熔断：达阈值即自动停用并清空下次运行时刻，附可读原因；由端点「重新启用」时清零复活（见 server.mjs）。
+  // 连续失败熔断：达阈值即自动停用（enabled=false、nextRunAt=null、记 autoDisabledAt+原因），
+  // 待人工修复后在配置页重新启用（端点会清零 consecutiveFailures/autoDisabledAt 复活）。
   function maybeDisableForFailures(job) {
     if (maxConsecutiveFailures > 0 && (Number(job.consecutiveFailures) || 0) >= maxConsecutiveFailures) {
       job.enabled = false;
@@ -142,7 +144,7 @@ export function createAutoTestScheduler({
             t.lastReportId = reportId || null;
             t.lastError = ok ? null : String(result?.message || result?.normalizedError || "测试未成功").slice(0, 500);
             if (ok) {
-              t.consecutiveFailures = 0;
+              t.consecutiveFailures = 0; // 成功即复位熔断计数
             } else {
               t.consecutiveFailures = (Number(t.consecutiveFailures) || 0) + 1;
               maybeDisableForFailures(t); // 达阈值则停用（会覆盖上面的 nextRunAt→null、enabled→false）
@@ -166,6 +168,19 @@ export function createAutoTestScheduler({
       } finally {
         releaseSlot();
       }
+    } catch (error) {
+      // 兜底：本函数的三个调用点全是「拒绝无人接管」的形态 —— tick 里的 Promise.all、
+      // start 里的 void reconcileThenTick()、runJobNow 里的 void fireJob(job)。一旦本函数拒绝
+      // 就成了 unhandledRejection，而 Node 默认直接杀进程：一次盘写失败会打死整个评测平台，
+      // 而不只是这一个作业。
+      // 逃逸点是两处状态回写 —— 占位的 lastStatus="running"、以及失败分支里的回写 ——
+      // 它们都在上面 catch 的覆盖之外，updateJobs 落盘失败（盘满 / EACCES）时从这里冒出来。
+      // 此时作业在盘上可能停留 "running"，由启动时的 reconcileInterruptedJobs 归位，不会永久卡住。
+      try {
+        await logError?.(error, job);
+      } catch {
+        // 记录失败同样不应影响调度
+      }
     } finally {
       runningJobIds.delete(job.id);
     }
@@ -186,17 +201,9 @@ export function createAutoTestScheduler({
     await Promise.all(due.map((job) => fireJob(job)));
   }
 
-  async function runJobNow(id) {
-    const jobs = await loadJobs();
-    const job = jobs.find((j) => j.id === id);
-    if (!job) return { ok: false, message: "作业不存在。" };
-    if (runningJobIds.has(id)) return { ok: false, message: "该作业正在运行，请稍候。" };
-    void fireJob(job); // 后台触发，不阻塞 HTTP 响应（测试可能跑数分钟）
-    return { ok: true };
-  }
-
-  // 启动对账：进程崩溃/OOM/重启会让中途运行的作业在盘上永久停留 lastStatus="running"（内存 runningJobIds 已随进程清空）。
-  // 启动时把这些「僵尸运行中」归位为 interrupted 并计一次失败——既清掉误导性的 UI 状态，也让 OOM 崩溃循环能被熔断收敛。
+  // 启动对账：进程崩溃/OOM/重启会让中途运行的作业在盘上永久停留 lastStatus="running"（内存 runningJobIds
+  // 已随进程清空）。启动时把这些「僵尸运行中」归位为 interrupted 并计一次失败——既清掉误导性的 UI 状态，
+  // 也让 OOM 崩溃循环能被熔断收敛。best-effort，不阻断随后的首个 tick。
   async function reconcileInterruptedJobs() {
     await updateJobs((jobs) => {
       for (const job of jobs) {
@@ -220,11 +227,20 @@ export function createAutoTestScheduler({
     await tick();
   }
 
-  // 活性快照：供 /api/health 暴露、容器健康检查+外部看门狗（autoheal）据 stale 判定是否重启。
+  async function runJobNow(id) {
+    const jobs = await loadJobs();
+    const job = jobs.find((j) => j.id === id);
+    if (!job) return { ok: false, message: "作业不存在。" };
+    if (runningJobIds.has(id)) return { ok: false, message: "该作业正在运行，请稍候。" };
+    void fireJob(job); // 后台触发，不阻塞 HTTP 响应（测试可能跑数分钟）
+    return { ok: true };
+  }
+
+  // 活性快照：供 /api/health 暴露、容器健康检查 + 外部看门狗（autoheal）据 stale 判定是否重启。
   function getStatus() {
     const running = Boolean(timer);
     const sinceLastTickMs = lastTickAt == null ? null : Math.max(0, now() - lastTickAt);
-    // 仅在「已启动且确有一次心跳且超阈值」时判僵死：未启动/优雅停机不算，避免关停期误触发重启。
+    // 仅在「已启动且确有一次心跳且超阈值」时判僵死：未启动 / 优雅停机不算，避免关停期误触发重启。
     const stale = running && lastTickAt != null && sinceLastTickMs > staleAfterMs;
     return {
       running,
@@ -240,7 +256,7 @@ export function createAutoTestScheduler({
   function start() {
     if (timer) return;
     lastTickAt = now(); // 先置起点，start_period 内不会被误判僵死
-    void reconcileThenTick(); // 启动即对账 + 跑一次做停机追补
+    void reconcileThenTick(); // 启动即对账僵尸「running」+ 跑一次做停机追补
     timer = setInterval(() => void tick(), tickMs);
     timer.unref?.(); // 不因调度器让本应退出的进程保持存活（listen 的 socket 才是存活来源）
   }

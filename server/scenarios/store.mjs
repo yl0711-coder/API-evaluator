@@ -10,6 +10,7 @@ import { writeJsonAtomic } from "../utils.mjs";
 
 import { BASIC_SCENARIOS } from "./basic.mjs";
 import { CODING_SCENARIOS } from "./coding.mjs";
+import { CODING_HARD_SCENARIOS } from "./coding-hard.mjs";
 import { LONG_CONTEXT_SCENARIOS } from "./long-context.mjs";
 import { CHINESE_SCENARIOS } from "./chinese.mjs";
 import { CUSTOM_SCENARIOS } from "./custom.mjs";
@@ -57,10 +58,11 @@ function withTag(scenario) {
 }
 
 // —— 分组解析：每个场景一个分组。显式 group 优先；否则按 bank 归入初始 5 组（与 scenarioGroups 默认清单一致）。——
-const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic"];
+const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic", "编程硬核"];
 const BANK_GROUP = {
   basic: "基础",
   coding: "基础",
+  "coding-hard": "编程硬核",
   "long-context": "基础",
   chinese: "基础",
   custom: "基础",
@@ -82,6 +84,7 @@ function withMeta(scenario, bankKey) {
 const SOURCES = {
   basic: BASIC_SCENARIOS,
   coding: CODING_SCENARIOS,
+  "coding-hard": CODING_HARD_SCENARIOS,
   "long-context": LONG_CONTEXT_SCENARIOS,
   chinese: CHINESE_SCENARIOS,
   custom: CUSTOM_SCENARIOS,
@@ -93,6 +96,7 @@ const SOURCES = {
 const BANK_META = [
   { key: "basic", exportName: "BASIC_SCENARIOS", file: "basic.mjs", always: true, flag: null },
   { key: "coding", exportName: "CODING_SCENARIOS", file: "coding.mjs", always: true, flag: null },
+  { key: "coding-hard", exportName: "CODING_HARD_SCENARIOS", file: "coding-hard.mjs", always: false, flag: "enableCodingHard" },
   { key: "long-context", exportName: "LONG_CONTEXT_SCENARIOS", file: "long-context.mjs", always: true, flag: null },
   { key: "chinese", exportName: "CHINESE_SCENARIOS", file: "chinese.mjs", always: true, flag: null },
   { key: "custom", exportName: "CUSTOM_SCENARIOS", file: "custom.mjs", always: true, flag: null },

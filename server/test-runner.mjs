@@ -30,10 +30,14 @@ import {
   buildProtocolRequest,
   buildProtocolStreamRequest,
   buildProtocolToolRequest,
+  coalesceSseResponse,
   extractFinishReason,
   extractOutputText,
   extractToolCall,
+  firstTokenPatternFor,
   extractUsage,
+  isStreamOptionsUnsupportedError,
+  isTemperatureUnsupportedError,
   normalizeEmptyResponse,
   normalizeHttpError,
   summarizeStreamStructure,
@@ -67,13 +71,44 @@ import {
   mean,
   parseLooseJson,
   percentile,
+  redactSensitiveText,
   safeJson,
   summarizeText,
   sumNullable,
 } from "./utils.mjs";
 import { saveRunArtifacts } from "./workspace-store.mjs";
 
-const MAX_UPSTREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
+export const MAX_UPSTREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
+// 流式 SSE 每个 token 单独成帧、外裹一层 JSON 信封（Claude 更是每 token 多个事件），体积是同等纯
+// 文本的 50–100 倍；长输出（maxTokens override ≥ ~8k 或推理模型长思考）流式下轻松 5–7MB。若沿用上面
+// 2MB 上限，健康渠道的长流式响应会在 2MB 处被截断、误判 response_too_large → 判 F（好渠道判成坏渠道）。
+// 故流式单独放大上限；仍有硬顶（+每请求超时兜底），不会因坏上游无界缓冲。可用 env 覆盖。
+export const MAX_UPSTREAM_STREAM_RESPONSE_BYTES =
+  Number(process.env.EVALUATOR_MAX_STREAM_RESPONSE_BYTES) > 0
+    ? Number(process.env.EVALUATOR_MAX_STREAM_RESPONSE_BYTES)
+    : 24 * 1024 * 1024;
+
+// 流式完整性：只在「流被截断 / 出错帧 / 内容块损坏」这些**确定**的不完整信号上判失败。
+// 刻意不采纳 summarizeStreamStructure 的全部 issue（如 invalid_json_chunk、event_order_invalid 等
+// 软信号）——那些在健康但怪癖的中转上会误触发，把好流判失败，是评测工具最不该犯的错。
+// finish_reason=length 这类「内容被 max_tokens 截断」不在此列：那种流仍有完整终止帧，属正常截断，
+// 由 isTruncatedFinish 另行处理，不当失败。
+const FATAL_STREAM_ISSUES = new Set([
+  "empty_stream", // 2xx 却一个事件都没有
+  "missing_done", // OpenAI SSE 无 [DONE] 终止帧 → 半截流
+  "missing_message_stop", // Claude SSE 无 message_stop 终止帧 → 半截流
+  "missing_content_block_stop", // Claude 内容块未收尾
+  "stream_error_event", // 吐到一半改口报错帧
+  "content_block_not_found", // Claude 已知的块错位崩溃
+  "content_block_dropped", // delta 落在从未 start 的块 → 内容丢失
+]);
+
+export function streamCompletenessError(streamValidation) {
+  if (!streamValidation || streamValidation.passed) return "";
+  const fatal = (streamValidation.issues || []).filter((issue) => FATAL_STREAM_ISSUES.has(issue));
+  if (!fatal.length) return "";
+  return fatal.includes("stream_error_event") ? "stream_error" : "stream_incomplete";
+}
 
 // Owns all real upstream evaluation work. server.mjs should route requests here
 // instead of carrying test execution details in the HTTP entrypoint.
@@ -89,14 +124,15 @@ async function attachRunArtifacts(runId, summary, artifacts = {}) {
 }
 
 // 报告命名：渠道_模型；取不到渠道/模型则返回空串（→ 多目标）。profile.name = "渠道 / 模型"。
-function reportTargetSlug(profile) {
+// 导出：压测模块（load-test.mjs）复用同一套报告命名，避免重复实现。
+export function reportTargetSlug(profile) {
   const channel = String(profile?.name || "").split(" / ")[0].trim();
   const model = String(profile?.defaultModel || profile?.model || "").trim();
   if (!channel) return model;
   return model ? `${channel}_${model}` : channel;
 }
 // 报告 id：渠道_模型_测试_YYYYMMDD_HHMMSS_短哈希；headSlug 为空（多目标）时用「多目标」。
-function buildReportId(type, headSlug) {
+export function buildReportId(type, headSlug) {
   const stamp = compactDate(new Date()).replace("-", "_"); // YYYYMMDD_HHMMSS
   const hash = crypto.randomUUID().slice(0, 4);
   const head = (headSlug || "").trim() || "多目标";
@@ -200,6 +236,10 @@ export async function runQuickVerify(body, taskContext = {}) {
 
   const verdict = buildQuickVerifyVerdict({ records, identityCheck, fingerprintSummary, absoluteTokenAudit, fingerprintTracking });
 
+  // 成功率 + 延迟：让快检也进「稳定性趋势」与基线回归（可用性/耗时退化都能被看见、被告警）。
+  const successCount = records.filter((r) => r.success).length;
+  const okTotalTimes = records.filter((r) => r.success).map((r) => r.totalMs).filter(Number.isFinite);
+
   const summary = {
     runId,
     type: "quick-verify",
@@ -212,7 +252,10 @@ export async function runQuickVerify(body, taskContext = {}) {
     endedAt: endedAt.toISOString(),
     durationMs: endedAt.getTime() - startedAt.getTime(),
     requestCount: records.length,
-    successCount: records.filter((r) => r.success).length,
+    successCount,
+    successRate: records.length ? successCount / records.length : null,
+    avgTotalMs: Math.round(mean(okTotalTimes) || 0),
+    p95TotalMs: percentile(okTotalTimes, 0.95),
     verdict,
     identityCheck,
     fingerprintSummary,
@@ -1187,6 +1230,20 @@ async function awardScenarioTags(summary, selectedScenarios) {
   }
 }
 
+// 可选的一次性数值覆盖：空/无效 → null（表示不覆盖，回落默认）；有效正数 → clamp 到 [min,max]。
+// 注意不能直接用 clampNumber：Number("")===0 是有限值，会被 clamp 到 min 而非回落。
+function optionalOverrideInt(value, min, max) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+// 表单复选框未勾选时字段直接缺席，勾选时为 "1"；JSON 调用方可传 true/"true"/"on"/"yes"。
+function isScenarioFlagOn(value) {
+  return value === true || ["1", "true", "on", "yes"].includes(String(value ?? "").trim().toLowerCase());
+}
+
 export async function runScenarioTest(body, taskContext = {}) {
   const profiles = await loadRunnableProfiles();
   const profileIds = normalizeProfileIds(body.profileIds);
@@ -1205,6 +1262,13 @@ export async function runScenarioTest(body, taskContext = {}) {
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const requestConcurrency = clampNumber(body.requestConcurrency || body.concurrency, 1, 3, 1);
   const repeats = clampNumber(body.repeats, 1, 5, 1);
+  // 一次性覆盖：仅本次运行生效，不持久化。留空则回落（maxTokens→场景默认 4096，timeoutMs→渠道配置）。
+  const maxTokensOverride = optionalOverrideInt(body.maxTokens, 1, 32768);
+  const timeoutMsOverride = optionalOverrideInt(body.timeoutMs, 1000, 600000);
+  // 「在报告中完整显示返回」：表单复选框传 "1"；同时容忍 JSON 调用方传 true/"true"/"on"/"yes"。
+  const fullResponseInReport = isScenarioFlagOn(body.fullResponseInReport);
+  // 「发送流式请求（SSE）」：开启则整轮场景都走流式，并采集真 TTFT。
+  const streamRequest = isScenarioFlagOn(body.streamRequest);
   const startedAt = new Date();
   const profileResults = [];
   if (taskContext?.task) {
@@ -1222,6 +1286,10 @@ export async function runScenarioTest(body, taskContext = {}) {
           scenarios: selectedScenarios,
           repeats,
           requestConcurrency,
+          maxTokensOverride,
+          timeoutMsOverride,
+          keepFullResponse: fullResponseInReport,
+          streamRequest,
           taskContext,
         }),
       ),
@@ -1282,8 +1350,17 @@ export async function runScenarioTest(body, taskContext = {}) {
       runId: perId,
       taskContext,
     });
-    const reportMarkdown = formatScenarioReport(one, { aiAnalysis });
+    const reportMarkdown = formatScenarioReport(one, { aiAnalysis, fullResponse: fullResponseInReport });
     const reportFiles = await saveReportFiles(perId, reportMarkdown, "场景测试报告");
+    // 全文的用途到此为止：落库/返回前剥掉，避免 test-runs.jsonl、SQLite 与任务结果被回答全文撑大。
+    // buildScenarioSummary 里 results 就是 profileResults 本身（同引用），删这里等于 one/aggregate 一起干净。
+    if (fullResponseInReport) {
+      for (const record of profileResult.records || []) {
+        delete record.responseText;
+        delete record.rawResponse;
+        delete record.rawResponsePartial;
+      }
+    }
     const aiAnalysisFiles = await saveAiAnalysisReport(
       perId,
       formatAiAnalysisDocument(aiAnalysis, { title: "场景测试 · AI 辅助分析" }),
@@ -1344,7 +1421,7 @@ export function normalizeScenarioIds(value) {
   return ids.length > 0 ? ids : getTestScenarios().map((scenario) => scenario.id);
 }
 
-async function runScenarioProfile({ runId, profile, scenarios, repeats, requestConcurrency, taskContext }) {
+async function runScenarioProfile({ runId, profile, scenarios, repeats, requestConcurrency, maxTokensOverride = null, timeoutMsOverride = null, keepFullResponse = false, streamRequest = false, taskContext }) {
   const records = [];
   // LLM 裁判审计（内联）：仅在开关开启时收集 (问题, 回答) 对，回答剥离前抓取。
   const collectForJudge = isLiveJudgeEnabled();
@@ -1361,19 +1438,32 @@ async function runScenarioProfile({ runId, profile, scenarios, repeats, requestC
     const batch = jobs.slice(index, index + requestConcurrency);
     const batchRecords = await Promise.all(
       batch.map(async ({ scenario, repeat }) => {
-        // 所有场景测试统一用 4096 输出窗口（覆盖渠道配置与 scenario.maxTokens）。
-        const caseProfile = { ...profile, maxTokens: SCENARIO_MAX_OUTPUT_TOKENS };
+        // 场景测试默认用 4096 输出窗口（覆盖渠道配置与 scenario.maxTokens）；
+        // 高级设置里的一次性覆盖（若填写）优先。timeoutMs 默认继承渠道配置，同样可被一次性覆盖。
+        const caseProfile = {
+          ...profile,
+          maxTokens: maxTokensOverride ?? SCENARIO_MAX_OUTPUT_TOKENS,
+          timeoutMs: timeoutMsOverride ?? profile.timeoutMs,
+        };
         const record = await executeTestRequest(caseProfile, buildScenarioPrompt(scenario, repeat, repeats), {
           runId,
           caseId: scenario.id,
           writeLog: true,
+          stream: streamRequest,
+          keepRawResponse: keepFullResponse,
           abortSignal: taskContext?.task?.abortController?.signal,
         });
         const quality = evaluateScenarioOutput(scenario, record);
         if (collectForJudge && record.success && record.responseText) {
           judgeItems.push({ question: scenario.prompt, answer: record.responseText, rubric: scenario.judgeRubric || "" });
         }
-        delete record.responseText;
+        // 回答全文默认剥离（会把 test-runs.jsonl / 任务结果撑大）；
+        // 仅「在报告中完整显示返回」开启时留到出报告，出完立刻剥掉（见 runScenarioTest）。
+        if (!keepFullResponse) {
+          delete record.responseText;
+          delete record.rawResponse;
+          delete record.rawResponsePartial;
+        }
         return {
           ...record,
           scenarioId: scenario.id,
@@ -1447,6 +1537,11 @@ export function linkExternalAbort(controller, signal) {
 const RETRY_MAX_ATTEMPTS = 3; // 含首次：最多 1 + 2 次重试
 const RETRY_BASE_DELAY_MS = 600; // 指数退避基数
 const RETRY_MAX_DELAY_MS = 20000; // 单次退避上限（同时钳制 Retry-After，避免被上游要求长睡）
+// 本进程内记住哪些模型（baseUrl|model）拒绝自定义 temperature，后续同模型请求首发就不带，
+// 省掉那次注定 400 的往返。仅内存态：模型不会中途改变是否支持，重启后从头学习即可。
+const TEMPERATURE_UNSUPPORTED_MODELS = new Set();
+// 同款记忆：本进程内曾因 stream_options 被 400 的模型，后续流式请求首发就不带，省掉注定失败的往返。
+const STREAM_OPTIONS_UNSUPPORTED_MODELS = new Set();
 
 // Retry-After（秒数或 HTTP 日期）→ 毫秒。无法解析 → null。
 function parseRetryAfter(value) {
@@ -1482,7 +1577,7 @@ function sleepUnlessAborted(ms, signal) {
 async function runUpstreamProbe(profile, options, { buildRequest, interpret, computeSuccess, captureFirstToken = false }) {
   const requestId = crypto.randomUUID();
   const startedAt = new Date();
-  const timeoutMs = Number(profile.timeoutMs || 60000);
+  const timeoutMs = Number(profile.timeoutMs || 300000);
 
   // 贯穿各 finalize 分支的可变结果（含变体特有字段 toolCall / streamValidation / firstTokenMs）。
   const r = {
@@ -1490,15 +1585,23 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
     firstTokenMs: null,
     totalMs: null,
     statusCode: null,
+    statusText: "", // HTTP reason phrase（原因短语）；HTTP/1.1 可自定义，HTTP/2 无、为空
     responseText: "",
     usage: null,
     finishReason: null,
     rawError: "",
+    // 未截断的原始响应体；仅 options.keepRawResponse 时填充（见下方采集点）。
+    rawResponse: "",
+    rawResponsePartial: false, // 上面那份是断流残体（非完整响应），报告须如实标注
     normalizedError: "",
     toolCall: null,
     streamValidation: null,
   };
   let attempts = 0; // 实际发出的请求次数（含重试），写进记录便于诊断
+  // 是否流式：取自【真正发出去的请求体】，不取调用方声明，两者不会脱节。
+  // 之前没这个字段，只能拿 firstTokenMs 是否有值反推——而流式请求若一个可见 token 都没吐到
+  // （空响应、上游中途死掉），它同样是 null，反推会把这类请求误判成非流式。
+  let streaming = false;
   const finalize = () =>
     finalizeTestRecord({
       options,
@@ -1507,12 +1610,16 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       startedAt,
       firstByteMs: r.firstByteMs,
       firstTokenMs: r.firstTokenMs,
+      stream: streaming,
       totalMs: r.totalMs,
       statusCode: r.statusCode,
+      statusText: r.statusText,
       responseText: r.responseText,
       usage: r.usage,
       finishReason: r.finishReason,
       rawError: r.rawError,
+      rawResponse: r.rawResponse,
+      rawResponsePartial: r.rawResponsePartial,
       normalizedError: r.normalizedError,
       toolCall: r.toolCall,
       streamValidation: r.streamValidation,
@@ -1530,12 +1637,22 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
   let request;
   try {
     request = buildRequest({ ...profile, apiKey });
+    streaming = request.body?.stream === true;
     await assertPublicTarget(request.url); // egress 阻断等确定性失败：不重试
   } catch (error) {
     r.totalMs = 0;
     r.rawError = error instanceof Error ? error.message : String(error);
     r.normalizedError = "network_error";
     return finalize();
+  }
+  // 已知拒绝自定义 temperature 的模型（本进程内曾被 400 过）：首发就不带，省掉那次注定失败的往返。
+  const tempKey = `${profile.baseUrl}|${profile.defaultModel}`;
+  if (request.body?.temperature !== undefined && TEMPERATURE_UNSUPPORTED_MODELS.has(tempKey)) {
+    delete request.body.temperature;
+  }
+  // 同上：已知不认 stream_options 的模型，流式请求首发就不带（拿不到上游 usage，调用方回退字符估算）。
+  if (request.body?.stream_options !== undefined && STREAM_OPTIONS_UNSUPPORTED_MODELS.has(tempKey)) {
+    delete request.body.stream_options;
   }
 
   for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
@@ -1548,15 +1665,21 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
     r.firstByteMs = null;
     r.firstTokenMs = null;
     r.statusCode = null;
+    r.statusText = "";
     r.responseText = "";
     r.usage = null;
     r.finishReason = null;
     r.rawError = "";
+    r.rawResponse = "";
+    r.rawResponsePartial = false;
     r.normalizedError = "";
     r.toolCall = null;
     r.streamValidation = null;
     let retryable = false;
     let retryAfterMs = null;
+    // 确定性重配：上游拒收某个我方可选参数（temperature / stream_options），已就地删掉并原样重试。
+    // 这不是负载信号、也不退避，故 noRetry（压测）也应放行——否则压测首批请求会白白判失败。
+    let reconfigured = false;
     try {
       const started = performance.now();
       const response = await fetch(request.url, {
@@ -1568,15 +1691,23 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       });
       r.firstByteMs = Math.round(performance.now() - started);
       r.statusCode = response.status;
-      const rawResult = await readBoundedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES, controller);
+      // 原因短语：直接取上游实际返回的 statusText（HTTP/1.1 可被上游自定义），不套用标准短语。
+      r.statusText = typeof response.statusText === "string" ? response.statusText : "";
+      // 流式响应体积远大于纯文本（每 token 独立成帧），用放大后的上限，避免长流式被误截断判 F。
+      const responseByteCap = streaming ? MAX_UPSTREAM_STREAM_RESPONSE_BYTES : MAX_UPSTREAM_RESPONSE_BYTES;
+      const rawResult = await readBoundedResponseText(response, responseByteCap, controller, {
+        firstTokenPattern: captureFirstToken ? firstTokenPatternFor(profile.protocol) : null,
+      });
       r.totalMs = Math.round(performance.now() - started);
-      // 真 TTFT：首个流式分片到达时刻（≈首 token）。仅流式可测；非流式 JSON 整体返回、
+      // 真 TTFT：首个「可见输出 token」所在分片的到达时刻。仅流式可测；非流式 JSON 整体返回、
       // 无 token 级时序，故 captureFirstToken=false 时保持 null。
-      if (captureFirstToken && rawResult.firstChunkAt != null) {
-        r.firstTokenMs = Math.max(0, Math.round(rawResult.firstChunkAt - started));
+      // 刻意不退回 firstChunkAt：首帧可能是 Claude 的 message_start / 中转保活帧，
+      // 用它会让 TTFT 系统性偏快且跨协议不可比——测不到就留 null（报告按「—」省略），不给假数字。
+      if (captureFirstToken && rawResult.firstTokenAt != null) {
+        r.firstTokenMs = Math.max(0, Math.round(rawResult.firstTokenAt - started));
       }
       if (rawResult.truncated) {
-        r.rawError = `上游响应超过 ${MAX_UPSTREAM_RESPONSE_BYTES} bytes，已停止读取。`;
+        r.rawError = `上游响应超过 ${responseByteCap} bytes，已停止读取。`;
         r.normalizedError = "response_too_large";
         break; // finally 会清理；不重试
       }
@@ -1587,13 +1718,53 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
         if (response.status === 429 || response.status >= 500) {
           retryable = true; // 限流 / 上游 5xx：可重试
           retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
+        } else if (
+          response.status === 400 &&
+          request.body?.temperature !== undefined &&
+          isTemperatureUnsupportedError(raw)
+        ) {
+          // 部分 OpenAI 系模型（o 系 / GPT-5 系）拒绝自定义 temperature：去掉后立即原样重试。
+          // 就地删掉，本次调用后续尝试都不再带 temperature（guard 保证只触发一次，不会死循环）；
+          // 并记住该模型，让后续请求首发就不带。
+          TEMPERATURE_UNSUPPORTED_MODELS.add(tempKey);
+          delete request.body.temperature;
+          retryable = true;
+          reconfigured = true;
+          retryAfterMs = 0; // 确定性重配，不退避
+        } else if (
+          response.status === 400 &&
+          request.body?.stream_options !== undefined &&
+          isStreamOptionsUnsupportedError(raw)
+        ) {
+          // 同 temperature：部分中转不认 stream_options（我们只用它取 usage）。去掉后立即原样重试，
+          // 否则「勾了流式」的场景题会被误判失败、压测（noRetry 之外的路径）整轮 0% 成功率。
+          // 代价仅是没有上游 usage → 调用方回退按字符估算输出 token。
+          STREAM_OPTIONS_UNSUPPORTED_MODELS.add(tempKey);
+          delete request.body.stream_options;
+          retryable = true;
+          reconfigured = true;
+          retryAfterMs = 0; // 确定性重配，不退避
         }
       } else {
         interpret(r, raw);
       }
+      // 「在报告中完整显示返回」：没提取到文本时（空响应 / SSE 异常 / 上游错误页），rawError 已被
+      // summarizeText 砍到 500 字并压平换行，恰恰是最需要看全文的情形却只剩开头。这里留一份未截断的
+      // 原始响应（已受 MAX_UPSTREAM_RESPONSE_BYTES 限长）。仅调用方明确要求时保留：全文只随记录进报告，
+      // 不进 requests.jsonl（同 responseText，见 finalizeTestRecord）。
+      if (options.keepRawResponse && !r.responseText) r.rawResponse = raw;
     } catch (error) {
       r.totalMs = r.totalMs ?? timeoutMs;
-      r.rawError = error instanceof Error ? error.message : String(error);
+      // undici 的 fetch reject 常是 "fetch failed"，真正的 errno 在 error.cause.code（如 ECONNRESET）。
+      // 附到 rawError，供压测区分网络错误是本机侧还是上游侧。
+      const errno = error?.cause?.code || error?.code || "";
+      r.rawError = [error instanceof Error ? error.message : String(error), errno].filter(Boolean).join(" ");
+      // 断流前已收到的半截 body（readBoundedResponseText 挂上来的）：标记为不完整，
+      // 报告不得把它当完整响应体展示。
+      if (options.keepRawResponse && typeof error?.partialText === "string" && error.partialText) {
+        r.rawResponse = error.partialText;
+        r.rawResponsePartial = true;
+      }
       if (/abort|timeout|timed out/i.test(r.rawError)) {
         r.normalizedError = "timeout"; // 超时或用户取消：止损，不重试
       } else {
@@ -1605,7 +1776,11 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
       unlinkAbort();
     }
 
-    if (!retryable || attempt >= RETRY_MAX_ATTEMPTS) break;
+    // options.noRetry：压测模式下每请求只测一次——重试会吞掉 429/5xx（正是要测的限流/不稳信号）、
+    // 并把退避 sleep 混进延迟，污染 QPS / 尾延迟 / 错误分类。见 server/load-test.mjs。
+    // 例外：确定性重配（reconfigured）是修我方请求体、零退避、totalMs 按最后一次尝试计，
+    // 不会污染任何负载信号，故压测也放行——不然首批请求全因可选参数被拒而误判失败。
+    if (!retryable || (options.noRetry && !reconfigured) || attempt >= RETRY_MAX_ATTEMPTS) break;
     const backoffMs =
       retryAfterMs != null
         ? Math.min(retryAfterMs, RETRY_MAX_DELAY_MS)
@@ -1617,11 +1792,17 @@ async function runUpstreamProbe(profile, options, { buildRequest, interpret, com
 }
 
 // 普通生成探测：解析输出文本与 usage；空回复按 normalizeEmptyResponse 归一。
+// options.stream=true 时改发 SSE 流式请求（贴近真实前端流量，且可测真 TTFT）。
+// 解析层无需分流：coalesceSseResponse 会把 SSE 拼回非流式响应形状，下面 interpret 原样复用。
 export async function executeTestRequest(profile, prompt, options = {}) {
+  const streaming = options.stream === true;
   return runUpstreamProbe(profile, options, {
-    buildRequest: (p) => buildProtocolRequest(p, prompt),
+    captureFirstToken: streaming, // 真 TTFT 仅流式可测；非流式整体返回，保持 null
+    buildRequest: (p) =>
+      streaming ? buildProtocolStreamRequest(p, prompt, { includeUsage: true }) : buildProtocolRequest(p, prompt),
     interpret: (r, raw) => {
-      const parsed = safeJson(raw);
+      // 上游若无视 stream:false 回了 SSE，safeJson 读不出 → 用 SSE 兜底拼回非流式形状。
+      const parsed = safeJson(raw) || coalesceSseResponse(profile.protocol, raw);
       r.responseText = extractOutputText(profile.protocol, parsed);
       r.usage = extractUsage(parsed);
       r.finishReason = extractFinishReason(profile.protocol, parsed);
@@ -1629,8 +1810,23 @@ export async function executeTestRequest(profile, prompt, options = {}) {
         r.rawError = summarizeText(raw);
         r.normalizedError = normalizeEmptyResponse(raw);
       }
+      // 流式完整性校验：coalesceSseResponse 会把「吐了一半就断」或「中途 error 帧」的流照样拼出文本，
+      // 只看「2xx + 有文本」会把这种半截流判成功——成功率虚高，半截答案还进 LLM 裁判打分。
+      // 复用准入路已有的 summarizeStreamStructure（此前只用在准入探测，未覆盖场景/压测流式路）。
+      if (streaming) {
+        r.streamValidation = summarizeStreamStructure(profile.protocol, raw);
+        const streamError = streamCompletenessError(r.streamValidation);
+        if (streamError) {
+          r.normalizedError = streamError; // 覆盖：半截流即便拼出了文本也不算成功
+          if (!r.rawError) r.rawError = (r.streamValidation.issues || []).join(", ");
+        }
+      }
     },
-    computeSuccess: () => undefined, // 走 finalize 默认：2xx + 有输出
+    // 流式：除「2xx + 有文本」外，还须流完整（无致命不完整信号）；非流式走 finalize 默认。
+    computeSuccess: (r) =>
+      streaming
+        ? Boolean(r.statusCode && r.statusCode >= 200 && r.statusCode < 300 && r.responseText && !streamCompletenessError(r.streamValidation))
+        : undefined,
   });
 }
 
@@ -1642,7 +1838,7 @@ function buildProbeTokenRequest(profile, text) {
     return {
       url: `${baseUrl}/v1/messages`,
       headers: { "content-type": "application/json", "x-api-key": profile.apiKey, "anthropic-version": profile.anthropicVersion || "2023-06-01" },
-      body: { model: profile.defaultModel, max_tokens: 1, messages: [{ role: "user", content: text }] },
+      body: { model: profile.defaultModel, max_tokens: 1, stream: false, messages: [{ role: "user", content: text }] },
     };
   }
   return {
@@ -1656,7 +1852,7 @@ async function measureProbeInputTokens(profile, text, options = {}) {
   return runUpstreamProbe(profile, { writeLog: false, ...options }, {
     buildRequest: (p) => buildProbeTokenRequest(p, text),
     interpret: (r, raw) => {
-      r.usage = extractUsage(safeJson(raw));
+      r.usage = extractUsage(safeJson(raw) || coalesceSseResponse(profile.protocol, raw));
     },
     computeSuccess: (r) => Number(r.usage?.inputTokens) > 0,
   });
@@ -1667,7 +1863,7 @@ export async function executeToolCallTestRequest(profile, options = {}) {
   return runUpstreamProbe(profile, options, {
     buildRequest: (p) => buildProtocolToolRequest(p),
     interpret: (r, raw) => {
-      const parsed = safeJson(raw);
+      const parsed = safeJson(raw) || coalesceSseResponse(profile.protocol, raw);
       r.toolCall = extractToolCall(profile.protocol, parsed);
       r.usage = extractUsage(parsed);
       r.responseText = r.toolCall ? `tool_call:${r.toolCall.name}` : extractOutputText(profile.protocol, parsed);
@@ -1699,27 +1895,38 @@ export async function executeStreamStructureTestRequest(profile, prompt, options
   });
 }
 
-export async function readBoundedResponseText(response, maxBytes, controller) {
+// firstTokenPattern：命中即视为「首个可见输出 token 已到达」（见 protocols.firstTokenPatternFor）。
+// 不传则只记 firstChunkAt，行为与旧版一致。
+export async function readBoundedResponseText(response, maxBytes, controller, { firstTokenPattern = null } = {}) {
   const contentLength = Number(response.headers.get("content-length") || 0);
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
     controller.abort();
-    return { text: "", truncated: true, firstChunkAt: null };
+    return { text: "", truncated: true, firstChunkAt: null, firstTokenAt: null };
   }
 
   if (!response.body?.getReader) {
     if (!contentLength) {
       controller.abort();
-      return { text: "", truncated: true, firstChunkAt: null };
+      return { text: "", truncated: true, firstChunkAt: null, firstTokenAt: null };
     }
     const text = await response.text();
-    return { text: text.slice(0, maxBytes), truncated: Buffer.byteLength(text, "utf8") > maxBytes, firstChunkAt: null };
+    return {
+      text: text.slice(0, maxBytes),
+      truncated: Buffer.byteLength(text, "utf8") > maxBytes,
+      firstChunkAt: null,
+      firstTokenAt: null,
+    };
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const chunks = [];
   let totalBytes = 0;
-  let firstChunkAt = null; // 首个分片到达时刻（performance.now()），供流式 TTFT 计算
+  let firstChunkAt = null; // 首个分片到达时刻（performance.now()）——含 message_start / 保活帧，不等于首 token
+  let firstTokenAt = null; // 首个「可见输出 token」所在分片的到达时刻，才是 TTFT 的正确口径
+  // 滑动窗：只留尾部若干字符 + 新分片，既能匹配跨分片被切断的标记，又不让正则开销随响应体线性增长。
+  let matchWindow = "";
+  const MATCH_WINDOW = 4096;
 
   try {
     while (true) {
@@ -1732,12 +1939,24 @@ export async function readBoundedResponseText(response, maxBytes, controller) {
       if (totalBytes > maxBytes) {
         await reader.cancel();
         controller.abort();
-        return { text: chunks.join(""), truncated: true, firstChunkAt };
+        return { text: chunks.join(""), truncated: true, firstChunkAt, firstTokenAt };
       }
-      chunks.push(decoder.decode(value, { stream: true }));
+      const piece = decoder.decode(value, { stream: true });
+      chunks.push(piece);
+      if (firstTokenPattern && firstTokenAt === null) {
+        matchWindow = (matchWindow + piece).slice(-MATCH_WINDOW);
+        if (firstTokenPattern.test(matchWindow)) firstTokenAt = performance.now();
+      }
     }
     chunks.push(decoder.decode());
-    return { text: chunks.join(""), truncated: false, firstChunkAt };
+    return { text: chunks.join(""), truncated: false, firstChunkAt, firstTokenAt };
+  } catch (error) {
+    // 流中途断掉（socket 被掐断 / 超时中止）：已收到的半截 body 往往是「上游到底发出来没有」的
+    // 唯一证据，不能连同异常一起丢掉。仍按原样抛出——错误归类（network_error / timeout）不变，
+    // 只是把残体挂在异常上给调用方（见 runUpstreamProbe 的 catch）。
+    const partial = chunks.join("");
+    if (partial) error.partialText = partial;
+    throw error;
   } finally {
     reader.releaseLock?.();
   }
@@ -1809,12 +2028,16 @@ async function finalizeTestRecord({
   startedAt,
   firstByteMs,
   firstTokenMs = null,
+  stream = false,
   totalMs,
   statusCode,
+  statusText = "",
   responseText,
   usage,
   finishReason = null,
   rawError,
+  rawResponse = "",
+  rawResponsePartial = false,
   normalizedError,
   toolCall = null,
   streamValidation = null,
@@ -1834,11 +2057,15 @@ async function finalizeTestRecord({
     // 实际发出的输出窗口（场景题会把它抬到 scenario.maxTokens）。落进 requests.jsonl 便于
     // 直接核对"发的是不是 8192"，不必靠输出长度反推。
     requestMaxTokens: Number(profile.maxTokens) || null,
+    // 实际发出的是不是 SSE 流式请求。诊断时不必再靠 firstTokenMs 反推（那会把「流式但没吐内容」
+    // 的失败误判成非流式）。
+    stream,
     startedAt: startedAt.toISOString(),
     firstByteMs,
     firstTokenMs,
     totalMs,
     statusCode,
+    statusText, // 上游返回的原因短语（reason phrase），供压测报告逐码展示
     success: successOverride ?? Boolean(statusCode && statusCode >= 200 && statusCode < 300 && responseText),
     attempts,
     normalizedError,
@@ -1855,6 +2082,10 @@ async function finalizeTestRecord({
     toolCall,
     streamValidation,
     rawError: summarizeText(rawError),
+    // 未截断原始响应（仅 keepRawResponse 时非空）。记录会原样写进工作区 result.json，
+    // 故在此就脱敏，不能等到出报告时才做。
+    rawResponse: rawResponse ? redactSensitiveText(rawResponse) : "",
+    rawResponsePartial: Boolean(rawResponse) && rawResponsePartial === true,
   };
 
   if (options.writeLog !== false) {
@@ -1862,6 +2093,9 @@ async function finalizeTestRecord({
     // Full response text can be large and user-provided; keep reports useful but
     // avoid turning request logs into a data dump.
     delete logRecord.responseText;
+    // 同上：日志留 rawError 的 500 字摘要即可（partial 标记是给它配套的，一并去掉）
+    delete logRecord.rawResponse;
+    delete logRecord.rawResponsePartial;
     await appendJsonLine(REQUEST_LOG_FILE, logRecord);
     // 双写 SQLite：逐请求全量历史，供统计严谨用。best-effort，
     // node:sqlite 不可用或出错时静默跳过，JSONL 仍是事实来源。

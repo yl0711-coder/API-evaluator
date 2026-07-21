@@ -17,6 +17,9 @@ export function buildProtocolRequest(profile, prompt) {
       body: {
         model,
         max_tokens: Number(profile.maxTokens || 512),
+        // 显式非流式：规范里 stream 默认 false，但部分中转（尤其把 OpenAI 后端包成 Claude 格式的）
+        // 不带该字段时会默认回 SSE，导致按 JSON 解析读不出文本、被误判成 empty_response。
+        stream: false,
         messages: [{ role: "user", content: text }],
       },
     };
@@ -55,6 +58,7 @@ export function buildProtocolToolRequest(profile) {
       body: {
         model,
         max_tokens: Number(profile.maxTokens || 512),
+        stream: false, // 同 buildProtocolRequest：不带该字段时部分中转会默认回 SSE。
         tools: [
           {
             name: toolName,
@@ -121,7 +125,11 @@ export function buildProtocolToolRequest(profile) {
   };
 }
 
-export function buildProtocolStreamRequest(profile, prompt) {
+// includeUsage：OpenAI 流式默认不返回 usage，必须显式 stream_options 才有 token 数。
+// 做成可选参数而非写死：只有「生成类」流式探测需要 token 数才传 true；
+// 准入的 stream_structure 用例（只校验 SSE 结构）不传，行为保持原样，
+// 免得个别中转不认 stream_options 直接 400、把原本能过的用例弄挂。
+export function buildProtocolStreamRequest(profile, prompt, { includeUsage = false } = {}) {
   const model = profile.defaultModel;
   const text = prompt.trim() || "请用一句话说明你现在可以正常工作。";
   const baseUrl = profile.baseUrl.replace(/\/+$/, "");
@@ -155,6 +163,9 @@ export function buildProtocolStreamRequest(profile, prompt) {
       temperature: 0.2,
       max_tokens: Number(profile.maxTokens || 512),
       stream: true,
+      // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
+      // coalesceClaudeSse 已做合并。
+      ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
     },
   };
 }
@@ -202,6 +213,126 @@ export function summarizeStreamStructure(protocol, raw) {
   return summarizeOpenAiStream(events, raw);
 }
 
+// 兜底：上游无视 stream:false、直接回 SSE 时，把流式事件重新拼回「非流式响应」的形状，
+// 于是 extractOutputText / extractUsage / extractFinishReason / extractToolCall 无需改动即可复用。
+// 非 SSE（或空流）返回 null，交由调用方按原逻辑判错。
+export function coalesceSseResponse(protocol, raw) {
+  const events = parseSseEvents(raw);
+  if (!events.length) return null;
+  return protocol === "claude_messages" ? coalesceClaudeSse(events) : coalesceOpenAiSse(events);
+}
+
+function coalesceClaudeSse(events) {
+  const blocks = new Map(); // index -> { type, text, name, id, jsonParts }
+  let usage = null;
+  let stopReason = null;
+  let sawAny = false;
+
+  const blockAt = (index) => {
+    const idx = Number.isInteger(index) ? index : 0;
+    let block = blocks.get(idx);
+    if (!block) {
+      block = { type: "text", text: "", name: "", id: "", jsonParts: [] };
+      blocks.set(idx, block);
+    }
+    return block;
+  };
+
+  for (const item of events) {
+    const type = item.event || item.parsed?.type || "";
+    const data = item.parsed || {};
+    if (!type) continue;
+    sawAny = true;
+
+    if (type === "message_start") {
+      if (data.message?.usage) usage = { ...data.message.usage };
+    } else if (type === "content_block_start") {
+      const cb = data.content_block || {};
+      const idx = Number.isInteger(data.index) ? data.index : blocks.size;
+      blocks.set(idx, { type: cb.type || "text", text: cb.text || "", name: cb.name || "", id: cb.id || "", jsonParts: [] });
+    } else if (type === "content_block_delta") {
+      const block = blockAt(data.index);
+      const delta = data.delta || {};
+      if (delta.type === "text_delta") block.text += delta.text || "";
+      else if (delta.type === "input_json_delta") block.jsonParts.push(delta.partial_json || "");
+      // thinking_delta 等其它增量不计入可见文本（与非流式响应里 thinking 不进 content 一致）。
+    } else if (type === "message_delta") {
+      if (data.delta?.stop_reason) stopReason = data.delta.stop_reason;
+      if (data.usage) usage = { ...(usage || {}), ...data.usage };
+    }
+  }
+  if (!sawAny) return null;
+
+  const content = [...blocks.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, block]) => {
+      if (block.type !== "tool_use") return { type: block.type || "text", text: block.text };
+      const joined = block.jsonParts.join("");
+      let input = {};
+      if (joined) {
+        try {
+          input = JSON.parse(joined);
+        } catch {
+          // 参数被截断 → 保留空对象，交由上层按 tool_call 参数缺失处理。
+        }
+      }
+      return { type: "tool_use", name: block.name, id: block.id, input };
+    });
+
+  return { content, stop_reason: stopReason, ...(usage ? { usage } : {}) };
+}
+
+function coalesceOpenAiSse(events) {
+  const toolCalls = new Map(); // index -> { id, name, argParts }
+  let content = "";
+  let finishReason = null;
+  let usage = null;
+  let sawAny = false;
+
+  for (const item of events) {
+    if (item.data === "[DONE]") {
+      sawAny = true;
+      continue;
+    }
+    const data = item.parsed;
+    if (!data || typeof data !== "object") continue;
+    sawAny = true;
+    if (data.usage) usage = data.usage;
+
+    const choice = data.choices?.[0];
+    if (!choice) continue;
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+    const delta = choice.delta || {};
+    if (typeof delta.content === "string") content += delta.content;
+
+    for (const call of delta.tool_calls || []) {
+      const idx = Number.isInteger(call.index) ? call.index : 0;
+      let entry = toolCalls.get(idx);
+      if (!entry) {
+        entry = { id: "", name: "", argParts: [] };
+        toolCalls.set(idx, entry);
+      }
+      if (call.id) entry.id = call.id;
+      if (call.function?.name) entry.name = call.function.name;
+      if (call.function?.arguments) entry.argParts.push(call.function.arguments);
+    }
+  }
+  if (!sawAny) return null;
+
+  const message = { role: "assistant", content };
+  if (toolCalls.size) {
+    message.tool_calls = [...toolCalls.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, entry]) => ({
+        id: entry.id,
+        type: "function",
+        // 非流式响应里 arguments 也是 JSON 字符串，拼接后形状一致。
+        function: { name: entry.name, arguments: entry.argParts.join("") },
+      }));
+  }
+  return { choices: [{ message, finish_reason: finishReason }], ...(usage ? { usage } : {}) };
+}
+
 export function extractOutputText(protocol, parsed) {
   if (!parsed || typeof parsed !== "object") {
     return "";
@@ -216,7 +347,20 @@ export function extractOutputText(protocol, parsed) {
       .trim();
   }
 
-  return String(parsed.choices?.[0]?.message?.content || "").trim();
+  const content = parsed.choices?.[0]?.message?.content;
+  // 把 Claude 包成 OpenAI 形状的中转会回「内容分片数组」而非字符串。String(数组) 得到
+  // "[object Object]"——非空，于是 normalizeEmptyResponse 不会触发，这串垃圾会被当成模型答案
+  // 存进报告并拿去打分。按分片取 text，与上面 Claude 分支同口径（thinking/reasoning 不算可见输出）。
+  if (Array.isArray(content)) {
+    return content
+      .map((item) =>
+        item && typeof item.text === "string" && item.type !== "thinking" && item.type !== "reasoning" ? item.text : "",
+      )
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  return String(content || "").trim();
 }
 
 // 截断信号：OpenAI choices[0].finish_reason==="length" / Claude stop_reason==="max_tokens"，
@@ -288,6 +432,71 @@ export function normalizeHttpError(status, raw) {
   if (/rate limit|too many requests|quota exceeded|insufficient quota/.test(text)) return "rate_limited";
   if (status >= 500) return "upstream_5xx";
   return "invalid_response";
+}
+
+// 上游报 400 时经常把我方请求体原样回显（不少中转带 request 字段，LiteLLM 直接 dump kwargs）。
+// 于是「错误文本里出现 temperature / stream_options」根本不能证明它就是被拒的那个参数——
+// 只要我们发了它，回显里就必然有。这里先抹掉「作为字典键/kwarg 出现」的那些
+// （`"x": <值>` / `'x': <值>` / `x=<值>`，靠值的起始形状识别），剩下还提到，才算上游确实点名了它。
+// 刻意不抹 `x: Extra inputs are not permitted` 这种——冒号后跟的是抱怨而非值，那是真投诉（pydantic 风格）。
+// 取向：宁可漏判也不能误判。漏判只是这次请求照旧 400（用户看得见真实报错）；
+// 误判会把模型永久加进进程级摘参名单（见 test-runner 的 *_UNSUPPORTED_MODELS），
+// 此后静默丢 usage / 丢 temperature，报告数字变错却毫无提示。
+function errorNamesParam(text, param) {
+  const echoedKey = new RegExp(`["']?\\b${param}\\b["']?\\s*[:=]\\s*(?=[{\\[]|["']|-?\\d|true\\b|false\\b|null\\b)`, "g");
+  return text.replace(echoedKey, " ").includes(param);
+}
+
+// 部分 OpenAI 系模型（推理模型 o 系、GPT-5 系）不再接受自定义 temperature，只允许默认值，
+// 收到 temperature≠默认会返回 400（如 "Unsupported value: 'temperature' does not support 0.2 ...
+// Only the default (1) value is supported."）。识别这类错误，以便去掉 temperature 后重试。
+export function isTemperatureUnsupportedError(raw) {
+  const text = String(raw || "").toLowerCase();
+  if (!errorNamesParam(text, "temperature")) return false;
+  return (
+    text.includes("unsupported") || // Unsupported value/parameter: 'temperature'
+    text.includes("does not support") || // does not support 0.2 with this model
+    text.includes("only the default") || // Only the default (1) value is supported
+    text.includes("not supported") // 'temperature' is not supported with this model
+  );
+}
+
+// 首个「可见输出 token」的到达标记（供流式 TTFT 打点）。
+// 不能用「首个 SSE 分片到达」近似：Claude 首帧是 message_start（不含任何文本）、部分中转还会先发
+// 保活注释（`: ping`）或换行开流——都会让 TTFT 系统性偏快，且 Claude 与 OpenAI 口径不对等、无法横评。
+// 返回不带 /g 的正则（.test 无状态），交给流式读取器逐分片对累积缓冲匹配。
+export function firstTokenPatternFor(protocol) {
+  if (protocol === "claude_messages") {
+    // text_delta=可见文本；input_json_delta=工具参数（工具流的首个真实产出）。
+    // thinking_delta 不算：它不进可见输出（见 extractOutputText），计入会让推理模型显得反应更快。
+    return /"type"\s*:\s*"(?:text_delta|input_json_delta)"/;
+  }
+  // OpenAI：delta.content 的首个非空字符串；工具流以 tool_calls 出现为准。
+  // 要求引号后至少一个字符，从而排除角色帧 "content":"" 与 "content":null；
+  // "reasoning_content" 不会误命中（其 content 前是下划线而非引号）。
+  return /"content"\s*:\s*"[^"]|"tool_calls"\s*:\s*\[/;
+}
+
+// 部分中转 / 非 OpenAI 官方实现不认 stream_options（流式取 usage 的必需参数），收到会直接 400
+// （如 "Unrecognized request argument supplied: stream_options"、"Extra inputs are not permitted"）。
+// 识别这类错误，以便去掉 stream_options 后重试——代价仅是拿不到上游 usage，
+// 调用方（load-test 的 deriveOutputTokens）本就会回退按字符估算，不影响成败判定。
+// 与 isTemperatureUnsupportedError 同款保守口径：必须点名 stream_options 才认（见 errorNamesParam——
+// 单纯 includes 挡不住回显：正因为我们发了 stream_options，回显里才必然带着它）。
+export function isStreamOptionsUnsupportedError(raw) {
+  const text = String(raw || "").toLowerCase();
+  if (!errorNamesParam(text, "stream_options")) return false;
+  return (
+    text.includes("unsupported") || // Unsupported parameter: 'stream_options'
+    text.includes("not supported") || // stream_options is not supported
+    text.includes("does not support") ||
+    text.includes("unrecognized") || // Unrecognized request argument supplied: stream_options
+    text.includes("unknown") || // Unknown parameter: 'stream_options'
+    text.includes("unexpected") || // unexpected keyword argument
+    text.includes("not permitted") || // Extra inputs are not permitted（pydantic 系）
+    text.includes("not allowed") ||
+    text.includes("invalid")
+  );
 }
 
 export function normalizeEmptyResponse(raw) {
@@ -403,15 +612,29 @@ function summarizeOpenAiStream(events, raw) {
   const issues = [];
   let sawDelta = false;
   let sawDone = false;
+  let sawErrorEvent = false;
   let invalidJsonChunks = 0;
 
   for (const item of events) {
-    if (item.data === "[DONE]") {
+    // 保活/空帧：`event: ping` 这种只有 event 行的、以及空 `data:` 的心跳帧，都不是 JSON 分片。
+    // 计入 invalidJsonChunks 会把健康中转误判成「SSE 结构坏了」——评测工具最不该犯的错。
+    // （`: ping` 注释帧在 parseSseEvents 就被跳过了，这里兜住另外两种形态。）
+    // 顺带容忍 `data: [DONE] ` 这类带尾随空白的收尾帧，同属「良性空白被当成坏数据」。
+    const data = String(item.data || "").trim();
+    if (!data) continue;
+    if (data === "[DONE]") {
       sawDone = true;
       continue;
     }
     if (!item.parsed) {
       invalidJsonChunks += 1;
+      continue;
+    }
+    // 错误帧：上游吐到一半改口报错（输出被截断）。只看结构完整性会误判「通过」——
+    // delta 有、[DONE] 也有。Claude 路径一直有这道检查（stream_error_event），此处对齐。
+    // 只认真值 error：部分中转每帧都带 "error":null，当错误帧会把健康流全判失败。
+    if (item.event === "error" || item.parsed.error) {
+      sawErrorEvent = true;
       continue;
     }
     const choices = Array.isArray(item.parsed.choices) ? item.parsed.choices : [];
@@ -425,6 +648,7 @@ function summarizeOpenAiStream(events, raw) {
   if (!sawDelta) issues.push("missing_delta");
   if (!sawDone) issues.push("missing_done");
   if (invalidJsonChunks > 0) issues.push("invalid_json_chunk");
+  if (sawErrorEvent) issues.push("stream_error_event");
   if (/content block not found/i.test(String(raw || ""))) issues.push("content_block_not_found");
 
   return {
@@ -435,6 +659,7 @@ function summarizeOpenAiStream(events, raw) {
     flags: {
       delta: sawDelta,
       done: sawDone,
+      errorEvent: sawErrorEvent,
       invalidJsonChunks,
     },
   };

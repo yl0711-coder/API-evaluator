@@ -6,11 +6,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed / Hardened（上线前就绪检查）
+- **健康检查的「调度器活性」判定是死配置** — `deploy/docker-compose.evaluator.yml` 的健康检查断言
+  `!(j.autoTest && j.autoTest.stale)` 以感知「进程活着但定时器僵死」，但 7月7日 `80624fc` 把调度器的
+  活性心跳（`lastTickAt`/`stale`/`getStatus`）连同其测试一起**静默删除**，`/api/health` 此后不再返回
+  `autoTest` 字段 → 表达式恒真、健康检查退化成纯 HTTP ping，autoheal 对「自动测试停摆」永不触发。
+  复原心跳：`getStatus()` 回归调度器、`/api/health` 重新暴露 `autoTest`（compose 无需改动即恢复生效），
+  并补回被删的 stale 判定回归测试（`server/auto-test-scheduler.mjs`、`server.mjs`、
+  `tests/auto-test-scheduler.test.mjs`）。
+- **容器无 SIGTERM 处理 + node 以 PID 1 运行 → 每次 `docker stop` 白等 10s 再被 SIGKILL** —
+  `CMD` 是 exec 形式、无 init/tini，内核不对 PID 1 上无处理器的信号执行默认终止动作。新增
+  `SIGTERM`/`SIGINT` 处理器：停调度器 → `server.close()` → `closeDatabase()` 干净收尾，带 8s 兜底
+  超时防卡死（`server.mjs`）。关键细节：`server.close()` 只等在途请求，反向代理握着的【空闲 keep-alive】
+  长连接会让回调永不触发、被兜底超时拖住，故补 `closeIdleConnections()`（立即断空闲连接）+ 5s 宽限后
+  `closeAllConnections()`（放剩余连接），在途请求先排空、空闲连接即时断。已用 `process.emit("SIGTERM")`
+  驱动真实处理器 + 持有 keep-alive 连接验证：真实处理器 5ms 内走完优雅收尾退出。注：OS 信号投递本身
+  （docker SIGTERM → 处理器）在 Windows Git Bash 下不投递，只能在 Linux/Docker 目标上验证；处理器体逻辑
+  已在本机真实驱动过。
+- **new-api 导入出站无超时 → 上游挂起会无限期吊住导入请求** — `newapi-source.mjs` 的分页 `fetch`
+  是全站唯一没带 `AbortSignal` 的出站点（undici 无默认响应超时），new-api 主机挂起会逐页累加吊死。
+  补每页超时（默认 15s，`EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS` 可覆盖），与 test-runner / client-replay
+  的守卫 + redirect + 超时三项对齐（`server/newapi-source.mjs` + 回归测试）。
+- **全局兜底：`unhandledRejection` / `uncaughtException`** — 此前未注册，任何逃逸的拒绝在 Node 默认
+  语义下静默杀进程、连日志都没有。新增兜底处理器：先落一条可诊断日志再按默认语义处理（rejection
+  仅告警保活、uncaughtException 记录后退出），把「静默猝死」变「可诊断」（`server.mjs`）。
+- **修正三处会误导排查的失效 / 虚假注释** —
+  (1) `egress-guard.mjs` 的 P1-2 安全决策记录称「newapi-source 的导入 fetch 没走本守卫」，该论据自
+  P2-1 起已失效（现已走守卫），改写为不依赖失效事实的表述；
+  (2) `channel-store.mjs` / `model-target-store.mjs` 的「SQLite + JSON 兜底」易被读成实时镜像——实为
+  仅在 SQLite 不可用时的降级路径，DB 损坏时读到的是旧 JSON、非恢复来源，注释据实澄清；
+  (3) `utils.mjs` 的原子写注释声称抗「断电」，实际不 fsync、只抗进程崩溃，据实收窄承诺。
+
+### Fixed（评测正确性）
+- **流式「半截流 / 中途 error 帧」被判成功（P2-2）** — 场景/压测的流式路成功判定只看「2xx + 拼得出
+  文本」，而 `coalesceSseResponse` 会把「吐一半就断」或「中途 `{"error":...}` 帧」的流照样拼出文本
+  → 成功率系统性高估、半截答案还进 LLM 裁判打分。改为流式路复用准入路已有的
+  `summarizeStreamStructure`，并新增 `streamCompletenessError`：仅在**确定的**不完整信号
+  （无 `[DONE]`/`message_stop` 终止帧、`content_block` 损坏、error 帧）上判失败，刻意不采纳
+  `invalid_json_chunk` 等软信号以免误杀健康怪癖中转。`finish_reason=length` 这类正常截断不受影响
+  （`server/test-runner.mjs`；接线经 `tests/probe-requests.test.mjs` 端到端验证）。
+- **2MB 响应上限没随流式放大 → 长流式被误判失败（P2-3）** — SSE 每 token 独立成帧、体积是纯文本的
+  50–100 倍，长输出流式轻松 5–7MB，会在 2MB 处被截断误判 `response_too_large` → 判 F（好渠道判成
+  坏渠道）。流式单独用放大上限（默认 24MB，`EVALUATOR_MAX_STREAM_RESPONSE_BYTES` 可覆盖），非流式
+  仍 2MB（`server/test-runner.mjs`）。
+- **趋势数据超 4000 行时砍掉的是「最新」轮次（P2-5）** — `queryRoundSeriesByRunIds` 用
+  `ORDER BY id ASC LIMIT`，历史轮数 >4000 时被砍的恰是最新轮，而回归判定以最新点为准 → 静默漂移。
+  改为 `ORDER BY id DESC LIMIT` 取最新再 `.reverse()` 回升序（`server/db.mjs`）。
+
+### Fixed / Hardened（安全）
+- **new-api 导入的出站漏在守卫之外、且跟随重定向（P2-1）** — `fetchViaApi` 的 `fetch` 未过
+  `assertPublicTarget`、未设 `redirect:"error"`，是全站第三个出站点。base 填内网/元数据、或上游 302
+  到内网都会打过去。补上守卫（host 跨页不变，校验一次）+ `redirect:"error"`，与另两个出站点对齐
+  （`server/newapi-source.mjs`）。
+- **`EVALUATOR_SESSION_SECRET` 无强度校验（P3-2）** — 会话 Cookie 用 HMAC-SHA256(secret) 自签，密钥
+  太短可被离线爆破后伪造超管会话。新增 `assertSessionSecretStrength`（≥32 字节，README 的
+  `openssl rand -hex 32`=64 字符远超门槛），由 server.mjs 在 listen 前调用，弱密钥变「启动即拒」而非
+  「线上默默可被伪造」（`server/auth.mjs` + `server.mjs`）。
+- **`/api/client-errors` 匿名可写、无限流（P3-8）** — 免登录白名单端点，任何人可无限灌错误日志。
+  新增极简固定窗口限流 `server/rate-limit.mjs`，按客户端 IP 限流（默认 60/分钟，
+  `EVALUATOR_CLIENT_ERROR_RATE_MAX` 可覆盖），超限返回 429。
+
+### Security decisions
+- **DNS rebinding（原审查 P1-2）定为「已知接受的缺口」，不在代码里修** — 出站守卫校验 DNS 解析
+  结果但不 pin 已验证 IP，fetch 会独立再解析一次，存在 TOCTOU 窗口。评估后不修，理由：
+  (1) 成本——Node 不公开导出 undici，保留 `fetch` 又要传自定义 `lookup` 就必须新增 undici 依赖；
+  不加依赖则须把三个出站点改写成 `node:https.request` 并重新实现流式读取/中止/重定向语义，
+  而这是本产品的核心链路；(2) 收益端封堵（摘 IAM 角色 / 强制 IMDSv2 / 网络层封 169.254.169.254）
+  比 pin IP 更硬——它同时覆盖没走守卫的出站点（如 `newapi-source` 的导入 fetch，即 P2-1），
+  且不依赖「守卫代码写得对」，而本次正好发现该守卫的 IPv6 判定已死了两个版本；
+  (3) 触发链需攻击者自建 rebinding DNS + 社工超管，而现实误用（超管填错内网地址）守卫已能挡住。
+  **此决策的前提是补偿控制真的落地**，故新增 `pnpm check:egress`
+  （`scripts/check-egress-mitigation.mjs`）在评测机本机核实元数据端点是否已封堵，未封堵则退出码 1。
+  完整决策记录（含「什么时候必须回来修」）写在 `server/egress-guard.mjs` 的 `assertPublicTarget` 上方。
+- **删除 `egress-guard.mjs` 顶部「防 DNS rebinding（校验实连 IP）」的错误注释** — 该模块既不校验
+  实连 IP 也不防 rebinding，文件内的函数注释其实自认了这点，两处自相矛盾。这类注释比缺口本身更
+  危险：它让读代码的人以为已处理，从而不去看。
+
+### Fixed / Hardened
+- **出站守卫的 IPv6 内网判定此前完全失效（P1-1，安全）** — `isPrivateV6` 用正则
+  `/::ffff:(\d+\.\d+\.\d+\.\d+)$/` 认 IPv4-mapped，要求点分十进制书写；但 WHATWG `URL` 会先把
+  `[::ffff:127.0.0.1]` 归一化成十六进制 `[::ffff:7f00:1]` 再交给守卫，正则**永不命中**——
+  这段判定自 0.5.3 起是死代码。实测 `http://[::ffff:a9fe:a9fe]/`（=169.254.169.254 云元数据）
+  与 `http://[::ffff:7f00:1]/`（=127.0.0.1）可直接过守卫，而评测机带 IAM 角色、响应体还会进报告。
+  改为把 IPv6 解析成 16 字节按位段判定：IPv4-mapped 还原内嵌 v4 走 v4 规则，并补上 `::/96`、
+  NAT64 `64:ff9b::/96`、`fe80::/10`（旧的 "fe80" 前缀只覆盖 `fe80::/16`）、`ff00::/8`、
+  2002::/16 6to4 内嵌 v4；解析失败一律 fail-closed（`server/egress-guard.mjs`）。
+  注：老用例 `isPrivateOrReservedIp("::ffff:10.0.0.1")` 测的是点分写法、直接调用，绕过了 URL
+  归一化，所以一直是绿的——新回归用例改测归一化后的真实形态。
+- **畸形 Cookie 触发 500，匿名可刷（P2-6）** — `parseCookies` 对每个值做 `decodeURIComponent`，
+  遇非法转义（`%zz`、裸 `%`）抛 `URIError`；该函数在鉴权前对每个请求都跑，任何人带一个坏
+  cookie 即可让请求 500 并写一条错误日志。改为逐值 try/catch，解不开按原文保留（会话 cookie
+  是签名令牌，原文自然验签失败 → 正常 401）（`server/auth.mjs`）。
+- **自动测试调度器盘写失败会杀掉整个进程（P2-4）** — `fireJob` 有两处状态回写不在既有 catch
+  覆盖内（占位 `lastStatus="running"`、失败分支的回写）；`updateJobs` 落盘失败（盘满 / EACCES）
+  时异常会冒到三个「拒绝无人接管」的调用点 —— `tick` 的 `Promise.all`、`start` 的
+  `void reconcileThenTick()`、以及 **`runJobNow` 的 `void fireJob(job)`（HTTP「立即运行」端点，
+  原审查未列出）** —— 成为 unhandledRejection，Node 默认直接杀进程：一次盘写失败打死整个评测
+  平台。改为在 `fireJob` 外层兜底（一处覆盖三个调用点），错误照常上报，内存占位照常解除以便下轮
+  重试；盘上残留的 `running` 由启动时的 `reconcileInterruptedJobs` 归位
+  （`server/auto-test-scheduler.mjs`）。
+
+### Changed
+- **API 路由表（route table）** — `handleApi` 的 62 条 `if (method && pathname)` 顺序匹配（约 1100 行）
+  换成文件顶部一张声明式路由表 + 5 行分发，`handleApi` 缩到 35 行。65 条接口现在有唯一清单，
+  handler 拆成命名函数（签名 `(req, res, { url, params })`），不依赖 `handleApi` 闭包。零新增依赖，
+  未引入 Express 等框架：本服务替用户保管中转站 API key，不宜在请求路径上增加供应链面，
+  而鉴权（`api-access.mjs`）与业务逻辑（`server/*.mjs`）本就已抽离，剩下的只是薄分发
+  (`server/router.mjs`)。鉴权位置不变，仍在分发之前，门禁判定与路由表无耦合。
+  `createRouter` 在建表时做重复规则与顺序体检（被前面的宽规则完全遮蔽的后置规则永不命中，
+  是原 if 链最难查的坑：不报错、只是安静走错分支），排错直接启动失败。
+- **畸形路径由「静默成功」收紧为 404**（上条的行为变化，仅影响手工构造的请求）——
+  原 `startsWith` 匹配会把多段 / 空 id 也吞进 handler，例如 `DELETE /api/profiles/export/`、
+  `DELETE /api/auto-test-jobs/a/b` 旧版返回 `200 {"ok":true}`（对一个根本不存在的资源报告删除成功），
+  `PUT /api/dev/scenarios/` 返回 400、`POST /api/auto-test-jobs//run` 返回 409。新版路由表要求
+  `:id` 为单个非空段，这些一律 404。前端不受影响：`src/` 内 13 处 URL 拼接全部经
+  `encodeURIComponent`，id 里的 `/` 编码为 `%2F`，始终是单段（`%2F` 解码后与旧写法等价）。
+  另：`:id` 含非法百分号编码（如 `%ZZ`）时旧版 `decodeURIComponent` 抛错被兜成 500，现为 404。
+
 ### Added
-- **自动测试配置（Auto-test scheduler）** — new super-admin page under 高级测试 to configure
+- **自动测试配置（Auto-test scheduler）** — new page under 高级测试 to configure
   recurring tests for a channel's model: pick model + test kind (快速/准入/稳定性/场景) + period
   (hours); a new in-process scheduler runs each job on its cadence and produces a report. Config
-  persisted to `配置/auto-test-jobs.json`; CRUD via `/api/dev/auto-test-jobs`
+  persisted to `配置/auto-test-jobs.json`; CRUD via `/api/auto-test-jobs` — login-required and
+  usable by ordinary admins (role 10), same tier as running tests manually (not `/api/dev/*`)
   (`server/auto-test-store.mjs`, `server/auto-test-scheduler.mjs`). Scheduler is in-process:
   effective only while the server runs, catches up overdue jobs on restart via persisted
   `nextRunAt`, does not resume a run interrupted mid-flight. Hardened: all job-file writes go

@@ -362,6 +362,37 @@ export async function queryRequestsByRun(runId, { path } = {}) {
   return db.prepare("SELECT * FROM test_requests WHERE run_id = ? ORDER BY id ASC").all(runId);
 }
 
+// 指定若干 run 的逐轮明细（时间升序），供稳定性趋势按「每轮 1 点」加密 / 按小时聚合。
+// 只取有耗时的行；用 run_id IN(...) 把趋势限定到这些运行（调用方传稳定性运行 + 基础场景运行的 runId）。
+// 附带 caseId（=场景 id），供基础场景运行按分组过滤逐轮明细；稳定性运行忽略该字段即可。
+export async function queryRoundSeriesByRunIds(runIds, { limit = 4000, path } = {}) {
+  const ids = (runIds || []).filter(Boolean);
+  if (!ids.length) return [];
+  const db = await getDatabase(path);
+  if (!db) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  // 超过 limit 时保留【最新】的若干轮，而非最旧的（P2-5）：趋势图/回归判定都以最新点为准，
+  // 旧写法 `ORDER BY id ASC LIMIT` 砍掉的恰是 id 最大=最新的轮次，会静默丢最近数据。
+  // 故先按 id DESC 取最新 limit 条，再 reverse 回升序，交给下游按时间正序消费。
+  const rows = db
+    .prepare(
+      `SELECT started_at, total_ms, success, normalized_error, run_id, case_id
+       FROM test_requests
+       WHERE run_id IN (${placeholders}) AND total_ms IS NOT NULL
+       ORDER BY id DESC LIMIT ?`,
+    )
+    .all(...ids, Math.max(1, Math.floor(limit)))
+    .reverse();
+  return rows.map((r) => ({
+    startedAt: r.started_at || null,
+    totalMs: Number(r.total_ms),
+    success: r.success ? 1 : 0,
+    normalizedError: r.normalized_error || "", // 区分超时(timeout)与其它失败，供趋势图底部标注
+    runId: r.run_id || null,
+    caseId: r.case_id || null, // 场景 id（场景运行才有），供基础分组过滤
+  }));
+}
+
 export async function countRequests({ path } = {}) {
   const db = await getDatabase(path);
   if (!db) return 0;
@@ -683,6 +714,20 @@ export async function queryRecentReports(limit = 100, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return [];
   return db.prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
+}
+
+// 删除单条报告元数据（供报告中心手动删除报告文件用）。文件删除交调用方做，db 只管元数据。
+// SQLite 不可用 → no-op 返回 false；返回是否确有一行被删。
+export async function deleteReport(reportId, { path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return false;
+    const info = db.prepare("DELETE FROM reports WHERE report_id = ?").run(String(reportId));
+    return info.changes > 0;
+  } catch (error) {
+    noteDbError("deleteReport", error);
+    return false;
+  }
 }
 
 // 留存清理：删除超过 retentionDays 或超出 maxTotal(保留最新)的报告记录。

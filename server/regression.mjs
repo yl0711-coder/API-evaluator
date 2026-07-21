@@ -5,7 +5,33 @@
 //   新一次 run 与基线比——成功率明显下跌 / P95 明显变差 / 准入等级下滑 → 判"疑似退化"并告警。
 //   纯函数，便于测试；判定保持克制（"疑似退化，建议复核"，非铁证）。
 
+import { percentile } from "./utils.mjs";
+
 const isNum = (v) => Number.isFinite(Number(v));
+
+// 场景测试的「基础」分组名（= DEFAULT_SCENARIO_GROUPS[0]，见 server/scenarios/store.mjs）。
+export const BASIC_SCENARIO_GROUP = "基础";
+
+// 从若干运行 summary 里，挑出 type==="scenario" 且其 scenarios[] 属于目标分组的 case id 集合。
+// 返回 Map(runId -> Set(caseId))；无该分组场景 / 无 scenarios 的运行不入表（非场景运行忽略）。
+export function collectBasicScenarioCaseIds(summaries, group = BASIC_SCENARIO_GROUP) {
+  const out = new Map();
+  for (const s of summaries || []) {
+    if (!s || s.type !== "scenario" || !Array.isArray(s.scenarios) || !s.runId) continue;
+    const ids = s.scenarios.filter((sc) => sc && sc.group === group && sc.id).map((sc) => sc.id);
+    if (ids.length) out.set(s.runId, new Set(ids));
+  }
+  return out;
+}
+
+// 逐轮明细 → { successRate, p95Ms }。空集合 → { successRate: null, p95Ms: null }。
+// 复用 server/utils.mjs 的 percentile(values, ratio)。round 形状：{ totalMs, success }。
+export function summarizeRoundStats(rounds) {
+  const rs = (rounds || []).filter((r) => r && r.totalMs != null && Number.isFinite(Number(r.totalMs)));
+  if (!rs.length) return { successRate: null, p95Ms: null };
+  const ok = rs.filter((r) => r.success).length;
+  return { successRate: ok / rs.length, p95Ms: percentile(rs.map((r) => Number(r.totalMs)), 0.95) };
+}
 
 function median(values) {
   const a = (values || []).filter(isNum).map(Number).sort((x, y) => x - y);
@@ -24,11 +50,18 @@ const GRADE_DROP = 2; // 准入等级下滑 ≥ 2 档
 
 // 把一次 run 的 summary 提成趋势点（图表/基线只需这几个量）。
 export function toTrendPoint(summary = {}) {
+  // 快检(quick-verify)历史上只记了 successCount/requestCount、没记 successRate，会被趋势与回归漏掉
+  // （明明常失败却不进成功率曲线）。这里为它按成败比补出成功率，让既有的快检运行也追溯地进图/进告警。
+  const successRate = isNum(summary.successRate)
+    ? Number(summary.successRate)
+    : summary.type === "quick-verify" && isNum(summary.successCount) && isNum(summary.requestCount) && Number(summary.requestCount) > 0
+      ? Number(summary.successCount) / Number(summary.requestCount)
+      : null;
   return {
     runId: summary.runId || null,
     type: summary.type || "",
     at: summary.endedAt || summary.startedAt || null,
-    successRate: isNum(summary.successRate) ? Number(summary.successRate) : null,
+    successRate,
     p95Ms: isNum(summary.p95TotalMs) ? Number(summary.p95TotalMs) : null,
     score: isNum(summary.score) ? Number(summary.score) : null,
     grade: summary.grade || null,

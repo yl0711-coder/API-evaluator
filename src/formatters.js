@@ -42,6 +42,7 @@ export function formatTaskType(type) {
     "batch-admission": "批量准入评测",
     "batch-stability": "批量稳定性测试",
     scenario: "场景测试",
+    "load-test": "压力测试",
   }[type] || type || "-";
 }
 
@@ -199,54 +200,10 @@ export function formatSupplierEvidenceResult(result) {
   return lines.join("\n");
 }
 
-export function formatAdmissionResult(result) {
-  const lines = [
-    `测试 ID：${result.runId || "-"}`,
-    `被测 API：${result.profileName || "-"}`,
-    `模型：${result.model || "-"}`,
-    `协议：${result.protocol || "-"}`,
-    `准入等级：${result.grade || "-"}`,
-    `综合分：${result.score ?? "-"}/100`,
-    `模型纯度初判：${result.purityAssessment?.title || "-"}（${result.purityAssessment?.score ?? "-"}/100）`,
-    `指纹探针：${formatFingerprintLine(result.fingerprintSummary)}`,
-    `成功率：${result.successRateText || "-"}`,
-    `工具调用：${result.toolCallPassed ? "通过" : "未通过或未测试"}`,
-    `标称一致性：${formatIdentityLine(result.identityCheck)}`,
-    `JSON 结构：${result.jsonPassed ? "通过" : "未通过或未测试"}`,
-    `平均耗时：${result.avgTotalMs ?? "-"} ms`,
-    `慢请求参考：${result.p95TotalMs ?? "-"} ms`,
-    `估算成本：${formatCost(result.estimatedCost)}`,
-    `估算收入：${formatCost(result.estimatedRevenue)}`,
-    `估算毛利：${formatCost(result.estimatedGrossProfit)}`,
-    `结论：${result.recommendation?.title || "-"}`,
-    `说明：${result.recommendation?.detail || "-"}`,
-    `下一步：${result.nextAction || "-"}`,
-    `Markdown 报告：${result.reportPath || "-"}`,
-    `HTML 报告：${result.reportHtmlPath || "-"}`,
-    ...(result.aiAnalysisHtmlPath ? [`AI 分析报告（独立 HTML）：${result.aiAnalysisHtmlPath}`] : []),
-    `JSON 原始结果：${result.rawJsonPath || "-"}`,
-  ];
-  return lines.join("\n");
-}
-
 export function formatCost(value) {
   if (!Number.isFinite(Number(value))) return "-";
   const number = Number(value);
   if (number === 0) return "0";
   if (number < 0.01) return number.toFixed(4);
   return number.toFixed(2);
-}
-
-function formatFingerprintLine(fingerprintSummary) {
-  if (!fingerprintSummary?.totalCount) return "未测试";
-  const version = fingerprintSummary.libraryVersion ? `，题库 ${fingerprintSummary.libraryVersion}` : "";
-  return `${fingerprintSummary.passedCount}/${fingerprintSummary.totalCount} 通过（${fingerprintSummary.passRateText || "-"}${version}）`;
-}
-
-function formatIdentityLine(identityCheck) {
-  if (!identityCheck) return "未测试";
-  if (identityCheck.status === "aligned") return "一致";
-  if (identityCheck.status === "conflict") return `冲突：标称 ${identityCheck.expectedFamily}，自述 ${identityCheck.reportedFamily}`;
-  if (identityCheck.status === "observed") return `已记录：${identityCheck.reportedFamily}`;
-  return "无法确认";
 }

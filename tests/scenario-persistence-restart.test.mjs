@@ -19,7 +19,7 @@ const overlayFile = join(dataDir, "配置", "scenario-overrides.json");
 const MARK = "RESTART-PERSIST-标记-δ"; // 编辑后的提示词内容，重起后据此判定持久
 
 const baseEnv = {
-  EVALUATOR_SESSION_SECRET: "test-secret",
+  EVALUATOR_SESSION_SECRET: "test-secret-0123456789abcdef-32b+",
   EVALUATOR_ADMIN_PASSWORD: "adminpw",
   EVALUATOR_SECRET_STORE: "memory",
   EVALUATOR_COOKIE_SECURE: "false",

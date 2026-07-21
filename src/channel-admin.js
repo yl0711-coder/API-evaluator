@@ -27,18 +27,8 @@ export function createChannelAdmin({ state, els, onChange }) {
       : `<div class="empty-state"><strong>还没有渠道</strong><p>在左侧填 Base URL + Key 添加，或从 new-api 一键导入。</p></div>`;
     els.channelList.querySelectorAll("[data-del-channel]").forEach((b) => b.addEventListener("click", () => deleteChannel(b.dataset.delChannel)));
     els.channelList.querySelectorAll("[data-edit-channel]").forEach((b) => b.addEventListener("click", () => editChannel(b.dataset.editChannel)));
-    els.channelList.querySelectorAll("[data-sync-channel]").forEach((b) => b.addEventListener("click", () => syncChannelModels(b.dataset.syncChannel)));
   }
 
-  async function syncChannelModels(id) {
-    try {
-      const r = await api(`/api/channels/${encodeURIComponent(id)}/sync-models`, { method: "POST", body: "{}" });
-      await Promise.all([loadChannels(), loadModelTargets()]);
-      toast(`已同步该渠道模型：新增 ${r.newTargets} 个。`);
-    } catch (error) {
-      toast(`同步失败：${error.message}`, true);
-    }
-  }
   function channelRow(channel) {
     // 未配置 Key 的渠道无法调用，状态显示「未配置」；配好 Key 后才按 enabled/disabled 显示启用/已禁用。
     const status = !channel.hasKey
@@ -55,8 +45,7 @@ export function createChannelAdmin({ state, els, onChange }) {
           <small>${escapeHtml(protocolLabel(channel.protocol))} · ${models} 个模型 · ${channel.hasKey ? "已存 Key" : "缺 Key"}${source}</small>
         </div>
         ${status}
-        <div class="row-actions${channel.source === "newapi" ? " actions-grid" : ""}">
-          ${channel.source === "newapi" ? `<button class="secondary" data-sync-channel="${channel.id}">同步模型</button>` : ""}
+        <div class="row-actions">
           <button class="secondary" data-edit-channel="${channel.id}">编辑</button>
           <button class="secondary" data-del-channel="${channel.id}">删除</button>
         </div>
@@ -73,10 +62,14 @@ export function createChannelAdmin({ state, els, onChange }) {
   function tagVocabulary() {
     return unionTagVocabulary(state.scenarios, state.settings?.customTags);
   }
-  function renderTagOptions(selected = []) {
+  // selected 省略 = 「只刷新可选词表、保留当前勾选」。
+  // 不能默认成 []：onTagsSaved / loadScenarios / 设置保存 都会无参调用它，若此时表单正处于编辑态，
+  // 勾选会被清空，用户随后点保存就收集到 tags:[] → 服务端把 [] 当「显式清空」→ 该模型的能力标签被抹掉。
+  // 显式传 [] 仍是清空（saveModelTarget 保存后重置表单用）。
+  function renderTagOptions(selected) {
     const box = els.modelTargetForm.querySelector("#model-target-tags");
     if (!box) return;
-    const sel = new Set(selected);
+    const sel = new Set(selected ?? [...box.querySelectorAll("input[name=modelTag]:checked")].map((i) => i.value));
     const vocab = tagVocabulary();
     box.innerHTML = vocab.length
       ? vocab
@@ -148,7 +141,16 @@ export function createChannelAdmin({ state, els, onChange }) {
     f.elements.channelId.value = target.channelId || "";
     f.elements.model.value = target.model || "";
     f.elements.note.value = target.note || "";
+    // 高级设置回填：最大输出/超时给默认值，单价为 null（未设置）时置空，别显示成 0。
+    f.elements.maxTokens.value = target.maxTokens ?? 512;
+    f.elements.timeoutMs.value = target.timeoutMs ?? 300000;
+    f.elements.inputPricePerMTokens.value = target.inputPricePerMTokens ?? "";
+    f.elements.outputPricePerMTokens.value = target.outputPricePerMTokens ?? "";
+    f.elements.inputSellPricePerMTokens.value = target.inputSellPricePerMTokens ?? "";
+    f.elements.outputSellPricePerMTokens.value = target.outputSellPricePerMTokens ?? "";
     renderTagOptions(Array.isArray(target.tags) ? target.tags : []);
+    const advanced = f.querySelector("details.advanced-settings");
+    if (advanced) advanced.open = true; // 编辑时展开，方便改超时/单价
     f.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   function modelTargetRow(target) {
@@ -218,6 +220,8 @@ export function createChannelAdmin({ state, els, onChange }) {
     f.elements.provider.value = channel.provider || "";
     f.elements.models.value = (channel.models || []).join(", ");
     f.elements.apiKey.value = "";
+    // 最大输出/超时/单价已下沉到「模型管理」，渠道高级设置只剩备注。
+    f.elements.notes.value = channel.notes || "";
     f.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   async function deleteChannel(id) {

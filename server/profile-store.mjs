@@ -68,7 +68,7 @@ export async function normalizeProfile(body, existingProfile = null) {
     defaultModel: requiredString(body.defaultModel, "默认模型"),
     channelCode: String(body.channelCode || "").trim(),
     maxTokens: Number(body.maxTokens || 512),
-    timeoutMs: Number(body.timeoutMs || 60000),
+    timeoutMs: Number(body.timeoutMs || 300000),
     inputPricePerMTokens: normalizePricePerMillion(body.inputPricePerMTokens),
     outputPricePerMTokens: normalizePricePerMillion(body.outputPricePerMTokens),
     inputSellPricePerMTokens: normalizePricePerMillion(body.inputSellPricePerMTokens),
@@ -124,7 +124,7 @@ export async function normalizeImportedProfiles(body, currentProfiles = []) {
       defaultModel: requiredString(item.defaultModel, "默认模型"),
       channelCode: String(item.channelCode || "").trim(),
       maxTokens: Number(item.maxTokens || 512),
-      timeoutMs: Number(item.timeoutMs || 60000),
+      timeoutMs: Number(item.timeoutMs || 300000),
       inputPricePerMTokens: normalizePricePerMillion(item.inputPricePerMTokens),
       outputPricePerMTokens: normalizePricePerMillion(item.outputPricePerMTokens),
       inputSellPricePerMTokens: normalizePricePerMillion(item.inputSellPricePerMTokens),
@@ -168,12 +168,6 @@ export function maskScenario(scenario) {
     expectsJson: Boolean(scenario.expectsJson),
     expectsSafetyRefusal: Boolean(scenario.expectsSafetyRefusal),
   };
-}
-
-export function maskKey(value) {
-  const text = String(value || "");
-  if (text.length <= 8) return "****";
-  return `${text.slice(0, 4)}...${text.slice(-4)}`;
 }
 
 export async function loadProfiles() {

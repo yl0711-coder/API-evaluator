@@ -30,7 +30,9 @@
           <button class="nav-button" type="button" data-page="quick-test">快速测试</button>
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
           <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
-          <button class="nav-button" type="button" data-page="auto-test-config" data-requires-admin>自动测试配置</button>
+          <button class="nav-button" type="button" data-page="auto-test-config">自动测试配置</button>
+          <button class="nav-button" type="button" data-page="load-test" data-requires-admin>压力测试</button>
+          <button class="nav-button" type="button" data-page="model-compare">模型比对</button>
         </div>
         <div class="nav-group">
           <span>总结与交付</span>
@@ -48,7 +50,6 @@
 
       <main class="main">
         <div id="high-risk-banner" class="high-risk-banner hidden" role="alert"></div>
-        <div id="edition-banner" class="edition-banner hidden"></div>
 
         <div id="demo-mode-banner" class="demo-banner hidden">
           <div>
@@ -56,11 +57,6 @@
             <span>这些数据只用于熟悉界面，不会发起真实请求，也不会写入本机配置。</span>
           </div>
           <button id="exit-demo-mode" class="secondary" type="button">退出演示模式</button>
-        </div>
-
-        <div id="page-help" class="page-help">
-          <button id="toggle-page-help" class="secondary help-toggle" type="button">这个页面怎么用？</button>
-          <div id="page-help-content" class="page-help-content hidden"></div>
         </div>
 
         <section class="page active" id="dashboard">
@@ -342,158 +338,6 @@
           </div>
         </section>
 
-        <section class="page" id="profiles">
-          <div class="cfg">
-          <div class="cfg-topbar">
-            <div>
-              <h2><span class="step">第 1 步 · API 配置</span>配置要评测的渠道</h2>
-              <p class="section-desc">普通用户只填必填项，点“保存并测试配置”。Key 只存本机，不进报告/导出。</p>
-            </div>
-            <div class="action-row">
-              <button id="import-profiles-button" class="secondary" type="button">导入配置</button>
-              <button id="export-profiles" class="secondary" type="button">导出配置</button>
-              <button id="reload-profiles" class="secondary" type="button">刷新</button>
-              <input id="import-profiles-file" type="file" accept="application/json,.json" hidden />
-            </div>
-          </div>
-
-          <div class="cfg-grid">
-          <form id="profile-form" class="panel form-grid" autocomplete="off">
-            <input type="hidden" name="id" />
-            <div class="wide form-section-title">
-              <p class="eyebrow">普通用户只填这里</p>
-              <h3>必填信息</h3>
-              <p class="section-desc">如果你只是拿到一个 API 地址和 Key 来测试，填完下面几项后直接点“保存并测试配置”。</p>
-            </div>
-            <label class="wide">
-              配置模板
-              <select id="profile-template">
-                <option value="">不使用模板，手动填写</option>
-                <option value="relay_openai_compatible">AI 中转站 / OpenAI 兼容</option>
-                <option value="claude_native">Claude 原生 Messages</option>
-                <option value="openai_official">OpenAI 官方 / Chat Completions（含 codex / o 系列）</option>
-                <option value="deepseek_openai_compatible">DeepSeek / OpenAI 兼容</option>
-                <option value="gemini_openai_compatible">Gemini / OpenAI 兼容</option>
-                <option value="kimi_openai_compatible">Kimi (Moonshot) / OpenAI 兼容</option>
-                <option value="doubao_openai_compatible">豆包 (火山方舟) / OpenAI 兼容</option>
-                <option value="glm_openai_compatible">GLM (智谱) / OpenAI 兼容</option>
-                <option value="qwen_openai_compatible">通义千问 Qwen / OpenAI 兼容</option>
-                <option value="grok_openai_compatible">Grok (xAI) / OpenAI 兼容</option>
-              </select>
-              <small class="field-hint">不懂协议时，先选“AI 中转站 / OpenAI 兼容”。模板只辅助填写，保存前仍可修改。</small>
-            </label>
-            <label>
-              名称
-              <input name="name" placeholder="例如 CC-Kiro-CH2 Claude" required />
-              <small class="field-hint">写成人能看懂的名字，报告里会显示。</small>
-            </label>
-            <label class="wide">
-              Base URL
-              <input name="baseUrl" placeholder="https://api.example.com" required />
-              <small class="field-hint">
-                正确示例：<code>https://api.example.com</code>。不要填：<code>https://api.example.com/v1/chat/completions</code>。
-              </small>
-            </label>
-            <label>
-              默认模型
-              <input name="defaultModel" placeholder="claude-sonnet-4-5 / gpt-4.1" required />
-              <small class="field-hint">复制平台后台里的模型名，不要自己猜。</small>
-            </label>
-            <label class="wide">
-              API Key
-              <input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴平台提供的 API Key" />
-              <small class="field-hint">Key 只保存在本机，不会出现在报告、日志或导出配置里。<b>编辑已有渠道时留空 = 保留原 Key。</b></small>
-            </label>
-
-            <details class="wide advanced-settings">
-              <summary>高级设置，一般不用改</summary>
-              <div class="form-grid advanced-settings-body">
-                <label>
-                  角色
-                  <select name="role">
-                    <option value="target">被测 API</option>
-                    <option value="baseline">可信基线 API</option>
-                    <option value="judge">主 API / 评分 API</option>
-                  </select>
-                  <small class="field-hint">官方 API 或长期稳定渠道可设为“可信基线 API”，用于后续横向对比。</small>
-                </label>
-                <label>
-                  供应商
-                  <input name="provider" placeholder="例如 OpenAI / Anthropic / DeepSeek" required />
-                </label>
-                <label>
-                  协议
-                  <select name="protocol">
-                    <option value="openai_compatible">OpenAI Compatible</option>
-                    <option value="openai_chat">OpenAI Chat Completions</option>
-                    <option value="claude_messages">Claude Messages</option>
-                  </select>
-                  <small class="field-hint">不确定时先选 OpenAI Compatible。</small>
-                </label>
-                <label>
-                  渠道标识
-                  <input name="channelCode" placeholder="可选，例如 CC-Kiro-CH2" />
-                </label>
-                <label>
-                  最大输出
-                  <input name="maxTokens" type="number" value="512" min="1" />
-                </label>
-                <label>
-                  超时毫秒
-                  <input name="timeoutMs" type="number" value="60000" min="1000" />
-                  <small class="field-hint">复杂任务建议 60000-120000，太短容易误判超时。</small>
-                </label>
-                <label>
-                  输入成本单价
-                  <input name="inputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 4.5" />
-                  <small class="field-hint">元 / 1M tokens。填写上游结算价，用于成本估算。</small>
-                </label>
-                <label>
-                  输出成本单价
-                  <input name="outputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 22.5" />
-                  <small class="field-hint">元 / 1M tokens。填写上游结算价。</small>
-                </label>
-                <label>
-                  输入售卖单价
-                  <input name="inputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 5" />
-                  <small class="field-hint">元 / 1M tokens。填写本站对外售卖价，用于毛利估算。</small>
-                </label>
-                <label>
-                  输出售卖单价
-                  <input name="outputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 25" />
-                  <small class="field-hint">元 / 1M tokens。可不填，不填则不计算收入和毛利。</small>
-                </label>
-                <label class="wide">
-                  备注
-                  <textarea name="notes" placeholder="价格、倍率、来源、测试目的"></textarea>
-                </label>
-              </div>
-            </details>
-            <div id="profile-check-result" class="wide check-panel muted">填写配置后，这里会提示明显风险。</div>
-            <div class="wide action-row split-actions">
-              <button id="save-and-test-profile" class="primary" type="submit">保存并测试配置</button>
-              <button id="save-profile-only" class="secondary quiet-action" type="button">仅保存，不测试</button>
-            </div>
-          </form>
-
-          <aside class="panel cfg-tips">
-            <h4>填写要点</h4>
-            <div class="tip"><b>Base URL</b><span>填到域名/网关 <code>https://api.example.com</code>，别带 <code>/v1/chat/completions</code>。</span></div>
-            <div class="tip"><b>协议</b><span>多数中转站选 OpenAI Compatible；Claude 原生接口才选 Claude Messages。选错常表现为内容块缺失/空响应。</span></div>
-            <div class="tip"><b>API Key</b><span>只保存在本机安全存储；导出配置、报告、日志都不带真实 Key。</span></div>
-            <div class="tip"><b>可信基线</b><span>官方或长期稳定渠道可在高级设置里设为“可信基线 API”，用于横向对比与防换模型。</span></div>
-          </aside>
-          </div>
-
-          <div id="missing-key-guide" class="panel missing-key-guide hidden"></div>
-
-          <div class="panel">
-            <h3>已配置渠道</h3>
-            <div id="profile-list" class="table"></div>
-          </div>
-          </div>
-        </section>
-
         <section class="page" id="channels">
           <div class="cfg">
             <div class="cfg-topbar">
@@ -523,6 +367,11 @@
                   <small class="field-hint">该渠道支持的模型，逗号分隔；在“模型管理”里选其一建测试目标。</small></label>
                 <label class="wide">API Key<input name="apiKey" type="password" autocomplete="new-password" placeholder="粘贴上游 Key" />
                   <small class="field-hint">编辑时留空 = 保留原 Key。只存本机、不下发浏览器。</small></label>
+
+                <label class="wide">备注
+                  <textarea name="notes" placeholder="渠道来源、倍率、测试目的等（对渠道/连接本身的说明）"></textarea>
+                </label>
+
                 <div class="wide action-row">
                   <button class="primary" id="save-channel" type="submit">保存渠道</button>
                 </div>
@@ -546,6 +395,37 @@
                 <label class="wide">渠道<select name="channelId" id="model-target-channel" required></select></label>
                 <label>模型名<input name="model" autocomplete="off" placeholder="gpt-4o" required /></label>
                 <label>备注<input name="note" autocomplete="off" placeholder="可选" /></label>
+
+                <details class="wide advanced-settings">
+                  <summary>高级设置</summary>
+                  <div class="form-grid advanced-settings-body">
+                    <label>最大输出
+                      <input name="maxTokens" type="number" value="512" min="1" />
+                      <small class="field-hint">单次响应的最大 token 数上限。</small>
+                    </label>
+                    <label>超时毫秒
+                      <input name="timeoutMs" type="number" value="300000" min="1000" />
+                      <small class="field-hint">单请求总时限（含推理+完整输出）。默认 300000（5 分钟）。</small>
+                    </label>
+                    <label>输入成本单价
+                      <input name="inputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 4.5" />
+                      <small class="field-hint">元 / 1M tokens。填写上游结算价，用于成本估算。</small>
+                    </label>
+                    <label>输出成本单价
+                      <input name="outputPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 22.5" />
+                      <small class="field-hint">元 / 1M tokens。填写上游结算价。</small>
+                    </label>
+                    <label>输入售卖单价
+                      <input name="inputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 5" />
+                      <small class="field-hint">元 / 1M tokens。填写本站对外售卖价，用于毛利估算。</small>
+                    </label>
+                    <label>输出售卖单价
+                      <input name="outputSellPricePerMTokens" type="number" min="0" step="0.0001" placeholder="例如 25" />
+                      <small class="field-hint">元 / 1M tokens。可不填，不填则不计算收入和毛利。</small>
+                    </label>
+                  </div>
+                </details>
+
                 <div class="wide field-tags">
                   <span class="tag-field-label">标签</span>
                   <div id="model-target-tags" class="tag-pick"></div>
@@ -706,11 +586,6 @@
           </div>
 
           <details class="helper-details">
-            <summary>查看测试摘要和报告位置</summary>
-            <pre id="stability-report" class="result-box report-box">测试完成后会在这里显示摘要和本地报告文件路径。</pre>
-          </details>
-
-          <details class="helper-details">
             <summary>批量并发测试</summary>
             <p class="field-hint">用于多个模型或渠道横向对比。建议先选 2-3 个 API 小轮数筛查。</p>
             <form id="batch-test-form" class="form-grid">
@@ -813,29 +688,60 @@
             <select name="profileIds" id="scenario-profile-select" multiple hidden></select>
             <div class="wide" id="scenario-case-picker"></div>
             <select name="scenarioIds" id="scenario-case-select" multiple hidden></select>
-            <label>
-              每个场景重复次数
-              <select name="repeats">
-                <option value="1" selected>1 次：快速筛查</option>
-                <option value="2">2 次：观察波动</option>
-                <option value="3">3 次：更稳妥</option>
-              </select>
-            </label>
-            <label>
-              同时测试 API 数
-              <select name="maxParallelProfiles">
-                <option value="1">1：最稳妥</option>
-                <option value="2" selected>2：推荐</option>
-                <option value="3">3：较激进</option>
-              </select>
-            </label>
-            <label>
-              单 API 请求并发
-              <select name="requestConcurrency">
-                <option value="1" selected>1：顺序场景</option>
-                <option value="2">2：并发场景</option>
-              </select>
-            </label>
+
+            <details class="wide advanced-settings">
+              <summary>高级设置</summary>
+              <div class="form-grid advanced-settings-body">
+                <label>
+                  最大输出
+                  <input name="maxTokens" type="number" min="1" max="32768" placeholder="留空 = 场景默认 4096" />
+                  <small class="field-hint">仅本次运行生效；留空则默认 4096，最高 32768。</small>
+                </label>
+                <label>
+                  超时毫秒
+                  <input name="timeoutMs" type="number" min="1000" max="600000" placeholder="留空 = 按模型配置" />
+                  <small class="field-hint">仅本次运行生效；留空按模型配置里的超时。</small>
+                </label>
+                <label>
+                  每个场景重复次数
+                  <select name="repeats">
+                    <option value="1" selected>1 次：快速筛查</option>
+                    <option value="2">2 次：观察波动</option>
+                    <option value="3">3 次：更稳妥</option>
+                  </select>
+                </label>
+                <label>
+                  同时测试 API 数
+                  <select name="maxParallelProfiles">
+                    <option value="1" selected>1：最稳妥</option>
+                    <option value="2">2：推荐</option>
+                    <option value="3">3：较激进</option>
+                  </select>
+                </label>
+                <label>
+                  单 API 请求并发
+                  <select name="requestConcurrency">
+                    <option value="1" selected>1：顺序场景</option>
+                    <option value="2">2：并发场景</option>
+                  </select>
+                </label>
+                <label class="wide checkbox-option">
+                  <input name="fullResponseInReport" type="checkbox" value="1" />
+                  <span>
+                    在报告中完整显示返回
+                    <small>报告末尾追加「完整返回」小节，逐条列出模型原始回答全文（不截断）。默认只在场景明细表里给一条截断样例；回答很长或场景数多时报告体积会明显变大。</small>
+                  </span>
+                </label>
+                <label class="wide checkbox-option">
+                  <input name="streamRequest" type="checkbox" value="1" />
+                  <span>
+                    发送流式请求（SSE）
+                    <small>按真实前端的方式发 SSE 流式请求，上游的排队与连接占用行为更接近线上。开启后能测出真实首 token 延迟（TTFT，写入请求日志）；回答文本、token 数与截断判定与非流式一致。默认关。</small>
+                  </span>
+                </label>
+              </div>
+            </details>
+
             <label class="wide checkbox-option">
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
@@ -863,16 +769,12 @@
             </div>
           </div>
 
-          <details class="helper-details">
-            <summary>查看场景测试摘要和报告位置</summary>
-            <pre id="scenario-test-result" class="result-box report-box">等待测试。</pre>
-          </details>
         </section>
 
         <section class="page" id="trend">
           <div class="section-header">
             <div>
-              <h2><span class="step">高级 · 趋势</span>稳定性趋势与基线回归</h2>
+              <h2><span class="step">运营 · 趋势</span>稳定性趋势与基线回归</h2>
               <p class="section-desc">同一供应商 / 同一渠道的历次测试随时间的变化。掉级会与历史基线对比并告警，方便观察稳定性。</p>
             </div>
           </div>
@@ -887,7 +789,30 @@
               <select id="trend-profile-select" disabled></select>
             </label>
             <div id="trend-regression" class="next-step-panel hidden"></div>
-            <h3>成功率趋势</h3>
+            <div class="trend-chart-head">
+              <h3>成功率 / 耗时趋势</h3>
+              <div class="trend-controls">
+                <label class="trend-xmode">
+                  横轴
+                  <select id="trend-xmode">
+                    <option value="count">按测试次数（每轮 1 点）</option>
+                    <option value="hour">按时间 · 小时</option>
+                  </select>
+                </label>
+                <label class="trend-xmode hidden" id="trend-window-field">
+                  时间范围
+                  <select id="trend-window">
+                    <option value="0">全部</option>
+                    <option value="3">最近 3 小时</option>
+                    <option value="6">最近 6 小时</option>
+                    <option value="12">最近 12 小时</option>
+                    <option value="24">最近 24 小时</option>
+                    <option value="48">最近 48 小时</option>
+                    <option value="168">最近一周</option>
+                  </select>
+                </label>
+              </div>
+            </div>
             <div id="trend-chart" class="trend-chart">选择测试目标后显示历次测试曲线。</div>
             <h3>历次测试</h3>
             <div id="trend-table" class="result-box">—</div>
@@ -899,7 +824,7 @@
         <section class="page" id="reports">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 5 步 · 报告中心</span>所有结论、排行与日志</h2>
+              <h2><span class="step">结论 · 报告中心</span>所有结论、排行与日志</h2>
               <p class="section-desc">先看报告结论卡片，再看排行榜和记录。给负责人汇报时优先用交付模板。</p>
             </div>
             <div class="action-row">
@@ -1026,7 +951,7 @@
         <section class="page" id="handoff">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 6 步 · 测试交付</span>测试交付模板</h2>
+              <h2><span class="step">汇报 · 测试交付</span>测试交付模板</h2>
             </div>
             <button id="copy-handoff-template" class="secondary" type="button">复制交付模板</button>
           </div>
@@ -1091,10 +1016,16 @@
             </div>
           </div>
 
-          <div class="panel manual-panel">
-            <div id="manual-content" class="manual-content">
-              <p class="muted">正在加载使用手册...</p>
+          <div class="panel manual-panel doc-layout">
+            <div class="doc-body">
+              <div id="manual-content" class="manual-content">
+                <p class="muted">正在加载使用手册...</p>
+              </div>
             </div>
+            <aside class="doc-toc">
+              <strong>本页目录</strong>
+              <nav id="manual-toc"></nav>
+            </aside>
           </div>
         </section>
 
@@ -1156,6 +1087,13 @@
                 <small>10 类逻辑谜题的长尾变体/无解题（JSON 客观判分），更耗额度，主攻档位降级判别。</small>
               </span>
             </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-coding-hard" />
+              <span>
+                加入 编程硬核题
+                <small>针对前沿模型高失败区的自制硬题（组合计数 / 非标准博弈 / 对抗性模拟）：要求写程序并给出指定输入的运行结果，exact 客观判分。很耗额度。</small>
+              </span>
+            </label>
 
             <div class="form-section-title">
               <h3>能力标签</h3>
@@ -1208,17 +1146,22 @@
               <input id="set-newapi-userid" type="text" inputmode="numeric" placeholder="1" />
             </label>
 
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="set-better-lighting" />
+              <span>更好的光影</span>
+            </label>
+
             <div class="wide action-row">
               <button id="save-settings" class="primary" type="submit">保存设置</button>
             </div>
           </form>
         </section>
 
-        <section class="page" id="auto-test-config" data-requires-admin hidden>
+        <section class="page" id="auto-test-config" hidden>
           <div class="section-header">
             <div>
               <h2><span class="step">高级 · 自动化</span>自动测试配置</h2>
-              <p class="section-desc">仅超级管理员可见。为某渠道的某模型配置定时自动测试：到点后平台自动跑一次对应测试并生成报告。调度器为进程内运行——仅在服务器运行时生效，重启后按下次运行时间自动追补。</p>
+              <p class="section-desc">为某渠道的某模型配置定时自动测试：到点后平台自动跑一次对应测试并生成报告。调度器为进程内运行——仅在服务器运行时生效，重启后按下次运行时间自动追补。</p>
             </div>
           </div>
 
@@ -1250,6 +1193,7 @@
             <label>
               测试周期（小时）
               <input type="number" id="atc-period" min="0.5" step="any" value="24" />
+              <small class="field-hint">支持小数，最短 0.5 小时（半小时）。</small>
             </label>
             <label>
               测试种类
@@ -1318,6 +1262,205 @@
               <button type="submit" class="primary">保存作业</button>
               <button type="button" id="atc-reset" class="secondary">清空表单</button>
             </div>
+          </form>
+
+          <div class="panel">
+            <div class="action-row atc-list-head">
+              <h3>巡检报告</h3>
+            </div>
+            <p class="section-desc">跨全部自动测试作业出一份周期性汇总巡检报告，对单个模型出报告见上方测试卡片。</p>
+            <div id="atc-digest-result"></div>
+            <div class="action-row" style="justify-content:flex-end;flex-wrap:wrap;gap:10px;align-items:center">
+              <select id="atc-digest-window">
+                <option value="24">最近 24 小时</option>
+                <option value="168" selected>最近 7 天</option>
+                <option value="720">最近 30 天</option>
+              </select>
+              <button type="button" id="atc-digest-generate" class="primary">生成全部巡检报告</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="load-test" data-requires-admin hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 压测</span>压力测试</h2>
+              <p class="section-desc">以持续并发向目标模型/上游中转施加恒定负载，测吞吐(QPS)、延迟分位(p50–p99)、成功率与错误构成。用于判断上游能否支撑规模化团队使用。</p>
+            </div>
+          </div>
+
+          <div class="panel" style="border-left: 3px solid #f06d7d;">
+            <strong>开始前请注意</strong>
+            <p class="field-hint">压测会发出大量<strong>真实请求、产生真实计费</strong>；建议先用廉价模型验证链路，再压目标模型。请在<strong>本机等有余量的机器</strong>上跑，<strong>不要在对外服务的生产机</strong>上压测。压测与其它测试<strong>共用同一进程</strong>，其高并发会拉高同时在跑任务的延迟（反之亦然）：请<strong>在压测期间不要并行发起其它测试</strong>，以免两边结果互相污染、都不可信。</p>
+          </div>
+
+          <form id="load-test-form" class="panel form-grid">
+            <label>
+              被测渠道
+              <select id="load-test-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select name="profileId" id="load-test-profile-select" disabled></select>
+            </label>
+            <label>
+              负载档
+              <select name="promptProfile">
+                <option value="simple" selected>简单：一句话连通（max_tokens 64）</option>
+                <option value="think">轻思考：小推理题（max_tokens 256）</option>
+                <option value="coding">编程：代码排错（max_tokens 800）</option>
+              </select>
+            </label>
+            <label>
+              请求方式
+              <select name="streamRequest">
+                <option value="" selected>非流式（默认）</option>
+                <option value="1">流式 SSE（贴近真实前端流量，可测 TTFT）</option>
+              </select>
+            </label>
+            <label>
+              工作负载模型
+              <select name="mode" id="load-test-mode">
+                <option value="closed" selected>闭环：固定并发（稳定性/持续吞吐）</option>
+                <option value="open">开环：固定速率 req/s（找容量上限/断点，推荐）</option>
+              </select>
+            </label>
+            <label class="wide">
+              <span id="load-test-load-label">负载值（并发数）</span>
+              <input type="text" name="loads" id="load-test-loads" value="30" />
+              <small class="field-hint">单点填一个数；<strong>扫描找拐点</strong>填多个逗号分隔（如 <code>10,30,50,100</code>），会依次跑并画「负载→吞吐/尾延迟」曲线、自动定位饱和拐点。闭环填并发数，开环填速率 req/s。</small>
+            </label>
+            <label id="load-test-maxinflight-field" class="hidden">
+              开环在飞上限
+              <select name="maxInFlight">
+                <option value="100">100</option>
+                <option value="300" selected>300</option>
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+              </select>
+              <small class="field-hint">开环下同时在飞的请求上限（≈速率×延迟）。打满即记「发生器受限」，是客户端侧饱和信号。</small>
+            </label>
+            <label id="load-test-burst-field" class="hidden">
+              发送周期（秒）
+              <select name="burstPeriodSec">
+                <option value="1" selected>1：每秒连续发送</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+                <option value="8">8</option>
+                <option value="10">10</option>
+              </select>
+              <small class="field-hint">开环下每隔几秒才发送一次；发送的那 1 秒内仍按速率匀速发满（模拟周期性突发流量）。选 1＝一直连续发。</small>
+            </label>
+            <label id="load-test-interval-field">
+              测试间隔（思考时间，秒）
+              <select name="intervalSec">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3" selected>3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+                <option value="7">7</option>
+                <option value="8">8</option>
+                <option value="9">9</option>
+                <option value="10">10</option>
+              </select>
+              <small class="field-hint">闭环下每个并发「用户」收到响应后停顿几秒再发下一条，模拟真实使用节奏。间隔越大，实际 QPS 越低、越贴近真人。</small>
+            </label>
+            <label>
+              稳态时长（秒）
+              <select name="durationSec">
+                <option value="10">10：先看手感</option>
+                <option value="30">30</option>
+                <option value="60" selected>60：常规单轮</option>
+                <option value="120">120：更稳的 p99</option>
+              </select>
+            </label>
+            <label>
+              ramp-up（秒）
+              <select name="warmupSec">
+                <option value="0">0：不预热</option>
+                <option value="5" selected>5：错开启动</option>
+                <option value="10">10</option>
+              </select>
+            </label>
+            <label>
+              每请求超时（秒）
+              <select name="timeoutSec">
+                <option value="30" selected>30</option>
+                <option value="60">60</option>
+                <option value="90">90</option>
+                <option value="120">120：长输出/慢上游</option>
+              </select>
+            </label>
+            <button id="load-test-submit" class="primary wide" type="submit">开始压力测试</button>
+          </form>
+
+          <div class="panel">
+            <h3>执行前预估</h3>
+            <div id="load-test-estimate" class="estimate-box">选择参数后会显示这一轮大概会发出多少请求。</div>
+            <div id="load-test-progress" class="progress-panel hidden">
+              <div class="progress-bar"><span></span></div>
+              <p class="muted">等待任务开始。</p>
+              <button id="cancel-load-test-task" class="secondary" type="button">取消当前任务</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>压测结果</h3>
+            <div id="load-test-summary" class="summary-grid">
+              <p class="muted">等待测试。</p>
+            </div>
+          </div>
+
+        </section>
+
+        <section class="page" id="model-compare" hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 分析</span>模型比对</h2>
+              <p class="section-desc">选「所用模型」和「要对比的模型」，依据两者在报告中心里各自最近的报告（1 份稳定性、1 份准入、若干份相同场景）做统计对比，产出一份对比报告。只读既有报告、不发起新测试。</p>
+            </div>
+          </div>
+
+          <form id="mc-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3>选择两个模型</h3>
+              <p class="section-desc">先选渠道再选模型；两者需不同。若某模型还没有报告，请先为它跑一次准入 / 稳定性 / 场景测试。</p>
+            </div>
+            <label class="wide">
+              所用模型（对象 A · 基准）
+              <select id="mc-a-channel"></select>
+              <select id="mc-a-model" disabled></select>
+              <input type="text" id="mc-a-name" maxlength="40" placeholder="本次报告显示名（可选，默认 渠道 / 模型）" />
+            </label>
+            <label class="wide">
+              要对比的模型（对象 B）
+              <select id="mc-b-channel"></select>
+              <select id="mc-b-model" disabled></select>
+              <input type="text" id="mc-b-name" maxlength="40" placeholder="本次报告显示名（可选，默认 渠道 / 模型）" />
+            </label>
+            <div class="wide" id="mc-scenario-section">
+              <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
+                <button type="button" id="mc-load-scenarios" class="secondary">加载可选场景</button>
+                <span class="field-hint" id="mc-scenario-hint">选好两个模型后，加载两方<strong>共有</strong>的场景，勾选要纳入对比的场景（默认全选）。不加载则用全部共有场景。</span>
+              </div>
+              <div id="mc-scenarios" class="mc-scenarios hidden"></div>
+            </div>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="mc-ai" />
+              <span>
+                加入 AI 叙述分析
+                <small>额外用「设置」里配置的 AI 总结模型写一段对比叙述；未配置时自动跳过，仅出机械统计报告。会消耗额度、生成更慢。</small>
+              </span>
+            </label>
+            <div class="wide action-row">
+              <button type="submit" id="mc-generate" class="primary">生成对比报告</button>
+            </div>
+            <div id="mc-result" class="wide"></div>
           </form>
         </section>
 
@@ -1405,6 +1548,17 @@
           </div>
         </div>
       </main>
+
+      <button
+        id="sidebar-toggle"
+        class="sidebar-toggle"
+        type="button"
+        aria-label="收起侧边栏"
+        aria-expanded="true"
+        title="收起侧边栏"
+      >
+        <span class="sidebar-toggle-arrow" aria-hidden="true">‹</span>
+      </button>
     </div>
 
     <script type="module" src="/src/app.js"></script>

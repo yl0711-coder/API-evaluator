@@ -123,8 +123,3 @@ export const TOKENIZER_PROBES = [
       "| 列A | 列B |\n|-----|-----|\n| 1 | 2 |",
   },
 ];
-
-// 便捷查找(审计阶段按 id 取回完全相同的文本)。
-export function getProbeById(id) {
-  return TOKENIZER_PROBES.find((p) => p.id === id) || null;
-}

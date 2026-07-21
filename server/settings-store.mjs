@@ -7,8 +7,8 @@ import { SETTINGS_FILE } from "./paths.mjs";
 import { writeJsonAtomic } from "./utils.mjs";
 
 // 注意：new-api 系统访问令牌（敏感）不在此——它走加密库（secret-store），绝不入 settings.json。
-const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic"];
-const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableAutoTag: true, customTags: [], scenarioGroups: [...DEFAULT_SCENARIO_GROUPS], newapiBaseUrl: "", newapiUserId: "", testCycleDays: 0, enableHighRiskAlert: false };
+const DEFAULT_SCENARIO_GROUPS = ["基础", "LiveBench", "安全红线", "HLE", "HardcoreLogic", "编程硬核"];
+const DEFAULTS = { aiAnalysisModelTargetId: "", enableLivebench: false, enableSafety: false, enableHle: false, enableHardcoreLogic: false, enableCodingHard: false, enableAutoTag: true, customTags: [], scenarioGroups: [...DEFAULT_SCENARIO_GROUPS], newapiBaseUrl: "", newapiUserId: "", testCycleDays: 0, enableHighRiskAlert: false };
 
 let cache = null;
 
@@ -20,6 +20,7 @@ function normalize(raw) {
     enableSafety: raw?.enableSafety === true,
     enableHle: raw?.enableHle === true,
     enableHardcoreLogic: raw?.enableHardcoreLogic === true,
+    enableCodingHard: raw?.enableCodingHard === true,
     // 高分通过场景测试自动授予能力标签：默认开启；仅显式 false 关闭（兼容旧 settings.json 缺该字段→视为开）。
     enableAutoTag: raw?.enableAutoTag !== false,
     // 用户自定义能力标签清单：trim、去空、去重、保序；非数组→空。并入模型表单的可勾选标签词表。

@@ -1,6 +1,9 @@
 // server/channel-store.mjs
-// 渠道存储：SQLite(channels 表) + JSON 兜底。明文 key 经 secret-store 加密落库，
-// 渠道记录只存 apiKeyRef + keyHash（单向指纹，判重用），明文绝不落库 / 不下发浏览器。
+// 渠道存储：SQLite(channels 表) 为主，JSON 仅在【SQLite 不可用时】兜底（saveChannels 见下：DB 写成功
+// 就 return，健康时 channels.json 根本不写、不是实时镜像）。故这是「无 SQLite 时也能起」的降级路径，
+// 不是数据库损坏后的恢复来源——DB 损坏时 dbLoadChannels 返回 null → 读到的是缺失 / 迁移前的旧 JSON。
+// 明文 key 经 secret-store 加密落库，渠道记录只存 apiKeyRef + keyHash（单向指纹，判重用），
+// 明文绝不落库 / 不下发浏览器。
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { CHANNELS_FILE } from "./paths.mjs";

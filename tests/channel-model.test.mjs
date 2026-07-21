@@ -31,8 +31,9 @@ test("normalizeChannel：必填名称，默认值与价格/模型清单归一", 
   assert.equal(ch.name, "中转A");
   assert.equal(ch.baseUrl, "https://api.x.com"); // 去尾斜杠
   assert.equal(ch.protocol, "openai_chat");
-  assert.equal(ch.maxTokens, 512);
-  assert.equal(ch.timeoutMs, 60000);
+  // v0.3.x 后 maxTokens/timeoutMs/单价已从渠道下沉到模型目标层，渠道不再携带（见 normalizeModelTarget 的测试）。
+  assert.equal(ch.maxTokens, undefined);
+  assert.equal(ch.timeoutMs, undefined);
   assert.deepEqual(ch.models, ["gpt-4o"]);
   assert.equal(ch.status, "enabled");
   assert.equal(ch.source, "manual");
@@ -44,7 +45,8 @@ test("normalizeChannel：编辑时沿用 existing 的创建时间与未传字段
   const ch = normalizeChannel({ id: "c1", name: "新名" }, existing);
   assert.equal(ch.id, "c1");
   assert.equal(ch.name, "新名");
-  assert.equal(ch.maxTokens, 1024);
+  // 渠道层不再有 maxTokens（下沉到模型目标）；existing 里遗留的 1024 应被忽略而非回传。
+  assert.equal(ch.maxTokens, undefined);
   assert.equal(ch.status, "disabled");
   assert.equal(ch.source, "newapi");
   assert.equal(ch.newapiChannelId, 7);
@@ -58,6 +60,21 @@ test("normalizeModelTarget：必填 channelId + model", () => {
   assert.equal(t.note, "主力");
   assert.throws(() => normalizeModelTarget({ model: "x" }), /渠道/);
   assert.throws(() => normalizeModelTarget({ channelId: "c1" }), /模型名/);
+});
+
+test("normalizeModelTarget：maxTokens/timeoutMs 默认 512/300000，编辑未传时沿用 existing", () => {
+  // v0.3.x 后这两个字段从渠道下沉到「渠道+模型」目标层，是真实请求的输出上限与超时，默认值不能错。
+  const created = normalizeModelTarget({ channelId: "c1", model: "gpt-4o" });
+  assert.equal(created.maxTokens, 512, "新建默认 maxTokens=512");
+  assert.equal(created.timeoutMs, 300000, "新建默认 timeoutMs=300000");
+  // 显式传值生效
+  const explicit = normalizeModelTarget({ channelId: "c1", model: "gpt-4o", maxTokens: 2048, timeoutMs: 120000 });
+  assert.equal(explicit.maxTokens, 2048);
+  assert.equal(explicit.timeoutMs, 120000);
+  // 编辑（全量覆盖）未带这两个字段 → 沿用 existing，不被打回默认
+  const edited = normalizeModelTarget({ channelId: "c1", model: "gpt-4o", note: "只改备注" }, { id: "x", maxTokens: 4096, timeoutMs: 90000 });
+  assert.equal(edited.maxTokens, 4096, "编辑未传 maxTokens 应沿用 existing");
+  assert.equal(edited.timeoutMs, 90000, "编辑未传 timeoutMs 应沿用 existing");
 });
 
 test("normalizeModelTarget：能力标签去空白/去重/保序", () => {
@@ -136,4 +153,20 @@ test("migrateProfileToChannelAndTarget：老 profile → channel + target，复�
   assert.equal(resolved.baseUrl, profile.baseUrl);
   assert.equal(resolved.defaultModel, profile.defaultModel);
   assert.equal(resolved.protocol, profile.protocol);
+});
+
+test("normalize*：改名自动记曾用名（aliases），改回时剔除当前名", () => {
+  let ch = normalizeChannel({ name: "渠道A", baseUrl: "https://x.com" });
+  assert.deepEqual(ch.aliases, []); // 新建无曾用名
+  ch = normalizeChannel({ name: "渠道B", baseUrl: "https://x.com" }, ch);
+  assert.deepEqual(ch.aliases, ["渠道A"]); // A→B：旧名进曾用名
+  ch = normalizeChannel({ name: "渠道C", baseUrl: "https://x.com" }, ch);
+  assert.deepEqual(ch.aliases, ["渠道A", "渠道B"]); // 多次改名累积
+  ch = normalizeChannel({ name: "渠道A", baseUrl: "https://x.com" }, ch);
+  assert.deepEqual(ch.aliases, ["渠道B", "渠道C"]); // 改回 A：当前名从曾用名剔除
+
+  let t = normalizeModelTarget({ channelId: "c1", model: "gpt-4o" });
+  assert.deepEqual(t.aliases, []);
+  t = normalizeModelTarget({ channelId: "c1", model: "gpt-4o-2024" }, t);
+  assert.deepEqual(t.aliases, ["gpt-4o"]); // 改模型名同样记曾用名
 });

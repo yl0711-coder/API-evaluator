@@ -279,6 +279,60 @@ export function formatSupplierEvidenceReport(evidence) {
   ].join("\n");
 }
 
+// 回答里可能自带 ``` 代码块，围栏必须比正文中最长的一串反引号更长，否则代码块会被提前闭合、
+// 后半段回答漏到正文里当 Markdown 渲染。
+function fencedBlock(text) {
+  const longest = (String(text).match(/`+/g) || []).reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return [fence, text, fence];
+}
+
+// 「在报告中完整显示返回」：默认关闭，关闭时返回空数组（不占小节号，旧报告结构不变）。
+// 单列一节而不是塞进「场景明细」表：表格单元格会被 escapeMarkdownTable 把换行压平，长回答只有代码块能读。
+function buildFullResponseSection(summary, options, heading) {
+  if (!options.fullResponse) return [];
+  const lines = [
+    heading,
+    "",
+    "> 模型原始回答全文（仅做密钥脱敏，未截断）；失败用例给出上游原始响应体，便于排查空响应 / 流式异常。未开启该选项时，报告只在「场景明细」给一条截断样例。",
+    "",
+  ];
+  let any = false;
+  for (const result of summary.results || []) {
+    const records = result.records || [];
+    if (!records.length) continue;
+    lines.push(`### ${result.profileName} / ${result.model}`, "");
+    for (const record of records) {
+      any = true;
+      const repeatSuffix = Number(summary.repeats) > 1 ? ` · 第 ${record.repeat} 次` : "";
+      const status = record.success ? "成功" : `失败（${record.normalizedError || "unknown_error"}）`;
+      lines.push(`#### ${record.scenarioName || record.scenarioId || "-"}${repeatSuffix} — ${status}`, "");
+      const text = String(record.responseText || "").trim();
+      const raw = String(record.rawResponse || "").trim();
+      if (text) {
+        lines.push(...fencedBlock(redactSensitiveText(text)));
+      } else if (raw) {
+        // 空响应 / 上游错误页：给未截断的响应体本身。rawError 是它被 summarizeText 砍到 500 字
+        // 又压平换行的摘要，排查「SSE 流为何没吐出文本」时基本没用。
+        // 断流残体必须标明，否则会被当成「上游只发了这些就正常收尾」而误判。
+        lines.push(
+          record.rawResponsePartial
+            ? `- 无文本返回，连接中途断开（${record.normalizedError || "-"}）。以下为断开前已收到的部分，并非完整响应：`
+            : "- 无文本返回。上游原始响应体如下：",
+          "",
+        );
+        lines.push(...fencedBlock(redactSensitiveText(raw)));
+      } else {
+        // 连响应体都没有（连接层失败/超时），只剩摘要——如实标注已截断，不冒充全文。
+        lines.push(`- 无文本返回，且未取得响应体，以下为错误摘要（已截断）：${redactSensitiveText(record.rawError || "-")}`);
+      }
+      lines.push("");
+    }
+  }
+  if (!any) lines.push("- 本次运行没有可展示的返回。", "");
+  return lines;
+}
+
 export function formatScenarioReport(summary, options = {}) {
   const safetySummary = buildSafetyReportSummary(summary);
   const scenarioInsights = buildScenarioInsights(summary);
@@ -430,6 +484,7 @@ export function formatScenarioReport(summary, options = {}) {
     "- 内容安全场景会额外检查是否明确拒绝风险请求、是否提供安全替代建议、是否疑似直接满足风险请求。",
     "- 后续可接入主评测模型，对复杂问题解决质量做更细的 AI 评分。",
     "",
+    ...buildFullResponseSection(summary, options, safetySummary ? "## 10. 完整返回" : "## 9. 完整返回"),
     ...buildReportAppendix(summary, options),
   ].join("\n");
 }
