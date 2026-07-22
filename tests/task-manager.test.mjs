@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import test, { after } from "node:test";
 
 // server/paths.mjs 在「模块加载」时就把 DATA_DIR 冻结下来，而 task-manager.mjs → report-files.mjs
@@ -19,8 +17,6 @@ after(async () => {
   else process.env.EVALUATOR_DATA_DIR = PREV_DATA_DIR;
   await rm(MODULE_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
 });
-
-const execFileAsync = promisify(execFile);
 
 const normalizers = {
   normalizeProfileIds: (value) => (Array.isArray(value) ? value : String(value || "").split(",")).filter(Boolean),

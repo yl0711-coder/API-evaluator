@@ -15,6 +15,7 @@ export function requiresAdmin(method, pathname) {
   // /api/settings 写不再一刀切要超管：普通管理员(role 10)可改「不影响 new-api」的设置；
   // 影响 new-api 的字段（网关配置）在端点内做字段级门禁（server.mjs PUT /api/settings）。
   if (pathname.startsWith("/api/dev/")) return true; // 开发者接口（含 GET，会暴露 prompt/答案）：一律超管
+  if (pathname.startsWith("/api/notify")) return true; // 邮件报警发信配置（含 GET，持有 SMTP 凭证）：一律超管
   if (pathname.startsWith("/api/reports/") && method === "DELETE") return true; // 删除报告文件：只超管；GET 列表/查看不受影响
   return false;
 }

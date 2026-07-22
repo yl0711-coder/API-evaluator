@@ -25,6 +25,8 @@ export const SCENARIO_OVERRIDES_FILE = join(CONFIG_DIR, "scenario-overrides.json
 export const AUTO_TEST_JOBS_FILE = join(CONFIG_DIR, "auto-test-jobs.json");
 // 高危报告提示的未读集合：运行完成时判危记入，用户点掉后移除（持久卷 /data）。
 export const HIGH_RISK_ALERTS_FILE = join(CONFIG_DIR, "high-risk-alerts.json");
+// 邮件报警的发信配置（SMTP 服务器/端口/账号/发件人/收件人）；密码不在此，走加密库（secret-store）。
+export const NOTIFY_CONFIG_FILE = join(CONFIG_DIR, "notify-config.json");
 export const SQLITE_DB_FILE = envCompat("SQLITE_DB") || join(DATA_DIR, "evaluator.db");
 export const REQUEST_LOG_FILE = join(LOGS_DIR, "requests.jsonl");
 export const TEST_RUNS_FILE = join(LOGS_DIR, "test-runs.jsonl");

@@ -131,7 +131,20 @@ Set `EVALUATOR_IMPORT_SOURCE` to pick the source (it is off when unset):
 | Mode | What it imports | Needs | Note |
 |---|---|---|---|
 | `api` | url / models / status / protocol (no key) | new-api base URL + import token (admin access token) | new-api protects the plaintext key behind 2FA, so keys can't be pulled via the API — fill them in afterwards. |
-| `db` | everything incl. keys (fully automatic) | `EVALUATOR_NEWAPI_DB_DSN` (read-only) + `mysql2` (`pnpm add mysql2`; not a core dep, lazy-loaded) | Reads the `channels` table directly. Grant the read-only account `SELECT` on `channels`. |
+| `db` | everything incl. keys (fully automatic) | `EVALUATOR_NEWAPI_DB_DSN` (read-only) + `mysql2` (core dep) | Reads the `channels` table directly. Grant the read-only account `SELECT` on `channels`. |
+
+The same `EVALUATOR_NEWAPI_DB_DSN` also backs **邮件报警配置 → 一键同步线上配置** (SMTP config
+sync, super-admin only, on the notify-config page). It reads new-api's `options` table
+(`SMTPServer/SMTPPort/SMTPAccount/SMTPFrom/SMTPToken/SMTPSSLEnabled`) — same pattern as
+newapi-monitor's own SMTP sync. Grant the read-only account `SELECT` on `options` too:
+
+```sql
+GRANT SELECT ON <newapi_db>.channels TO '<ro_user>'@'%';
+GRANT SELECT ON <newapi_db>.options  TO '<ro_user>'@'%';
+```
+
+Without the DSN configured, the sync button fails with a clear "未配置 EVALUATOR_NEWAPI_DB_DSN"
+error and existing config is left untouched — it never blocks page load.
 
 For `api` mode, the new-api **base URL / import token / admin user id** can be set in-app under
 **帮助与设置 → 设置 → new-api 网关** (super admin only; saved to local `settings.json`, takes effect
