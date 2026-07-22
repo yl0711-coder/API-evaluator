@@ -480,6 +480,7 @@ requireElement("#reload-requests").addEventListener("click", async () => {
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
 requireElement("#export-support-bundle").addEventListener("click", exportSupportBundle);
+requireElement("#check-disk-usage").addEventListener("click", checkDiskUsage);
 
 requireElement("#cancel-stability-task").addEventListener("click", () => cancelRemoteTask(state, "stability"));
 requireElement("#cancel-load-test-task").addEventListener("click", () => cancelRemoteTask(state, "loadTest"));
@@ -923,5 +924,16 @@ async function exportSupportBundle() {
     toast("问题包已导出。可以把这个文件发给负责人，里面不包含 API Key。");
   } catch (error) {
     toast(`问题包导出失败：${error.message}`, true);
+  }
+}
+
+// 磁盘空间（评测数据所在分区剩余量，非目录用量）。
+async function checkDiskUsage() {
+  try {
+    const { freeBytes, totalBytes, usedPercent } = await api("/api/reports/disk");
+    const gb = (bytes) => (bytes / 1024 ** 3).toFixed(1);
+    toast(`磁盘剩余 ${gb(freeBytes)} GB / 共 ${gb(totalBytes)} GB（已用 ${usedPercent}%）`);
+  } catch (error) {
+    toast(`磁盘空间查询失败：${error.message}`, true);
   }
 }

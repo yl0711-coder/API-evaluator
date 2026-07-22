@@ -71,6 +71,7 @@
   "#cancel-standard-task",
   "#channel-form",
   "#channel-list",
+  "#check-disk-usage",
   "#client-evidence-submit",
   "#client-log-directory-import",
   "#client-log-file",

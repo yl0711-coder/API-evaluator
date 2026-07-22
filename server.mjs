@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, rm, stat } from "node:fs/promises";
+import { readFile, readdir, rm, stat, statfs } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
 import {
@@ -477,6 +477,7 @@ const API_ROUTES = [
   // 报告中心（DELETE 一律要超管；GET 列表 / 查看不受限）
   ["GET", "/api/reports", handleReportsList],
   ["GET", "/api/reports/files", handleReportFilesList],
+  ["GET", "/api/reports/disk", handleReportsDiskUsage],
   ["DELETE", "/api/reports/files/:id", handleReportFileDelete],
   ["POST", "/api/reports/compare/scenarios", handleReportsCompareScenarios],
   ["POST", "/api/reports/compare", handleReportsCompare],
@@ -1461,6 +1462,19 @@ async function handleReportFilesList(req, res) {
     /* 目录不存在/读失败 → 空列表 */
   }
   sendJson(res, 200, files);
+  return;
+}
+
+// 磁盘剩余空间（评测数据所在分区，非目录用量——够判断"要不要清理"这一件事，不需要递归扫目录）。
+async function handleReportsDiskUsage(req, res) {
+  const stats = await statfs(DATA_DIR);
+  const totalBytes = stats.blocks * stats.bsize;
+  const freeBytes = stats.bavail * stats.bsize;
+  sendJson(res, 200, {
+    totalBytes,
+    freeBytes,
+    usedPercent: totalBytes > 0 ? Math.round(((totalBytes - freeBytes) / totalBytes) * 1000) / 10 : 0,
+  });
   return;
 }
 
