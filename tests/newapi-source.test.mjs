@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { fetchNewapiChannels, normalizeMysqlDsn } from "../server/newapi-source.mjs";
+import { fetchNewapiChannels, fetchNewapiSmtp, normalizeMysqlDsn } from "../server/newapi-source.mjs";
 
 async function withMockNewapi(handler, run) {
   const server = createServer(handler);
@@ -105,6 +105,13 @@ test("normalizeMysqlDsn：mysql:// URI 与其它形式原样透传", () => {
   const uri = "mysql://ro:pw@db-host:3306/newapi";
   assert.equal(normalizeMysqlDsn(uri), uri);
   assert.equal(normalizeMysqlDsn("  " + uri + "  "), uri); // 仅 trim
+});
+
+// 「邮件报警配置」一键同步：不连真实数据库，只覆盖「未配 DSN」这条不碰网络的错误路径
+// （真连库/合并语义留给人工验收，见计划文档——测试环境不该也不能连生产 new-api 库）。
+test("fetchNewapiSmtp：未配置 EVALUATOR_NEWAPI_DB_DSN → 明确报错", async () => {
+  delete process.env.EVALUATOR_NEWAPI_DB_DSN;
+  await assert.rejects(() => fetchNewapiSmtp(), /EVALUATOR_NEWAPI_DB_DSN/);
 });
 
 // 回归：导入出站此前无超时——new-api 主机挂起会让本请求无限期吊住（undici 无默认响应超时）。
