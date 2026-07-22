@@ -44,6 +44,7 @@
           <span>帮助与设置</span>
           <button class="nav-button" type="button" data-page="manual">使用手册</button>
           <button class="nav-button" type="button" data-page="settings">设置</button>
+          <button class="nav-button" type="button" data-page="notify-config" data-requires-admin>邮件报警配置</button>
           <button class="nav-button" type="button" data-page="developer" data-requires-admin>测试场景维护</button>
         </div>
       </aside>
@@ -1142,6 +1143,65 @@
 
             <div class="wide action-row">
               <button id="save-settings" class="primary" type="submit">保存设置</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="page" id="notify-config" data-requires-admin hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 报警</span>邮件报警配置</h2>
+              <p class="section-desc">配置报警邮件的发信信息（SMTP 服务器、账号、发件人、收件人）。本页只负责发信本身；报警触发的阈值/规则留到后续再配置。</p>
+            </div>
+          </div>
+
+          <form id="notify-config-form" class="panel form-grid">
+            <div class="form-section-title">
+              <div class="action-row ntf-section-head">
+                <h3>SMTP 发信服务器</h3>
+                <button id="ntf-sync" class="secondary" type="button">一键同步线上配置</button>
+              </div>
+              <p class="section-desc">默认复用线上 new-api（中转站）的发件配置；如手动改过想还原，点「一键同步线上配置」即可重新同步（覆盖下方 host/端口/SSL/账号/发件人/密码，收件人不受影响）。465 端口固定使用隐式 TLS，其它端口（如 587）走 STARTTLS。</p>
+            </div>
+            <label>
+              SMTP 服务器
+              <input id="ntf-host" type="text" placeholder="smtp.example.com" />
+            </label>
+            <label>
+              端口
+              <input id="ntf-port" type="number" min="1" max="65535" placeholder="465" />
+            </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="ntf-ssl" />
+              <span>使用 SSL<small>465 端口始终使用隐式 TLS，与本勾选无关；其余端口按本勾选决定是否要求 STARTTLS。</small></span>
+            </label>
+
+            <div class="form-section-title">
+              <h3>账号与收发件人</h3>
+            </div>
+            <label>
+              登录账号
+              <input id="ntf-user" type="text" autocomplete="off" placeholder="user@example.com" />
+            </label>
+            <label>
+              访问凭证
+              <input id="ntf-password" type="password" autocomplete="off" placeholder="未配置" />
+              <small class="field-hint">留空表示保留已保存的密码；密码只存加密库，此处从不回显明文。</small>
+            </label>
+            <label>
+              发件人
+              <input id="ntf-from" type="text" placeholder="不填则使用登录账号" />
+            </label>
+            <label class="wide">
+              收件人
+              <textarea id="ntf-recipients" rows="3" placeholder="多个收件人用逗号、分号或换行分隔"></textarea>
+              <small class="field-hint">支持逗号 / 分号 / 换行 / 空格混合分隔，重复地址会自动去重。</small>
+            </label>
+
+            <div class="wide action-row">
+              <button id="ntf-save" class="primary" type="submit">保存配置</button>
+              <button id="ntf-test" class="secondary" type="button">发送测试邮件</button>
+              <span class="field-hint" id="ntf-status"></span>
             </div>
           </form>
         </section>

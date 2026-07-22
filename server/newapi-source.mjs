@@ -5,6 +5,7 @@
 //   db (A2)：直读 new-api 的 channels 表（含明文 key），完全自动。需 EVALUATOR_NEWAPI_DB_DSN（只读）。
 //            mysql2 是核心依赖（已随镜像带上），import 即用。
 // 通用：任何 new-api 用户配自己的来源即可复用（channels 表结构来自 new-api 开源，版本兼容见 README）。
+// 「邮件报警配置」页的一键同步（fetchNewapiSmtp）复用同一条 EVALUATOR_NEWAPI_DB_DSN，只读 options 表。
 import { envCompat } from "./env-compat.mjs";
 import { readConfig } from "./newapi-tag-writer.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
@@ -104,4 +105,52 @@ async function fetchViaDb() {
   } finally {
     await conn.end().catch(() => {});
   }
+}
+
+// 「邮件报警配置」页的一键同步：直读 new-api 的 options 表拿它自己的发信配置，与 fetchViaDb() 共用
+// 同一条 EVALUATOR_NEWAPI_DB_DSN（已配 db 模式导入渠道的用户免配第二条连接串）。字段名/合并语义
+// 照抄 newapi-monitor 的 monitor/smtp_sync.go：SSL 未显式设置时按端口 465 兜底；最终无论如何
+// 465 都强制视为隐式 TLS（不信来源的 SMTPSSLEnabled，与本仓 mailer.mjs 的 465=secure 判定口径一致）。
+export async function fetchNewapiSmtp() {
+  const dsn = envCompat("NEWAPI_DB_DSN");
+  if (!dsn) throw new Error("同步需要 EVALUATOR_NEWAPI_DB_DSN（new-api 库的只读连接串，与渠道导入 db 模式共用）。");
+  let mysql;
+  try {
+    mysql = (await import("mysql2/promise")).default ?? (await import("mysql2/promise"));
+  } catch {
+    throw new Error("缺少 mysql2 驱动：同步需要 mysql2（正常随镜像带上）。");
+  }
+  let conn;
+  try {
+    conn = await mysql.createConnection(normalizeMysqlDsn(dsn));
+  } catch {
+    throw new Error("连接 new-api 数据库失败：请检查 EVALUATOR_NEWAPI_DB_DSN 是否正确、库可达。");
+  }
+  let rows;
+  try {
+    rows = (
+      await conn.query(
+        "SELECT `key`, `value` FROM options WHERE `key` IN ('SMTPServer','SMTPPort','SMTPAccount','SMTPFrom','SMTPToken','SMTPSSLEnabled')",
+      )
+    )[0];
+  } catch {
+    throw new Error("读取 new-api options 表失败：请确认表结构与权限。");
+  } finally {
+    await conn.end().catch(() => {});
+  }
+  const map = Object.fromEntries((Array.isArray(rows) ? rows : []).map((r) => [r.key, r.value]));
+  const host = String(map.SMTPServer || "").trim();
+  if (!host) throw new Error("线上 new-api 尚未配置 SMTP 服务器，无法同步。");
+  const port = Number(map.SMTPPort) || 465;
+  const sslExplicit = Object.prototype.hasOwnProperty.call(map, "SMTPSSLEnabled");
+  const siteSsl = sslExplicit ? map.SMTPSSLEnabled === "true" || map.SMTPSSLEnabled === "1" : port === 465;
+  const user = String(map.SMTPAccount || "").trim();
+  return {
+    host,
+    port,
+    ssl: siteSsl || port === 465,
+    user,
+    from: String(map.SMTPFrom || "").trim() || user,
+    password: String(map.SMTPToken || ""),
+  };
 }

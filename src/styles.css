@@ -4207,6 +4207,12 @@ textarea:focus {
   border-color: rgba(255, 122, 138, 0.4);
 }
 
+/* SMTP 分区标题栏：标题贴左、同步按钮靠右贴同一行（同 .atc-list-head 思路），说明文字仍在下方独占一行。 */
+#notify-config .ntf-section-head { justify-content: space-between; align-items: center; }
+#notify-config .ntf-section-head h3 { margin: 0; }
+#notify-config .ntf-section-head button { flex-shrink: 0; }
+
+
 /* —— 统一卡片立体阴影（静态）——
    置于文件末尾，确保胜过前面所有 .panel / .dash .panel 的 box-shadow 覆盖。 */
 .panel {

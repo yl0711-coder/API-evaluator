@@ -37,7 +37,7 @@ import {
   normalizeProfile,
   saveProfiles,
 } from "./server/profile-store.mjs";
-import { deleteProfileApiKey, saveProfileApiKey } from "./server/secret-store.mjs";
+import { deleteProfileApiKey, saveProfileApiKey, saveSecret, readSecret } from "./server/secret-store.mjs";
 import { createTaskManager } from "./server/task-manager.mjs";
 import { buildSupportBundle } from "./server/support-bundle.mjs";
 import {
@@ -116,9 +116,11 @@ import { migratePricingToTargetsOnce } from "./server/migrate-pricing.mjs";
 import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./server/channel-model.mjs";
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
-import { fetchNewapiChannels, importSourceMode } from "./server/newapi-source.mjs";
+import { fetchNewapiChannels, fetchNewapiSmtp, importSourceMode } from "./server/newapi-source.mjs";
 import { readConfig as readNewapiConfig, loadNewapiToken, saveNewapiToken } from "./server/newapi-tag-writer.mjs";
 import { getSettings, loadSettings, saveSettings, peekLegacyNewapiToken, stripLegacyNewapiToken } from "./server/settings-store.mjs";
+import { getNotifyConfig, loadNotifyConfig, saveNotifyConfig } from "./server/notify-config.mjs";
+import { sendMail, buildTestMailBody } from "./server/mailer.mjs";
 import { withRunBy } from "./server/run-context.mjs";
 import { createRouter } from "./server/router.mjs";
 import { createRateLimiter } from "./server/rate-limit.mjs";
@@ -173,6 +175,7 @@ try {
   process.exit(1);
 }
 await loadSettings(); // 暖运行时设置缓存（AI 总结模型 / LiveBench / 安全题开关）
+await loadNotifyConfig(); // 暖邮件报警发信配置缓存
 await loadScenarioOverrides(); // 读回超管的场景编辑覆盖层（/data），合并到内置 bank 之上
 // new-api 系统令牌走加密库：启动解密一次缓存进内存（readConfig 同步读）。
 // 迁移旧版明文令牌：先写进加密库，再从 settings.json 抹除（顺序保证不丢令牌）。
@@ -444,6 +447,12 @@ const API_ROUTES = [
   // 设置（写不一刀切要超管：影响 new-api 的字段在 handleSettingsUpdate 里做字段级门禁）
   ["GET", "/api/settings", handleSettingsGet],
   ["PUT", "/api/settings", handleSettingsUpdate],
+
+  // 邮件报警发信配置：持有 SMTP 凭证，整组仅超管（含 GET，见 api-access.mjs）
+  ["GET", "/api/notify/config", handleNotifyConfigGet],
+  ["PUT", "/api/notify/config", handleNotifyConfigSave],
+  ["POST", "/api/notify/test", handleNotifyTestSend],
+  ["POST", "/api/notify/smtp/sync", handleNotifySmtpSync],
 
   // 模型目标：不持 key，普通管理员即可维护
   ["GET", "/api/model-targets", handleModelTargetsList],
@@ -1237,6 +1246,89 @@ async function handleSettingsUpdate(req, res) {
   if (tokenInput.trim()) await saveNewapiToken(tokenInput);
   const rest = await saveSettings(patch);
   sendJson(res, 200, { ...rest, newapiImportTokenSet: Boolean(readNewapiConfig().token) });
+  return;
+}
+
+// —— 邮件报警发信配置（本轮只做发信，报警规则留到后续）——
+// 全站只有一份 SMTP 配置，非 per-profile，用固定 ref（对齐 secret-store 的通用 ref 读写）。
+const SMTP_PASSWORD_REF = "notify:smtp-password";
+
+async function handleNotifyConfigGet(req, res) {
+  // 对齐 monitor 的 ensureSMTPDefault()：本页从未配置过 SMTP 时，首次 GET 尽力自动从线上
+  // new-api 同步一次（失败不阻塞、不报错，只是留空让用户手填）；已配置过（无论是同步来的
+  // 还是手填的）绝不覆盖。
+  await ensureSmtpDefault();
+  // 密码存于加密库、不在 notify-config.json：GET 只回 smtpPasswordSet 布尔，绝不回明文。
+  sendJson(res, 200, getNotifyConfig());
+  return;
+}
+
+async function handleNotifyConfigSave(req, res) {
+  const patch = await readJson(req);
+  const passwordInput = typeof patch.smtpPassword === "string" ? patch.smtpPassword : "";
+  delete patch.smtpPassword;
+  // 密码留空＝保留原值；非空才写入加密库并把 smtpPasswordSet 置真。
+  if (passwordInput) {
+    await saveSecret(SMTP_PASSWORD_REF, passwordInput);
+    patch.smtpPasswordSet = true;
+  }
+  const next = await saveNotifyConfig(patch);
+  sendJson(res, 200, next);
+  return;
+}
+
+async function handleNotifyTestSend(req, res) {
+  const cfg = getNotifyConfig();
+  if (!cfg.smtpHost || !cfg.recipients) {
+    sendJson(res, 400, { error: "missing_config", userMessage: "请先保存 SMTP 服务器和收件人。" });
+    return;
+  }
+  const smtpPassword = await readSecret(SMTP_PASSWORD_REF);
+  try {
+    await sendMail({ ...cfg, smtpPassword }, "API-evaluator 配置测试邮件", buildTestMailBody());
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    sendJson(res, 500, { error: "send_failed", userMessage: `发送失败：${error?.message || error}` });
+  }
+  return;
+}
+
+// 从线上 new-api 的 options 表读它自己的发信配置，覆盖本页 host/port/ssl/账号/发件人；
+// 密码源端非空才覆盖（源端未配密码不清空本地已设的）。收件人是本站自己的订阅名单，不受同步影响。
+async function syncSmtpFromNewapi() {
+  const smtp = await fetchNewapiSmtp();
+  const patch = {
+    smtpHost: smtp.host,
+    smtpPort: smtp.port,
+    smtpSsl: smtp.ssl,
+    smtpUser: smtp.user,
+    smtpFrom: smtp.from,
+  };
+  if (smtp.password) {
+    await saveSecret(SMTP_PASSWORD_REF, smtp.password);
+    patch.smtpPasswordSet = true;
+  }
+  return saveNotifyConfig(patch);
+}
+
+// 对齐 monitor 的 ensureSMTPDefault()：本页未配置过时尽力同步一次，失败静默吞掉（不阻塞 GET）。
+async function ensureSmtpDefault() {
+  if (getNotifyConfig().smtpHost) return; // 已配置过，不覆盖
+  try {
+    await syncSmtpFromNewapi();
+  } catch {
+    // 尽力而为：没配 DSN / 线上没配 SMTP 都是常见情况，留空让用户手填即可。
+  }
+}
+
+// 一键同步按钮：与 ensureSmtpDefault 共用同步逻辑，但失败要回显给用户（不是静默吞掉）。
+async function handleNotifySmtpSync(req, res) {
+  try {
+    const next = await syncSmtpFromNewapi();
+    sendJson(res, 200, next);
+  } catch (error) {
+    sendJson(res, 502, { error: "sync_failed", userMessage: error?.message || String(error) });
+  }
   return;
 }
 

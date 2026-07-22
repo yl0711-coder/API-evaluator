@@ -7,6 +7,7 @@ import { applyRoleVisibility, ensureAuthenticated, wireUnauthorizedRedirect } fr
 import { createConfirmDialog } from "./confirm-dialog.js";
 import { createDeveloper } from "./developer.js";
 import { createAutoTestConfig } from "./auto-test-config.js";
+import { createNotifyConfig } from "./notify-config.js";
 import { createModelCompare } from "./model-compare.js";
 import {
   confirmExecution,
@@ -109,6 +110,7 @@ const developer = createDeveloper({
 });
 // 「自动测试配置」（仅超管）：定时自动测试作业的增删改查。confirmAction 在后文声明，闭包取值时已就绪。
 const autoTestConfig = createAutoTestConfig({ state, confirm: (opts) => confirmAction(opts) });
+const notifyConfig = createNotifyConfig({ state });
 // 「模型比对」（登录即可用）：依据两个模型各自最近的报告做统计对比，产出对比报告。
 const modelCompare = createModelCompare({ state });
 // 注册到 _onProfileData（必须在顶层 await 之前）。
@@ -712,6 +714,9 @@ function showPage(page) {
   }
   if (page === "auto-test-config") {
     autoTestConfig.load();
+  }
+  if (page === "notify-config") {
+    notifyConfig.load();
   }
   if (page === "model-compare") {
     modelCompare.load();
