@@ -220,7 +220,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `styles.css`: resolve the undefined `--border` custom property (use `--line`).
 - Channel / model-target / profile validation failures now return HTTP 400 with a
   user-facing message instead of being swallowed as a 500.
-- Stopped credential autofill, double-submit, and dialog / polling hangs in the UI.
 
 ### Changed
 - Removed internal codenames from code comments and report output (neutral wording).
