@@ -24,7 +24,13 @@ import { runClientReplay } from "./server/client-replay.mjs";
 import { buildUserErrorMessage, logTechnicalError } from "./server/error-log.mjs";
 import { isAllowedBrowserOrigin, staticSecurityHeaders } from "./server/http-security.mjs";
 import { HttpRequestError, readJson } from "./server/http-request.mjs";
-import { formatClientReplayReport, formatSupplierEvidenceReport, saveReportFiles } from "./server/reporting.mjs";
+import {
+  compressAgedReportFiles,
+  formatClientReplayReport,
+  formatSupplierEvidenceReport,
+  readReportFileText,
+  saveReportFiles,
+} from "./server/reporting.mjs";
 import {
   exportProfile,
   findDuplicateProfile,
@@ -182,7 +188,8 @@ await loadScenarioOverrides(); // 读回超管的场景编辑覆盖层（/data�
 const legacyNewapiToken = await peekLegacyNewapiToken();
 await loadNewapiToken(legacyNewapiToken);
 if (legacyNewapiToken) await stripLegacyNewapiToken();
-await pruneReportsOnStartup();
+await runReportMaintenance();
+scheduleReportMaintenance();
 
 // 「模型比对」共用：按文件名前缀收集两方在报告中心的报告，取最近若干份，再平衡为「双方共有」的报告集。
 // 返回 { balA, balB }（已平衡的报告文件），或 { error, userMessage }（无报告 / 无共有报告）。
@@ -218,7 +225,7 @@ async function loadBalancedCompareFiles(A, B) {
     const files = [];
     for (const m of chosen) {
       try {
-        files.push({ name: m.base, md: await readFile(join(REPORTS_DIR, `${m.base}.md`), "utf8"), mtimeMs: m.mtimeMs });
+        files.push({ name: m.base, md: await readReportFileText(join(REPORTS_DIR, `${m.base}.md`)), mtimeMs: m.mtimeMs });
       } catch {
         /* 读失败 → 跳过 */
       }
@@ -540,10 +547,14 @@ async function handleApi(req, res) {
   sendJson(res, 404, { error: "not_found" });
 }
 
-async function pruneReportsOnStartup() {
+// 报告 + 历史维护：删过期/超量报告 → 删过期/超量历史表行 → 把剩下超龄未压缩的报告原地 gzip。
+// 顺序如此：先删掉不再需要保留的，再压缩还要留着的，避免白白压缩马上又要删的文件。
+// 默认时间线：创建 30 天后压缩，累计 180 天后删除（EVALUATOR_REPORT_RETENTION_DAYS 含义不变，
+// 仍是「距创建超过 N 天即删」，默认值改大以配合新增的压缩层，不新增单独的「压缩后再留几天」变量）。
+async function runReportMaintenance() {
   try {
     const removed = await pruneReports({
-      retentionDays: Number(process.env.EVALUATOR_REPORT_RETENTION_DAYS || 30),
+      retentionDays: Number(process.env.EVALUATOR_REPORT_RETENTION_DAYS || 180),
       maxTotal: Number(process.env.EVALUATOR_REPORT_MAX_TOTAL || 2000),
     });
     for (const report of removed) {
@@ -562,9 +573,24 @@ async function pruneReportsOnStartup() {
     if (historyTotal) {
       console.log(`[history] 已清理 ${historyTotal} 条过期/超量历史记录（${JSON.stringify(history)}）`);
     }
+    // 剩下的（未到删除线）报告里，超过压缩阈值且尚未压缩的原地 gzip，缓解长期磁盘增长。
+    const compressed = await compressAgedReportFiles({
+      compressAfterDays: Number(process.env.EVALUATOR_REPORT_COMPRESS_AFTER_DAYS || 30),
+    });
+    if (compressed.length) {
+      console.log(`[reports] 已压缩 ${compressed.length} 份老化报告`);
+    }
   } catch {
-    // 清理失败不应阻断启动
+    // 维护失败不应阻断启动 / 定时触发
   }
+}
+
+// 长期不重启的进程不能只在启动时清理一次，否则报告/历史只会一直增长。
+// 启动跑一次（调用处不变）之外，另加定时重跑；unref 避免这个计时器阻止进程正常退出。
+function scheduleReportMaintenance() {
+  const intervalHours = Number(process.env.EVALUATOR_MAINTENANCE_INTERVAL_HOURS || 24);
+  if (!Number.isFinite(intervalHours) || intervalHours <= 0) return;
+  setInterval(runReportMaintenance, intervalHours * 3600 * 1000).unref();
 }
 
 async function logErrorSafely(entry) {
@@ -1786,7 +1812,7 @@ async function handleReportsAutoTestDigest(req, res) {
 async function handleReportView(req, res, { params }) {
   const id = sanitizeReportBaseName(params.id);
   try {
-    const html = await readFile(join(REPORTS_DIR, `${id}.html`), "utf8");
+    const html = await readReportFileText(join(REPORTS_DIR, `${id}.html`));
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "X-Content-Type-Options": "nosniff",

@@ -119,6 +119,23 @@ All configuration is via environment variables — see [`.env.evaluator.example`
 Persisted data (model configs, encrypted key vault, reports, logs, SQLite db) lives under the data
 directory (`/data` in Docker; override with `EVALUATOR_DATA_DIR`).
 
+### Report retention & cleanup
+
+Reports and history don't grow unbounded on a long-running server. A maintenance pass runs on
+startup and then on a timer (`EVALUATOR_MAINTENANCE_INTERVAL_HOURS`, default 24h):
+
+- Reports older than `EVALUATOR_REPORT_RETENTION_DAYS` (default 180) or beyond
+  `EVALUATOR_REPORT_MAX_TOTAL` (default 2000) are deleted.
+- Reports older than `EVALUATOR_REPORT_COMPRESS_AFTER_DAYS` (default 30) are gzip-compressed
+  in place — filename and extension stay the same; report file/HTML reads transparently
+  decompress based on the gzip magic bytes, so nothing else (report list, viewer, model
+  compare) needs to know a report is compressed.
+- SQLite history rows (requests/runs/alerts/fingerprints) older than
+  `EVALUATOR_HISTORY_RETENTION_DAYS` (default 90) are pruned so the db doesn't grow forever.
+
+The default retention of 180 days is meant to be read as "compress at 30 days, then keep the
+compressed report around for another ~150 days before deleting it."
+
 ## new-api integration
 
 If your gateway is built on [new-api](https://github.com/QuantumNous/new-api), a super-admin can
