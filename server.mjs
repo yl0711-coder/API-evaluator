@@ -87,8 +87,10 @@ import {
 } from "./server/report-compare.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath, sanitizeReportBaseName } from "./server/report-files.mjs";
 import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobValidationError } from "./server/auto-test-store.mjs";
+import { loadRules, updateRules, normalizeRule, validateRule, RuleValidationError } from "./server/alert-rules-store.mjs";
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
+import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -147,7 +149,10 @@ const taskManager = createTaskManager({
   errorLogFile: ERROR_LOG_FILE,
   logTechnicalError,
   buildUserErrorMessage,
-  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：手动测试完成时按开关判危记录
+  onRunComplete: (result) => {
+    noteRunIfEnabled(result); // 高危报告提示：手动测试完成时按开关判危记录
+    evaluateAlertRules(result); // 自定义阈值报警规则：手动测试完成时按规则判断是否报警
+  },
 });
 
 // 自动测试调度器（平台唯一的周期性定时器）：按各作业的 nextRunAt 到点直接调 runner 跑测试并产出报告。
@@ -156,7 +161,10 @@ const autoTestScheduler = createAutoTestScheduler({
   updateJobs,
   runners: { runQuickVerify, runAdmissionTest, runStabilityTest, runScenarioTest },
   reportIdFromHtmlPath,
-  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：自动测试完成时按开关判危记录
+  onRunComplete: (result) => {
+    noteRunIfEnabled(result); // 高危报告提示：自动测试完成时按开关判危记录
+    evaluateAlertRules(result); // 自定义阈值报警规则：自动测试完成时按规则判断是否报警
+  },
   logError: (error, job) =>
     logErrorSafely({ source: "auto-test-scheduler", error, context: { jobId: job?.id, kind: job?.kind, targetId: job?.targetId } }),
 });
@@ -437,6 +445,11 @@ const API_ROUTES = [
   ["POST", "/api/auto-test-jobs", handleAutoTestJobUpsert],
   ["POST", "/api/auto-test-jobs/:id/run", handleAutoTestJobRunNow],
   ["DELETE", "/api/auto-test-jobs/:id", handleAutoTestJobDelete],
+
+  // 报警规则：登录即可用（任意管理员可自定义阈值报警规则），同样不走 /api/dev/ 前缀
+  ["GET", "/api/alert-rules", handleAlertRulesList],
+  ["POST", "/api/alert-rules", handleAlertRuleUpsert],
+  ["DELETE", "/api/alert-rules/:id", handleAlertRuleDelete],
 
   // 配置档案：写（非 GET 一律要超管，见 api-access.requiresAdmin）
   ["POST", "/api/profiles", handleProfileUpsert],
@@ -1043,6 +1056,54 @@ async function handleAutoTestJobDelete(req, res, { params }) {
   await updateJobs((jobs) => {
     const idx = jobs.findIndex((j) => j.id === id);
     if (idx >= 0) jobs.splice(idx, 1);
+  });
+  sendJson(res, 200, { ok: true });
+  return;
+}
+
+async function handleAlertRulesList(req, res) {
+  const [rules, runnable] = await Promise.all([loadRules(), loadRunnableProfiles()]);
+  const byId = new Map(runnable.map((p) => [p.id, p]));
+  const enriched = rules.map((rule) => {
+    if (rule.scope?.type !== "target") return rule;
+    const target = byId.get(rule.scope.targetId);
+    return { ...rule, targetName: target?.name || "", targetRunnable: Boolean(target) };
+  });
+  sendJson(res, 200, { ok: true, rules: enriched });
+  return;
+}
+
+async function handleAlertRuleUpsert(req, res) {
+  const body = await readJson(req);
+  try {
+    // 整个「找 existing → 规范化 → 校验 → upsert」在串行化的 updateRules 里做，与其它并发请求互不覆盖。
+    // 校验失败抛 RuleValidationError → 不落盘 → 下面兜 400。
+    const rule = await updateRules((rules) => {
+      const existing = body.id ? rules.find((r) => r.id === body.id) || null : null;
+      const next = normalizeRule(body, existing);
+      const err = validateRule(next);
+      if (err) throw new RuleValidationError(err);
+      const idx = rules.findIndex((r) => r.id === next.id);
+      if (idx >= 0) rules[idx] = next;
+      else rules.push(next);
+      return next;
+    });
+    sendJson(res, 200, { ok: true, rule });
+  } catch (error) {
+    if (error instanceof RuleValidationError) {
+      sendJson(res, 400, { error: "invalid_rule", userMessage: error.message });
+      return;
+    }
+    throw error;
+  }
+  return;
+}
+
+async function handleAlertRuleDelete(req, res, { params }) {
+  const id = params.id;
+  await updateRules((rules) => {
+    const idx = rules.findIndex((r) => r.id === id);
+    if (idx >= 0) rules.splice(idx, 1);
   });
   sendJson(res, 200, { ok: true });
   return;
