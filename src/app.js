@@ -7,6 +7,7 @@ import { applyRoleVisibility, ensureAuthenticated, wireUnauthorizedRedirect } fr
 import { createConfirmDialog } from "./confirm-dialog.js";
 import { createDeveloper } from "./developer.js";
 import { createAutoTestConfig } from "./auto-test-config.js";
+import { createAlertRules } from "./alert-rules.js";
 import { createNotifyConfig } from "./notify-config.js";
 import { createModelCompare } from "./model-compare.js";
 import {
@@ -113,9 +114,12 @@ const autoTestConfig = createAutoTestConfig({ state, confirm: (opts) => confirmA
 const notifyConfig = createNotifyConfig({ state });
 // 「模型比对」（登录即可用）：依据两个模型各自最近的报告做统计对比，产出对比报告。
 const modelCompare = createModelCompare({ state });
+// 「报警规则」（登录即可用，任意管理员）：自定义阈值报警规则的增删改查。
+const alertRules = createAlertRules({ state, confirm: (opts) => confirmAction(opts) });
 // 注册到 _onProfileData（必须在顶层 await 之前）。
 _onProfileData.push((data) => autoTestConfig.refreshTargets(data));
 _onProfileData.push((data) => modelCompare.refreshTargets(data));
+_onProfileData.push((data) => alertRules.refreshTargets(data));
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
 requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
@@ -714,6 +718,9 @@ function showPage(page) {
   }
   if (page === "auto-test-config") {
     autoTestConfig.load();
+  }
+  if (page === "alert-rules") {
+    alertRules.load();
   }
   if (page === "notify-config") {
     notifyConfig.load();
