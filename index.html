@@ -1656,6 +1656,16 @@
                 <span class="field-hint" id="mc-scenario-hint">选好两个模型后，加载两方<strong>共有</strong>的场景，勾选要纳入对比的场景（默认全选）。不加载则用全部共有场景。</span>
               </div>
               <div id="mc-scenarios" class="mc-scenarios hidden"></div>
+              <div id="mc-gap-fill" class="hidden" style="margin-top:10px">
+                <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
+                  <button type="button" id="mc-fill-gaps" class="secondary">补齐单方场景</button>
+                  <span class="field-hint" id="mc-gap-hint"></span>
+                </div>
+                <div id="mc-gap-progress" class="progress-panel hidden">
+                  <div class="progress-bar"><span></span></div>
+                  <p class="muted">等待开始。</p>
+                </div>
+              </div>
             </div>
             <label class="wide checkbox-option">
               <input type="checkbox" id="mc-ai" />

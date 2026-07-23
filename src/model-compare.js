@@ -3,12 +3,12 @@
 // 依据两者在报告中心各自最近的报告（1 稳定性 + 1 准入 + 每场景最新一份）做统计对比。
 // 后端 POST /api/reports/compare 产出并落盘一份「模型对比报告」，前端用浮层查看 + 可下载 md。
 import { escapeHtml, toast, downloadText } from "./client-utils.js";
-import { api } from "./api-client.js";
+import { api, runRemoteTask } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { openReportOverlay } from "./report-overlay.js";
 
-export function createModelCompare({ state }) {
+export function createModelCompare({ state, confirm }) {
   const form = requireElement("#mc-form");
   const aChannel = requireElement("#mc-a-channel");
   const aModel = requireElement("#mc-a-model");
@@ -22,6 +22,10 @@ export function createModelCompare({ state }) {
   const loadScenariosBtn = requireElement("#mc-load-scenarios");
   const scenariosBox = requireElement("#mc-scenarios");
   const scenarioHint = requireElement("#mc-scenario-hint");
+  const gapFillBox = requireElement("#mc-gap-fill");
+  const fillGapsBtn = requireElement("#mc-fill-gaps");
+  const gapHint = requireElement("#mc-gap-hint");
+  const gapProgress = requireElement("#mc-gap-progress");
 
   const cascadeA = createCascadeTargetPicker(aChannel, aModel);
   const cascadeB = createCascadeTargetPicker(bChannel, bModel);
@@ -29,6 +33,9 @@ export function createModelCompare({ state }) {
   // null = 未加载可选场景（生成时不带 scenarios 字段，后端用全部共有场景）；
   // 数组 = 已加载的两方共有场景 [{name, tier}]，勾选状态在 DOM 上。
   let loadedScenarios = null;
+  // 「补齐单方场景」：{ onlyA: [{name,tier}], onlyB: [...] } | null（未算出 / 已重置）。
+  // onlyA = A 测过但 B 没测过（需要补给 B）；onlyB 反之（需要补给 A）。
+  let gaps = null;
 
   // 由模型目标 id 反查 { channel(渠道名), model, 曾用名 }，供后端按报告文件名匹配。
   // 带上渠道与模型的曾用名(aliases)，让改名前的历史报告也能被本模型认领。
@@ -178,6 +185,15 @@ export function createModelCompare({ state }) {
     scenariosBox.innerHTML = "";
     scenariosBox.classList.add("hidden");
     scenarioHint.classList.remove("hidden");
+    resetGaps();
+  }
+
+  // 清空「补齐单方场景」状态：换模型/渠道，或补齐流程结束后回到未算出的初始态。
+  function resetGaps() {
+    gaps = null;
+    gapFillBox.classList.add("hidden");
+    gapHint.textContent = "";
+    gapProgress.classList.add("hidden");
   }
 
   async function onLoadScenarios() {
@@ -197,9 +213,13 @@ export function createModelCompare({ state }) {
     const prev = loadScenariosBtn.textContent;
     loadScenariosBtn.textContent = "加载中…";
     try {
-      const r = await api("/api/reports/compare/scenarios", { method: "POST", body: JSON.stringify({ a, b }) });
-      loadedScenarios = Array.isArray(r.scenarios) ? r.scenarios : [];
+      const [scenarioRes, gapRes] = await Promise.all([
+        api("/api/reports/compare/scenarios", { method: "POST", body: JSON.stringify({ a, b }) }),
+        api("/api/reports/compare/gaps", { method: "POST", body: JSON.stringify({ a, b }) }).catch(() => null),
+      ]);
+      loadedScenarios = Array.isArray(scenarioRes.scenarios) ? scenarioRes.scenarios : [];
       renderScenarioChecklist(loadedScenarios);
+      renderGaps(gapRes);
     } catch (error) {
       toast(`加载场景失败：${error.message}`, true);
     } finally {
@@ -208,7 +228,106 @@ export function createModelCompare({ state }) {
     }
   }
 
+  // 渲染「补齐单方场景」入口：两方都无独有场景（或差集接口失败）则隐藏按钮。
+  function renderGaps(gapRes) {
+    const onlyA = Array.isArray(gapRes?.onlyA) ? gapRes.onlyA : [];
+    const onlyB = Array.isArray(gapRes?.onlyB) ? gapRes.onlyB : [];
+    if (!onlyA.length && !onlyB.length) {
+      resetGaps();
+      return;
+    }
+    gaps = { onlyA, onlyB };
+    gapFillBox.classList.remove("hidden");
+    gapHint.textContent = `发现 A 有 ${onlyA.length} 个场景 B 未测，B 有 ${onlyB.length} 个场景 A 未测。点击可自动为对方补测（真实消耗额度）。`;
+    gapProgress.classList.add("hidden");
+  }
+
+  // 把场景名映射为场景 id：state.scenarios 是当前生效的题库（可能已改名/下架场景不在其中）。
+  function scenarioIdByName(name) {
+    const s = (state.scenarios || []).find((x) => x.name === name);
+    return s ? s.id : null;
+  }
+
+  async function onFillGaps() {
+    if (!gaps || (!gaps.onlyA.length && !gaps.onlyB.length)) return;
+    const idA = cascadeA.value;
+    const idB = cascadeB.value;
+    if (!idA || !idB) {
+      toast("请先选好两个不同的模型。", true);
+      return;
+    }
+    // jobs：[{ targetId, scenarioId, scenarioName, forLabel }]；名字在当前题库里找不到 id 的场景（已改名/下架）跳过。
+    const jobs = [];
+    const skipped = [];
+    for (const s of gaps.onlyA) {
+      const scenarioId = scenarioIdByName(s.name);
+      if (scenarioId) jobs.push({ targetId: idB, scenarioId, scenarioName: s.name, forLabel: "B" });
+      else skipped.push(s.name);
+    }
+    for (const s of gaps.onlyB) {
+      const scenarioId = scenarioIdByName(s.name);
+      if (scenarioId) jobs.push({ targetId: idA, scenarioId, scenarioName: s.name, forLabel: "A" });
+      else skipped.push(s.name);
+    }
+    if (!jobs.length) {
+      toast("待补场景均已从当前题库下架/改名，无法自动补齐。", true);
+      return;
+    }
+
+    const detail = [
+      `将发起 ${jobs.length} 次场景测试（每次测 1 个场景），逐个进行、每次都真实调用被测 API、消耗额度。`,
+      skipped.length ? `另有 ${skipped.length} 个场景已从当前题库下架/改名，无法补齐，将跳过：${skipped.join("、")}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const confirmed = confirm
+      ? await confirm({
+          title: "补齐单方场景",
+          message: detail,
+          detail: "确认后会逐个开始测试，可能耗时较久，请不要关闭窗口。",
+          confirmLabel: "确认开始补齐",
+          cancelLabel: "先不运行",
+          tone: jobs.length >= 10 ? "danger" : "normal",
+        })
+      : window.confirm(detail);
+    if (!confirmed) return;
+
+    fillGapsBtn.disabled = true;
+    const prevLabel = fillGapsBtn.textContent;
+    const failures = [];
+    for (let i = 0; i < jobs.length; i += 1) {
+      const job = jobs[i];
+      fillGapsBtn.textContent = `补齐中…（${i + 1}/${jobs.length}）`;
+      gapProgress.classList.remove("hidden");
+      const p = gapProgress.querySelector("p");
+      if (p) p.textContent = `补齐中 ${i + 1}/${jobs.length}：《${job.scenarioName}》→ 补给对象 ${job.forLabel} (0%)`;
+      try {
+        await runRemoteTask(
+          state,
+          "mc-gap-fill",
+          "scenario",
+          { profileIds: [job.targetId], scenarioIds: [job.scenarioId], repeats: 1 },
+          gapProgress,
+        );
+      } catch (error) {
+        failures.push(`${job.scenarioName}（补给 ${job.forLabel}）：${error.message}`);
+      }
+    }
+    fillGapsBtn.disabled = false;
+    fillGapsBtn.textContent = prevLabel;
+    gapProgress.classList.add("hidden");
+
+    if (failures.length) {
+      toast(`补齐完成：${jobs.length - failures.length}/${jobs.length} 成功，${failures.length} 个失败。`, true);
+    } else {
+      toast(`补齐完成：${jobs.length} 个场景测试已全部完成。`);
+    }
+    // 补齐后重新拉一次共有场景 + 差集，让用户能立刻看到最新可对比场景。
+    await onLoadScenarios();
+  }
+
   loadScenariosBtn.addEventListener("click", onLoadScenarios);
+  fillGapsBtn.addEventListener("click", onFillGaps);
   // 勾选变化 → 更新计数。挂在持久容器上，故只在此挂一次（放渲染函数里会每次渲染叠加）。
   scenariosBox.addEventListener("change", updateScenarioCount);
   // 换模型/渠道后，已加载的场景列表可能不再适用 → 重置，避免用旧场景生成。

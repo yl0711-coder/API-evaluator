@@ -604,6 +604,19 @@ export function commonScenarioNames(filesA, filesB) {
   return aggA.scenarios.filter((s) => namesB.has(s.name)).map((s) => ({ name: s.name, tier: s.tier || null }));
 }
 
+// 取两方【单方独有】的场景（供「补齐单方场景」按钮用）：onlyA = A 测过但 B 没测过（需要在 B 上补），
+// onlyB 反之。口径与 commonScenarioNames 一致（同样先按名聚合），只是取差集而非交集。
+export function exclusiveScenarioNames(filesA, filesB) {
+  const aggA = aggregateSubject({ files: filesA });
+  const aggB = aggregateSubject({ files: filesB });
+  const namesA = new Set(aggA.scenarios.map((s) => s.name));
+  const namesB = new Set(aggB.scenarios.map((s) => s.name));
+  return {
+    onlyA: aggA.scenarios.filter((s) => !namesB.has(s.name)).map((s) => ({ name: s.name, tier: s.tier || null })),
+    onlyB: aggB.scenarios.filter((s) => !namesA.has(s.name)).map((s) => ({ name: s.name, tier: s.tier || null })),
+  };
+}
+
 // —— 对象画像聚合（全部聚合）——
 
 // scenarioFilter?: Set<string> —— 若给定，只保留名在其中的场景【行】（在按名归组后过滤，

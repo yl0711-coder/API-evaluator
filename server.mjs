@@ -81,6 +81,7 @@ import {
   buildComparison,
   buildCompareAnalysisPrompt,
   commonScenarioNames,
+  exclusiveScenarioNames,
   formatCompareReportMarkdown,
   parseReportBaseName,
   pickRecentReports,
@@ -250,7 +251,9 @@ async function loadBalancedCompareFiles(A, B) {
       userMessage: `以下模型暂无可用于对比的报告：${missing.join("、")}。请先为其跑一次准入 / 稳定性 / 场景测试。`,
     };
   }
-  const [balA, balB] = balanceCommonReports(pickRecentReports(filesA), pickRecentReports(filesB));
+  const pickedA = pickRecentReports(filesA);
+  const pickedB = pickRecentReports(filesB);
+  const [balA, balB] = balanceCommonReports(pickedA, pickedB);
   if (!balA.length || !balB.length) {
     return {
       error: "no_common_reports",
@@ -261,7 +264,8 @@ async function loadBalancedCompareFiles(A, B) {
   // 渲染后的 markdown 表格里反解析数字（B2）。取不到的照旧解析 md —— 老报告/孤儿报告/库不可用都得能对比。
   // 放在平衡之后：此时只剩真正参与对比的报告，查库量最小。
   await attachSummaries([...balA, ...balB]);
-  return { balA, balB };
+  // pickedA/pickedB：平衡前的「各自已测场景全集」，供「补齐单方场景」算差集用（不受交集裁剪）。
+  return { balA, balB, pickedA, pickedB };
 }
 
 // 按报告文件名批量取结构化 summary 并挂到 file.summary 上（原地改）。
@@ -510,6 +514,7 @@ const API_ROUTES = [
   ["DELETE", "/api/reports/files/:id", handleReportFileDelete],
   ["POST", "/api/reports/compare/scenarios", handleReportsCompareScenarios],
   ["POST", "/api/reports/compare", handleReportsCompare],
+  ["POST", "/api/reports/compare/gaps", handleReportsCompareGaps],
   ["POST", "/api/reports/auto-test-digest", handleReportsAutoTestDigest],
   ["GET", "/api/reports/:id/view", handleReportView],
 
@@ -1686,6 +1691,26 @@ async function handleReportsCompareScenarios(req, res) {
     return;
   }
   sendJson(res, 200, { scenarios: commonScenarioNames(prep.balA, prep.balB) });
+  return;
+}
+
+// 「模型比对 · 差集场景」：给定两个模型，返回各自【单方独有】的场景（供「补齐单方场景」按钮列出待补清单）。
+// 用 pickedA/pickedB（平衡前的各自已测场景全集），不受 balanceCommonReports 的交集裁剪影响。
+async function handleReportsCompareGaps(req, res) {
+  const body = await readJson(req);
+  const A = body?.a || {};
+  const B = body?.b || {};
+  if (!A.channel || !A.model || !B.channel || !B.model) {
+    sendJson(res, 400, { error: "invalid_target", userMessage: "请选择两个模型（渠道 + 模型）。" });
+    return;
+  }
+  const prep = await loadBalancedCompareFiles(A, B);
+  if (prep.error) {
+    sendJson(res, 400, { error: prep.error, userMessage: prep.userMessage });
+    return;
+  }
+  const { onlyA, onlyB } = exclusiveScenarioNames(prep.pickedA, prep.pickedB);
+  sendJson(res, 200, { onlyA, onlyB });
   return;
 }
 
