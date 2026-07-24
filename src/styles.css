@@ -3966,6 +3966,8 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-height: 160px; /* 报告数一多就内部滚动，避免横幅无限撑高顶掉正文 */
+  overflow-y: auto;
 }
 .high-risk-banner__item {
   display: flex;
