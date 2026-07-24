@@ -17,6 +17,7 @@ import {
   balanceCommonReports,
   buildComparison,
   commonScenarioNames,
+  exclusiveScenarioNames,
   formatCompareReportMarkdown,
   pickRecentReports,
   buildCompareAnalysisPrompt,
@@ -353,6 +354,38 @@ test("commonScenarioNames：取两方共有场景（多场景/份也精确，口
   // 与报告口径一致：buildComparison 的 matched 名集应与 commonScenarioNames 完全相同。
   const cmp = buildComparison(aggregateSubject({ files: filesA }), aggregateSubject({ files: filesB }));
   assert.deepEqual(cmp.scenarioQuality.matched.map((m) => m.name).sort(), common, "报告 matched 与界面共有场景同口径");
+});
+
+test("exclusiveScenarioNames：取两方单方独有场景（供「补齐单方场景」用），口径与 commonScenarioNames 互补", () => {
+  const runMd = "# 稳定性测试报告\n";
+  const scenMd = (...rows) =>
+    `# 场景测试报告\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n` +
+    rows.map((n) => `| ${n} | 100% | 80 |`).join("\n") +
+    "\n";
+  // A：逻辑谜题+数学题（共有）、编程题（A 独有）；B：逻辑谜题+数学题（共有）、翻译题（B 独有）。
+  const filesA = [
+    { name: "a-run", md: runMd },
+    { name: "a-s12", md: scenMd("逻辑谜题", "数学题") },
+    { name: "a-s3", md: scenMd("编程题") },
+  ];
+  const filesB = [
+    { name: "b-run", md: runMd },
+    { name: "b-s123", md: scenMd("逻辑谜题", "数学题", "翻译题") },
+  ];
+  const { onlyA, onlyB } = exclusiveScenarioNames(filesA, filesB);
+  assert.deepEqual(onlyA.map((s) => s.name), ["编程题"], "onlyA = A 测过但 B 没测过");
+  assert.deepEqual(onlyB.map((s) => s.name), ["翻译题"], "onlyB = B 测过但 A 没测过");
+  // 互补校验：共有 + 单方独有(各自) 应覆盖两方场景全集，且共有/独有不重叠。
+  const common = new Set(commonScenarioNames(filesA, filesB).map((s) => s.name));
+  assert.ok(!common.has("编程题") && !common.has("翻译题"), "独有场景不应出现在共有集合里");
+});
+
+test("exclusiveScenarioNames：两方场景完全相同 → 双方 onlyA/onlyB 均为空", () => {
+  const scenMd = `# 场景测试报告\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n| 逻辑谜题 | 100% | 80 |\n`;
+  const files = [{ name: "s1", md: scenMd }];
+  const { onlyA, onlyB } = exclusiveScenarioNames(files, files);
+  assert.deepEqual(onlyA, []);
+  assert.deepEqual(onlyB, []);
 });
 
 test("aggregateSubject(scenarioFilter)：行级筛选，多场景/份也能只算被选场景", () => {

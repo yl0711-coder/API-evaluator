@@ -204,6 +204,26 @@ test("请求 AI 叙述但未配置 AI 模型 → 优雅跳过（200，aiApplied=
   assert.match(r.body.markdown, /## 6\. 总结/);
 });
 
+test("/api/reports/compare/gaps：两方场景相同 → onlyA/onlyB 均为空", async () => {
+  const r = await post("/api/reports/compare/gaps", cookie, { a: A, b: B });
+  assert.equal(r.status, 200, `期望 200，实为 ${r.status}：${JSON.stringify(r.body)}`);
+  assert.deepEqual(r.body.onlyA, [], "两方都只测了「基础问答」，A 无独有场景");
+  assert.deepEqual(r.body.onlyB, [], "两方都只测了「基础问答」，B 无独有场景");
+});
+
+test("/api/reports/compare/gaps：追加一份仅 A 测过的新场景 → onlyA 含该场景，onlyB 仍空", async () => {
+  // 追加一份新日期的场景报告（场景名「编程题」），只属于 A；B 未测过 → 应出现在 onlyA。
+  await writeFile(
+    join(REPORTS_DIR, `test_claude-opus-4-8_scenario_20260702.md`),
+    scenarioReportMd("100% (3/3)", "9.0").replace("基础问答", "编程题"),
+    "utf8",
+  );
+  const r = await post("/api/reports/compare/gaps", cookie, { a: A, b: B });
+  assert.equal(r.status, 200, `期望 200，实为 ${r.status}：${JSON.stringify(r.body)}`);
+  assert.deepEqual(r.body.onlyA.map((s) => s.name), ["编程题"], "A 独有新场景应出现在 onlyA");
+  assert.deepEqual(r.body.onlyB, [], "B 仍无独有场景");
+});
+
 test("/api/reports/:id/view：已被原地 gzip 压缩的报告仍能正常查看（透明解压）", async () => {
   // 复用已播种的场景报告（seedReports 里已把它原地 gzip 过），先渲染出对应 .html，
   // 再单独把该 .html 也原地 gzip，验证 handleReportView 一样能透明解压服务。
