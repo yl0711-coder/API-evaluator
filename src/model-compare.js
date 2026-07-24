@@ -308,11 +308,14 @@ export function createModelCompare({ state, confirm }) {
       const p = gapProgress.querySelector("p");
       if (p) p.textContent = `补齐中 ${i + 1}/${jobs.length}：《${job.scenarioName}》→ 补给对象 ${job.forLabel} (0%)`;
       try {
+        // idempotencyKey：显式声明去重身份（服务端 task-manager 只信这个字段，不按 payload
+        // 形状猜）。补齐同一 {模型, 场景} 时用同一个键，让"轮询误报失败后用户再点一次补齐"
+        // 拿到的是同一个仍在跑的任务，而不是发起第二次真实付费调用。
         await runRemoteTask(
           state,
           "mc-gap-fill",
           "scenario",
-          { profileIds: [job.targetId], scenarioIds: [job.scenarioId], repeats: 1 },
+          { profileIds: [job.targetId], scenarioIds: [job.scenarioId], repeats: 1, idempotencyKey: `mc-gap-fill:${job.targetId}:${job.scenarioId}` },
           gapProgress,
         );
       } catch (error) {

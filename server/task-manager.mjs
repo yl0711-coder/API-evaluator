@@ -22,18 +22,19 @@ export function createTaskManager({
   onRunComplete, // (result) => void：任务完成回调（用于高危报告提示等），best-effort
 }) {
   const tasks = new Map();
-  // 单模型单场景的 scenario 任务去重键 → taskId（供「模型比对·补齐单方场景」防双花）：
-  // 该功能逐个真实调用付费 API，若某次轮询因网络抖动被前端误判失败，用户很容易对同一
-  // {模型, 场景} 再点一次补齐；同名的批量场景测试（选多个模型/多个场景）不受影响，
-  // 只在恰好是「单模型+单场景」这一形态时才生效——这正是补齐流程逐条发起时的 payload 形状。
+  // scenario 任务去重键 → taskId（供「模型比对·补齐单方场景」防双花）：该功能逐个真实调用付费
+  // API，若某次轮询因网络抖动被前端误判失败，用户很容易对同一 {模型, 场景} 再点一次补齐。
+  // 必须由调用方在 payload.idempotencyKey 显式带上非空字符串才生效——绝不能按 profileIds/
+  // scenarioIds 的形状去猜「是不是补齐场景」：普通的「复杂场景测试」表单完全可以只选 1 个模型 +
+  // 1 个场景（并不罕见），而 tasks 这个 Map 是整个进程共享的内存态、不区分发起者/会话，
+  // 按形状推断会把两个语义完全不同的请求（比如同一对模型+场景，但 repeats 不同）错误合并成一个，
+  // 调用方会拿到别人那次任务的结果而不是自己发起的。显式 opt-in 才能保证只去重真正想去重的调用。
   // 只做进程内最佳努力：不是跨进程/跨副本的强一致锁，多开一个后端实例仍可能重复创建。
   const activeScenarioKeys = new Map();
   function scenarioIdempotencyKey(type, payload) {
     if (type !== "scenario") return null;
-    const profileIds = normalizeProfileIds(payload?.profileIds);
-    const scenarioIds = normalizeScenarioIds(payload?.scenarioIds);
-    if (profileIds.length !== 1 || scenarioIds.length !== 1) return null;
-    return `${profileIds[0]}::${scenarioIds[0]}`;
+    const key = String(payload?.idempotencyKey ?? "").trim();
+    return key || null;
   }
   // 全局重测试并发上限，超出排队。避免多任务并发拖垮宿主或同机其它服务的资源。
   let runningSlots = 0;

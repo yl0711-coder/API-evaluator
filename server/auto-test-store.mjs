@@ -62,7 +62,7 @@ export function __resetWriteChainForTest() {
 // 下次运行时刻。双模式：
 //   - 数字入参 computeNextRunAt(periodHours, fromMs)：间隔模式，推 periodHours 小时（老调用，保持兼容）。
 //   - 对象入参 computeNextRunAt(job, fromMs)：有 job.cron 走 cron；否则退回 job.periodHours 间隔。
-// cron 无匹配（理论上 366 天内不触发）时回退成 24h 间隔，绝不返回 null 卡死调度。
+// cron 366 天内无匹配（见下方分支注释：真实可构造，非纯理论）时回退成 24h 间隔，绝不返回 null 卡死调度。
 export function computeNextRunAt(jobOrPeriod, fromMs = Date.now()) {
   if (jobOrPeriod && typeof jobOrPeriod === "object") {
     const job = jobOrPeriod;

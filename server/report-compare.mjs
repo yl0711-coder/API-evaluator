@@ -556,12 +556,14 @@ export function pickRecentReports(files) {
   const latestAdm = withMeta.filter((f) => f.type === "admission").sort(byRecency)[0];
   if (latestAdm) picked.push(latestAdm);
 
-  // scenario：按场景名保留最新一份（每份场景报告只测一个场景）。
-  // 已知问题（暂不修）：只取 scenarios[0] 当整份文件的代表名——若某份报告其实是多目标批量测试、
-  // 一次装了多个不同名场景，这里会拿第一个场景名去重，一旦它被更新的文件顶替，整份文件（连同
-  // 它装的其它稀有场景）都会被跳过丢弃，那些场景的数据就随之从对比里消失（不报错）。当前调用方
-  // （loadBalancedCompareFiles）传入的场景报告均为单场景，暂不受影响；引入多场景批量报告的
-  // 场景对比入口前需要重新按「场景名」而非「文件」做这层去重。
+  // scenario：按场景名保留最新一份。
+  // 已知问题（暂不修，比表面看起来更容易触发）：只取 scenarios[0] 当整份文件的代表名去重——但
+  // 「复杂场景测试」表单本身就允许一次给同一个模型勾选多个场景（server/summaries.mjs 的
+  // buildScenarioSummary 会把它们都写进同一份 per-model 报告文件），这是常规用法，不是罕见的
+  // 「多目标批量测试」场景。一旦某份装着多个场景名的文件的第一个场景名被更新的文件顶替，整份文件
+  // （连同它装的其它场景）都会被跳过丢弃，那些场景的数据随之从对比里消失（不报错）。只要用户对
+  // 同一模型分几次跑「复杂场景测试」、每次勾选的场景集合有重叠但不完全相同，就可能触发。
+  // 需要重新按「场景名」而非「文件」做这层去重（即此前一版被撤销的重构方向）才能根治。
   const scen = withMeta.filter((f) => f.type === "scenario").sort(byRecency);
   const seen = new Set();
   for (const f of scen) {
