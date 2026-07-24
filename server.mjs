@@ -81,14 +81,17 @@ import {
   buildComparison,
   buildCompareAnalysisPrompt,
   commonScenarioNames,
+  exclusiveScenarioNames,
   formatCompareReportMarkdown,
   parseReportBaseName,
   pickRecentReports,
 } from "./server/report-compare.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath, sanitizeReportBaseName } from "./server/report-files.mjs";
 import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobValidationError } from "./server/auto-test-store.mjs";
+import { loadRules, updateRules, normalizeRule, validateRule, RuleValidationError } from "./server/alert-rules-store.mjs";
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
+import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -147,7 +150,10 @@ const taskManager = createTaskManager({
   errorLogFile: ERROR_LOG_FILE,
   logTechnicalError,
   buildUserErrorMessage,
-  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：手动测试完成时按开关判危记录
+  onRunComplete: (result) => {
+    noteRunIfEnabled(result); // 高危报告提示：手动测试完成时按开关判危记录
+    evaluateAlertRules(result); // 自定义阈值报警规则：手动测试完成时按规则判断是否报警
+  },
 });
 
 // 自动测试调度器（平台唯一的周期性定时器）：按各作业的 nextRunAt 到点直接调 runner 跑测试并产出报告。
@@ -156,7 +162,10 @@ const autoTestScheduler = createAutoTestScheduler({
   updateJobs,
   runners: { runQuickVerify, runAdmissionTest, runStabilityTest, runScenarioTest },
   reportIdFromHtmlPath,
-  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：自动测试完成时按开关判危记录
+  onRunComplete: (result) => {
+    noteRunIfEnabled(result); // 高危报告提示：自动测试完成时按开关判危记录
+    evaluateAlertRules(result); // 自定义阈值报警规则：自动测试完成时按规则判断是否报警
+  },
   logError: (error, job) =>
     logErrorSafely({ source: "auto-test-scheduler", error, context: { jobId: job?.id, kind: job?.kind, targetId: job?.targetId } }),
 });
@@ -221,6 +230,10 @@ async function loadBalancedCompareFiles(A, B) {
     }
     metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
     // 限流：稳定性/准入各取最近几份，场景最多取最近 60 份读盘（pickRecentReports 再按场景名去重取最新）。
+    // 已知问题（暂不修）：这里是按【文件数】限流（取最近 60 份场景报告），而 pickRecentReports 是
+    // 按【场景名】去重（一份文件通常只测一个场景，但理论上也可能撞名）。内置场景库已有约 89 个场景，
+    // 若用户实际跑过的场景种类数超过 60，排序在候选池之外的稀有场景会连去重环节都进不去，被静默漏掉
+    // （不报错，只是「共有场景数」会比实际偏小）。多数部署场景种类不会跑到这么全，暂按可接受风险处理。
     const chosen = [...metas.filter((m) => m.type !== "scenario").slice(0, 6), ...metas.filter((m) => m.type === "scenario").slice(0, 60)];
     const files = [];
     for (const m of chosen) {
@@ -242,7 +255,9 @@ async function loadBalancedCompareFiles(A, B) {
       userMessage: `以下模型暂无可用于对比的报告：${missing.join("、")}。请先为其跑一次准入 / 稳定性 / 场景测试。`,
     };
   }
-  const [balA, balB] = balanceCommonReports(pickRecentReports(filesA), pickRecentReports(filesB));
+  const pickedA = pickRecentReports(filesA);
+  const pickedB = pickRecentReports(filesB);
+  const [balA, balB] = balanceCommonReports(pickedA, pickedB);
   if (!balA.length || !balB.length) {
     return {
       error: "no_common_reports",
@@ -253,7 +268,8 @@ async function loadBalancedCompareFiles(A, B) {
   // 渲染后的 markdown 表格里反解析数字（B2）。取不到的照旧解析 md —— 老报告/孤儿报告/库不可用都得能对比。
   // 放在平衡之后：此时只剩真正参与对比的报告，查库量最小。
   await attachSummaries([...balA, ...balB]);
-  return { balA, balB };
+  // pickedA/pickedB：平衡前的「各自已测场景全集」，供「补齐单方场景」算差集用（不受交集裁剪）。
+  return { balA, balB, pickedA, pickedB };
 }
 
 // 按报告文件名批量取结构化 summary 并挂到 file.summary 上（原地改）。
@@ -438,6 +454,11 @@ const API_ROUTES = [
   ["POST", "/api/auto-test-jobs/:id/run", handleAutoTestJobRunNow],
   ["DELETE", "/api/auto-test-jobs/:id", handleAutoTestJobDelete],
 
+  // 报警规则：登录即可用（任意管理员可自定义阈值报警规则），同样不走 /api/dev/ 前缀
+  ["GET", "/api/alert-rules", handleAlertRulesList],
+  ["POST", "/api/alert-rules", handleAlertRuleUpsert],
+  ["DELETE", "/api/alert-rules/:id", handleAlertRuleDelete],
+
   // 配置档案：写（非 GET 一律要超管，见 api-access.requiresAdmin）
   ["POST", "/api/profiles", handleProfileUpsert],
   ["POST", "/api/profiles/import", handleProfilesImport],
@@ -497,6 +518,7 @@ const API_ROUTES = [
   ["DELETE", "/api/reports/files/:id", handleReportFileDelete],
   ["POST", "/api/reports/compare/scenarios", handleReportsCompareScenarios],
   ["POST", "/api/reports/compare", handleReportsCompare],
+  ["POST", "/api/reports/compare/gaps", handleReportsCompareGaps],
   ["POST", "/api/reports/auto-test-digest", handleReportsAutoTestDigest],
   ["GET", "/api/reports/:id/view", handleReportView],
 
@@ -1043,6 +1065,54 @@ async function handleAutoTestJobDelete(req, res, { params }) {
   await updateJobs((jobs) => {
     const idx = jobs.findIndex((j) => j.id === id);
     if (idx >= 0) jobs.splice(idx, 1);
+  });
+  sendJson(res, 200, { ok: true });
+  return;
+}
+
+async function handleAlertRulesList(req, res) {
+  const [rules, runnable] = await Promise.all([loadRules(), loadRunnableProfiles()]);
+  const byId = new Map(runnable.map((p) => [p.id, p]));
+  const enriched = rules.map((rule) => {
+    if (rule.scope?.type !== "target") return rule;
+    const target = byId.get(rule.scope.targetId);
+    return { ...rule, targetName: target?.name || "", targetRunnable: Boolean(target) };
+  });
+  sendJson(res, 200, { ok: true, rules: enriched });
+  return;
+}
+
+async function handleAlertRuleUpsert(req, res) {
+  const body = await readJson(req);
+  try {
+    // 整个「找 existing → 规范化 → 校验 → upsert」在串行化的 updateRules 里做，与其它并发请求互不覆盖。
+    // 校验失败抛 RuleValidationError → 不落盘 → 下面兜 400。
+    const rule = await updateRules((rules) => {
+      const existing = body.id ? rules.find((r) => r.id === body.id) || null : null;
+      const next = normalizeRule(body, existing);
+      const err = validateRule(next);
+      if (err) throw new RuleValidationError(err);
+      const idx = rules.findIndex((r) => r.id === next.id);
+      if (idx >= 0) rules[idx] = next;
+      else rules.push(next);
+      return next;
+    });
+    sendJson(res, 200, { ok: true, rule });
+  } catch (error) {
+    if (error instanceof RuleValidationError) {
+      sendJson(res, 400, { error: "invalid_rule", userMessage: error.message });
+      return;
+    }
+    throw error;
+  }
+  return;
+}
+
+async function handleAlertRuleDelete(req, res, { params }) {
+  const id = params.id;
+  await updateRules((rules) => {
+    const idx = rules.findIndex((r) => r.id === id);
+    if (idx >= 0) rules.splice(idx, 1);
   });
   sendJson(res, 200, { ok: true });
   return;
@@ -1625,6 +1695,26 @@ async function handleReportsCompareScenarios(req, res) {
     return;
   }
   sendJson(res, 200, { scenarios: commonScenarioNames(prep.balA, prep.balB) });
+  return;
+}
+
+// 「模型比对 · 差集场景」：给定两个模型，返回各自【单方独有】的场景（供「补齐单方场景」按钮列出待补清单）。
+// 用 pickedA/pickedB（平衡前的各自已测场景全集），不受 balanceCommonReports 的交集裁剪影响。
+async function handleReportsCompareGaps(req, res) {
+  const body = await readJson(req);
+  const A = body?.a || {};
+  const B = body?.b || {};
+  if (!A.channel || !A.model || !B.channel || !B.model) {
+    sendJson(res, 400, { error: "invalid_target", userMessage: "请选择两个模型（渠道 + 模型）。" });
+    return;
+  }
+  const prep = await loadBalancedCompareFiles(A, B);
+  if (prep.error) {
+    sendJson(res, 400, { error: prep.error, userMessage: prep.userMessage });
+    return;
+  }
+  const { onlyA, onlyB } = exclusiveScenarioNames(prep.pickedA, prep.pickedB);
+  sendJson(res, 200, { onlyA, onlyB });
   return;
 }
 

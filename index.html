@@ -31,6 +31,7 @@
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
           <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
           <button class="nav-button" type="button" data-page="auto-test-config">自动测试配置</button>
+          <button class="nav-button" type="button" data-page="alert-rules">报警规则</button>
           <button class="nav-button" type="button" data-page="load-test" data-requires-admin>压力测试</button>
           <button class="nav-button" type="button" data-page="model-compare">模型比对</button>
         </div>
@@ -1395,6 +1396,98 @@
           </div>
         </section>
 
+        <section class="page" id="alert-rules" hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 报警</span>报警规则</h2>
+              <p class="section-desc">配置自定义阈值报警规则：测试运行完成后，若某项原始指标触发阈值，即向邮件报警配置的收件人发信提醒。每条规则可选“全部渠道+模型”或指定具体渠道+模型，命中后有固定冷却时长，避免重复轰炸邮箱。发信配置见「邮件报警配置」页。</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="action-row atc-list-head">
+              <h3>已配置的报警规则</h3>
+              <button type="button" id="ar-reload" class="secondary">刷新</button>
+            </div>
+            <div id="ar-rule-list">正在加载…</div>
+          </div>
+
+          <form id="ar-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3 id="ar-form-title">新建报警规则</h3>
+            </div>
+            <input type="hidden" id="ar-rule-id" value="" />
+            <label class="wide">
+              规则名称
+              <input type="text" id="ar-name" placeholder="如：成功率过低报警" maxlength="120" />
+            </label>
+            <label>
+              适用范围
+              <select id="ar-scope-type">
+                <option value="all" selected>全部渠道 + 模型</option>
+                <option value="target">指定渠道 + 模型</option>
+              </select>
+            </label>
+            <div id="ar-target-picker" class="hidden">
+              <label>
+                渠道
+                <select id="ar-channel-select"></select>
+              </label>
+              <label>
+                模型
+                <select id="ar-model-select" disabled></select>
+              </label>
+            </div>
+            <label>
+              触发指标
+              <select id="ar-metric">
+                <option value="successRate">成功率</option>
+                <option value="p95TotalMs">P95 耗时（毫秒）</option>
+                <option value="avgTotalMs">平均耗时（毫秒）</option>
+                <option value="score">综合分（准入）</option>
+                <option value="grade">准入等级</option>
+                <option value="avgQualityScore">质量分（场景）</option>
+                <option value="recommendationLevel">结论等级</option>
+                <option value="verdictLevel">快速验证结论</option>
+              </select>
+            </label>
+            <label>
+              比较符
+              <select id="ar-comparator">
+                <option value="lt">低于</option>
+                <option value="lte">不高于</option>
+                <option value="gt">高于</option>
+                <option value="gte">不低于</option>
+                <option value="eq">等于</option>
+              </select>
+            </label>
+            <label id="ar-threshold-number-label">
+              阈值
+              <input type="number" id="ar-threshold-number" step="any" />
+            </label>
+            <label id="ar-threshold-level-label" class="hidden">
+              阈值等级
+              <select id="ar-threshold-level"></select>
+            </label>
+            <label>
+              冷却时长（小时）
+              <input type="number" id="ar-cooldown" min="0.1" step="any" value="1" />
+              <small class="field-hint">同一规则对同一目标命中后，此时长内不再重复发信。</small>
+            </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="ar-enabled" checked />
+              <span>
+                启用
+                <small>保存后立即生效；取消勾选则只保存不参与评估。</small>
+              </span>
+            </label>
+            <div class="wide action-row atc-form-actions">
+              <button type="submit" class="primary">保存规则</button>
+              <button type="button" id="ar-reset" class="secondary">清空表单</button>
+            </div>
+          </form>
+        </section>
+
         <section class="page" id="load-test" data-requires-admin hidden>
           <div class="section-header">
             <div>
@@ -1563,6 +1656,17 @@
                 <span class="field-hint" id="mc-scenario-hint">选好两个模型后，加载两方<strong>共有</strong>的场景，勾选要纳入对比的场景（默认全选）。不加载则用全部共有场景。</span>
               </div>
               <div id="mc-scenarios" class="mc-scenarios hidden"></div>
+              <div id="mc-gap-fill" class="hidden" style="margin-top:10px">
+                <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
+                  <button type="button" id="mc-fill-gaps" class="secondary">补齐单方场景</button>
+                  <span class="field-hint" id="mc-gap-hint"></span>
+                </div>
+                <div id="mc-gap-progress" class="progress-panel hidden">
+                  <div class="progress-bar"><span></span></div>
+                  <p class="muted">等待开始。</p>
+                  <button id="cancel-mc-gap-fill-task" class="secondary" type="button">取消当前场景</button>
+                </div>
+              </div>
             </div>
             <label class="wide checkbox-option">
               <input type="checkbox" id="mc-ai" />

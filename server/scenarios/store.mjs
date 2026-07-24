@@ -251,12 +251,23 @@ async function persistChange(persist, record) {
   }
 }
 
+// name 不得含 | 或换行：报告对比内核（server/report-compare.mjs 的 pickRecentReports /
+// balanceCommonReports）按场景名字符串做匹配/去重；md 报告里的名字经 escapeMarkdownTable
+// 转义（`|`→`\|`、换行→空格），若走结构化数据路径（scenarioDataFromSummary）取到的却是
+// 未转义的原始 scenarioName，两处字符串就不再相等——轻则该场景被误判成「文件互相顶替」丢弃，
+// 重则（表格按 `|` 硬 split）连带撞坏同一行其它列的解析。在创建/编辑时就拦住，
+// 比事后在多处对齐转义规则更彻底。
+const BAD_NAME_CHARS_RE = /[|\r\n]/;
+
 function validateScenario(scn) {
   if (!scn || typeof scn !== "object") return "场景必须是对象。";
   const id = String(scn.id ?? "").trim();
   if (!id) return "场景 id 不能为空。";
   const promptOk = (typeof scn.prompt === "string" && scn.prompt.trim()) || (Array.isArray(scn.prompt) && scn.prompt.length);
   if (!promptOk) return "提示词 prompt 不能为空。";
+  if (typeof scn.name === "string" && BAD_NAME_CHARS_RE.test(scn.name)) {
+    return "场景名不能包含竖线「|」或换行，请换一种写法（这类字符会导致报告对比功能误判场景丢失）。";
+  }
   return null;
 }
 
