@@ -230,6 +230,10 @@ async function loadBalancedCompareFiles(A, B) {
     }
     metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
     // 限流：稳定性/准入各取最近几份，场景最多取最近 60 份读盘（pickRecentReports 再按场景名去重取最新）。
+    // 已知问题（暂不修）：这里是按【文件数】限流（取最近 60 份场景报告），而 pickRecentReports 是
+    // 按【场景名】去重（一份文件通常只测一个场景，但理论上也可能撞名）。内置场景库已有约 89 个场景，
+    // 若用户实际跑过的场景种类数超过 60，排序在候选池之外的稀有场景会连去重环节都进不去，被静默漏掉
+    // （不报错，只是「共有场景数」会比实际偏小）。多数部署场景种类不会跑到这么全，暂按可接受风险处理。
     const chosen = [...metas.filter((m) => m.type !== "scenario").slice(0, 6), ...metas.filter((m) => m.type === "scenario").slice(0, 60)];
     const files = [];
     for (const m of chosen) {

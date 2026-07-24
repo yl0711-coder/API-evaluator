@@ -128,7 +128,11 @@ async function sendAlertMail(rule, entry, reason) {
 
 // 运行完成钩子：对该次结果的每个目标条目 × 每条启用规则做匹配/阈值/冷却判断，命中则发信。
 // best-effort：任何异常吞掉并记日志，绝不向上抛出。
-export async function evaluateAlertRules(result) {
+//
+// opts.sendAlertMailFn：仅供测试注入假发信函数（模拟 SMTP 故障），默认走真实 sendAlertMail——
+// 与 mailer.mjs 的 opts.transportFactory / auth.mjs 的 opts.fetchImpl 同一惯例。
+export async function evaluateAlertRules(result, opts = {}) {
+  const sendAlertMailFn = opts.sendAlertMailFn || sendAlertMail;
   try {
     if (!result || typeof result !== "object") return;
     const entries = collectEntries(result);
@@ -148,12 +152,15 @@ export async function evaluateAlertRules(result) {
           if (elapsedHours < rule.cooldownHours) continue; // 冷却期内，跳过不发信
         }
 
+        // markFired 只在发信真正成功后才记——否则 SMTP 故障期间第一次告警的异常被吞掉，
+        // 却仍标记为「已触发」，会让整个冷却窗口（可能长达数小时）内即使指标持续恶化也不再重试，
+        // 恰好是最该报警却失声的场景。发信失败就让下一次命中在没有冷却阻挡的情况下立即重试。
         try {
-          await sendAlertMail(rule, entry, describeHit(rule, entry));
+          await sendAlertMailFn(rule, entry, describeHit(rule, entry));
+          await markFired(rule.id, targetKey);
         } catch (error) {
           console.error("[alert-rules] 发信失败：", error?.message || error);
         }
-        await markFired(rule.id, targetKey);
       }
     }
   } catch (error) {

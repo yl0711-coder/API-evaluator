@@ -557,6 +557,11 @@ export function pickRecentReports(files) {
   if (latestAdm) picked.push(latestAdm);
 
   // scenario：按场景名保留最新一份（每份场景报告只测一个场景）。
+  // 已知问题（暂不修）：只取 scenarios[0] 当整份文件的代表名——若某份报告其实是多目标批量测试、
+  // 一次装了多个不同名场景，这里会拿第一个场景名去重，一旦它被更新的文件顶替，整份文件（连同
+  // 它装的其它稀有场景）都会被跳过丢弃，那些场景的数据就随之从对比里消失（不报错）。当前调用方
+  // （loadBalancedCompareFiles）传入的场景报告均为单场景，暂不受影响；引入多场景批量报告的
+  // 场景对比入口前需要重新按「场景名」而非「文件」做这层去重。
   const scen = withMeta.filter((f) => f.type === "scenario").sort(byRecency);
   const seen = new Set();
   for (const f of scen) {

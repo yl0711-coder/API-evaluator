@@ -169,6 +169,66 @@ test("task manager runs batch admission tasks", async () => {
   }
 });
 
+// 回归：「模型比对·补齐单方场景」逐个真实调用付费 API，若某次误判失败用户很容易对同一
+// {模型,场景} 再点一次补齐——createTask 对单模型单场景的 scenario 任务应去重，防双花。
+test("scenario 任务去重：同一 profileId+scenarioId 的单模型单场景任务仍在跑时，重复创建返回同一个任务", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-scenario-dedup-test-"));
+  let releaseRunner;
+  const gate = new Promise((resolve) => {
+    releaseRunner = resolve;
+  });
+  try {
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runStabilityTest: async () => ({}),
+      runBatchAdmissionTest: async () => ({}),
+      runBatchStabilityTest: async () => ({}),
+      runScenarioTest: async () => {
+        await gate;
+        return { type: "scenario", results: [] };
+      },
+    });
+
+    const payload = { profileIds: ["p1"], scenarioIds: ["s1"], repeats: 1 };
+    const first = await manager.createTask("scenario", payload);
+    const second = await manager.createTask("scenario", payload);
+    assert.equal(second.id, first.id, "第二次创建应拿到同一个 in-flight 任务，不新建");
+    assert.equal(manager.tasks.size, 1, "只应存在一个任务");
+
+    releaseRunner();
+    await waitFor(() => first.status === "completed");
+
+    // 任务结束后去重键已释放，同样的 {模型,场景} 可以重新发起（不是永久锁死）。
+    const third = await manager.createTask("scenario", payload);
+    assert.notEqual(third.id, first.id, "上一轮已结束，应能正常发起新一轮");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+test("scenario 任务去重：多模型或多场景（批量场景测试）不受去重影响，各自正常创建", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-scenario-nodedup-test-"));
+  try {
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runStabilityTest: async () => ({}),
+      runBatchAdmissionTest: async () => ({}),
+      runBatchStabilityTest: async () => ({}),
+      runScenarioTest: async () => ({ type: "scenario", results: [] }),
+    });
+
+    const multiModel = await manager.createTask("scenario", { profileIds: ["p1", "p2"], scenarioIds: ["s1"], repeats: 1 });
+    const multiScenario = await manager.createTask("scenario", { profileIds: ["p1", "p2"], scenarioIds: ["s1"], repeats: 1 });
+    assert.notEqual(multiScenario.id, multiModel.id, "多模型形态不去重，各自新建");
+
+    await waitFor(() => multiModel.status === "completed" && multiScenario.status === "completed");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
 test("task manager separates user-facing task errors from technical logs", async () => {
   const dir = await mkdtemp(join(tmpdir(), "evaluator-task-error-test-"));
   try {

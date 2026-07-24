@@ -85,6 +85,7 @@
   "#cancel-admission-batch-task",
   "#cancel-batch-task",
   "#cancel-load-test-task",
+  "#cancel-mc-gap-fill-task",
   "#cancel-scenario-task",
   "#cancel-stability-task",
   "#cancel-standard-task",
