@@ -13,6 +13,7 @@ import {
   parseRunReport,
   parseScenarioReport,
   parseAdmissionReport,
+  parseLoadReport,
   aggregateSubject,
   balanceCommonReports,
   buildComparison,
@@ -22,6 +23,7 @@ import {
   pickRecentReports,
   buildCompareAnalysisPrompt,
 } from "../server/report-compare.mjs";
+import { aggregate, formatSinglePointReport, formatSweepReport, findKnee } from "../server/load-test.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const EVAL = join(root, "tests", "fixtures", "report-compare");
@@ -114,7 +116,7 @@ test("formatCompareReportMarkdown 含各对比小节", async () => {
   const a = aggregateSubject({ files: await readFolder(DIR_A) });
   const b = aggregateSubject({ files: await readFolder(DIR_B) });
   const md = formatCompareReportMarkdown(buildComparison(a, b), { generatedAt: "2026-07-07T00:00:00.000Z" });
-  // 新顺序：结论速览 → 可用性 → 延迟 → 准入身份 → 档位 → 逐场景 → 总结。
+  // 新顺序：结论速览 → 可用性 → 延迟 → 准入身份 → 档位 → 逐场景 → 压测 → 总结。
   for (const heading of [
     "# 模型对比报告",
     "## 结论速览",
@@ -123,7 +125,8 @@ test("formatCompareReportMarkdown 含各对比小节", async () => {
     "## 3. 准入分项与身份纯度",
     "## 4. 按难度档位拆解",
     "## 5. 逐场景诊断",
-    "## 6. 总结",
+    "## 6. 压力测试对比",
+    "## 7. 总结",
   ]) {
     assert.ok(md.includes(heading), `缺少小节：${heading}`);
   }
@@ -134,7 +137,8 @@ test("formatCompareReportMarkdown 含各对比小节", async () => {
     "## 3. 准入分项与身份纯度",
     "## 4. 按难度档位拆解",
     "## 5. 逐场景诊断",
-    "## 6. 总结",
+    "## 6. 压力测试对比",
+    "## 7. 总结",
   ];
   const positions = order.map((h) => md.indexOf(h));
   for (let i = 1; i < positions.length; i++)
@@ -162,7 +166,7 @@ test("formatCompareReportMarkdown 含各对比小节", async () => {
   assert.ok(overview.includes("稳定性成功率") && overview.includes("场景通过率"), "可用性两行始终产出");
 });
 
-test("报告正文：用「对象A/对象B」、去统计术语（仅留末节）、第3/6节无 ⚠️、支持自定义显示名", async () => {
+test("报告正文：用「对象A/对象B」、去统计术语（仅留末节）、第3/7节无 ⚠️、支持自定义显示名", async () => {
   const a = aggregateSubject({ files: await readFolder(DIR_A), label: "甲渠道" });
   const b = aggregateSubject({ files: await readFolder(DIR_B), label: "乙渠道" });
   const md = formatCompareReportMarkdown(buildComparison(a, b), { generatedAt: "2026-07-07T00:00:00.000Z", balancedToCommon: true });
@@ -188,11 +192,11 @@ test("报告正文：用「对象A/对象B」、去统计术语（仅留末节�
     assert.ok(footer.includes(term), `末节应保留术语解释「${term}」`);
   }
 
-  // ④ 第3、6节不含 ⚠️（结论速览的 ⚠️ 不受影响）。
+  // ④ 第3、7节不含 ⚠️（结论速览的 ⚠️ 不受影响）。
   const sec3 = md.slice(md.indexOf("## 3."), md.indexOf("## 4."));
-  const sec6 = md.slice(md.indexOf("## 6. 总结"), footerIdx > md.indexOf("## 6. 总结") ? footerIdx : md.length);
+  const sec7 = md.slice(md.indexOf("## 7. 总结"), footerIdx > md.indexOf("## 7. 总结") ? footerIdx : md.length);
   assert.ok(!sec3.includes("⚠️"), "第3节不应含 ⚠️");
-  assert.ok(!sec6.includes("⚠️"), "第6节不应含 ⚠️");
+  assert.ok(!sec7.includes("⚠️"), "第7节不应含 ⚠️");
   assert.ok(!sec3.includes("横向指纹对照"), "第3节已删除「横向指纹对照」行");
 });
 
@@ -245,14 +249,207 @@ test("pickRecentReports：取最新 run/admission，场景按名保留最新一�
   assert.equal(new Set(names).size, 8);
 });
 
-test("balanceCommonReports：两方只留共有报告——同名场景取交集；run/准入需双方都有", () => {
+test("pickRecentReports 回归：两份多场景报告共享【首条】场景名时，旧文件里的其余场景不得被整份连坐丢弃", () => {
+  // 复现的真实缺陷：旧写法用 scenarios[0] 当整份文件的去重身份，两份多场景报告只要首条场景名相同，
+  // 较旧那份里除首条外的场景就被整份丢弃、从此在共有/差集里彻底消失。
+  const scenMd = (...names) =>
+    `# 场景测试报告\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n` +
+    names.map((n) => `| ${n} | 100% | 80 |`).join("\n") +
+    "\n";
+  // 旧文件（较旧）：批量测了 首场景 + 场景B + 场景C；新文件（较新）：批量测了 首场景 + 场景D。
+  const files = [
+    { name: "batch_old", md: scenMd("连通性：基础响应", "场景B", "场景C"), mtimeMs: 1 },
+    { name: "batch_new", md: scenMd("连通性：基础响应", "场景D"), mtimeMs: 2 },
+  ];
+  const picked = pickRecentReports(files);
+  // 两份都应保留（旧文件仍带来 场景B/场景C 这两个新名字）。
+  assert.equal(picked.length, 2, "旧文件因含独有场景 B/C 必须保留，不能被首条场景名连坐");
+  // 聚合后 5 个场景名一个不少。
+  const agg = aggregateSubject({ files: picked });
+  const got = agg.scenarios.map((s) => s.name).sort();
+  assert.deepEqual(got, ["场景B", "场景C", "场景D", "连通性：基础响应"].sort(), "五条场景行去重后应得 4 个场景名，无一丢失");
+});
+
+test("commonScenarioNames/exclusiveScenarioNames 回归：多场景报告共享首条场景名时，共有与差集计数不得偏低", () => {
+  const scenMd = (...names) =>
+    `# 场景测试报告\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n` +
+    names.map((n) => `| ${n} | 100% | 80 |`).join("\n") +
+    "\n";
+  // A：两份报告都以「首场景」开头 —— 若按首条去重，A 的 数学题/编程题 会被连坐丢弃。
+  const filesA = [
+    { name: "a_batch1", md: scenMd("首场景", "数学题"), mtimeMs: 1 },
+    { name: "a_batch2", md: scenMd("首场景", "编程题"), mtimeMs: 2 },
+  ];
+  // B：也测了 首场景 + 数学题 + 编程题（与 A 共有全部三个）。
+  const filesB = [{ name: "b_batch", md: scenMd("首场景", "数学题", "编程题"), mtimeMs: 1 }];
+  const common = commonScenarioNames(filesA, filesB)
+    .map((s) => s.name)
+    .sort();
+  assert.deepEqual(common, ["数学题", "编程题", "首场景"].sort(), "共有场景应含全部三个，不因首条去重而偏少");
+  const { onlyA, onlyB } = exclusiveScenarioNames(filesA, filesB);
+  assert.deepEqual(onlyA, [], "A 没有 B 未测的场景");
+  assert.deepEqual(onlyB, [], "B 没有 A 未测的场景");
+});
+
+test("行级授权回归：旧文件因独有场景被保留时，其与新文件重名的场景行不得混入聚合稀释最新结果", () => {
+  // 场景：用户先批量测了 [X, B]（X 质量分 20，当时渠道有问题），修好后重测了 [X]（质量分 90）。
+  // 贪心覆盖会保留旧文件（它带来独有场景 B），但旧文件里 X=20 的陈旧行绝不能与新文件 X=90 池化
+  // ——否则 X 均分变 55，用户"重测覆盖旧结果"的意图被静默打折。X 必须只由含它的最新文件供数。
+  const scenMd = (rows) =>
+    `# 场景测试报告\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n` +
+    rows.map(([n, q]) => `| ${n} | 100% | ${q} |`).join("\n") +
+    "\n";
+  const files = [
+    { name: "old_batch", md: scenMd([["场景X", 20], ["场景B", 70]]), mtimeMs: 1 },
+    { name: "new_single", md: scenMd([["场景X", 90]]), mtimeMs: 2 },
+  ];
+  const picked = pickRecentReports(files);
+  assert.equal(picked.length, 2, "旧文件因独有场景 B 保留");
+  // 行级授权：旧文件只被授权供数 场景B；新文件供数 场景X。
+  const oldPicked = picked.find((f) => f.name === "old_batch");
+  assert.deepEqual(oldPicked.scenarioAllow, ["场景B"], "旧文件的授权应只含其独家贡献的场景");
+  const agg = aggregateSubject({ files: picked });
+  const x = agg.scenarios.find((s) => s.name === "场景X");
+  assert.equal(x.quality, 90, "场景X 质量分必须来自最新文件（90），不得与旧文件的 20 池化成 55");
+  assert.equal(x.runs, 1, "场景X 只由 1 份文件供数");
+  const b = agg.scenarios.find((s) => s.name === "场景B");
+  assert.equal(b.quality, 70, "场景B 正常由旧文件供数");
+  // 授权要能穿过 balanceCommonReports 存活（否则白标）：对侧也测过 X 和 B 时，X 仍只取最新值。
+  const filesOther = [{ name: "other", md: scenMd([["场景X", 50], ["场景B", 50]]), mtimeMs: 1 }];
+  const [balA] = balanceCommonReports(picked, pickRecentReports(filesOther));
+  const aggBal = aggregateSubject({ files: balA });
+  assert.equal(aggBal.scenarios.find((s) => s.name === "场景X").quality, 90, "经 balance 后授权仍生效，X 不被陈旧行稀释");
+});
+
+test("行级授权口径回归：挂 DB summary 后行名来自库（可能含换行/首尾空白），规范化匹配不得误丢；无人认领的名字放行", () => {
+  // 背景：授权名来自 md 表格解析（写入时换行渲染成空格、单元格被 trim），而挂了 DB summary 的文件
+  // 行名走库里的原始 scenarioName——名字含换行时两边字面不同。规范化匹配前，这类行会被判"授权外"误丢。
+  const scenMd = (rows) =>
+    `# 场景测试报告\n\n## 专业分析摘要\n\n- 每个场景重复次数：1\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n` +
+    rows.map(([n, q]) => `| ${n} | 100% | ${q} |`).join("\n") +
+    "\n";
+  const mkSummary = (rows) => ({
+    repeats: 1,
+    results: [
+      {
+        scenarios: rows.map(([name, q]) => ({
+          scenarioName: name,
+          successRate: 1,
+          avgQualityScore: q,
+          avgTotalMs: 1000,
+          p95TotalMs: 1200,
+          issues: [],
+        })),
+      },
+    ],
+  });
+  // 新文件测了 场景X；旧文件测了 场景X + 「换行 场景」（DB 原始名带 \n，md 里渲染成空格）。
+  const files = [
+    { name: "old", md: scenMd([["场景X", 20], ["换行 场景", 70]]), mtimeMs: 1 },
+    { name: "new", md: scenMd([["场景X", 90]]), mtimeMs: 2 },
+  ];
+  const picked = pickRecentReports(files);
+  // 模拟 attachSummaries：给旧文件挂 DB summary，行名用【原始】带换行的名字。
+  const oldPicked = picked.find((f) => f.name === "old");
+  oldPicked.summary = mkSummary([["场景X", 20], ["换行\n场景", 70]]);
+  const agg = aggregateSubject({ files: picked });
+  const wrapped = agg.scenarios.find((s) => s.name.includes("换行"));
+  assert.ok(wrapped, "DB 原始名含换行的场景不得因 md/DB 名字字面不同而被授权过滤误丢");
+  assert.equal(wrapped.quality, 70);
+  assert.equal(agg.scenarios.find((s) => s.name === "场景X").quality, 90, "陈旧的 场景X=20（DB 行）仍被正确排除");
+
+  // 无人认领的名字放行（保底）：DB 行名与任何 md 授权名都对不上（如名字含 |，md 表格解析已碎）——
+  // 此时没有任何更新文件在供数同名场景，丢掉它就是纯数据丢失，必须保留。
+  const files2 = [
+    { name: "only", md: scenMd([["正常场景", 80]]), mtimeMs: 1 },
+  ];
+  const picked2 = pickRecentReports(files2);
+  picked2[0].summary = mkSummary([["正常场景", 80], ["带|管道的场景", 60]]);
+  const agg2 = aggregateSubject({ files: picked2 });
+  assert.ok(
+    agg2.scenarios.some((s) => s.name === "带|管道的场景"),
+    "DB 独有、无人认领的场景名应放行（fail-open），不得静默丢弃",
+  );
+});
+
+test("buildComparison：同键重复负载点显式去重（保留首个），两侧同一规则、不静默吞行", () => {
+  const mkAgg = (pts) => ({
+    label: "x",
+    scenarios: [],
+    tiers: [],
+    latency: { samples: [] },
+    quality: { mean: null, n: 0 },
+    loadPoints: pts,
+  });
+  // A 侧重复 closed/30（用户输入 "30,30" 时 runLoadTest 不去重）；B 侧也重复。
+  const a = mkAgg([
+    { mode: "closed", offered: 30, qps: 5, successRate: 1, p95: 500, p99: 600 },
+    { mode: "closed", offered: 30, qps: 7, successRate: 1, p95: 550, p99: 650 },
+  ]);
+  const b = mkAgg([
+    { mode: "closed", offered: 30, qps: 4, successRate: 1, p95: 700, p99: 800 },
+    { mode: "closed", offered: 30, qps: 9, successRate: 1, p95: 750, p99: 850 },
+  ]);
+  const cmp = buildComparison(a, b);
+  assert.equal(cmp.loadComparison.matched.length, 1, "重复键去重后只产出一行配对，不得出现重复行");
+  assert.equal(cmp.loadComparison.matched[0].a.qps, 5, "A 侧保留首个（报告顺序）");
+  assert.equal(cmp.loadComparison.matched[0].b.qps, 4, "B 侧同规则保留首个（旧实现 Map 会静默留最后一个）");
+  assert.deepEqual(cmp.loadComparison.onlyA, []);
+  assert.deepEqual(cmp.loadComparison.onlyB, []);
+});
+
+test("parseLoadReport 边界：offered 解析失败的单点报告 → 空点集（与扫描护栏同规则）；错误短语含冒号不少计", () => {
+  // 单点报告缺「并发」行 → offered 无法解析 → 不产出 offered:null 的废点（那会与对侧的 null 互相"配对"）。
+  const brokenMd = [
+    "# 压力测试报告",
+    "",
+    "- 模式：闭环（固定并发） · 负载档 简单",
+    "",
+    "## 吞吐与成功率",
+    "",
+    "- 成功：2（100%）　吞吐 QPS：0.2 req/s",
+    "",
+  ].join("\n");
+  const broken = parseLoadReport(brokenMd);
+  assert.deepEqual(broken.points, [], "offered 解析失败 → 空点集");
+
+  // 上游 statusText 可自带冒号（HTTP/1.1 原因短语上游可控）：计数取行尾的「：数字」，不得整行匹配失败少计。
+  const colonMd = [
+    "# 压力测试报告",
+    "",
+    "- 模式：闭环（固定并发） · 负载档 简单",
+    "- 并发：10",
+    "",
+    "## 吞吐与成功率",
+    "",
+    "- 成功：1（25%）　吞吐 QPS：0.4 req/s",
+    "",
+    "## 延迟分布（仅成功请求）",
+    "",
+    "| p50 | p90 | p95 | p99 | max | avg |",
+    "|---|---|---|---|---|---|",
+    "| 0.10s | 0.10s | 0.10s | 0.10s | 0.10s | 0.10s |",
+    "",
+    "## 错误构成",
+    "",
+    "- 成功：1",
+    "- HTTP 429 Too Many: Requests（上游限流）：3",
+    "",
+  ].join("\n");
+  const parsed = parseLoadReport(colonMd);
+  assert.equal(parsed.points[0].http429, 3, "原因短语含冒号时 429 计数仍应取行尾数字");
+});
+
+test("balanceCommonReports：两方只留共有报告——同名场景取交集；run/准入需双方都有；load 单方独有仍放行", () => {
   const runMd = "# 稳定性测试报告\n";
   const admMd = "# 准入评测报告\n";
+  const loadMd = "# 压力测试报告\n\n- 模式：闭环（固定并发）\n\n## 吞吐与成功率\n\n- 成功：1（100%）　吞吐 QPS：1 req/s\n";
   const scenMd = (n) => `# 场景测试报告\n\n## 场景明细\n\n| 场景 | 成功率 | 平均质量分 |\n|---|---|---|\n| ${n} | 100%(3/3) | 80 |\n`;
-  // A：run + 准入 + 场景{逻辑,数学,编程}；B：run（无准入）+ 场景{逻辑,数学,翻译}。
+  // A：run + 准入 + 压测 + 场景{逻辑,数学,编程}；B：run（无准入、无压测）+ 场景{逻辑,数学,翻译}。
   const A = [
     { name: "A-run", md: runMd },
     { name: "A-adm", md: admMd },
+    { name: "A-load", md: loadMd },
     { name: "A-s1", md: scenMd("逻辑谜题") },
     { name: "A-s2", md: scenMd("数学题") },
     { name: "A-s3", md: scenMd("编程题") },
@@ -269,10 +466,11 @@ test("balanceCommonReports：两方只留共有报告——同名场景取交集
       .filter((f) => detectReportType(f.name, f.md) === "scenario")
       .map((f) => parseScenarioReport(f.md).scenarios[0]?.name)
       .sort();
-  assert.equal(balA.length, balB.length, "两方报告数量相同");
-  assert.equal(balA.length, 3, "run + 逻辑 + 数学 = 3（准入被丢，B 无准入）");
+  assert.equal(balA.length, 4, "run + 压测 + 逻辑 + 数学 = 4（准入被丢，B 无准入；压测单方独有仍放行）");
+  assert.equal(balB.length, 3, "run + 逻辑 + 数学 = 3（B 没有压测报告，自然没有）");
   assert.equal(balA.filter((f) => detectReportType(f.name, f.md) === "admission").length, 0, "准入单方独有 → 两方都不用");
   assert.equal(balA.filter((f) => detectReportType(f.name, f.md) === "run").length, 1, "run 双方都有 → 保留");
+  assert.equal(balA.filter((f) => detectReportType(f.name, f.md) === "load").length, 1, "压测单方独有 → 放行，不像 run/准入那样两边都不用");
   assert.deepEqual(names(balA), ["数学题", "逻辑谜题"], "A 只留共有场景");
   assert.deepEqual(names(balB), ["数学题", "逻辑谜题"], "B 只留共有场景");
 
@@ -386,6 +584,189 @@ test("exclusiveScenarioNames：两方场景完全相同 → 双方 onlyA/onlyB �
   const { onlyA, onlyB } = exclusiveScenarioNames(files, files);
   assert.deepEqual(onlyA, []);
   assert.deepEqual(onlyB, []);
+});
+
+// —— 压力测试(load)报告：解析、聚合、配对对比 ——
+// 用 load-test.mjs 的真实 aggregate()/formatSinglePointReport()/formatSweepReport() 产出 md，
+// 而非手写字符串——这样测的是「parseLoadReport 能不能读懂 runner 实际产出的报告」，不是自证。
+const loadMeta = (over = {}) => ({
+  mode: "closed",
+  model: "m1",
+  profileName: "渠道 / m1",
+  protocol: "openai_chat",
+  promptProfile: "简单",
+  durationSec: 10,
+  warmupSec: 0,
+  maxTokens: 64,
+  timeoutSec: 30,
+  maxInFlight: 300,
+  intervalSec: 0,
+  burstPeriodSec: 1,
+  stream: false,
+  startedAt: "2026-07-20T00:00:00.000Z",
+  endedAt: "2026-07-20T00:00:10.000Z",
+  ...over,
+});
+const okSample = (ms) => ({ ms, ok: true, status: 200, err: "", warmup: false });
+const failSample = (status, err) => ({ ms: null, ok: false, status, err, warmup: false });
+
+test("parseLoadReport：单点报告往返（closed 模式），数字与 aggregate() 原始值一致", () => {
+  const samples = [okSample(100), okSample(200), okSample(300), okSample(400), failSample(429, "rate_limited")];
+  const point = aggregate({ samples, mode: "closed", offered: 30, durationSec: 10 });
+  const md = formatSinglePointReport(loadMeta(), point);
+  const parsed = parseLoadReport(md);
+
+  assert.equal(parsed.type, "load");
+  assert.equal(parsed.mode, "closed");
+  assert.equal(parsed.points.length, 1);
+  const p = parsed.points[0];
+  assert.equal(p.offered, 30, "并发数往返一致");
+  assert.equal(p.qps, point.qps);
+  assert.equal(p.successRate, point.successRate);
+  assert.equal(p.p50, point.latency.p50);
+  assert.equal(p.p95, point.latency.p95);
+  assert.equal(p.p99, point.latency.p99);
+  assert.equal(p.http429, 1, "错误构成里的 429 计数往返一致");
+});
+
+test("parseLoadReport：单点报告往返（open 模式，速率单位），mode 正确识别为 open", () => {
+  const samples = [okSample(50), okSample(60), okSample(70)];
+  const point = aggregate({ samples, mode: "open", offered: 20, durationSec: 10 });
+  const md = formatSinglePointReport(loadMeta({ mode: "open" }), point);
+  const parsed = parseLoadReport(md);
+  assert.equal(parsed.mode, "open");
+  assert.equal(parsed.points[0].offered, 20);
+  assert.equal(parsed.points[0].mode, "open");
+});
+
+test("parseLoadReport：扫描报告往返，逐负载点数字与 aggregate() 一致", () => {
+  const points = [
+    aggregate({ samples: [okSample(100), okSample(150), okSample(200)], mode: "closed", offered: 10, durationSec: 10 }),
+    aggregate({ samples: [okSample(300), okSample(350), okSample(400)], mode: "closed", offered: 20, durationSec: 10 }),
+    aggregate({ samples: [okSample(900), okSample(950), failSample(429, "rate_limited")], mode: "closed", offered: 40, durationSec: 10 }),
+  ];
+  const knee = findKnee(points);
+  const md = formatSweepReport(loadMeta(), points, knee);
+  const parsed = parseLoadReport(md);
+
+  assert.equal(parsed.type, "load");
+  assert.equal(parsed.points.length, 3);
+  for (let i = 0; i < points.length; i++) {
+    assert.equal(parsed.points[i].offered, points[i].offered, `第${i}点负载值往返一致`);
+    assert.equal(parsed.points[i].qps, points[i].qps, `第${i}点 QPS 往返一致`);
+    // 扫描表格的成功率列是整数百分比（load-test.mjs 的 pct() 四舍五入），往返有 <1% 的精度损失——
+    // 这是报告格式本身的取舍，不是解析器的锅，故用容差比较而非严格相等。
+    assert.ok(
+      Math.abs(parsed.points[i].successRate - points[i].successRate) < 0.01,
+      `第${i}点成功率往返一致（容差<1%）：解析出 ${parsed.points[i].successRate}，原始 ${points[i].successRate}`,
+    );
+    assert.equal(parsed.points[i].p95, points[i].latency.p95, `第${i}点 p95 往返一致`);
+    assert.equal(parsed.points[i].p99, points[i].latency.p99, `第${i}点 p99 往返一致`);
+  }
+  assert.equal(parsed.points[2].http429, 1, "第三点 429 计数（扫描表格列）往返一致");
+});
+
+test("aggregateSubject：load 报告聚合出 loadPoints，reportCounts.load 计数正确", () => {
+  const point = aggregate({ samples: [okSample(100), okSample(200)], mode: "closed", offered: 30, durationSec: 10 });
+  const md = formatSinglePointReport(loadMeta(), point);
+  const agg = aggregateSubject({ files: [{ name: "x_load_20260720", md }] });
+  assert.equal(agg.reportCounts.load, 1);
+  assert.equal(agg.loadPoints.length, 1);
+  assert.equal(agg.loadPoints[0].offered, 30);
+  assert.equal(agg.loadPoints[0].mode, "closed");
+});
+
+test("端到端回归：一方有压测报告、另一方完全没有压测报告时，压测数据不得在 balanceCommonReports 被静默丢弃", () => {
+  // 复现的真实缺陷：load 若像 run/admission 一样要求「双方都有该类型才保留整份报告」，
+  // A 的压测报告会在 balanceCommonReports 这一步就被整份删掉，buildComparison 里
+  // onlyA/onlyB 的「仅一方测过」判断永远轮不到执行，报告还会误报「两个对象都没有压力测试报告」。
+  // 走完整链路（而非直接手造 aggregateSubject 的返回值喂给 buildComparison）才能测到这个缺口。
+  const point = aggregate({ samples: [okSample(100), okSample(200)], mode: "closed", offered: 30, durationSec: 10 });
+  const loadMd = formatSinglePointReport(loadMeta(), point);
+  const filesA = [{ name: "a_load_20260101", md: loadMd, mtimeMs: 1 }];
+  const filesB = []; // B 完全没有任何报告
+
+  const pickedA = pickRecentReports(filesA);
+  const pickedB = pickRecentReports(filesB);
+  const [balA, balB] = balanceCommonReports(pickedA, pickedB);
+  assert.equal(balA.length, 1, "A 的压测报告不应在平衡阶段被整份丢弃");
+  assert.equal(balB.length, 0);
+
+  const aggA = aggregateSubject({ files: balA, label: "A" });
+  const aggB = aggregateSubject({ files: balB, label: "B" });
+  assert.equal(aggA.loadPoints.length, 1, "A 的负载点应能传到聚合层");
+
+  const cmp = buildComparison(aggA, aggB);
+  assert.equal(cmp.loadComparison.onlyA.length, 1, "A 独有的负载点应出现在 onlyA，而非被前置过滤吃掉");
+  assert.equal(cmp.loadComparison.onlyA[0].offered, 30);
+
+  const md = formatCompareReportMarkdown(cmp, { generatedAt: "2026-01-01T00:00:00Z" });
+  assert.ok(!md.includes("两个对象都没有压力测试报告"), "A 明明有压测报告，不得声称双方都没有");
+  assert.match(md, /仅对象A 测过的负载点/);
+});
+
+test("buildComparison：负载点按 (mode, offered) 精确配对；不同 mode 不互相配对；单方独有归入 onlyA/onlyB", () => {
+  const mkAgg = (pts) => ({
+    label: "x",
+    scenarios: [],
+    tiers: [],
+    latency: { samples: [] },
+    quality: { mean: null, n: 0 },
+    loadPoints: pts,
+  });
+  const a = mkAgg([
+    { mode: "closed", offered: 10, qps: 5, successRate: 1, p95: 500, p99: 600 },
+    { mode: "closed", offered: 20, qps: 8, successRate: 0.9, p95: 900, p99: 1000 },
+    { mode: "open", offered: 10, qps: 9, successRate: 1, p95: 400, p99: 450 }, // 与闭环同数值但不同 mode
+  ]);
+  const b = mkAgg([
+    { mode: "closed", offered: 10, qps: 4, successRate: 0.95, p95: 550, p99: 650 },
+    { mode: "closed", offered: 30, qps: 6, successRate: 1, p95: 700, p99: 800 }, // B 独有
+  ]);
+  const cmp = buildComparison(a, b);
+  assert.equal(cmp.loadComparison.matched.length, 1, "只有 closed/10 两边都有，唯一配对");
+  const m = cmp.loadComparison.matched[0];
+  assert.equal(m.mode, "closed");
+  assert.equal(m.offered, 10);
+  assert.equal(m.qpsDelta, 1, "5-4=1");
+  assert.equal(m.p95Delta, -50, "500-550=-50");
+  // A 独有：closed/20 与 open/10（后者与 B 的 closed/10 数值一样但 mode 不同，不得被误配）。
+  const onlyAKeys = cmp.loadComparison.onlyA.map((p) => `${p.mode}:${p.offered}`).sort();
+  assert.deepEqual(onlyAKeys, ["closed:20", "open:10"], "closed/20 与 open/10 均未被配对");
+  assert.deepEqual(cmp.loadComparison.onlyB.map((p) => `${p.mode}:${p.offered}`), ["closed:30"]);
+});
+
+test("formatCompareReportMarkdown：压力测试对比节——有数据时出表格，无数据时给说明而非空表格", () => {
+  const mkAgg = (pts) => ({
+    label: "x",
+    channel: null,
+    model: null,
+    reportCounts: { run: 0, scenario: 0, admission: 0, load: pts.length ? 1 : 0, total: 0 },
+    stability: null,
+    integrity: { errorCounts: {} },
+    latency: { samples: [], rounds: [], stats: {} },
+    scenarioPass: { succ: 0, total: 0, rate: null },
+    quality: { mean: null, n: 0 },
+    scenarios: [],
+    tiers: [],
+    admission: null,
+    tokens: { input: 0, output: 0 },
+    loadPoints: pts,
+  });
+  const withLoad = buildComparison(
+    mkAgg([{ mode: "closed", offered: 10, qps: 5, successRate: 1, p95: 500, p99: 600 }]),
+    mkAgg([{ mode: "closed", offered: 10, qps: 4, successRate: 0.9, p95: 600, p99: 700 }]),
+  );
+  const mdWith = formatCompareReportMarkdown(withLoad, { generatedAt: "2026-07-20T00:00:00Z" });
+  assert.match(mdWith, /## 6\. 压力测试对比/);
+  assert.match(mdWith, /\| 模式 \| 负载 \| QPS\(A\)/);
+  assert.match(mdWith, /闭环 \| 10 并发/);
+
+  const withoutLoad = buildComparison(mkAgg([]), mkAgg([]));
+  const mdWithout = formatCompareReportMarkdown(withoutLoad, { generatedAt: "2026-07-20T00:00:00Z" });
+  assert.match(mdWithout, /## 6\. 压力测试对比/);
+  assert.match(mdWithout, /两个对象都没有压力测试报告，跳过压测对比/);
+  assert.ok(!mdWithout.includes("| 模式 | 负载 |"), "无压测数据时不应出现空表格");
 });
 
 test("aggregateSubject(scenarioFilter)：行级筛选，多场景/份也能只算被选场景", () => {

@@ -304,6 +304,9 @@ export function createModelCompare({ state, confirm }) {
     for (let i = 0; i < jobs.length; i += 1) {
       const job = jobs[i];
       fillGapsBtn.textContent = `补齐中…（${i + 1}/${jobs.length}）`;
+      // 中途换模型下拉会触发 resetGaps 把父容器 #mc-gap-fill 隐藏，但补测仍在逐个真实调用 API 计费——
+      // 每轮都把容器和进度条重新亮出来，绝不允许"额度在烧、界面上却什么都看不到"。
+      gapFillBox.classList.remove("hidden");
       gapProgress.classList.remove("hidden");
       const p = gapProgress.querySelector("p");
       if (p) p.textContent = `补齐中 ${i + 1}/${jobs.length}：《${job.scenarioName}》→ 补给对象 ${job.forLabel} (0%)`;
@@ -332,7 +335,13 @@ export function createModelCompare({ state, confirm }) {
       toast(`补齐完成：${jobs.length} 个场景测试已全部完成。`);
     }
     // 补齐后重新拉一次共有场景 + 差集，让用户能立刻看到最新可对比场景。
-    await onLoadScenarios();
+    // 仅当两个下拉仍是本次补齐的组合时才自动刷新——中途换过模型的话，自动刷新会拿【新】组合发请求，
+    // 界面呈现与刚补完的对象脱节（补的是旧组合、列表却是新组合的）。
+    if (cascadeA.value === idA && cascadeB.value === idB) {
+      await onLoadScenarios();
+    } else {
+      toast("补齐期间模型选择已变更，请重新点「加载可选场景」查看结果。");
+    }
   }
 
   loadScenariosBtn.addEventListener("click", onLoadScenarios);

@@ -220,7 +220,7 @@ async function loadBalancedCompareFiles(A, B) {
       if (!prefixes.some((p) => name.startsWith(p))) continue;
       const base = name.replace(/\.md$/i, "");
       const type = parseReportBaseName(base).type;
-      if (type !== "run" && type !== "admission" && type !== "scenario") continue;
+      if (type !== "run" && type !== "admission" && type !== "scenario" && type !== "load") continue;
       try {
         const st = await stat(join(REPORTS_DIR, name));
         metas.push({ base, type, mtimeMs: st.mtimeMs });
@@ -229,12 +229,18 @@ async function loadBalancedCompareFiles(A, B) {
       }
     }
     metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
-    // 限流：稳定性/准入各取最近几份，场景最多取最近 60 份读盘（pickRecentReports 再按场景名去重取最新）。
-    // 已知问题（暂不修）：这里是按【文件数】限流（取最近 60 份场景报告），而 pickRecentReports 是
-    // 按【场景名】去重（一份文件通常只测一个场景，但理论上也可能撞名）。内置场景库已有约 89 个场景，
+    // 限流：run/admission 共享最近 6 份（沿用 load 类型加入前的原始预算）；load 独立取最近 6 份——
+    // 三者混在一个预算里时，密集调参跑压测（6 份以上近期 load 文件）会把 run/admission 全部挤出候选，
+    // 对比里稳定性/准入静默消失（磁盘上明明有）。场景需要按名去重，最多取最近 60 份读盘。
+    // 已知问题（暂不修）：场景是按【文件数】限流（取最近 60 份场景报告），而 pickRecentReports 是
+    // 按【场景名】去重（一份文件可含多条场景行，理论上也可能撞名）。内置场景库已有约 89 个场景，
     // 若用户实际跑过的场景种类数超过 60，排序在候选池之外的稀有场景会连去重环节都进不去，被静默漏掉
     // （不报错，只是「共有场景数」会比实际偏小）。多数部署场景种类不会跑到这么全，暂按可接受风险处理。
-    const chosen = [...metas.filter((m) => m.type !== "scenario").slice(0, 6), ...metas.filter((m) => m.type === "scenario").slice(0, 60)];
+    const chosen = [
+      ...metas.filter((m) => m.type === "run" || m.type === "admission").slice(0, 6),
+      ...metas.filter((m) => m.type === "load").slice(0, 6),
+      ...metas.filter((m) => m.type === "scenario").slice(0, 60),
+    ];
     const files = [];
     for (const m of chosen) {
       try {
@@ -1779,7 +1785,8 @@ async function handleReportsCompare(req, res) {
   const baseName = `${slug(A)}_vs_${slug(B)}_compare_${stamp}_${randomUUID().slice(0, 4)}`;
   await saveReportFiles(baseName, markdown, "模型对比报告");
   const reportId = sanitizeReportBaseName(baseName);
-  const usedNote = (agg) => `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入`;
+  const usedNote = (agg) =>
+    `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入${agg.reportCounts.load ? ` / ${agg.reportCounts.load} 压测` : ""}`;
   sendJson(res, 200, {
     reportId,
     markdown,
