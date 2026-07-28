@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-07-28
+
+### Security
+- **升级 Nodemailer 至 9.0.3** — 修复旧版邮件依赖已披露的 `raw` 内容访问绕过及地址解析拒绝服务风险；
+  邮件报警与 SMTP 测试流程保持不变。
+- **CI 增加生产依赖安全闸** — CI 与镜像构建测试阶段均执行
+  `pnpm audit --prod --audit-level=high`，阻止带 high/critical 生产依赖漏洞的提交或发布标签产出镜像。
+
 ### Fixed / Hardened（上线前就绪检查）
 - **健康检查的「调度器活性」判定是死配置** — `deploy/docker-compose.evaluator.yml` 的健康检查断言
   `!(j.autoTest && j.autoTest.stale)` 以感知「进程活着但定时器僵死」，但 7月7日 `80624fc` 把调度器的
