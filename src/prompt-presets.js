@@ -197,7 +197,10 @@ const PRESETS_BY_KIND = {
 export function renderPromptPresetOptions(kindOrSelectedId = "stability", maybeSelectedId = "basic") {
   const { presets, selectedId } = resolvePresetArgs(kindOrSelectedId, maybeSelectedId);
   return presets
-    .map((preset) => `<option value="${escapeHtml(preset.id)}"${preset.id === selectedId ? " selected" : ""}>${escapeHtml(preset.label)}</option>`)
+    .map(
+      (preset) =>
+        `<option value="${escapeHtml(preset.id)}"${preset.id === selectedId ? " selected" : ""}>${escapeHtml(preset.label)}</option>`,
+    )
     .join("");
 }
 
@@ -212,7 +215,8 @@ export function applyPromptPresetToForm({ kind = "stability", form, select, hint
   const preset = getPromptPreset(kind, select.value);
   const promptInput = form.elements.prompt;
   if (hint) {
-    hint.textContent = preset.id === "custom" ? `${preset.hint} 下方文本框现在可以编辑。` : `${preset.hint} 下方文本框已自动填入，可直接开始测试。`;
+    hint.textContent =
+      preset.id === "custom" ? `${preset.hint} 下方文本框现在可以编辑。` : `${preset.hint} 下方文本框已自动填入，可直接开始测试。`;
   }
   if (promptInput) {
     promptInput.readOnly = preset.id !== "custom";

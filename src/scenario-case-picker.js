@@ -24,7 +24,14 @@ export function createScenarioCasePicker(container, hiddenSelect) {
   function rows() {
     return [...hiddenSelect.options]
       .filter((o) => o.value)
-      .map((o) => ({ id: o.value, name: o.dataset.name || o.textContent, tag: o.dataset.tag || "", difficulty: o.dataset.difficulty || "", group: o.dataset.group || "", selected: o.selected }));
+      .map((o) => ({
+        id: o.value,
+        name: o.dataset.name || o.textContent,
+        tag: o.dataset.tag || "",
+        difficulty: o.dataset.difficulty || "",
+        group: o.dataset.group || "",
+        selected: o.selected,
+      }));
   }
   // 当前分组筛选下的可见项（空＝全部）。
   function visibleRows() {
@@ -34,7 +41,8 @@ export function createScenarioCasePicker(container, hiddenSelect) {
   function syncGroupOptions() {
     const groups = distinctGroups(rows());
     const cur = groupFilter.value;
-    groupFilter.innerHTML = `<option value="">全部分组</option>` + groups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
+    groupFilter.innerHTML =
+      `<option value="">全部分组</option>` + groups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
     groupFilter.value = resolveGroupFilterValue(groups, cur);
   }
 
@@ -72,7 +80,9 @@ export function createScenarioCasePicker(container, hiddenSelect) {
     const data = rows();
     const selected = selectedRows(data);
     chips.innerHTML = selected.length
-      ? selected.map((r) => `<span class="chip" data-id="${escapeHtml(r.id)}">${escapeHtml(r.name)} <span class="x">✕</span></span>`).join("")
+      ? selected
+          .map((r) => `<span class="chip" data-id="${escapeHtml(r.id)}">${escapeHtml(r.name)} <span class="x">✕</span></span>`)
+          .join("")
       : `<span class="empty-chips">未选择</span>`;
     chips.querySelectorAll(".chip .x").forEach((x) =>
       x.addEventListener("click", () => {

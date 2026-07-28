@@ -38,7 +38,10 @@ test("token audit reports usage coverage and suspicious zero output", () => {
   assert.equal(audit.inputTokens, 180);
   assert.equal(audit.outputTokens, 20);
   assert.equal(audit.tokenReliability, "medium");
-  assert.equal(audit.issues.some((item) => item.code === "zero_output_success"), true);
+  assert.equal(
+    audit.issues.some((item) => item.code === "zero_output_success"),
+    true,
+  );
 });
 
 test("purity assessment flags identity conflict as model mismatch", () => {
@@ -61,7 +64,10 @@ test("purity assessment flags identity conflict as model mismatch", () => {
   });
 
   assert.equal(assessment.classification, "suspected_model_mismatch");
-  assert.equal(assessment.riskFlags.some((item) => item.code === "identity_conflict"), true);
+  assert.equal(
+    assessment.riskFlags.some((item) => item.code === "identity_conflict"),
+    true,
+  );
   assert.equal(assessment.score < 85, true);
 });
 
@@ -115,8 +121,14 @@ test("fingerprint probe cases add model family probes when model name is known",
   const openaiCases = buildFingerprintProbeCases({ modelName: "gpt-4.1" });
   const unknownCases = buildFingerprintProbeCases({ modelName: "unknown-model" });
 
-  assert.equal(claudeCases.some((item) => item.id === "fingerprint_family_claude_messages"), true);
-  assert.equal(openaiCases.some((item) => item.id === "fingerprint_family_openai_chat"), true);
+  assert.equal(
+    claudeCases.some((item) => item.id === "fingerprint_family_claude_messages"),
+    true,
+  );
+  assert.equal(
+    openaiCases.some((item) => item.id === "fingerprint_family_openai_chat"),
+    true,
+  );
   assert.equal(unknownCases.length, 4);
 
   const familyResult = evaluateFingerprintProbe(
@@ -134,7 +146,10 @@ test("fingerprint library exposes version and coverage metadata", () => {
   assert.match(metadata.version, /^\d{4}\.\d{2}\.\d{2}$/);
   assert.equal(metadata.expectedFamily, "claude");
   assert.equal(metadata.totalProbeCount, cases.length);
-  assert.equal(cases.every((item) => item.libraryVersion === metadata.version), true);
+  assert.equal(
+    cases.every((item) => item.libraryVersion === metadata.version),
+    true,
+  );
 });
 
 test("family fingerprint probes fail when expected signals are missing", () => {

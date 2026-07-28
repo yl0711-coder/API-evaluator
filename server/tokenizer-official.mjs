@@ -23,7 +23,9 @@ const encoderCache = new Map(); // encoding -> encode fn | null
 // EVALUATOR_OFFLINE_TOKENIZER=off 一键关闭官方分词器，全部回退到零额外内存的横向对照法。
 export function resolveOpenAiEncoding(model) {
   if (String(process.env.EVALUATOR_OFFLINE_TOKENIZER || "").toLowerCase() === "off") return null;
-  const m = String(model || "").toLowerCase().trim();
+  const m = String(model || "")
+    .toLowerCase()
+    .trim();
   if (!m) return null;
   if (/gpt-4o|chatgpt-4o|gpt-4\.1|gpt-5|codex|o200k/.test(m)) return "o200k_base";
   if (/(^|[^a-z0-9])o[1345]([^a-z0-9]|$)/.test(m)) return "o200k_base"; // o1/o3/o4 推理系

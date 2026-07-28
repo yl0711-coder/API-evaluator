@@ -32,8 +32,7 @@ const FAMILY_CPT_HINTS = [
   { family: "claude", min: 2.5, max: 4.5, note: "需官方 tokenizer 标定" },
 ];
 
-const CJK_PATTERN =
-  /[㐀-䶿一-鿿豈-﫿぀-ヿ㄰-㆏가-힯]/u;
+const CJK_PATTERN = /[㐀-䶿一-鿿豈-﫿぀-ヿ㄰-㆏가-힯]/u;
 
 export function countCharClasses(text) {
   const raw = String(text || "");
@@ -54,10 +53,7 @@ export function countCharClasses(text) {
 export function estimateTokens(text) {
   const { cjk, ascii, whitespace, punct } = countCharClasses(text);
   const estimate =
-    cjk * CJK_TOKENS_PER_CHAR +
-    ascii / ASCII_CHARS_PER_TOKEN +
-    whitespace / WHITESPACE_CHARS_PER_TOKEN +
-    punct * PUNCT_TOKENS_PER_CHAR;
+    cjk * CJK_TOKENS_PER_CHAR + ascii / ASCII_CHARS_PER_TOKEN + whitespace / WHITESPACE_CHARS_PER_TOKEN + punct * PUNCT_TOKENS_PER_CHAR;
   return Math.max(0, Math.round(estimate));
 }
 
@@ -108,12 +104,13 @@ export function fingerprintTokenizer({ text, reportedTokens, declaredModel = "" 
     note = "实测 token 数远低于局部估算，疑似少计/缓存命中/裁剪，需上游解释。";
   }
 
-  const suspectedFamilies = cpt == null
-    ? []
-    : FAMILY_CPT_HINTS.filter((hint) => cpt >= hint.min && cpt <= hint.max).map((hint) => ({
-        family: hint.family,
-        note: hint.note,
-      }));
+  const suspectedFamilies =
+    cpt == null
+      ? []
+      : FAMILY_CPT_HINTS.filter((hint) => cpt >= hint.min && cpt <= hint.max).map((hint) => ({
+          family: hint.family,
+          note: hint.note,
+        }));
 
   return { ...base, ratio: Math.round(ratio * 1000) / 1000, plausibility, suspectedFamilies, note };
 }

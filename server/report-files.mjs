@@ -1,14 +1,22 @@
 // 报告文件落盘：把 Markdown + 渲染后的 HTML 写到报告目录，并登记报告中心元数据。
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { promisify } from "node:util";
+import { gunzip, gzip } from "node:zlib";
 import { recordReport } from "./db.mjs";
 import { REPORTS_DIR } from "./paths.mjs";
 import { renderReportHtml } from "./report-html.mjs";
 
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
+const GZIP_MAGIC = Buffer.from([0x1f, 0x8b]);
+
 // EVALUATOR_OPEN_REPORT=1/true/on/yes 时，报告生成后自动在本机默认浏览器打开。默认关闭。
 export function isOpenReportEnabled(value) {
-  const v = String(value ?? "").trim().toLowerCase();
+  const v = String(value ?? "")
+    .trim()
+    .toLowerCase();
   return v === "1" || v === "true" || v === "on" || v === "yes";
 }
 
@@ -21,11 +29,7 @@ export function openReportInBrowser(htmlPath, { enabled = isOpenReportEnabled(pr
     // Windows：用 explorer.exe 的完整路径，避免 spawn 按裸名字解析 PATH 报 ENOENT。
     // explorer.exe 收到一个文件参数时，会用其默认关联程序（.html → 默认浏览器）打开。
     const command =
-      platform === "win32"
-        ? join(process.env.SystemRoot || "C:\\Windows", "explorer.exe")
-        : platform === "darwin"
-          ? "open"
-          : "xdg-open";
+      platform === "win32" ? join(process.env.SystemRoot || "C:\\Windows", "explorer.exe") : platform === "darwin" ? "open" : "xdg-open";
     const child = spawn(command, [htmlPath], { detached: true, stdio: "ignore" });
     child.on("error", () => {}); // 找不到命令 / 无图形界面 → 静默
     child.unref();
@@ -114,4 +118,55 @@ export function sanitizeReportBaseName(baseName) {
     .replace(/^[._]+/, "") // 去前导点 / 下划线
     .slice(0, 200);
   return safeName || "report";
+}
+
+// 读一份报告正文（.md 或 .html），对老化后被原地 gzip 压缩过的文件透明解压。
+// 判断依据是文件头两字节的 gzip magic（0x1f 0x8b），不依赖扩展名——压缩前后文件名不变。
+export async function readReportFileText(path) {
+  const buf = await readFile(path);
+  if (buf.length >= 2 && buf[0] === GZIP_MAGIC[0] && buf[1] === GZIP_MAGIC[1]) {
+    return (await gunzipAsync(buf)).toString("utf8");
+  }
+  return buf.toString("utf8");
+}
+
+// 老化报告原地压缩：扫描 REPORTS_DIR 下 .md/.html 文件，超过 compressAfterDays 且尚未压缩的，
+// gzip 后原地替换（文件名/扩展名不变，靠上面的 magic-byte 判断透明解压读取）。
+// 写临时文件再 rename 落地，避免读者读到半写文件；已压缩的文件跳过（幂等，重复调用不会二次压缩坏掉）。
+// 压缩后用 utimes 把 mtime 还原成压缩前的值——handleReportFilesList/loadBalancedCompareFiles
+// 都拿 mtime 当"报告实际生成时间"用于排序/展示（前端报告列表的日期列、模型对比选最近报告），
+// 若放任 rename 把 mtime 刷成"现在"，老报告会看起来比新报告更"新"，报告列表日期显示错误、
+// 模型对比可能优先选中刚被压缩的老报告而非真正最近的报告。
+// best-effort：单个文件失败不影响其余文件；返回被压缩的文件名列表。
+export async function compressAgedReportFiles({ compressAfterDays = 30, now } = {}) {
+  const compressed = [];
+  // 配置校验：非法值（如误填非数字字符串）算术上会产出 NaN，而 `mtimeMs >= NaN` 恒为 false，
+  // 会导致"任何文件都判定为超龄"，把刚生成的报告也压缩掉。宁可整次跳过（fail safe），
+  // 不学 Number(bad || 30) 那种一 truthy 就直接把坏值送进算术的写法。
+  if (!Number.isFinite(compressAfterDays) || compressAfterDays < 0) return compressed;
+  let names;
+  try {
+    names = (await readdir(REPORTS_DIR)).filter((n) => /\.(md|html)$/i.test(n));
+  } catch {
+    return compressed; // 目录不存在 → 无事可做
+  }
+  const cutoffMs = (now ?? Date.now()) - compressAfterDays * 24 * 3600 * 1000;
+  for (const name of names) {
+    const path = join(REPORTS_DIR, name);
+    try {
+      const st = await stat(path);
+      if (st.mtimeMs >= cutoffMs) continue; // 未到年龄
+      const buf = await readFile(path);
+      if (buf.length >= 2 && buf[0] === GZIP_MAGIC[0] && buf[1] === GZIP_MAGIC[1]) continue; // 已压缩
+      const gz = await gzipAsync(buf);
+      const tmpPath = `${path}.tmp${process.pid}`;
+      await writeFile(tmpPath, gz);
+      await rename(tmpPath, path);
+      await utimes(path, st.atime, st.mtime); // 还原原始时间戳，压缩不应改变"报告生成时间"的语义
+      compressed.push(name);
+    } catch {
+      /* 单文件失败不影响其余：跳过 */
+    }
+  }
+  return compressed;
 }

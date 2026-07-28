@@ -20,17 +20,9 @@
     "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5"
   },
-  "calibratedTiers": [
-    "opus",
-    "sonnet",
-    "haiku"
-  ],
+  "calibratedTiers": ["opus", "sonnet", "haiku"],
   "anchorHealth": {
-    "availableTiers": [
-      "opus",
-      "sonnet",
-      "haiku"
-    ],
+    "availableTiers": ["opus", "sonnet", "haiku"],
     "monotonicRate": 0.75,
     "avgSeparation": 0.375,
     "healthy": true,

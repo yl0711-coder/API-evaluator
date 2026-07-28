@@ -134,7 +134,8 @@ export function renderTrendChart(rounds, xMode, { windowHours = 0 } = {}) {
   const p2 = (x) => String(x).padStart(2, "0");
   const tickDay = (ms) => new Date(ms).toDateString();
   const tickDate = (ms) => `${p2(new Date(ms).getMonth() + 1)}-${p2(new Date(ms).getDate())}`;
-  const tickTime = (ms) => (xMode === "hour" ? `${p2(new Date(ms).getHours())}:00` : `${p2(new Date(ms).getHours())}:${p2(new Date(ms).getMinutes())}`);
+  const tickTime = (ms) =>
+    xMode === "hour" ? `${p2(new Date(ms).getHours())}:00` : `${p2(new Date(ms).getHours())}:${p2(new Date(ms).getMinutes())}`;
   let lastX = -Infinity;
   let lastText = null;
   let lastDay = null;
@@ -168,7 +169,12 @@ export function renderTrendChart(rounds, xMode, { windowHours = 0 } = {}) {
       prevRate = p.rate;
       if (!boundary) return "";
       const color = p.rate >= 0.95 ? "#7bd88f" : p.rate >= 0.8 ? "#f6b56b" : "#ff8a8a";
-      const tip = `${String(p.at || "").replace("T", " ").slice(0, 16)} · 成功率 ${Math.round(p.rate * 100)}% · 耗时 ${p.ms != null ? Math.round(p.ms) + "ms" : "—"}${p.n ? ` · ${p.n} 轮` : ""}`;
+      const tip = `${String(p.at || "")
+        .replace("T", " ")
+        .slice(
+          0,
+          16,
+        )} · 成功率 ${Math.round(p.rate * 100)}% · 耗时 ${p.ms != null ? Math.round(p.ms) + "ms" : "—"}${p.n ? ` · ${p.n} 轮` : ""}`;
       return `<circle cx="${px(p.frac).toFixed(1)}" cy="${pyRate(p.rate).toFixed(1)}" r="3" fill="${color}"><title>${escapeHtml(tip)}</title></circle>`;
     })
     .join("");
@@ -178,7 +184,9 @@ export function renderTrendChart(rounds, xMode, { windowHours = 0 } = {}) {
     .map((f) => {
       const color = f.kind === "timeout" ? "#f6b56b" : "#ff8a8a";
       const x = px(f.frac);
-      const tip = `${String(f.at || "").replace("T", " ").slice(0, 16)} · ${f.kind === "timeout" ? "超时" : "失败"}${f.n > 1 ? ` ×${f.n}` : ""}`;
+      const tip = `${String(f.at || "")
+        .replace("T", " ")
+        .slice(0, 16)} · ${f.kind === "timeout" ? "超时" : "失败"}${f.n > 1 ? ` ×${f.n}` : ""}`;
       return `<path d="M ${x.toFixed(1)},${(baselineY + 4).toFixed(1)} l -3,6 l 6,0 z" fill="${color}"><title>${escapeHtml(tip)}</title></path>`;
     })
     .join("");

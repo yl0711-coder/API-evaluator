@@ -404,18 +404,14 @@ export async function countRequests({ path } = {}) {
 export async function queryRecentRequests(limit = 50, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return null;
-  const rows = db
-    .prepare("SELECT raw_json FROM test_requests ORDER BY id DESC LIMIT ?")
-    .all(Math.max(1, Math.floor(limit)));
+  const rows = db.prepare("SELECT raw_json FROM test_requests ORDER BY id DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
   return rows.map((row) => safeParse(row.raw_json)).filter(Boolean);
 }
 
 export async function queryRecentTestRuns(limit = 20, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return null;
-  const rows = db
-    .prepare("SELECT raw_json FROM test_runs ORDER BY id DESC LIMIT ?")
-    .all(Math.max(1, Math.floor(limit)));
+  const rows = db.prepare("SELECT raw_json FROM test_runs ORDER BY id DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
   return rows.map((row) => safeParse(row.raw_json)).filter(Boolean);
 }
 
@@ -423,9 +419,7 @@ export async function queryRecentTestRuns(limit = 20, { path } = {}) {
 export async function queryRunsByProfile(profileId, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return [];
-  return db
-    .prepare("SELECT * FROM test_runs WHERE profile_id = ? ORDER BY id ASC")
-    .all(profileId);
+  return db.prepare("SELECT * FROM test_runs WHERE profile_id = ? ORDER BY id ASC").all(profileId);
 }
 
 // 同一 profile 的历次运行汇总（解析 raw_json，时间升序），供趋势图/基线回归用。
@@ -716,6 +710,50 @@ export async function queryRecentReports(limit = 100, { path } = {}) {
   return db.prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
 }
 
+// 按报告文件名（不含 .md）批量取当初生成该报告的结构化 summary（test_runs.raw_json）。
+// 用途：模型对比不必再从渲染后的 markdown 表格里反解析数字——那些数字本来就以原生数值存在库里。
+// 见 report-compare.scenarioDataFromSummary 与 B2 的分析。
+//
+// 匹配方式：reports.path_md 存的是绝对路径，这里按「文件名去扩展名」比对，与调用方手里的
+// base name 对齐（调用方是从报告目录 readdir 来的，只有文件名）。
+// 任何一环缺失（无库/无记录/无 raw_json/JSON 坏）→ 该 base 不出现在返回 Map 里，
+// 调用方据此回退到解析 markdown。绝不抛错：对比功能不该因为库的问题而整个挂掉。
+export async function queryReportSummariesByBase(baseNames, { path } = {}) {
+  const out = new Map();
+  const names = [...new Set((baseNames || []).map((n) => String(n)).filter(Boolean))];
+  if (!names.length) return out;
+  try {
+    const db = await getDatabase(path);
+    if (!db) return out;
+    // 一次查全部报告的 (path_md, run_id)，在 JS 侧按 base name 匹配。
+    // 不用 SQL 拼 IN (…)：报告名含中文与特殊字符，且这里量级只有几百行，JS 侧过滤更稳。
+    const wanted = new Set(names);
+    const rows = db.prepare("SELECT path_md, run_id FROM reports WHERE path_md IS NOT NULL AND run_id IS NOT NULL").all();
+    const runIdByBase = new Map();
+    for (const r of rows) {
+      const base = String(r.path_md)
+        .split(/[\\/]/)
+        .pop()
+        .replace(/\.(md|html)$/i, "");
+      if (wanted.has(base)) runIdByBase.set(base, r.run_id);
+    }
+    if (!runIdByBase.size) return out;
+    const stmt = db.prepare("SELECT raw_json FROM test_runs WHERE run_id = ? LIMIT 1");
+    for (const [base, runId] of runIdByBase) {
+      try {
+        const row = stmt.get(runId);
+        if (!row?.raw_json) continue;
+        out.set(base, JSON.parse(row.raw_json));
+      } catch {
+        /* 单条坏掉不影响其余：该 base 缺席 → 调用方回退解析 md */
+      }
+    }
+  } catch (error) {
+    noteDbError("queryReportSummariesByBase", error);
+  }
+  return out;
+}
+
 // 删除单条报告元数据（供报告中心手动删除报告文件用）。文件删除交调用方做，db 只管元数据。
 // SQLite 不可用 → no-op 返回 false；返回是否确有一行被删。
 export async function deleteReport(reportId, { path } = {}) {
@@ -740,9 +778,7 @@ export async function pruneReports({ retentionDays = 30, maxTotal = 2000, now, p
     const cutoffIso = new Date((now ?? Date.now()) - retentionDays * 24 * 3600 * 1000).toISOString();
     const expired = db.prepare("SELECT * FROM reports WHERE created_at IS NOT NULL AND created_at < ?").all(cutoffIso);
     // 超量清理：按时间倒序跳过最新 maxTotal 条，其余（更旧的）视为超量待删
-    const overflow = db
-      .prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT -1 OFFSET ?")
-      .all(Math.max(0, Math.floor(maxTotal)));
+    const overflow = db.prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT -1 OFFSET ?").all(Math.max(0, Math.floor(maxTotal)));
     const toDelete = new Map();
     for (const row of [...expired, ...overflow]) toDelete.set(row.report_id, row);
     if (toDelete.size === 0) return [];

@@ -22,7 +22,15 @@ test("status 映射：1=enabled，2/3=disabled", () => {
 });
 
 test("mapNewapiChannel：字段映射 + 空 base_url 按 type 取默认 + 不含 key", () => {
-  const ch = mapNewapiChannel({ id: 7, type: 1, name: "我的OpenAI", base_url: "", models: "gpt-4o, gpt-4o-mini", status: 1, key: "sk-zzz" });
+  const ch = mapNewapiChannel({
+    id: 7,
+    type: 1,
+    name: "我的OpenAI",
+    base_url: "",
+    models: "gpt-4o, gpt-4o-mini",
+    status: 1,
+    key: "sk-zzz",
+  });
   assert.equal(ch.id, newapiChannelLocalId(7));
   assert.equal(ch.id, "newapi-7");
   assert.equal(ch.provider, "OpenAI");
@@ -34,7 +42,14 @@ test("mapNewapiChannel：字段映射 + 空 base_url 按 type 取默认 + 不含
   assert.equal(ch.newapiChannelId, 7);
   assert.equal(ch.key, undefined); // 明文 key 绝不进渠道对象
 
-  const claude = mapNewapiChannel({ id: 9, type: 14, name: "Claude渠道", base_url: "https://relay.test/", models: "claude-sonnet-4-5", status: 2 });
+  const claude = mapNewapiChannel({
+    id: 9,
+    type: 14,
+    name: "Claude渠道",
+    base_url: "https://relay.test/",
+    models: "claude-sonnet-4-5",
+    status: 2,
+  });
   assert.equal(claude.protocol, "claude_messages");
   assert.equal(claude.baseUrl, "https://relay.test"); // 去尾斜杠
   assert.equal(claude.status, "disabled");
@@ -82,7 +97,20 @@ test("buildImportPlan：已推送的本地渠道（UUID id + newapiChannelId）�
   // 模拟：本地手动渠道推送到 new-api 后，本地 id 仍是 UUID、但带 newapiChannelId=44，且其下已有模型目标。
   const localId = "11111111-2222-3333-4444-555555555555";
   const existingChannels = [
-    { id: localId, name: "我的渠道", provider: "DeepSeek", baseUrl: "https://up.test", protocol: "openai_compatible", models: ["m1", "m2"], status: "enabled", source: "manual", newapiChannelId: 44, apiKeyRef: "profile:" + localId + ":api-key", hasKey: true, createdAt: "2026-01-01T00:00:00.000Z" },
+    {
+      id: localId,
+      name: "我的渠道",
+      provider: "DeepSeek",
+      baseUrl: "https://up.test",
+      protocol: "openai_compatible",
+      models: ["m1", "m2"],
+      status: "enabled",
+      source: "manual",
+      newapiChannelId: 44,
+      apiKeyRef: "profile:" + localId + ":api-key",
+      hasKey: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    },
   ];
   const existingTargets = [
     { id: "t-m1", channelId: localId, model: "m1", source: "manual" },
@@ -101,13 +129,27 @@ test("buildImportPlan：已推送的本地渠道（UUID id + newapiChannelId）�
   assert.equal(plan.summary.newTargets, 1);
   assert.equal(plan.targets.length, 3);
   assert.equal(plan.targets.filter((t) => t.model === "m1").length, 1, "m1 不重复");
-  assert.equal(plan.targets.some((t) => t.model === "m3" && t.channelId === localId), true, "m3 挂在同一本地渠道下");
+  assert.equal(
+    plan.targets.some((t) => t.model === "m3" && t.channelId === localId),
+    true,
+    "m3 挂在同一本地渠道下",
+  );
 });
 
 test("buildImportPlan：标签已下线——导入不带入 new-api 标签、不动本地标签、汇总无 taggedTargets", () => {
   const rows = [{ id: 1, type: 1, name: "A", base_url: "https://a.test", models: "gpt-4o,claude", status: 1 }];
   // 已有本地渠道（含夺标得到的本地标签），导入后本地标签应原样保留。
-  const existingChannels = [{ id: "newapi-1", name: "A", protocol: "openai_compatible", models: ["gpt-4o"], status: "enabled", source: "newapi", newapiChannelId: 1 }];
+  const existingChannels = [
+    {
+      id: "newapi-1",
+      name: "A",
+      protocol: "openai_compatible",
+      models: ["gpt-4o"],
+      status: "enabled",
+      source: "newapi",
+      newapiChannelId: 1,
+    },
+  ];
   const existingTargets = [{ id: "tx", channelId: "newapi-1", model: "gpt-4o", tags: ["本地夺标"], source: "newapi" }];
   const plan = buildImportPlan({ rows, existingChannels, existingTargets });
 

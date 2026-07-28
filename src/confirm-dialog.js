@@ -1,13 +1,6 @@
 import { escapeHtml } from "./client-utils.js";
 
-export function createConfirmDialog({
-  modal,
-  titleElement,
-  messageElement,
-  confirmButton,
-  cancelButton,
-  closeButton,
-}) {
+export function createConfirmDialog({ modal, titleElement, messageElement, confirmButton, cancelButton, closeButton }) {
   let resolveCurrent = null;
   let isTristate = false;
   let delayTimer = null;
@@ -101,8 +94,9 @@ export function createConfirmDialog({
 
 function renderConfirmMessage(options) {
   const lines = [options.message || "", options.detail || ""].filter(Boolean);
-  const list = Array.isArray(options.items) && options.items.length > 0
-    ? `<ul>${options.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-    : "";
+  const list =
+    Array.isArray(options.items) && options.items.length > 0
+      ? `<ul>${options.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+      : "";
   return `${lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}${list}`;
 }

@@ -4,7 +4,16 @@
 // saveReportFiles，绝不真打网络、不写盘。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { aggregate, classifyNetwork, classifyPointStatus, deriveOutputTokens, findKnee, formatSinglePointReport, formatSweepReport, runLoadTest } from "../server/load-test.mjs";
+import {
+  aggregate,
+  classifyNetwork,
+  classifyPointStatus,
+  deriveOutputTokens,
+  findKnee,
+  formatSinglePointReport,
+  formatSweepReport,
+  runLoadTest,
+} from "../server/load-test.mjs";
 
 const fakeSave = async (runId) => ({ markdownPath: `/x/${runId}.md`, htmlPath: `/x/${runId}.html` });
 const target = { baseUrl: "http://x", model: "m1" };
@@ -39,10 +48,7 @@ test("aggregate：warmup 排除；成功率/QPS/分位/错误分桶（含 gen_sa
   assert.equal(s.latency.p95, 400);
   assert.equal(s.latency.max, 400);
   assert.equal(s.latency.avg, 250);
-  assert.deepEqual(
-    { ...s.errors },
-    { ok: 4, http_429: 1, http_5xx: 1, timeout: 1, network_error: 1, gen_saturated: 1, other: 0 },
-  );
+  assert.deepEqual({ ...s.errors }, { ok: 4, http_429: 1, http_5xx: 1, timeout: 1, network_error: 1, gen_saturated: 1, other: 0 });
   // 逐状态码明细：每个失败的 HTTP 状态码单独计数；无状态码的其它失败计入 noStatusOther。
   assert.deepEqual({ ...s.statusCounts }, { 429: 1, 503: 1 }, "429 与 503 各自成项");
   assert.equal(s.noStatusOther, 0, "timeout/network 有专门桶，noStatusOther 为 0");
@@ -91,7 +97,13 @@ test("aggregate + 报告：流式给出 TTFT 分位数；非流式无 TTFT → �
   const ok = (ms, ttft) => ({ ms, ttft, ok: true, status: 200, err: "", outTok: 10, outTokEst: false, warmup: false });
   // 流式：ttft 有值（且失败样本不计入）
   const streamed = aggregate({
-    samples: [ok(1000, 100), ok(1000, 200), ok(1000, 300), ok(1000, 400), { ms: null, ttft: null, ok: false, status: 500, err: "upstream_5xx", warmup: false }],
+    samples: [
+      ok(1000, 100),
+      ok(1000, 200),
+      ok(1000, 300),
+      ok(1000, 400),
+      { ms: null, ttft: null, ok: false, status: 500, err: "upstream_5xx", warmup: false },
+    ],
     mode: "closed",
     offered: 4,
     durationSec: 10,
@@ -141,8 +153,14 @@ test("闭环：持续并发（在飞可达 N，非串行）、writeLog:false + n
   assert.ok(result.sentRequests > 0);
   assert.equal(result.sweep, undefined, "单点不带 sweep");
   assert.match(result.reportHtmlPath, /\.html$/);
-  assert.ok(seenOptions.every((o) => o.noRetry === true), "noRetry 透传");
-  assert.ok(seenOptions.every((o) => o.writeLog === false), "writeLog:false 透传");
+  assert.ok(
+    seenOptions.every((o) => o.noRetry === true),
+    "noRetry 透传",
+  );
+  assert.ok(
+    seenOptions.every((o) => o.writeLog === false),
+    "writeLog:false 透传",
+  );
 });
 
 // ===================== 闭环思考时间(think time) =====================
@@ -272,7 +290,11 @@ test("开环发送周期：每 N 秒只在前 1 秒匀速发满，其余静默 �
     const pos = t % 2000;
     return pos >= 1100 && pos < 1900; // 静默段中间，留边界容差
   });
-  assert.equal(inSilent.length, 0, `静默段不应有发送，实测 ${inSilent.length} 个（时刻 ${inSilent.slice(0, 5).map((x) => Math.round(x))}）`);
+  assert.equal(
+    inSilent.length,
+    0,
+    `静默段不应有发送，实测 ${inSilent.length} 个（时刻 ${inSilent.slice(0, 5).map((x) => Math.round(x))}）`,
+  );
   // 连续发本应约 20×4=80；每 2s 只发 1s → 约 40。给宽松范围。
   assert.ok(callTimes.length <= 60, `突发应把总量降到约 1/2，实测 ${callTimes.length}`);
   assert.ok(callTimes.length >= 20, `仍应有两簇发送，实测 ${callTimes.length}`);
@@ -300,7 +322,11 @@ test("classifyPointStatus：限流/出错/客户端受限/上游饱和/健康 �
   assert.equal(classifyPointStatus(base, mkPoint({ successRate: 0.9 })).tag, "errors", "成功率<99% → 出错");
   assert.equal(classifyPointStatus(base, mkPoint({ genSaturated: 3 })).tag, "client_saturated", "发生器打满 → 客户端受限");
   // 吞吐持平(102 < 100×1.05) 且 p99 由 1000→2000(≥1.3×) → 上游饱和
-  assert.equal(classifyPointStatus(base, mkPoint({ tokensPerSecond: 102, p99: 2000 })).tag, "server_saturated", "吞吐持平+ p99 飙 → 上游饱和");
+  assert.equal(
+    classifyPointStatus(base, mkPoint({ tokensPerSecond: 102, p99: 2000 })).tag,
+    "server_saturated",
+    "吞吐持平+ p99 飙 → 上游饱和",
+  );
   // 吞吐仍上升 → 健康（即便 p99 抬升）
   assert.equal(classifyPointStatus(base, mkPoint({ tokensPerSecond: 150, p99: 2000 })).tag, "healthy", "吞吐仍上升 → 健康");
 });
@@ -361,7 +387,16 @@ test("formatSweepReport：无可推荐容量时如实说明，不得崩溃、不
     mkPoint({ offered: 5, qps: 0, successRate: 0, tokensPerSecond: 0 }),
   ];
   const md = formatSweepReport(
-    { mode: "closed", model: "m", protocol: "openai", promptProfile: "simple", durationSec: 60, warmupSec: 5, timeoutSec: 30, maxTokens: 256 },
+    {
+      mode: "closed",
+      model: "m",
+      protocol: "openai",
+      promptProfile: "simple",
+      durationSec: 60,
+      warmupSec: 5,
+      timeoutSec: 30,
+      maxTokens: 256,
+    },
     allFailing,
     findKnee(allFailing),
   );
@@ -406,9 +441,26 @@ test("formatSweepReport：表格含「状态」列，首行「基准」，饱和
     mkPoint({ offered: 8, qps: 20, tokensPerSecond: 101, p95: 1800, p99: 2000 }),
   ];
   const knee = findKnee(points);
-  const md = formatSweepReport({ mode: "closed", model: "m1", protocol: "openai", durationSec: 5, warmupSec: 0, maxTokens: 64, timeoutSec: 30, promptProfile: "simple" }, points, knee);
+  const md = formatSweepReport(
+    {
+      mode: "closed",
+      model: "m1",
+      protocol: "openai",
+      durationSec: 5,
+      warmupSec: 0,
+      maxTokens: 64,
+      timeoutSec: 30,
+      promptProfile: "simple",
+    },
+    points,
+    knee,
+  );
   // TTFT p95 列：非流式点无数据显示「—」（见下方 mkPoint 未给 ttft）。
-  assert.match(md, /\| 并发 \| QPS \| tok\/s \| 成功率 \| TTFT p95 \| p95 \| p99 \| 429 \| 超时\+5xx \| 发生器受限 \| 状态 \|/, "表头含 TTFT p95 与状态列");
+  assert.match(
+    md,
+    /\| 并发 \| QPS \| tok\/s \| 成功率 \| TTFT p95 \| p95 \| p99 \| 429 \| 超时\+5xx \| 发生器受限 \| 状态 \|/,
+    "表头含 TTFT p95 与状态列",
+  );
   assert.match(md, /\| 2 \| 10 \| 50 \| .* \| 基准 \|/, "首行状态为基准");
   assert.match(md, /上游饱和/, "饱和点标注上游饱和");
   assert.match(md, /双峰/, "脚注含双峰提示");
@@ -439,7 +491,11 @@ test("扫描：多负载点 → sweep 数组 + 拐点；出错点前一个健康
     { executeTestRequest: gated, saveReportFiles: fakeSave },
   );
   assert.ok(Array.isArray(result.sweep) && result.sweep.length === 3, "三个负载点");
-  assert.deepEqual(result.sweep.map((p) => p.offered), [2, 4, 8], "按负载升序");
+  assert.deepEqual(
+    result.sweep.map((p) => p.offered),
+    [2, 4, 8],
+    "按负载升序",
+  );
   assert.ok(result.knee, "有拐点结论");
   assert.ok(result.knee.offered <= 4, `拐点(推荐容量)应在出错点(8)之前，实测 ${result.knee.offered}`);
   assert.match(result.reportHtmlPath, /\.html$/);

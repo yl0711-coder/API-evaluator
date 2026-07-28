@@ -11,24 +11,25 @@ import {
 } from "../src/prompt-presets.js";
 
 test("prompt presets exist for every prompt input entry", () => {
-  assert.deepEqual(QUICK_PROMPT_PRESETS.map((preset) => preset.id), ["connectivity", "format", "chinese", "custom"]);
-  assert.deepEqual(STANDARD_PROMPT_PRESETS.map((preset) => preset.id), ["default", "operator", "format", "custom"]);
-  assert.deepEqual(BATCH_PROMPT_PRESETS.map((preset) => preset.id), ["fair-basic", "fair-json", "fair-business", "custom"]);
+  assert.deepEqual(
+    QUICK_PROMPT_PRESETS.map((preset) => preset.id),
+    ["connectivity", "format", "chinese", "custom"],
+  );
+  assert.deepEqual(
+    STANDARD_PROMPT_PRESETS.map((preset) => preset.id),
+    ["default", "operator", "format", "custom"],
+  );
+  assert.deepEqual(
+    BATCH_PROMPT_PRESETS.map((preset) => preset.id),
+    ["fair-basic", "fair-json", "fair-business", "custom"],
+  );
   assert.ok([...QUICK_PROMPT_PRESETS, ...STANDARD_PROMPT_PRESETS, ...BATCH_PROMPT_PRESETS].every((preset) => preset.label && preset.hint));
 });
 
 test("stability prompt presets cover representative operator scenarios", () => {
   const ids = STABILITY_PROMPT_PRESETS.map((preset) => preset.id);
 
-  assert.deepEqual(ids, [
-    "basic",
-    "customer-support",
-    "marketing",
-    "structured-json",
-    "coding",
-    "long-summary",
-    "custom",
-  ]);
+  assert.deepEqual(ids, ["basic", "customer-support", "marketing", "structured-json", "coding", "long-summary", "custom"]);
   assert.ok(STABILITY_PROMPT_PRESETS.every((preset) => preset.label && preset.hint));
   assert.match(getPromptPreset("stability", "basic").prompt, /稳定性测试/);
   assert.match(getPromptPreset("stability", "structured-json").prompt, /严格 JSON/);

@@ -114,7 +114,14 @@ test("scopeLabel：单模型模式在抬头加「范围」行", () => {
 });
 
 test("空数据：各节优雅兜底，不抛", () => {
-  const md = formatAutoTestDigestReport({ windowHours: 24, generatedAt: "2026-07-10T00:00:00Z", jobs: [], targets: [], regressionAlerts: [], highRiskAlerts: [] });
+  const md = formatAutoTestDigestReport({
+    windowHours: 24,
+    generatedAt: "2026-07-10T00:00:00Z",
+    jobs: [],
+    targets: [],
+    regressionAlerts: [],
+    highRiskAlerts: [],
+  });
   assert.match(md, /✅ 本周期未见回归、高危或作业异常。/);
   assert.match(md, /尚未配置任何自动测试作业/);
   assert.match(md, /窗口内没有任何模型的测试运行/);

@@ -32,7 +32,9 @@ const MODEL_PRICE_CATALOG = [
 
 // 按模型名查官方价。命中返回单价对象，未命中返回 null。
 export function lookupModelPrice(modelName) {
-  const text = String(modelName || "").toLowerCase().trim();
+  const text = String(modelName || "")
+    .toLowerCase()
+    .trim();
   if (!text) return null;
   for (const entry of MODEL_PRICE_CATALOG) {
     if (entry.match.test(text)) {

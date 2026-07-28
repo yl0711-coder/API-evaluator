@@ -209,9 +209,18 @@ test("queryRecentTestRuns and queryRunsByProfile read back runs", async () => {
   const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
   const path = join(dir, "runs2.db");
   try {
-    await recordTestRun({ runId: "r1", profileId: "p1", profileName: "甲", rounds: 5, successCount: 5, successRate: 1 }, { type: "stability", path });
-    await recordTestRun({ runId: "r2", profileId: "p1", profileName: "甲", rounds: 5, successCount: 3, successRate: 0.6 }, { type: "stability", path });
-    await recordTestRun({ runId: "r3", profileId: "p2", profileName: "乙", rounds: 5, successCount: 4, successRate: 0.8 }, { type: "stability", path });
+    await recordTestRun(
+      { runId: "r1", profileId: "p1", profileName: "甲", rounds: 5, successCount: 5, successRate: 1 },
+      { type: "stability", path },
+    );
+    await recordTestRun(
+      { runId: "r2", profileId: "p1", profileName: "甲", rounds: 5, successCount: 3, successRate: 0.6 },
+      { type: "stability", path },
+    );
+    await recordTestRun(
+      { runId: "r3", profileId: "p2", profileName: "乙", rounds: 5, successCount: 4, successRate: 0.8 },
+      { type: "stability", path },
+    );
 
     const recent = await queryRecentTestRuns(10, { path });
     assert.equal(recent.length, 3);
@@ -251,9 +260,17 @@ test("queryRoundSeriesByRunIds：按 run_id 集合取逐轮明细（升序、限
   const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
   const path = join(dir, "rounds.db");
   try {
-    await recordRequest(makeRecord({ requestId: "a", runId: "runA", caseId: "case-1", totalMs: 1000, success: true, startedAt: "2026-06-02T00:00:00Z" }), { path });
-    await recordRequest(makeRecord({ requestId: "b", runId: "runA", caseId: "case-2", totalMs: 2000, success: false, startedAt: "2026-06-02T00:00:01Z" }), { path });
-    await recordRequest(makeRecord({ requestId: "c", runId: "runB", totalMs: 1500, success: true, startedAt: "2026-06-02T00:00:02Z" }), { path });
+    await recordRequest(
+      makeRecord({ requestId: "a", runId: "runA", caseId: "case-1", totalMs: 1000, success: true, startedAt: "2026-06-02T00:00:00Z" }),
+      { path },
+    );
+    await recordRequest(
+      makeRecord({ requestId: "b", runId: "runA", caseId: "case-2", totalMs: 2000, success: false, startedAt: "2026-06-02T00:00:01Z" }),
+      { path },
+    );
+    await recordRequest(makeRecord({ requestId: "c", runId: "runB", totalMs: 1500, success: true, startedAt: "2026-06-02T00:00:02Z" }), {
+      path,
+    });
     await recordRequest(makeRecord({ requestId: "d", runId: "runA", totalMs: undefined, success: true }), { path }); // 无耗时(NULL)→跳过
     await recordRequest(makeRecord({ requestId: "e", runId: "runC", totalMs: 999, success: true }), { path }); // 不在集合里→排除
 
@@ -267,7 +284,10 @@ test("queryRoundSeriesByRunIds：按 run_id 集合取逐轮明细（升序、限
     assert.equal(rows[1].success, 0); // 升序：b 在 a 之后
     assert.equal(rows[2].runId, "runB");
     assert.equal(rows[2].totalMs, 1500);
-    assert.ok(rows.every((r) => r.runId !== "runC"), "限定到指定运行，排除 runC");
+    assert.ok(
+      rows.every((r) => r.runId !== "runC"),
+      "限定到指定运行，排除 runC",
+    );
 
     assert.deepEqual(await queryRoundSeriesByRunIds([], { path }), []); // 空集合
     const onlyA = await queryRoundSeriesByRunIds(["runA"], { path });
@@ -287,10 +307,9 @@ test("queryRoundSeriesByRunIds：超出 limit 时保留最新轮次并保持升�
   try {
     // 顺序插入 5 轮，startedAt 递增标识新旧（插入顺序=id 顺序）
     for (let i = 0; i < 5; i += 1) {
-      await recordRequest(
-        makeRecord({ requestId: `r${i}`, runId: "big", totalMs: 100 + i, startedAt: `2026-06-02T00:00:0${i}Z` }),
-        { path },
-      );
+      await recordRequest(makeRecord({ requestId: `r${i}`, runId: "big", totalMs: 100 + i, startedAt: `2026-06-02T00:00:0${i}Z` }), {
+        path,
+      });
     }
     const rows = await queryRoundSeriesByRunIds(["big"], { path, limit: 3 });
     assert.equal(rows.length, 3);
@@ -299,7 +318,11 @@ test("queryRoundSeriesByRunIds：超出 limit 时保留最新轮次并保持升�
       rows.map((r) => r.startedAt),
       ["2026-06-02T00:00:02Z", "2026-06-02T00:00:03Z", "2026-06-02T00:00:04Z"],
     );
-    assert.deepEqual(rows.map((r) => r.totalMs), [102, 103, 104], "保留的是最新轮，不是最旧轮");
+    assert.deepEqual(
+      rows.map((r) => r.totalMs),
+      [102, 103, 104],
+      "保留的是最新轮，不是最旧轮",
+    );
   } finally {
     closeDatabase(path);
     await rm(dir, { recursive: true, force: true });

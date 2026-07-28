@@ -33,7 +33,14 @@ export function estimateLoadTestCost(payload) {
   const loads = Array.isArray(payload.loads) && payload.loads.length ? payload.loads : [open ? 10 : 30];
   const requests = Math.max(
     1,
-    loads.reduce((sum, load) => sum + Math.round(open ? (Number(load) * durationSec) / burstPeriodSec : (Number(load) * durationSec) / (LOAD_ASSUMED_L[key] + intervalSec)), 0),
+    loads.reduce(
+      (sum, load) =>
+        sum +
+        Math.round(
+          open ? (Number(load) * durationSec) / burstPeriodSec : (Number(load) * durationSec) / (LOAD_ASSUMED_L[key] + intervalSec),
+        ),
+      0,
+    ),
   );
   const [lo, hi] = LOAD_TOKENS[key];
   return {
@@ -76,10 +83,12 @@ export function estimateAdmissionBatchCost(payload) {
   const profiles = payload.profileIds?.length || 0;
   const modelNames = Array.isArray(payload.modelNames) ? payload.modelNames : [];
   // 单渠道估算里关掉 AI 分析（批次只在总层做一次），避免逐渠道重复累加。
-  const estimates = profiles > 0
-    ? Array.from({ length: profiles }, (_, index) =>
-        estimateAdmissionCost({ ...payload, modelName: modelNames[index], useAiReportAnalysis: "" }))
-    : [];
+  const estimates =
+    profiles > 0
+      ? Array.from({ length: profiles }, (_, index) =>
+          estimateAdmissionCost({ ...payload, modelName: modelNames[index], useAiReportAnalysis: "" }),
+        )
+      : [];
   const requests = estimates.reduce((total, estimate) => total + estimate.requests, 0);
   return withAiAnalysisEstimate(payload, {
     requests,
@@ -188,7 +197,9 @@ function upgradeRisk(risk, extraHighTokens) {
 
 function knownModelFamily(modelName) {
   const text = String(modelName || "").toLowerCase();
-  return /claude|anthropic|gemini|palm|deepseek|(^|[-_])glm|chatglm|zhipu|doubao|ark|volc|豆包|kimi|moonshot|grok|xai|gpt|openai|codex|(^|[-_])o[134](?:[-_]|$)|o\d/.test(text);
+  return /claude|anthropic|gemini|palm|deepseek|(^|[-_])glm|chatglm|zhipu|doubao|ark|volc|豆包|kimi|moonshot|grok|xai|gpt|openai|codex|(^|[-_])o[134](?:[-_]|$)|o\d/.test(
+    text,
+  );
 }
 
 function highTokenEstimateForScenario(scenario) {

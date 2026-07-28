@@ -140,6 +140,13 @@ test("提示词编辑/新增/删除跨真实进程重启仍持久（Docker resta
   const afterB = list1.body.find((s) => s.id === B.id);
   assert.ok(afterB, "被编辑的内置题重启后仍在");
   assert.equal(afterB.prompt, MARK, "重启后提示词编辑仍持久");
-  assert.ok(list1.body.some((s) => s.id === "restart-new" && s.prompt === "NEW-PERSIST"), "重启后新增题仍在");
-  assert.equal(list1.body.some((s) => s.id === D.id), false, "重启后被删内置题仍不在（墓碑生效）");
+  assert.ok(
+    list1.body.some((s) => s.id === "restart-new" && s.prompt === "NEW-PERSIST"),
+    "重启后新增题仍在",
+  );
+  assert.equal(
+    list1.body.some((s) => s.id === D.id),
+    false,
+    "重启后被删内置题仍不在（墓碑生效）",
+  );
 });

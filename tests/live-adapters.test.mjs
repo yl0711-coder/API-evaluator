@@ -166,7 +166,10 @@ test("runLiveJudgeAudit aggregates judge call consumption (tokens + cost by judg
   }));
   const out = await runLiveJudgeAudit({
     targetModel: "claude-sonnet-4-5",
-    items: [{ question: "Q1", answer: "A1" }, { question: "Q2", answer: "A2" }],
+    items: [
+      { question: "Q1", answer: "A1" },
+      { question: "Q2", answer: "A2" },
+    ],
     judgeProfiles: judges,
     maxCalls: 50,
     runRequest: run,

@@ -17,10 +17,7 @@ const approx = (a, b, tol, m) => assert.ok(Math.abs(a - b) <= tol, `${m}: expect
 
 // --- BFCL ---
 test("scoreBfclToolCall: exact structural match scores 1", () => {
-  const r = scoreBfclToolCall(
-    { name: "get_weather", arguments: { city: "北京" } },
-    { name: "get_weather", arguments: { city: "北京" } },
-  );
+  const r = scoreBfclToolCall({ name: "get_weather", arguments: { city: "北京" } }, { name: "get_weather", arguments: { city: "北京" } });
   assert.equal(r.match, true);
   assert.equal(r.score, 1);
 });
@@ -32,10 +29,7 @@ test("scoreBfclToolCall: wrong function name scores 0", () => {
 });
 
 test("scoreBfclToolCall: missing/extra args are penalized but name match keeps partial credit", () => {
-  const missing = scoreBfclToolCall(
-    { name: "f", arguments: { a: 1, b: 2 } },
-    { name: "f", arguments: { a: 1 } },
-  );
+  const missing = scoreBfclToolCall({ name: "f", arguments: { a: 1, b: 2 } }, { name: "f", arguments: { a: 1 } });
   assert.equal(missing.match, false);
   assert.ok(missing.score > 0 && missing.score < 1);
   assert.deepEqual(missing.missingArgs, ["b"]);

@@ -21,7 +21,10 @@ test("client log directory importer reads supported log files with limits", asyn
     assert.match(result.logText, /line-a/);
     assert.match(result.logText, /requestId/);
     assert.equal(result.logText.includes("ignore"), false);
-    assert.equal(result.files.every((item) => item.path.startsWith(root)), true);
+    assert.equal(
+      result.files.every((item) => item.path.startsWith(root)),
+      true,
+    );
   } finally {
     delete process.env.EVALUATOR_LOG_IMPORT_ROOTS;
     await rm(root, { recursive: true, force: true });

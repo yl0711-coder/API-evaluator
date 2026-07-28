@@ -1,9 +1,9 @@
-import { escapeHtml, protocolLabel } from "./client-utils.js";
+import { escapeHtml, html, protocolLabel } from "./client-utils.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
 
 export function renderProfileList({ profiles, list, verdicts = {}, onFocusForm, onDeleteProfile, onUpdateKey, onEditProfile }) {
   if (profiles.length === 0) {
-    list.innerHTML = `
+    list.innerHTML = html`
       <div class="empty-state">
         <strong>还没有可测试的 API</strong>
         <p>先把平台给你的地址、Key 和模型名填进来。不会填协议时，直接选“AI 中转站 / OpenAI 兼容”。</p>
@@ -19,16 +19,16 @@ export function renderProfileList({ profiles, list, verdicts = {}, onFocusForm, 
       const verdict = verdicts[profile.id] || null; // { cls: good|warn|bad, label } | null
       const health = verdict ? verdict.cls : "idle";
       const pill = verdict
-        ? `<span class="chan-pill ${verdict.cls}">已测 · ${escapeHtml(verdict.label)}</span>`
+        ? `<span class="chan-pill ${verdict.cls}">已测 · ${verdict.label}</span>`
         : `<span class="chan-pill idle">未测</span>`;
-      return `
+      return html`
         <div class="chan-row">
           <span class="chan-health ${health}" title="${verdict ? escapeHtml(verdict.label) : "未测"}"></span>
           <div class="chan-who">
-            <b>${escapeHtml(profile.name)} <span class="chan-role ${roleClass(profile.role)}">${roleLabel(profile.role)}</span></b>
-            <small>${escapeHtml(profile.defaultModel)} · ${escapeHtml(protocolLabel(profile.protocol))}</small>
+            <b>${profile.name} <span class="chan-role ${roleClass(profile.role)}">${roleLabel(profile.role)}</span></b>
+            <small>${profile.defaultModel} · ${protocolLabel(profile.protocol)}</small>
           </div>
-          <div class="chan-meta">${escapeHtml(formatProfilePrice(profile))}</div>
+          <div class="chan-meta">${formatProfilePrice(profile)}</div>
           ${pill}
           <div class="row-actions">
             <button class="secondary" data-edit-profile="${profile.id}">编辑</button>
@@ -61,7 +61,7 @@ function formatProfilePrice(profile) {
   const sellInput = Number.isFinite(Number(profile.inputSellPricePerMTokens)) ? Number(profile.inputSellPricePerMTokens) : null;
   const sellOutput = Number.isFinite(Number(profile.outputSellPricePerMTokens)) ? Number(profile.outputSellPricePerMTokens) : null;
   if (input === null && output === null && sellInput === null && sellOutput === null) return "未填单价";
-  return `成本 ${input ?? "-"}/${output ?? "-"} · 售价 ${sellInput ?? "-"}/${sellOutput ?? "-"}`;
+  return html`成本 ${input ?? "-"}/${output ?? "-"} · 售价 ${sellInput ?? "-"}/${sellOutput ?? "-"}`;
 }
 
 export function renderMissingKeyPanel({ profiles, container, onFillKey }) {
@@ -73,7 +73,7 @@ export function renderMissingKeyPanel({ profiles, container, onFillKey }) {
   }
 
   container.classList.remove("hidden");
-  container.innerHTML = `
+  container.innerHTML = html`
     <div class="section-header compact">
       <div>
         <p class="eyebrow">需要补 Key</p>
@@ -84,11 +84,11 @@ export function renderMissingKeyPanel({ profiles, container, onFillKey }) {
     <div class="inline-list">
       ${missing
         .map(
-          (profile) => `
+          (profile) => html`
             <article class="inline-item">
               <div>
-                <strong>${escapeHtml(profile.name)}</strong>
-                <small>${escapeHtml(profile.defaultModel || "-")}</small>
+                <strong>${profile.name}</strong>
+                <small>${profile.defaultModel || "-"}</small>
               </div>
               <button class="primary" type="button" data-fill-missing-key="${profile.id}">补 Key</button>
             </article>
@@ -109,14 +109,14 @@ export function renderRunTargetSelectOptions({ modelTargets = [], channels = [],
   const targets = resolveRunnableTargets({ channels, modelTargets, profiles });
   const options = targets.map((target) => {
     if (target.source === "legacy") {
-      return `<option value="${target.id}">${escapeHtml(target.name)} / ${escapeHtml(target.model || "")}（旧配置）</option>`;
+      return html`<option value="${target.id}">${target.name} / ${target.model || ""}（旧配置）</option>`;
     }
     const disabled = target.channelStatus === "disabled" ? "（已禁用）" : "";
-    return `<option value="${target.id}">${escapeHtml(target.name)}${disabled}</option>`;
+    return html`<option value="${target.id}">${target.name}${disabled}</option>`;
   });
-  const html = options.length ? options.join("") : `<option value="">请先在“模型管理”添加测试模型</option>`;
+  const optionsHtml = options.length ? options.join("") : `<option value="">请先在"模型管理"添加测试模型</option>`;
   selects.forEach((select) => {
-    select.innerHTML = html;
+    select.innerHTML = optionsHtml;
   });
 }
 
@@ -131,4 +131,3 @@ function roleClass(role) {
   if (role === "baseline") return "baseline";
   return "target";
 }
-

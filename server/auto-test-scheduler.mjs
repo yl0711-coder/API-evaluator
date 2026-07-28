@@ -107,7 +107,11 @@ export function createAutoTestScheduler({
       job.enabled = false;
       job.nextRunAt = null;
       job.autoDisabledAt = new Date(now()).toISOString();
-      job.lastError = `${job.lastError ? job.lastError + " " : ""}连续失败 ${job.consecutiveFailures} 次，已自动停用以避免无效重跑；请修复后在配置页重新启用。`.slice(0, 500);
+      job.lastError =
+        `${job.lastError ? job.lastError + " " : ""}连续失败 ${job.consecutiveFailures} 次，已自动停用以避免无效重跑；请修复后在配置页重新启用。`.slice(
+          0,
+          500,
+        );
     }
   }
 
@@ -123,7 +127,7 @@ export function createAutoTestScheduler({
       try {
         const startedMs = now();
         const startedIso = new Date(startedMs).toISOString();
-        const nextRunAt = computeNextRunAt(job.periodHours, startedMs);
+        const nextRunAt = computeNextRunAt(job, startedMs);
         await patchJob(job.id, { lastStatus: "running" });
         try {
           const result = await run();

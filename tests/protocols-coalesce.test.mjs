@@ -180,10 +180,18 @@ test("firstTokenPatternFor(claude)：只认 text_delta / input_json_delta", () =
   const re = firstTokenPatternFor("claude_messages");
   // 不该命中的无内容首帧
   assert.equal(re.test(`data: {"type":"message_start","message":{"usage":{"input_tokens":12}}}`), false, "message_start 不是 token");
-  assert.equal(re.test(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`), false, "block start 无文本");
+  assert.equal(
+    re.test(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+    false,
+    "block start 无文本",
+  );
   assert.equal(re.test(`data: {"type":"ping"}`), false, "保活帧");
   assert.equal(re.test(`: ping`), false, "SSE 注释保活");
-  assert.equal(re.test(`data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"想"}}`), false, "thinking 不进可见输出");
+  assert.equal(
+    re.test(`data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"想"}}`),
+    false,
+    "thinking 不进可见输出",
+  );
   // 该命中的首个可见产出
   assert.equal(re.test(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你"}}`), true);
   assert.equal(re.test(`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{"}}`), true);

@@ -8,3 +8,7 @@ export const MIME_TYPES = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
 };
+
+// P95 总延迟三档分类阈值（ms）：≤15s 好 / ≤45s 观察 / >45s 慢
+export const P95_LATENCY_OK_MS = 15000;
+export const P95_LATENCY_SLOW_MS = 45000;

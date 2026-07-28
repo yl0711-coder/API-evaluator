@@ -97,7 +97,8 @@ export const PROFILE_TEMPLATES = {
     modelPlaceholder: "grok-4 / grok-3",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "xAI 直连可用标准 /v1 路径；经中转站同样适用。其余少见模型（Mistral / Llama / 文心 / 混元 / MiniMax 等）直接用最上面的通用「AI 中转站 / OpenAI 兼容」即可。",
+    notes:
+      "xAI 直连可用标准 /v1 路径；经中转站同样适用。其余少见模型（Mistral / Llama / 文心 / 混元 / MiniMax 等）直接用最上面的通用「AI 中转站 / OpenAI 兼容」即可。",
   },
 };
 
@@ -110,7 +111,11 @@ const ERROR_ADVICES = {
   model_not_found: {
     title: "模型不可用",
     cause: "模型名写错，或当前渠道没有开通这个模型。",
-    actions: ["复制平台后台展示的模型名，不要凭记忆填写。", "如果是中转站，确认该渠道是否支持这个模型。", "用默认短 Prompt 重新跑快速测试。"],
+    actions: [
+      "复制平台后台展示的模型名，不要凭记忆填写。",
+      "如果是中转站，确认该渠道是否支持这个模型。",
+      "用默认短 Prompt 重新跑快速测试。",
+    ],
   },
   rate_limited: {
     title: "触发限流",
@@ -125,7 +130,11 @@ const ERROR_ADVICES = {
   network_error: {
     title: "本地网络错误",
     cause: "本机网络、VPN、DNS、代理或 Base URL 有问题。",
-    actions: ["先确认浏览器和代理能正常访问网页。", "检查 Base URL 是否填成基础地址。", "如果只有本工具失败，把错误截图和配置名称发给负责人。"],
+    actions: [
+      "先确认浏览器和代理能正常访问网页。",
+      "检查 Base URL 是否填成基础地址。",
+      "如果只有本工具失败，把错误截图和配置名称发给负责人。",
+    ],
   },
   upstream_5xx: {
     title: "上游服务错误",
@@ -135,7 +144,11 @@ const ERROR_ADVICES = {
   content_block_not_found: {
     title: "内容块缺失",
     cause: "常见于 Claude/OpenAI 协议转换不完整，平台显示 done 但客户端无法解析内容。",
-    actions: ["优先检查协议：中转站多数选 OpenAI Compatible，Claude 原生才选 Claude Messages。", "查看平台日志里的请求转换方式。", "换一个同模型渠道快速测试，判断是不是单渠道转换问题。"],
+    actions: [
+      "优先检查协议：中转站多数选 OpenAI Compatible，Claude 原生才选 Claude Messages。",
+      "查看平台日志里的请求转换方式。",
+      "换一个同模型渠道快速测试，判断是不是单渠道转换问题。",
+    ],
   },
   empty_response: {
     title: "空响应",
@@ -282,11 +295,13 @@ export function normalizeErrorKey(errorLike) {
   if (ERROR_ADVICES[text]) return text;
   if (text.includes("content block not found")) return "content_block_not_found";
   if (text.includes("auth") || text.includes("401") || text.includes("403") || text.includes("unauthorized")) return "auth_failed";
-  if (text.includes("model") && (text.includes("not found") || text.includes("invalid") || text.includes("unknown"))) return "model_not_found";
+  if (text.includes("model") && (text.includes("not found") || text.includes("invalid") || text.includes("unknown")))
+    return "model_not_found";
   if (text.includes("rate") || text.includes("429") || text.includes("quota")) return "rate_limited";
   if (text.includes("timeout") || text.includes("aborted")) return "timeout";
   if (text.includes("network") || text.includes("fetch failed") || text.includes("dns") || text.includes("tls")) return "network_error";
-  if (text.includes("5xx") || text.includes("500") || text.includes("502") || text.includes("503") || text.includes("504")) return "upstream_5xx";
+  if (text.includes("5xx") || text.includes("500") || text.includes("502") || text.includes("503") || text.includes("504"))
+    return "upstream_5xx";
   if (text.includes("empty")) return "empty_response";
   if (text.includes("invalid") || text.includes("json")) return "invalid_response";
   return "unknown_error";
@@ -307,10 +322,7 @@ export function buildErrorAdviceText(errorLike) {
 
 export function buildStandardNextStepAdvice({ quick, stability, scenario }) {
   if (!quick?.success) {
-    return [
-      "快速测试没有通过，先不要继续消耗 token。",
-      "下一步：回到 API 配置，检查 Base URL、协议、模型名和 Key，然后重新跑快速测试。",
-    ];
+    return ["快速测试没有通过，先不要继续消耗 token。", "下一步：回到 API 配置，检查 Base URL、协议、模型名和 Key，然后重新跑快速测试。"];
   }
 
   const successRate = Number(stability?.successRate ?? 0);
@@ -326,23 +338,14 @@ export function buildStandardNextStepAdvice({ quick, stability, scenario }) {
   }
 
   if (successRate < 0.9) {
-    return [
-      "稳定性不足，暂时不建议作为候选渠道。",
-      "下一步：去报告中心查看失败类型；如果是限流或上游 5xx，间隔一段时间后用 3 轮复测。",
-    ];
+    return ["稳定性不足，暂时不建议作为候选渠道。", "下一步：去报告中心查看失败类型；如果是限流或上游 5xx，间隔一段时间后用 3 轮复测。"];
   }
 
   if (p95 > 30000) {
-    return [
-      "能跑通，但响应偏慢。",
-      "下一步：确认业务是否能接受等待时间；如不能接受，换低延迟渠道或降低复杂任务输入长度。",
-    ];
+    return ["能跑通，但响应偏慢。", "下一步：确认业务是否能接受等待时间；如不能接受，换低延迟渠道或降低复杂任务输入长度。"];
   }
 
-  return [
-    "结果需要人工复核。",
-    "下一步：查看报告中心的错误诊断和输出摘要，再决定是否扩大轮数。",
-  ];
+  return ["结果需要人工复核。", "下一步：查看报告中心的错误诊断和输出摘要，再决定是否扩大轮数。"];
 }
 
 export function buildStandardOperatorSummary({ quick, stability, scenario }) {

@@ -36,14 +36,14 @@ const PAGE_SIZE = 100;
 
 // HLE category → 中文名 / id 短码。覆盖镜像里出现的 8 类；未知类回退 other。
 const CATEGORY_META = {
-  "Math": { cn: "数学", slug: "math" },
-  "Physics": { cn: "物理", slug: "physics" },
-  "Chemistry": { cn: "化学", slug: "chemistry" },
+  Math: { cn: "数学", slug: "math" },
+  Physics: { cn: "物理", slug: "physics" },
+  Chemistry: { cn: "化学", slug: "chemistry" },
   "Biology/Medicine": { cn: "生物医学", slug: "biology" },
   "Computer Science/AI": { cn: "计算机", slug: "cs" },
-  "Engineering": { cn: "工程", slug: "engineering" },
+  Engineering: { cn: "工程", slug: "engineering" },
   "Humanities/Social Science": { cn: "人文社科", slug: "humanities" },
-  "Other": { cn: "其他", slug: "other" },
+  Other: { cn: "其他", slug: "other" },
 };
 const catMeta = (c) => CATEGORY_META[c] || { cn: String(c || "其他"), slug: "other" };
 
@@ -57,11 +57,12 @@ const ANSWER_DISCIPLINE =
   "Reason briefly (a few sentences at most) so your output is not cut off, then put ONLY " +
   "your final answer (no extra words) inside <solution></solution> tags. " +
   "The <solution> block must be the last thing you output.";
-const ANSWER_SUFFIX = "\n\n---\n" + ANSWER_DISCIPLINE;
 
 // 有效数字位数：去符号/小数点/前导零后剩余数字位数（对本题库的数值答案足够）。
 function countSigFigs(mantissa) {
-  const d = String(mantissa).replace(/[+\-.]/g, "").replace(/^0+/, "");
+  const d = String(mantissa)
+    .replace(/[+\-.]/g, "")
+    .replace(/^0+/, "");
   return Math.max(1, d.length);
 }
 

@@ -25,9 +25,7 @@ export const MIN_SESSION_SECRET_BYTES = 32;
 export function assertSessionSecretStrength() {
   const secret = sessionSecret();
   if (!secret) {
-    throw new Error(
-      "EVALUATOR_SESSION_SECRET 未配置：会话 Cookie 无法签名。请生成一个强随机密钥，例如 `openssl rand -hex 32`。",
-    );
+    throw new Error("EVALUATOR_SESSION_SECRET 未配置：会话 Cookie 无法签名。请生成一个强随机密钥，例如 `openssl rand -hex 32`。");
   }
   const bytes = Buffer.byteLength(secret, "utf8");
   if (bytes < MIN_SESSION_SECRET_BYTES) {

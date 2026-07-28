@@ -28,8 +28,7 @@ export const JUDGE_CONSISTENCY_THRESHOLD = 0.8;
 // level："interval"（连续分，默认）或 "nominal"（类别判定）。
 // 公式：α = 1 - (n-1) * Σ o·δ² / Σ n_c·n_k·δ²（重合矩阵法）。
 export function krippendorffAlpha(units, { level = "interval" } = {}) {
-  const delta2 =
-    level === "nominal" ? (a, b) => (a === b ? 0 : 1) : (a, b) => (a - b) * (a - b);
+  const delta2 = level === "nominal" ? (a, b) => (a === b ? 0 : 1) : (a, b) => (a - b) * (a - b);
 
   const coincidence = new Map(); // value -> Map(value -> weight)
   const addCoin = (c, k, w) => {
@@ -39,9 +38,7 @@ export function krippendorffAlpha(units, { level = "interval" } = {}) {
   };
 
   for (const unit of units || []) {
-    const vals = (unit || [])
-      .filter((v) => v !== null && v !== undefined && Number.isFinite(Number(v)))
-      .map(Number);
+    const vals = (unit || []).filter((v) => v !== null && v !== undefined && Number.isFinite(Number(v))).map(Number);
     const m = vals.length;
     if (m < 2) continue; // 单评无法贡献一致性
     const w = 1 / (m - 1);

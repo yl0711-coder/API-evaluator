@@ -12,7 +12,10 @@ import { normalizeProtocol } from "./profile-store.mjs";
 import { requiredString } from "./utils.mjs";
 
 const CHANNEL_STATUSES = new Set(["enabled", "disabled"]);
-const normalizeBaseUrl = (url) => String(url || "").trim().replace(/\/+$/, "");
+const normalizeBaseUrl = (url) =>
+  String(url || "")
+    .trim()
+    .replace(/\/+$/, "");
 // 数字兜底：Number("abc")=NaN 不触发 ??，这里确保非有限值回落默认。
 const toFinite = (value, fallback) => {
   const n = Number(value);

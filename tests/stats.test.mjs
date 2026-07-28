@@ -14,10 +14,7 @@ import {
 } from "../server/stats.mjs";
 
 const approx = (actual, expected, tol, message) => {
-  assert.ok(
-    Math.abs(actual - expected) <= tol,
-    `${message || "approx"}: expected ${expected} ± ${tol}, got ${actual}`,
-  );
+  assert.ok(Math.abs(actual - expected) <= tol, `${message || "approx"}: expected ${expected} ± ${tol}, got ${actual}`);
 };
 
 test("normalCdf matches known standard-normal values", () => {

@@ -6,11 +6,12 @@ import { escapeHtml } from "./client-utils.js";
 function buildIndex({ channels = [], modelTargets = [] } = {}) {
   const byName = (a, b) => String(a).localeCompare(String(b));
   const chMap = new Map(channels.map((c) => [c.id, c]));
-  const aChannels = channels
-    .filter((c) => modelTargets.some((t) => t.channelId === c.id))
-    .sort((a, b) => byName(a.name, b.name));
+  const aChannels = channels.filter((c) => modelTargets.some((t) => t.channelId === c.id)).sort((a, b) => byName(a.name, b.name));
   const targetsByChannel = (channelId) =>
-    modelTargets.filter((t) => t.channelId === channelId).map((t) => ({ id: t.id, model: t.model })).sort((a, b) => byName(a.model, b.model));
+    modelTargets
+      .filter((t) => t.channelId === channelId)
+      .map((t) => ({ id: t.id, model: t.model }))
+      .sort((a, b) => byName(a.model, b.model));
   // 去重模型名,保留首个原始大小写作展示
   const display = new Map();
   for (const t of modelTargets) {
@@ -71,7 +72,9 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
       anchorLabel.textContent = "被测渠道";
       listTitle.textContent = "勾选要体检的模型";
       anchor.innerHTML = idx.aChannels.length
-        ? idx.aChannels.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}${c.status === "disabled" ? "（已禁用）" : ""}</option>`).join("")
+        ? idx.aChannels
+            .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}${c.status === "disabled" ? "（已禁用）" : ""}</option>`)
+            .join("")
         : `<option value="">还没有可测渠道</option>`;
     } else {
       anchorLabel.textContent = "对比模型";
@@ -87,6 +90,7 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
     return idx.targetsForModel(anchor.value).map((t) => ({
       id: t.id,
       label: t.channel.name,
+      // pill 是硬编码 HTML 片段，不是用户数据——刻意不转义
       pill: t.channel.status === "disabled" ? '<span class="pill bad">已禁用</span>' : '<span class="pill good">启用</span>',
     }));
   }
@@ -94,12 +98,18 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
   function renderList() {
     const rows = currentRows();
     list.innerHTML = rows.length
-      ? rows.map((r) => `<label class="opt${selected.has(r.id) ? " checked" : ""}" data-id="${escapeHtml(r.id)}"><input type="checkbox" ${selected.has(r.id) ? "checked" : ""}><span class="name">${escapeHtml(r.label)}</span>${r.pill}</label>`).join("")
+      ? rows
+          .map(
+            (r) =>
+              `<label class="opt${selected.has(r.id) ? " checked" : ""}" data-id="${escapeHtml(r.id)}"><input type="checkbox" ${selected.has(r.id) ? "checked" : ""}><span class="name">${escapeHtml(r.label)}</span>${r.pill}</label>`,
+          )
+          .join("")
       : `<div class="opt"><span class="name" style="color:var(--muted)">没有可选项</span></div>`;
     list.querySelectorAll(".opt[data-id]").forEach((row) => {
       row.querySelector("input").addEventListener("change", (e) => {
         const id = row.dataset.id;
-        if (e.target.checked) selected.add(id); else selected.delete(id);
+        if (e.target.checked) selected.add(id);
+        else selected.delete(id);
         row.classList.toggle("checked", e.target.checked);
         renderChips();
       });
@@ -111,30 +121,54 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
     const labelOf = (id) => rows.find((r) => r.id === id)?.label || id;
     const ids = [...selected];
     chips.innerHTML = ids.length
-      ? ids.map((id) => `<span class="chip" data-id="${escapeHtml(id)}">${escapeHtml(labelOf(id))} <span class="x">✕</span></span>`).join("")
+      ? ids
+          .map((id) => `<span class="chip" data-id="${escapeHtml(id)}">${escapeHtml(labelOf(id))} <span class="x">✕</span></span>`)
+          .join("")
       : `<span class="empty-chips">未选择</span>`;
-    chips.querySelectorAll(".chip .x").forEach((x) => x.addEventListener("click", () => {
-      selected.delete(x.parentElement.dataset.id);
-      renderList(); renderChips();
-    }));
+    chips.querySelectorAll(".chip .x").forEach((x) =>
+      x.addEventListener("click", () => {
+        selected.delete(x.parentElement.dataset.id);
+        renderList();
+        renderChips();
+      }),
+    );
     const n = selected.size;
-    echo.innerHTML = dim === "A"
-      ? `正在体检渠道 <b>${escapeHtml(anchorText())}</b> 的 <b>${n}</b> 个模型`
-      : `正在为模型 <b>${escapeHtml(anchor.value || "—")}</b> 对比 <b>${n}</b> 个渠道`;
+    echo.innerHTML =
+      dim === "A"
+        ? `正在体检渠道 <b>${escapeHtml(anchorText())}</b> 的 <b>${n}</b> 个模型`
+        : `正在为模型 <b>${escapeHtml(anchor.value || "—")}</b> 对比 <b>${n}</b> 个渠道`;
     syncHidden();
   }
-  function anchorText() { return anchor.options[anchor.selectedIndex]?.textContent || "—"; }
+  function anchorText() {
+    return anchor.options[anchor.selectedIndex]?.textContent || "—";
+  }
 
-  segBtns.forEach((b) => b.addEventListener("click", () => {
-    if (b.dataset.dim === dim) return;
-    dim = b.dataset.dim;
-    segBtns.forEach((x) => x.classList.toggle("on", x.dataset.dim === dim));
+  segBtns.forEach((b) =>
+    b.addEventListener("click", () => {
+      if (b.dataset.dim === dim) return;
+      dim = b.dataset.dim;
+      segBtns.forEach((x) => x.classList.toggle("on", x.dataset.dim === dim));
+      selected.clear();
+      buildAnchor();
+      renderList();
+      renderChips();
+    }),
+  );
+  anchor.addEventListener("change", () => {
     selected.clear();
-    buildAnchor(); renderList(); renderChips();
-  }));
-  anchor.addEventListener("change", () => { selected.clear(); renderList(); renderChips(); });
-  container.querySelector(".bp-all").addEventListener("click", () => { currentRows().forEach((r) => selected.add(r.id)); renderList(); renderChips(); });
-  container.querySelector(".bp-clear").addEventListener("click", () => { selected.clear(); renderList(); renderChips(); });
+    renderList();
+    renderChips();
+  });
+  container.querySelector(".bp-all").addEventListener("click", () => {
+    currentRows().forEach((r) => selected.add(r.id));
+    renderList();
+    renderChips();
+  });
+  container.querySelector(".bp-clear").addEventListener("click", () => {
+    selected.clear();
+    renderList();
+    renderChips();
+  });
 
   function refresh(stateData) {
     idx = buildIndex(stateData);
@@ -144,8 +178,11 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
     if (prevAnchor && [...anchor.options].some((o) => o.value === prevAnchor)) anchor.value = prevAnchor;
     // 选中项里仍存在的保留
     const valid = new Set(currentRows().map((r) => r.id));
-    [...selected].forEach((id) => { if (!valid.has(id)) selected.delete(id); });
-    renderList(); renderChips();
+    [...selected].forEach((id) => {
+      if (!valid.has(id)) selected.delete(id);
+    });
+    renderList();
+    renderChips();
   }
 
   return { refresh, getSelectedIds: () => [...selected] };

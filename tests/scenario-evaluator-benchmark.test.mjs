@@ -42,7 +42,11 @@ test("ifeval scenario scores by verifiable instructions", () => {
 
 test("bfcl scenario scores tool call structurally (dormant until tool path wired)", () => {
   const scenario = { id: "z", scorer: "bfcl", expectedToolCall: { name: "get_weather", arguments: { city: "北京" } } };
-  const ok = evaluateScenarioOutput(scenario, { success: true, responseText: "", toolCall: { name: "get_weather", arguments: { city: "北京" } } });
+  const ok = evaluateScenarioOutput(scenario, {
+    success: true,
+    responseText: "",
+    toolCall: { name: "get_weather", arguments: { city: "北京" } },
+  });
   assert.equal(ok.passed, true);
   const noTool = evaluateScenarioOutput(scenario, { success: true, responseText: "天气不错" });
   assert.equal(noTool.passed, false); // 未产生工具调用
@@ -123,11 +127,7 @@ test("buildScenarioProfileSummary excludes truncated items from quality score", 
   });
   const profile = { id: "p", name: "P", defaultModel: "m", protocol: "openai_compatible" };
   // 两条好题（score 100/80）+ 一条被截断（score 0, truncated）→ 均分应只算前两条 = 90，不是 60。
-  const records = [
-    mk({ score: 100, passed: true }),
-    mk({ score: 80, passed: true }),
-    mk({ score: 0, passed: false, truncated: true }),
-  ];
+  const records = [mk({ score: 100, passed: true }), mk({ score: 80, passed: true }), mk({ score: 0, passed: false, truncated: true })];
   const summary = buildScenarioProfileSummary(profile, records);
   assert.equal(summary.avgQualityScore, 90);
   assert.equal(summary.scenarios[0].truncatedCount, 1);

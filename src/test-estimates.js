@@ -1,9 +1,4 @@
-import {
-  estimateBatchCost,
-  estimateScenarioCost,
-  estimateStabilityCost,
-  formatEstimate,
-} from "./cost-estimates.js";
+import { estimateBatchCost, estimateScenarioCost, estimateStabilityCost, formatEstimate } from "./cost-estimates.js";
 
 export function updateEstimateLabels({
   stabilityForm,

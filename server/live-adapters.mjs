@@ -38,7 +38,10 @@ export function isLiveRutEnabled() {
 // 裁判调用器：judges 传裁判 profile 列表；callJudge 收到的是“裁判模型名”
 // （编排层用模型名做同家族规避），按模型名映射回 profile 再发请求。
 // runRequest 由上层注入（真实跑传 executeTestRequest，测试传 mock）。
-export function createJudgeCaller(judgeProfiles = [], { runRequest = defaultRunRequest, runId = "llm-judge", abortSignal = null, onJudgeRecord = null } = {}) {
+export function createJudgeCaller(
+  judgeProfiles = [],
+  { runRequest = defaultRunRequest, runId = "llm-judge", abortSignal = null, onJudgeRecord = null } = {},
+) {
   const byModel = new Map();
   for (const profile of judgeProfiles) {
     if (profile?.defaultModel && !byModel.has(profile.defaultModel)) {

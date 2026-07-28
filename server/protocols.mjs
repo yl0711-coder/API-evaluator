@@ -353,9 +353,7 @@ export function extractOutputText(protocol, parsed) {
   // 存进报告并拿去打分。按分片取 text，与上面 Claude 分支同口径（thinking/reasoning 不算可见输出）。
   if (Array.isArray(content)) {
     return content
-      .map((item) =>
-        item && typeof item.text === "string" && item.type !== "thinking" && item.type !== "reasoning" ? item.text : "",
-      )
+      .map((item) => (item && typeof item.text === "string" && item.type !== "thinking" && item.type !== "reasoning" ? item.text : ""))
       .filter(Boolean)
       .join("\n")
       .trim();
@@ -417,8 +415,7 @@ export function extractUsage(parsed) {
     inputTokens: usage.prompt_tokens ?? usage.input_tokens ?? null,
     outputTokens: usage.completion_tokens ?? usage.output_tokens ?? null,
     cacheCreationTokens: usage.cache_creation_input_tokens ?? usage.cache_creation_tokens ?? null,
-    cacheReadTokens:
-      usage.cache_read_input_tokens ?? usage.cache_read_tokens ?? promptDetails.cached_tokens ?? null,
+    cacheReadTokens: usage.cache_read_input_tokens ?? usage.cache_read_tokens ?? promptDetails.cached_tokens ?? null,
     reasoningTokens: usage.reasoning_tokens ?? completionDetails.reasoning_tokens ?? null,
   };
 }

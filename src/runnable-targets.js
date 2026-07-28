@@ -9,7 +9,13 @@ export function resolveRunnableTargets({ channels = [], modelTargets = [], profi
   for (const target of modelTargets) {
     const channel = byChannel.get(target.channelId);
     if (!channel) continue; // 渠道已删 -> 不可运行
-    out.push({ id: target.id, name: `${channel.name} / ${target.model}`, model: target.model, source: "target", channelStatus: channel.status });
+    out.push({
+      id: target.id,
+      name: `${channel.name} / ${target.model}`,
+      model: target.model,
+      source: "target",
+      channelStatus: channel.status,
+    });
   }
   // 未被迁移成渠道的老 profile（孤儿）本身是"渠道+模型"二合一，作为遗留可运行目标补入；
   // 其 id 若等于某渠道 id 说明已迁移，跳过避免重复。

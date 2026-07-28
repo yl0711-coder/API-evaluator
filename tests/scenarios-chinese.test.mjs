@@ -8,7 +8,10 @@ import { evaluateScenarioOutput } from "../server/scenario-evaluator.mjs";
 test("chinese scenarios are wired into ABILITY_SCENARIOS", () => {
   assert.ok(CHINESE_SCENARIOS.length >= 5);
   for (const s of CHINESE_SCENARIOS) {
-    assert.ok(ABILITY_SCENARIOS.some((a) => a.id === s.id), `${s.id} 应在 ABILITY_SCENARIOS 中`);
+    assert.ok(
+      ABILITY_SCENARIOS.some((a) => a.id === s.id),
+      `${s.id} 应在 ABILITY_SCENARIOS 中`,
+    );
   }
 });
 

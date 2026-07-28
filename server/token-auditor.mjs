@@ -208,7 +208,12 @@ export async function auditAbsoluteTokens({ probes = [], model = "" } = {}) {
     points.push({ id: p.id, exact, reported });
   }
   if (points.length < 2) {
-    return { applicable: false, reason: "insufficient_points", encoding, note: "可用于绝对对照的固定探针不足 2 个（quick 包不含指纹探针时常见）。" };
+    return {
+      applicable: false,
+      reason: "insufficient_points",
+      encoding,
+      note: "可用于绝对对照的固定探针不足 2 个（quick 包不含指纹探针时常见）。",
+    };
   }
 
   const n = points.length;
@@ -240,7 +245,11 @@ export async function auditAbsoluteTokens({ probes = [], model = "" } = {}) {
     verdict = `计费倍率 ×${round3(slope)}，低于精确分词，疑似少计/缓存命中，需确认。`;
   }
   if (intercept > 40) {
-    flags.push({ code: "high_constant_overhead", level: "low", note: `每条请求固定开销约 ${Math.round(intercept)} token，偏高，疑似固定加价，可复核。` });
+    flags.push({
+      code: "high_constant_overhead",
+      level: "low",
+      note: `每条请求固定开销约 ${Math.round(intercept)} token，偏高，疑似固定加价，可复核。`,
+    });
   }
   if (r2 !== null && r2 < 0.9 && n >= 3) {
     flags.push({

@@ -9,12 +9,7 @@ import { assertPublicTarget } from "./egress-guard.mjs";
 import { redactSensitiveText, safeJson, summarizeText } from "./utils.mjs";
 
 const MAX_REPLAY_RESPONSE_BYTES = 2 * 1024 * 1024;
-const SAFE_HEADER_NAMES = new Set([
-  "accept",
-  "anthropic-beta",
-  "anthropic-version",
-  "content-type",
-]);
+const SAFE_HEADER_NAMES = new Set(["accept", "anthropic-beta", "anthropic-version", "content-type"]);
 
 export async function runClientReplay(profile, replayPayload = {}) {
   const apiKey = await readProfileApiKey(profile);

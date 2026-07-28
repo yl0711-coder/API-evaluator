@@ -1,12 +1,6 @@
 // 汇总一组记录的逐字段 token 用量（审计基础）。
 // 某字段在所有记录里都缺失 → 返回 null（区分"无数据"与"真实为 0"）。
-const USAGE_TOKEN_FIELDS = [
-  "inputTokens",
-  "outputTokens",
-  "cacheCreationTokens",
-  "cacheReadTokens",
-  "reasoningTokens",
-];
+const USAGE_TOKEN_FIELDS = ["inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens", "reasoningTokens"];
 
 export function aggregateUsage(records) {
   const list = Array.isArray(records) ? records : [];
@@ -69,8 +63,7 @@ export function estimateTokenEconomics({
     inputPricePerMTokens: inputSellPricePerMTokens,
     outputPricePerMTokens: outputSellPricePerMTokens,
   });
-  const estimatedGrossProfit =
-    estimatedCost !== null && estimatedRevenue !== null ? roundCost(estimatedRevenue - estimatedCost) : null;
+  const estimatedGrossProfit = estimatedCost !== null && estimatedRevenue !== null ? roundCost(estimatedRevenue - estimatedCost) : null;
   const estimatedGrossMargin =
     estimatedGrossProfit !== null && estimatedRevenue > 0 ? roundRatio(estimatedGrossProfit / estimatedRevenue) : null;
 

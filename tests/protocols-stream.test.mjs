@@ -27,7 +27,13 @@ function healthyStream(blocks) {
 test("healthy multi-block stream passes with per-index tracking", () => {
   const raw = healthyStream([
     { type: "text", deltas: [{ type: "text_delta", text: "你好" }] },
-    { type: "tool_use", deltas: [{ type: "input_json_delta", partial_json: '{"city":' }, { type: "input_json_delta", partial_json: '"北京"}' }] },
+    {
+      type: "tool_use",
+      deltas: [
+        { type: "input_json_delta", partial_json: '{"city":' },
+        { type: "input_json_delta", partial_json: '"北京"}' },
+      ],
+    },
   ]);
   const s = summarizeStreamStructure("claude_messages", raw);
   assert.equal(s.passed, true);
@@ -54,9 +60,7 @@ test("root cause 1: delta on an index that never started → content_block_dropp
 });
 
 test("root cause 2: text_delta landing on a tool_use block → delta_block_mismatch", () => {
-  const raw = healthyStream([
-    { type: "tool_use", deltas: [{ type: "text_delta", text: "oops" }] },
-  ]);
+  const raw = healthyStream([{ type: "tool_use", deltas: [{ type: "text_delta", text: "oops" }] }]);
   const s = summarizeStreamStructure("claude_messages", raw);
   assert.equal(s.flags.deltaBlockMismatch, true);
   assert.equal(s.issues.includes("delta_block_mismatch"), true);
@@ -73,9 +77,7 @@ test("root cause 3: tool_use input_json_delta that does not form valid JSON → 
 });
 
 test("valid tool_use json does not trigger tool_args_lost", () => {
-  const raw = healthyStream([
-    { type: "tool_use", deltas: [{ type: "input_json_delta", partial_json: "{}" }] },
-  ]);
+  const raw = healthyStream([{ type: "tool_use", deltas: [{ type: "input_json_delta", partial_json: "{}" }] }]);
   const s = summarizeStreamStructure("claude_messages", raw);
   assert.equal(s.flags.toolArgsLost, false);
 });

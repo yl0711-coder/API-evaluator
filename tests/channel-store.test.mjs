@@ -66,11 +66,21 @@ test("一次性迁移：老 profile → 渠道+模型目标，复用 id 与密�
   await targetStore.saveModelTargets([]);
   // 播一个带密钥的老 profile
   await secretStore.saveProfileApiKey("pmig", "sk-mig-123");
-  await profileStore.saveProfiles([{
-    id: "pmig", name: "老渠道", provider: "OpenAI", baseUrl: "https://api.openai.com",
-    apiKeyRef: secretStore.buildApiKeyRef("pmig"), keyStorage: "test-memory-vault", hasKey: true,
-    protocol: "openai_chat", defaultModel: "gpt-4o", maxTokens: 512, timeoutMs: 60000,
-  }]);
+  await profileStore.saveProfiles([
+    {
+      id: "pmig",
+      name: "老渠道",
+      provider: "OpenAI",
+      baseUrl: "https://api.openai.com",
+      apiKeyRef: secretStore.buildApiKeyRef("pmig"),
+      keyStorage: "test-memory-vault",
+      hasKey: true,
+      protocol: "openai_chat",
+      defaultModel: "gpt-4o",
+      maxTokens: 512,
+      timeoutMs: 60000,
+    },
+  ]);
 
   const result = await channelStore.migrateProfilesToChannelsIfEmpty();
   assert.equal(result.migrated, 1);

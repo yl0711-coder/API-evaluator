@@ -31,13 +31,7 @@ test("unionTagVocabulary：任一为空/缺失都安全", () => {
 });
 
 test("distinctTargetTags：模型目标上出现过的去重标签（排序）", () => {
-  const targets = [
-    { tags: ["编程", "推理"] },
-    { tags: ["推理"] },
-    { tags: [] },
-    {},
-    { tags: ["写作"] },
-  ];
+  const targets = [{ tags: ["编程", "推理"] }, { tags: ["推理"] }, { tags: [] }, {}, { tags: ["写作"] }];
   const got = distinctTargetTags(targets);
   assert.deepEqual([...got].sort(), ["写作", "推理", "编程"].sort());
   assert.equal(got.length, 3, "去重");

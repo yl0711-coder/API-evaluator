@@ -31,6 +31,7 @@
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
           <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
           <button class="nav-button" type="button" data-page="auto-test-config">自动测试配置</button>
+          <button class="nav-button" type="button" data-page="alert-rules">报警规则</button>
           <button class="nav-button" type="button" data-page="load-test" data-requires-admin>压力测试</button>
           <button class="nav-button" type="button" data-page="model-compare">模型比对</button>
         </div>
@@ -52,14 +53,6 @@
       <main class="main">
         <div id="high-risk-banner" class="high-risk-banner hidden" role="alert"></div>
 
-        <div id="demo-mode-banner" class="demo-banner hidden">
-          <div>
-            <strong>正在查看演示数据</strong>
-            <span>这些数据只用于熟悉界面，不会发起真实请求，也不会写入本机配置。</span>
-          </div>
-          <button id="exit-demo-mode" class="secondary" type="button">退出演示模式</button>
-        </div>
-
         <section class="page active" id="dashboard">
           <div class="dash">
             <!-- 空状态：无被测配置时显示（app.js 切换）-->
@@ -74,7 +67,7 @@
                 <span class="ms"><b>4</b> 标准评测</span>
               </div>
               <button class="primary" type="button" data-go-page="channels" data-requires-admin>配置第一个渠道 →</button>
-              <div class="links">先不配置？<button id="load-demo-data" class="linklike" type="button">查看演示数据</button> · <button class="linklike" type="button" data-go-page="manual">打开操作手册</button></div>
+              <div class="links">先不配置？<button class="linklike" type="button" data-go-page="manual">打开操作手册</button></div>
             </div>
 
             <!-- 常态：有配置时显示 -->
@@ -534,12 +527,8 @@
             </label>
             <label>
               测试轮数
-              <select name="rounds">
-                <option value="1">1 轮：快速功能测试</option>
-                <option value="3">3 轮：冒烟验证</option>
-                <option value="10" selected>10 轮：基础稳定性</option>
-                <option value="30">30 轮：较完整稳定性</option>
-              </select>
+              <input type="number" name="rounds" id="stability-rounds" min="1" max="100" step="1" value="10" />
+              <small class="field-hint">1-100 轮，默认 10 轮（基础稳定性）。</small>
             </label>
             <label>
               并发数
@@ -830,6 +819,7 @@
             </div>
             <div class="action-row">
               <button id="export-support-bundle" class="secondary" type="button">导出问题包</button>
+              <button id="check-disk-usage" class="secondary" type="button">磁盘空间</button>
               <button id="reload-requests" class="secondary" type="button">刷新</button>
             </div>
           </div>
@@ -1251,10 +1241,75 @@
               <select id="atc-model-select" disabled></select>
             </label>
             <label>
-              测试周期（小时）
-              <input type="number" id="atc-period" min="0.5" step="any" value="24" />
-              <small class="field-hint">支持小数，最短 0.5 小时（半小时）。</small>
+              调度方式
+              <select id="atc-schedule-mode">
+                <option value="interval" selected>固定间隔（每 N 小时）</option>
+                <option value="cron">定时表达式（工作日/周末、白天/黑夜不同频率）</option>
+              </select>
             </label>
+            <label id="atc-period-label">
+              测试周期（小时）
+              <input type="number" id="atc-period" min="0.1" step="any" value="24" />
+              <small class="field-hint">支持小数，最短 0.1 小时（6 分钟）。</small>
+            </label>
+            <div id="atc-cron-builder" class="atc-opt wide hidden">
+              <label>
+                星期
+                <select id="atc-cron-days">
+                  <option value="everyday" selected>每天</option>
+                  <option value="weekday">工作日（周一至周五）</option>
+                  <option value="weekend">周末（周六、周日）</option>
+                  <option value="custom">自定义…</option>
+                </select>
+              </label>
+              <div id="atc-cron-days-custom" class="atc-weekday-picker hidden">
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-1" value="1" />周一</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-2" value="2" />周二</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-3" value="3" />周三</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-4" value="4" />周四</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-5" value="5" />周五</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-6" value="6" />周六</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-0" value="0" />周日</label>
+              </div>
+              <label id="atc-cron-period-label">
+                时段
+                <select id="atc-cron-period">
+                  <option value="allday" selected>全天</option>
+                  <option value="day">白天（9-18 点）</option>
+                  <option value="night">夜间（19 点至次日 8 点）</option>
+                  <option value="custom">自定义…</option>
+                </select>
+              </label>
+              <div id="atc-cron-hours-custom" class="atc-hours-picker hidden">
+                <label>起<select id="atc-cron-start-hour"></select></label>
+                <label>止<select id="atc-cron-end-hour"></select></label>
+              </div>
+              <label>
+                频率
+                <select id="atc-cron-freq">
+                  <option value="m6">每 6 分钟</option>
+                  <option value="m10">每 10 分钟</option>
+                  <option value="m12">每 12 分钟</option>
+                  <option value="m15">每 15 分钟</option>
+                  <option value="m20">每 20 分钟</option>
+                  <option value="m30">每 30 分钟</option>
+                  <option value="hourly" selected>每小时</option>
+                  <option value="h2">每 2 小时</option>
+                  <option value="h3">每 3 小时</option>
+                  <option value="h6">每 6 小时</option>
+                  <option value="h12">每 12 小时</option>
+                  <option value="once">每天一次</option>
+                </select>
+              </label>
+              <label id="atc-cron-once" class="hidden">
+                每天几点
+                <select id="atc-cron-once-hour"></select>
+              </label>
+              <small class="field-hint atc-cron-preview-line">
+                <span id="atc-cron-preview">每天全天，每小时一次</span>
+              </small>
+              <input type="hidden" id="atc-cron" value="" />
+            </div>
             <label>
               测试种类
               <select id="atc-kind">
@@ -1339,6 +1394,99 @@
               <button type="button" id="atc-digest-generate" class="primary">生成全部巡检报告</button>
             </div>
           </div>
+        </section>
+
+        <section class="page" id="alert-rules" hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 报警</span>报警规则</h2>
+              <p class="section-desc">配置自定义阈值报警规则：测试运行完成后，若某项原始指标触发阈值，即向邮件报警配置的收件人发信提醒。每条规则可选“全部渠道+模型”或指定具体渠道+模型，命中后有固定冷却时长，避免重复轰炸邮箱。发信配置见「邮件报警配置」页。</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="action-row atc-list-head">
+              <h3>已配置的报警规则</h3>
+              <button id="ar-metric-doc" class="secondary" type="button">触发指标说明</button>
+              <button type="button" id="ar-reload" class="secondary">刷新</button>
+            </div>
+            <div id="ar-rule-list">正在加载…</div>
+          </div>
+
+          <form id="ar-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3 id="ar-form-title">新建报警规则</h3>
+            </div>
+            <input type="hidden" id="ar-rule-id" value="" />
+            <label class="wide">
+              规则名称
+              <input type="text" id="ar-name" placeholder="如：成功率过低报警" maxlength="120" />
+            </label>
+            <label>
+              适用范围
+              <select id="ar-scope-type">
+                <option value="all" selected>全部渠道 + 模型</option>
+                <option value="target">指定渠道 + 模型</option>
+              </select>
+            </label>
+            <div id="ar-target-picker" class="hidden">
+              <label>
+                渠道
+                <select id="ar-channel-select"></select>
+              </label>
+              <label>
+                模型
+                <select id="ar-model-select" disabled></select>
+              </label>
+            </div>
+            <label>
+              触发指标
+              <select id="ar-metric">
+                <option value="successRate">成功率</option>
+                <option value="p95TotalMs">P95 耗时（毫秒）</option>
+                <option value="avgTotalMs">平均耗时（毫秒）</option>
+                <option value="score">综合分（准入）</option>
+                <option value="grade">准入等级</option>
+                <option value="avgQualityScore">质量分（场景）</option>
+                <option value="recommendationLevel">结论等级</option>
+                <option value="verdictLevel">快速验证结论</option>
+              </select>
+            </label>
+            <label>
+              比较符
+              <select id="ar-comparator">
+                <option value="lt">低于</option>
+                <option value="lte">不高于</option>
+                <option value="gt">高于</option>
+                <option value="gte">不低于</option>
+                <option value="eq">等于</option>
+              </select>
+            </label>
+            <label id="ar-threshold-number-label">
+              阈值
+              <input type="number" id="ar-threshold-number" step="any" />
+            </label>
+            <label id="ar-threshold-level-label" class="hidden">
+              阈值等级
+              <select id="ar-threshold-level"></select>
+            </label>
+            <label>
+              冷却时长（小时）
+              <input type="number" id="ar-cooldown" min="0.1" step="any" value="1" />
+              <small class="field-hint">同一规则对同一目标命中后，此时长内不再重复发信。</small>
+            </label>
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="ar-enabled" checked />
+              <span>
+                启用
+                <small>保存后立即生效；取消勾选则只保存不参与评估。</small>
+              </span>
+            </label>
+            <div class="wide action-row atc-form-actions">
+              <button type="submit" class="primary">保存规则</button>
+              <button type="button" id="ar-reset" class="secondary">清空表单</button>
+            </div>
+          </form>
         </section>
 
         <section class="page" id="load-test" data-requires-admin hidden>
@@ -1482,7 +1630,7 @@
           <div class="section-header">
             <div>
               <h2><span class="step">高级 · 分析</span>模型比对</h2>
-              <p class="section-desc">选「所用模型」和「要对比的模型」，依据两者在报告中心里各自最近的报告（1 份稳定性、1 份准入、若干份相同场景）做统计对比，产出一份对比报告。只读既有报告、不发起新测试。</p>
+              <p class="section-desc">选「所用模型」和「要对比的模型」，依据两者在报告中心里各自最近的报告（1 份稳定性、1 份准入、1 份压测、若干份相同场景）做统计对比，产出一份对比报告。只读既有报告、不发起新测试。</p>
             </div>
           </div>
 
@@ -1509,6 +1657,17 @@
                 <span class="field-hint" id="mc-scenario-hint">选好两个模型后，加载两方<strong>共有</strong>的场景，勾选要纳入对比的场景（默认全选）。不加载则用全部共有场景。</span>
               </div>
               <div id="mc-scenarios" class="mc-scenarios hidden"></div>
+              <div id="mc-gap-fill" class="hidden" style="margin-top:10px">
+                <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
+                  <button type="button" id="mc-fill-gaps" class="secondary">补齐单方场景</button>
+                  <span class="field-hint" id="mc-gap-hint"></span>
+                </div>
+                <div id="mc-gap-progress" class="progress-panel hidden">
+                  <div class="progress-bar"><span></span></div>
+                  <p class="muted">等待开始。</p>
+                  <button id="cancel-mc-gap-fill-task" class="secondary" type="button">取消当前场景</button>
+                </div>
+              </div>
             </div>
             <label class="wide checkbox-option">
               <input type="checkbox" id="mc-ai" />

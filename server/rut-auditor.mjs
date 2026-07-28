@@ -55,7 +55,10 @@ function ksProb(lambda) {
 
 // 单样本 KS 检验：检验一组值是否服从 Uniform(0,1)。
 export function ksTestUniform(values) {
-  const u = (values || []).filter(isNum).map(Number).sort((a, b) => a - b);
+  const u = (values || [])
+    .filter(isNum)
+    .map(Number)
+    .sort((a, b) => a - b);
   const n = u.length;
   if (n < 3) return { n, statistic: null, pValue: null, note: "样本不足（n<3）" };
   let d = 0;
@@ -72,7 +75,10 @@ export function ksTestUniform(values) {
 
 // Cramér-von Mises W² 统计量（对 Uniform(0,1)）——作参考报告，不出 p 值。
 export function cramerVonMisesW2(values) {
-  const u = (values || []).filter(isNum).map(Number).sort((a, b) => a - b);
+  const u = (values || [])
+    .filter(isNum)
+    .map(Number)
+    .sort((a, b) => a - b);
   const n = u.length;
   if (n < 3) return null;
   let s = 1 / (12 * n);

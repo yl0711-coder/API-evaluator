@@ -10,7 +10,9 @@ test("profiles never persist or export real API keys", async () => {
   process.env.EVALUATOR_SECRET_STORE = "memory";
 
   try {
-    const paths = await import(`../server/paths.mjs?case=${Date.now()}`);
+    // 不接返回值：这次 import 只为副作用——带 ?case= 破模块缓存，逼 paths.mjs 重读上面刚设的
+    // EVALUATOR_DATA_DIR。模块本身无需在此使用。
+    await import(`../server/paths.mjs?case=${Date.now()}`);
     const profileStore = await import(`../server/profile-store.mjs?case=${Date.now()}`);
     const secretStore = await import("../server/secret-store.mjs");
     const realKey = "sk-test-secret-123456";

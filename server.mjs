@@ -1,9 +1,16 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, rm, stat } from "node:fs/promises";
+import { readFile, readdir, rm, stat, statfs } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
-import { getAllScenariosForAdmin, loadScenarioOverrides, upsertScenario, deleteScenario, renameScenarioGroup, clearScenarioGroup } from "./server/scenarios/index.mjs";
+import {
+  getAllScenariosForAdmin,
+  loadScenarioOverrides,
+  upsertScenario,
+  deleteScenario,
+  renameScenarioGroup,
+  clearScenarioGroup,
+} from "./server/scenarios/index.mjs";
 import { DATA_DIR, ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
 import { ensureDataDir, readRecentErrors, readRecentRequests, readRecentTasks, readRecentTestRuns } from "./server/data-store.mjs";
 import {
@@ -17,7 +24,13 @@ import { runClientReplay } from "./server/client-replay.mjs";
 import { buildUserErrorMessage, logTechnicalError } from "./server/error-log.mjs";
 import { isAllowedBrowserOrigin, staticSecurityHeaders } from "./server/http-security.mjs";
 import { HttpRequestError, readJson } from "./server/http-request.mjs";
-import { formatClientReplayReport, formatSupplierEvidenceReport, saveReportFiles } from "./server/reporting.mjs";
+import {
+  compressAgedReportFiles,
+  formatClientReplayReport,
+  formatSupplierEvidenceReport,
+  readReportFileText,
+  saveReportFiles,
+} from "./server/reporting.mjs";
 import {
   exportProfile,
   findDuplicateProfile,
@@ -41,6 +54,7 @@ import {
   pruneReports,
   queryLastTestedByProfile,
   queryRecentReports,
+  queryReportSummariesByBase,
   queryRegressionAlerts,
   querySpendSummary,
 } from "./server/db.mjs";
@@ -67,16 +81,19 @@ import {
   buildComparison,
   buildCompareAnalysisPrompt,
   commonScenarioNames,
+  exclusiveScenarioNames,
   formatCompareReportMarkdown,
   parseReportBaseName,
   pickRecentReports,
 } from "./server/report-compare.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath, sanitizeReportBaseName } from "./server/report-files.mjs";
 import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobValidationError } from "./server/auto-test-store.mjs";
+import { loadRules, updateRules, normalizeRule, validateRule, RuleValidationError } from "./server/alert-rules-store.mjs";
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
+import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
-import { appendJsonLine, compactDate, hasProxyEnv, requiredString, safeJson, sendJson } from "./server/utils.mjs";
+import { appendJsonLine, compactDate, hasProxyEnv, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
 import {
   authenticate,
@@ -133,7 +150,10 @@ const taskManager = createTaskManager({
   errorLogFile: ERROR_LOG_FILE,
   logTechnicalError,
   buildUserErrorMessage,
-  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：手动测试完成时按开关判危记录
+  onRunComplete: (result) => {
+    noteRunIfEnabled(result); // 高危报告提示：手动测试完成时按开关判危记录
+    evaluateAlertRules(result); // 自定义阈值报警规则：手动测试完成时按规则判断是否报警
+  },
 });
 
 // 自动测试调度器（平台唯一的周期性定时器）：按各作业的 nextRunAt 到点直接调 runner 跑测试并产出报告。
@@ -142,7 +162,10 @@ const autoTestScheduler = createAutoTestScheduler({
   updateJobs,
   runners: { runQuickVerify, runAdmissionTest, runStabilityTest, runScenarioTest },
   reportIdFromHtmlPath,
-  onRunComplete: (result) => noteRunIfEnabled(result), // 高危报告提示：自动测试完成时按开关判危记录
+  onRunComplete: (result) => {
+    noteRunIfEnabled(result); // 高危报告提示：自动测试完成时按开关判危记录
+    evaluateAlertRules(result); // 自定义阈值报警规则：自动测试完成时按规则判断是否报警
+  },
   logError: (error, job) =>
     logErrorSafely({ source: "auto-test-scheduler", error, context: { jobId: job?.id, kind: job?.kind, targetId: job?.targetId } }),
 });
@@ -174,7 +197,8 @@ await loadScenarioOverrides(); // 读回超管的场景编辑覆盖层（/data�
 const legacyNewapiToken = await peekLegacyNewapiToken();
 await loadNewapiToken(legacyNewapiToken);
 if (legacyNewapiToken) await stripLegacyNewapiToken();
-await pruneReportsOnStartup();
+await runReportMaintenance();
+scheduleReportMaintenance();
 
 // 「模型比对」共用：按文件名前缀收集两方在报告中心的报告，取最近若干份，再平衡为「双方共有」的报告集。
 // 返回 { balA, balB }（已平衡的报告文件），或 { error, userMessage }（无报告 / 无共有报告）。
@@ -196,7 +220,7 @@ async function loadBalancedCompareFiles(A, B) {
       if (!prefixes.some((p) => name.startsWith(p))) continue;
       const base = name.replace(/\.md$/i, "");
       const type = parseReportBaseName(base).type;
-      if (type !== "run" && type !== "admission" && type !== "scenario") continue;
+      if (type !== "run" && type !== "admission" && type !== "scenario" && type !== "load") continue;
       try {
         const st = await stat(join(REPORTS_DIR, name));
         metas.push({ base, type, mtimeMs: st.mtimeMs });
@@ -205,12 +229,22 @@ async function loadBalancedCompareFiles(A, B) {
       }
     }
     metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
-    // 限流：稳定性/准入各取最近几份，场景最多取最近 60 份读盘（pickRecentReports 再按场景名去重取最新）。
-    const chosen = [...metas.filter((m) => m.type !== "scenario").slice(0, 6), ...metas.filter((m) => m.type === "scenario").slice(0, 60)];
+    // 限流：run/admission 共享最近 6 份（沿用 load 类型加入前的原始预算）；load 独立取最近 6 份——
+    // 三者混在一个预算里时，密集调参跑压测（6 份以上近期 load 文件）会把 run/admission 全部挤出候选，
+    // 对比里稳定性/准入静默消失（磁盘上明明有）。场景需要按名去重，最多取最近 60 份读盘。
+    // 已知问题（暂不修）：场景是按【文件数】限流（取最近 60 份场景报告），而 pickRecentReports 是
+    // 按【场景名】去重（一份文件可含多条场景行，理论上也可能撞名）。内置场景库已有约 89 个场景，
+    // 若用户实际跑过的场景种类数超过 60，排序在候选池之外的稀有场景会连去重环节都进不去，被静默漏掉
+    // （不报错，只是「共有场景数」会比实际偏小）。多数部署场景种类不会跑到这么全，暂按可接受风险处理。
+    const chosen = [
+      ...metas.filter((m) => m.type === "run" || m.type === "admission").slice(0, 6),
+      ...metas.filter((m) => m.type === "load").slice(0, 6),
+      ...metas.filter((m) => m.type === "scenario").slice(0, 60),
+    ];
     const files = [];
     for (const m of chosen) {
       try {
-        files.push({ name: m.base, md: await readFile(join(REPORTS_DIR, `${m.base}.md`), "utf8"), mtimeMs: m.mtimeMs });
+        files.push({ name: m.base, md: await readReportFileText(join(REPORTS_DIR, `${m.base}.md`)), mtimeMs: m.mtimeMs });
       } catch {
         /* 读失败 → 跳过 */
       }
@@ -219,14 +253,43 @@ async function loadBalancedCompareFiles(A, B) {
   };
   const [filesA, filesB] = await Promise.all([collect(A), collect(B)]);
   if (!filesA.length || !filesB.length) {
-    const missing = [!filesA.length ? `${A.channel} / ${A.model}` : null, !filesB.length ? `${B.channel} / ${B.model}` : null].filter(Boolean);
-    return { error: "no_reports", userMessage: `以下模型暂无可用于对比的报告：${missing.join("、")}。请先为其跑一次准入 / 稳定性 / 场景测试。` };
+    const missing = [!filesA.length ? `${A.channel} / ${A.model}` : null, !filesB.length ? `${B.channel} / ${B.model}` : null].filter(
+      Boolean,
+    );
+    return {
+      error: "no_reports",
+      userMessage: `以下模型暂无可用于对比的报告：${missing.join("、")}。请先为其跑一次准入 / 稳定性 / 场景测试。`,
+    };
   }
-  const [balA, balB] = balanceCommonReports(pickRecentReports(filesA), pickRecentReports(filesB));
+  const pickedA = pickRecentReports(filesA);
+  const pickedB = pickRecentReports(filesB);
+  const [balA, balB] = balanceCommonReports(pickedA, pickedB);
   if (!balA.length || !balB.length) {
-    return { error: "no_common_reports", userMessage: "两个对象没有可对比的共同报告：没有同名场景，稳定性 / 准入也未双方都有。请让两者至少跑一个相同的场景，或同一类测试。" };
+    return {
+      error: "no_common_reports",
+      userMessage: "两个对象没有可对比的共同报告：没有同名场景，稳定性 / 准入也未双方都有。请让两者至少跑一个相同的场景，或同一类测试。",
+    };
   }
-  return { balA, balB };
+  // 给每份报告挂上当初生成它的结构化 summary（test_runs.raw_json），让场景报告不必再从
+  // 渲染后的 markdown 表格里反解析数字（B2）。取不到的照旧解析 md —— 老报告/孤儿报告/库不可用都得能对比。
+  // 放在平衡之后：此时只剩真正参与对比的报告，查库量最小。
+  await attachSummaries([...balA, ...balB]);
+  // pickedA/pickedB：平衡前的「各自已测场景全集」，供「补齐单方场景」算差集用（不受交集裁剪）。
+  return { balA, balB, pickedA, pickedB };
+}
+
+// 按报告文件名批量取结构化 summary 并挂到 file.summary 上（原地改）。
+// 整体 try 兜底：对比功能不该因为库读不到而挂掉——最坏就是全部回退解析 md，即改动前的行为。
+async function attachSummaries(files) {
+  try {
+    const byBase = await queryReportSummariesByBase(files.map((f) => f.name));
+    for (const f of files) {
+      const s = byBase.get(f.name);
+      if (s) f.summary = s;
+    }
+  } catch (error) {
+    console.warn(`[compare] 读结构化报告数据失败，回退解析 markdown：${error?.message || error}`);
+  }
 }
 
 const httpServer = createServer(async (req, res) => {
@@ -286,9 +349,7 @@ const httpServer = createServer(async (req, res) => {
     .catch(() => {});
   const backend = (process.env.EVALUATOR_AUTH_BACKEND || "local").toLowerCase();
   if (backend !== "newapi" && backend !== "new-api" && !hasConfiguredLocalUsers()) {
-    console.warn(
-      "[auth] 登录后端=local 但未配置任何账号：请设置 EVALUATOR_ADMIN_PASSWORD（或 EVALUATOR_LOCAL_USERS），否则无法登录。",
-    );
+    console.warn("[auth] 登录后端=local 但未配置任何账号：请设置 EVALUATOR_ADMIN_PASSWORD（或 EVALUATOR_LOCAL_USERS），否则无法登录。");
   }
 });
 
@@ -399,6 +460,11 @@ const API_ROUTES = [
   ["POST", "/api/auto-test-jobs/:id/run", handleAutoTestJobRunNow],
   ["DELETE", "/api/auto-test-jobs/:id", handleAutoTestJobDelete],
 
+  // 报警规则：登录即可用（任意管理员可自定义阈值报警规则），同样不走 /api/dev/ 前缀
+  ["GET", "/api/alert-rules", handleAlertRulesList],
+  ["POST", "/api/alert-rules", handleAlertRuleUpsert],
+  ["DELETE", "/api/alert-rules/:id", handleAlertRuleDelete],
+
   // 配置档案：写（非 GET 一律要超管，见 api-access.requiresAdmin）
   ["POST", "/api/profiles", handleProfileUpsert],
   ["POST", "/api/profiles/import", handleProfilesImport],
@@ -454,9 +520,11 @@ const API_ROUTES = [
   // 报告中心（DELETE 一律要超管；GET 列表 / 查看不受限）
   ["GET", "/api/reports", handleReportsList],
   ["GET", "/api/reports/files", handleReportFilesList],
+  ["GET", "/api/reports/disk", handleReportsDiskUsage],
   ["DELETE", "/api/reports/files/:id", handleReportFileDelete],
   ["POST", "/api/reports/compare/scenarios", handleReportsCompareScenarios],
   ["POST", "/api/reports/compare", handleReportsCompare],
+  ["POST", "/api/reports/compare/gaps", handleReportsCompareGaps],
   ["POST", "/api/reports/auto-test-digest", handleReportsAutoTestDigest],
   ["GET", "/api/reports/:id/view", handleReportView],
 
@@ -507,10 +575,14 @@ async function handleApi(req, res) {
   sendJson(res, 404, { error: "not_found" });
 }
 
-async function pruneReportsOnStartup() {
+// 报告 + 历史维护：删过期/超量报告 → 删过期/超量历史表行 → 把剩下超龄未压缩的报告原地 gzip。
+// 顺序如此：先删掉不再需要保留的，再压缩还要留着的，避免白白压缩马上又要删的文件。
+// 默认时间线：创建 30 天后压缩，累计 180 天后删除（EVALUATOR_REPORT_RETENTION_DAYS 含义不变，
+// 仍是「距创建超过 N 天即删」，默认值改大以配合新增的压缩层，不新增单独的「压缩后再留几天」变量）。
+async function runReportMaintenance() {
   try {
     const removed = await pruneReports({
-      retentionDays: Number(process.env.EVALUATOR_REPORT_RETENTION_DAYS || 30),
+      retentionDays: Number(process.env.EVALUATOR_REPORT_RETENTION_DAYS || 180),
       maxTotal: Number(process.env.EVALUATOR_REPORT_MAX_TOTAL || 2000),
     });
     for (const report of removed) {
@@ -529,9 +601,24 @@ async function pruneReportsOnStartup() {
     if (historyTotal) {
       console.log(`[history] 已清理 ${historyTotal} 条过期/超量历史记录（${JSON.stringify(history)}）`);
     }
+    // 剩下的（未到删除线）报告里，超过压缩阈值且尚未压缩的原地 gzip，缓解长期磁盘增长。
+    const compressed = await compressAgedReportFiles({
+      compressAfterDays: Number(process.env.EVALUATOR_REPORT_COMPRESS_AFTER_DAYS || 30),
+    });
+    if (compressed.length) {
+      console.log(`[reports] 已压缩 ${compressed.length} 份老化报告`);
+    }
   } catch {
-    // 清理失败不应阻断启动
+    // 维护失败不应阻断启动 / 定时触发
   }
+}
+
+// 长期不重启的进程不能只在启动时清理一次，否则报告/历史只会一直增长。
+// 启动跑一次（调用处不变）之外，另加定时重跑；unref 避免这个计时器阻止进程正常退出。
+function scheduleReportMaintenance() {
+  const intervalHours = Number(process.env.EVALUATOR_MAINTENANCE_INTERVAL_HOURS || 24);
+  if (!Number.isFinite(intervalHours) || intervalHours <= 0) return;
+  setInterval(runReportMaintenance, intervalHours * 3600 * 1000).unref();
 }
 
 async function logErrorSafely(entry) {
@@ -878,7 +965,7 @@ async function handleClientLogsReplay(req, res) {
   return;
 }
 
-  // —— 开发者接口：场景分组清单（新建 / 重命名 / 删除；仅超管）——
+// —— 开发者接口：场景分组清单（新建 / 重命名 / 删除；仅超管）——
 async function handleScenarioGroupCreate(req, res) {
   const name = String((await readJson(req)).name ?? "").trim();
   if (!name) {
@@ -918,9 +1005,9 @@ async function handleScenarioGroupDelete(req, res) {
   return;
 }
 
-  // —— 自动测试作业（列表 / 新建改 / 删除 / 立即运行）——
-  // 非 /api/dev 前缀：登录即可用（普通管理员 role 10 也可维护自己的定时作业），未登录仍 401。
-  // 作业管理不暴露场景 prompt/答案，故不需超管；与 /api/dev/scenarios 的严格门禁区分开。
+// —— 自动测试作业（列表 / 新建改 / 删除 / 立即运行）——
+// 非 /api/dev 前缀：登录即可用（普通管理员 role 10 也可维护自己的定时作业），未登录仍 401。
+// 作业管理不暴露场景 prompt/答案，故不需超管；与 /api/dev/scenarios 的严格门禁区分开。
 async function handleAutoTestJobsList(req, res) {
   const [jobs, runnable] = await Promise.all([loadJobs(), loadRunnableProfiles()]);
   const byId = new Map(runnable.map((p) => [p.id, p]));
@@ -946,9 +1033,10 @@ async function handleAutoTestJobUpsert(req, res) {
       const err = validateJob(next);
       if (err) throw new JobValidationError(err);
       if (!runnableIds.has(next.targetId)) throw new JobValidationError("被测目标不存在或不可运行（渠道可能已删除/停用）。");
-      // 新建、或改动周期/由停用转启用后：重算 nextRunAt；已有且未改则沿用旧值。停用则清空。
-      const cadenceChanged = !existing || existing.periodHours !== next.periodHours || (!existing.enabled && next.enabled);
-      if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next.periodHours);
+      // 新建、或改动节奏（周期/cron）/由停用转启用后：重算 nextRunAt；已有且未改则沿用旧值。停用则清空。
+      const cadenceChanged =
+        !existing || existing.periodHours !== next.periodHours || existing.cron !== next.cron || (!existing.enabled && next.enabled);
+      if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next);
       if (!next.enabled) next.nextRunAt = null;
       // 由停用转启用（含熔断自动停用后的人工复活）：清零连续失败熔断状态，让作业重新开始计数。
       if (existing && !existing.enabled && next.enabled) {
@@ -983,6 +1071,54 @@ async function handleAutoTestJobDelete(req, res, { params }) {
   await updateJobs((jobs) => {
     const idx = jobs.findIndex((j) => j.id === id);
     if (idx >= 0) jobs.splice(idx, 1);
+  });
+  sendJson(res, 200, { ok: true });
+  return;
+}
+
+async function handleAlertRulesList(req, res) {
+  const [rules, runnable] = await Promise.all([loadRules(), loadRunnableProfiles()]);
+  const byId = new Map(runnable.map((p) => [p.id, p]));
+  const enriched = rules.map((rule) => {
+    if (rule.scope?.type !== "target") return rule;
+    const target = byId.get(rule.scope.targetId);
+    return { ...rule, targetName: target?.name || "", targetRunnable: Boolean(target) };
+  });
+  sendJson(res, 200, { ok: true, rules: enriched });
+  return;
+}
+
+async function handleAlertRuleUpsert(req, res) {
+  const body = await readJson(req);
+  try {
+    // 整个「找 existing → 规范化 → 校验 → upsert」在串行化的 updateRules 里做，与其它并发请求互不覆盖。
+    // 校验失败抛 RuleValidationError → 不落盘 → 下面兜 400。
+    const rule = await updateRules((rules) => {
+      const existing = body.id ? rules.find((r) => r.id === body.id) || null : null;
+      const next = normalizeRule(body, existing);
+      const err = validateRule(next);
+      if (err) throw new RuleValidationError(err);
+      const idx = rules.findIndex((r) => r.id === next.id);
+      if (idx >= 0) rules[idx] = next;
+      else rules.push(next);
+      return next;
+    });
+    sendJson(res, 200, { ok: true, rule });
+  } catch (error) {
+    if (error instanceof RuleValidationError) {
+      sendJson(res, 400, { error: "invalid_rule", userMessage: error.message });
+      return;
+    }
+    throw error;
+  }
+  return;
+}
+
+async function handleAlertRuleDelete(req, res, { params }) {
+  const id = params.id;
+  await updateRules((rules) => {
+    const idx = rules.findIndex((r) => r.id === id);
+    if (idx >= 0) rules.splice(idx, 1);
   });
   sendJson(res, 200, { ok: true });
   return;
@@ -1076,7 +1212,7 @@ async function handleProfileKeyUpdate(req, res, { params }) {
   return;
 }
 
-  // —— v0.3.0 渠道管理（连接 url + key + 协议，超管维护、持 key）——
+// —— v0.3.0 渠道管理（连接 url + key + 协议，超管维护、持 key）——
 async function handleChannelsList(req, res) {
   const channels = await loadChannels();
   sendJson(res, 200, channels.map(maskChannel));
@@ -1091,7 +1227,13 @@ async function handleChannelUpsert(req, res) {
   if (body.apiKey) {
     channel = await attachChannelKey(channel, body.apiKey);
   } else if (existing) {
-    channel = { ...channel, apiKeyRef: existing.apiKeyRef, keyStorage: existing.keyStorage, hasKey: existing.hasKey, keyHash: existing.keyHash };
+    channel = {
+      ...channel,
+      apiKeyRef: existing.apiKeyRef,
+      keyStorage: existing.keyStorage,
+      hasKey: existing.hasKey,
+      keyHash: existing.keyHash,
+    };
   }
   const duplicate = await findDuplicateChannel(channels, channel);
   if (duplicate && duplicate.id !== channel.id) {
@@ -1137,7 +1279,10 @@ async function handleChannelSyncModels(req, res, { params }) {
     return;
   }
   if (!channel.newapiChannelId) {
-    sendJson(res, 400, { error: "not_newapi_channel", userMessage: "该渠道不是从 new-api 导入的，无法同步模型。手动渠道请在“模型管理”里直接加模型。" });
+    sendJson(res, 400, {
+      error: "not_newapi_channel",
+      userMessage: "该渠道不是从 new-api 导入的，无法同步模型。手动渠道请在“模型管理”里直接加模型。",
+    });
     return;
   }
   let rows;
@@ -1183,7 +1328,7 @@ async function handleChannelDelete(req, res, { params }) {
   return;
 }
 
-  // —— 运行时设置（AI 总结模型 / 场景测试题库开关；脱离环境变量）——
+// —— 运行时设置（AI 总结模型 / 场景测试题库开关；脱离环境变量）——
 function handleSettingsGet(req, res) {
   // 令牌存于加密库、不在 settings.json：只回「已配置/未配置」（含环境变量兜底）。
   sendJson(res, 200, { ...getSettings(), newapiImportTokenSet: Boolean(readNewapiConfig().token) });
@@ -1289,7 +1434,7 @@ async function handleNotifySmtpSync(req, res) {
   return;
 }
 
-  // —— v0.3.0 模型目标管理（选渠道 + 填模型，管理员维护、看不到 key）——
+// —— v0.3.0 模型目标管理（选渠道 + 填模型，管理员维护、看不到 key）——
 async function handleModelTargetsList(req, res) {
   const [targets, channels, lastByProfile] = await Promise.all([loadModelTargets(), loadChannels(), queryLastTestedByProfile()]);
   const byChannel = new Map(channels.map((item) => [item.id, item]));
@@ -1370,7 +1515,7 @@ async function handleTestQuick(req, res) {
   return;
 }
 
-  // 轻量快检：真伪 + token 虚报 + 真实消耗，少量探针、输出封顶、成本可控
+// 轻量快检：真伪 + token 虚报 + 真实消耗，少量探针、输出封顶、成本可控
 async function handleTestQuickVerify(req, res) {
   const body = await readJson(req);
   const result = await runQuickVerify(body);
@@ -1466,19 +1611,19 @@ async function handleTestRunsRecent(req, res) {
   return;
 }
 
-  // 报告中心元数据列表（全平台共享，登录可读）
+// 报告中心元数据列表（全平台共享，登录可读）
 async function handleReportsList(req, res) {
   sendJson(res, 200, await queryRecentReports(200));
   return;
 }
 
-  // 高危报告提示：未读高危报告清单（登录可读）。开关关时不记录，故一般为空。
+// 高危报告提示：未读高危报告清单（登录可读）。开关关时不记录，故一般为空。
 async function handleHighRiskAlertsList(req, res) {
   sendJson(res, 200, { alerts: await listAlerts() });
   return;
 }
 
-  // 点掉某条（{ reportId }）或全部忽略（{ all: true }）；返回剩余清单。
+// 点掉某条（{ reportId }）或全部忽略（{ all: true }）；返回剩余清单。
 async function handleHighRiskAlertsAck(req, res) {
   const body = await readJson(req);
   if (body?.all === true) await ackAll();
@@ -1487,8 +1632,8 @@ async function handleHighRiskAlertsAck(req, res) {
   return;
 }
 
-  // 列出报告目录（评测数据/报告）里的全部 .html 报告文件，供「查看报告」浏览。
-  // best-effort：目录不存在/读失败 → 返回 []。每项 id 与 /view 路由一致（基名去 .html）。
+// 列出报告目录（评测数据/报告）里的全部 .html 报告文件，供「查看报告」浏览。
+// best-effort：目录不存在/读失败 → 返回 []。每项 id 与 /view 路由一致（基名去 .html）。
 async function handleReportFilesList(req, res) {
   let files = [];
   try {
@@ -1503,7 +1648,10 @@ async function handleReportFilesList(req, res) {
         }
       }),
     );
-    files = stats.filter(Boolean).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 500);
+    files = stats
+      .filter(Boolean)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .slice(0, 500);
   } catch {
     /* 目录不存在/读失败 → 空列表 */
   }
@@ -1511,8 +1659,21 @@ async function handleReportFilesList(req, res) {
   return;
 }
 
-  // 删除一份报告文件（仅超级管理员，鉴权在 api-access 的 requiresAdmin 已强制）。
-  // 只删该 id 自身的 .md + .html 与其元数据行，不牵连 -ai-analysis 兄弟（各行独立）。
+// 磁盘剩余空间（评测数据所在分区，非目录用量——够判断"要不要清理"这一件事，不需要递归扫目录）。
+async function handleReportsDiskUsage(req, res) {
+  const stats = await statfs(DATA_DIR);
+  const totalBytes = stats.blocks * stats.bsize;
+  const freeBytes = stats.bavail * stats.bsize;
+  sendJson(res, 200, {
+    totalBytes,
+    freeBytes,
+    usedPercent: totalBytes > 0 ? Math.round(((totalBytes - freeBytes) / totalBytes) * 1000) / 10 : 0,
+  });
+  return;
+}
+
+// 删除一份报告文件（仅超级管理员，鉴权在 api-access 的 requiresAdmin 已强制）。
+// 只删该 id 自身的 .md + .html 与其元数据行，不牵连 -ai-analysis 兄弟（各行独立）。
 async function handleReportFileDelete(req, res, { params }) {
   const id = sanitizeReportBaseName(params.id);
   for (const ext of [".md", ".html"]) {
@@ -1523,9 +1684,9 @@ async function handleReportFileDelete(req, res, { params }) {
   return;
 }
 
-  // 「模型比对」：依据两个模型各自在报告中心里「最近」的报告（1 份稳定性 run、1 份准入 admission、
-  // 每个场景最新一份 scenario）做统计对比，产出一份「模型对比报告」并落盘（登录即可用，只读既有报告、不发起测试）。
-  // 「模型比对 · 可选场景」：给定两个模型，返回两方【共有】的场景列表（名 + 档位），供前端勾选要纳入对比的场景。
+// 「模型比对」：依据两个模型各自在报告中心里「最近」的报告（1 份稳定性 run、1 份准入 admission、
+// 每个场景最新一份 scenario）做统计对比，产出一份「模型对比报告」并落盘（登录即可用，只读既有报告、不发起测试）。
+// 「模型比对 · 可选场景」：给定两个模型，返回两方【共有】的场景列表（名 + 档位），供前端勾选要纳入对比的场景。
 async function handleReportsCompareScenarios(req, res) {
   const body = await readJson(req);
   const A = body?.a || {};
@@ -1540,6 +1701,26 @@ async function handleReportsCompareScenarios(req, res) {
     return;
   }
   sendJson(res, 200, { scenarios: commonScenarioNames(prep.balA, prep.balB) });
+  return;
+}
+
+// 「模型比对 · 差集场景」：给定两个模型，返回各自【单方独有】的场景（供「补齐单方场景」按钮列出待补清单）。
+// 用 pickedA/pickedB（平衡前的各自已测场景全集），不受 balanceCommonReports 的交集裁剪影响。
+async function handleReportsCompareGaps(req, res) {
+  const body = await readJson(req);
+  const A = body?.a || {};
+  const B = body?.b || {};
+  if (!A.channel || !A.model || !B.channel || !B.model) {
+    sendJson(res, 400, { error: "invalid_target", userMessage: "请选择两个模型（渠道 + 模型）。" });
+    return;
+  }
+  const prep = await loadBalancedCompareFiles(A, B);
+  if (prep.error) {
+    sendJson(res, 400, { error: prep.error, userMessage: prep.userMessage });
+    return;
+  }
+  const { onlyA, onlyB } = exclusiveScenarioNames(prep.pickedA, prep.pickedB);
+  sendJson(res, 200, { onlyA, onlyB });
   return;
 }
 
@@ -1581,7 +1762,11 @@ async function handleReportsCompare(req, res) {
         aiNote = "未在「设置」里指定 AI 总结模型，已跳过 AI 叙述。";
       } else {
         const record = await executeTestRequest(
-          { ...profile, maxTokens: Math.max(Number(profile.maxTokens || 0), 1200), timeoutMs: Math.max(Number(profile.timeoutMs || 0), 90000) },
+          {
+            ...profile,
+            maxTokens: Math.max(Number(profile.maxTokens || 0), 1200),
+            timeoutMs: Math.max(Number(profile.timeoutMs || 0), 90000),
+          },
           buildCompareAnalysisPrompt(cmp),
           { runId: "model-compare", caseId: "compare-analysis", writeLog: true },
         );
@@ -1600,7 +1785,8 @@ async function handleReportsCompare(req, res) {
   const baseName = `${slug(A)}_vs_${slug(B)}_compare_${stamp}_${randomUUID().slice(0, 4)}`;
   await saveReportFiles(baseName, markdown, "模型对比报告");
   const reportId = sanitizeReportBaseName(baseName);
-  const usedNote = (agg) => `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入`;
+  const usedNote = (agg) =>
+    `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入${agg.reportCounts.load ? ` / ${agg.reportCounts.load} 压测` : ""}`;
   sendJson(res, 200, {
     reportId,
     markdown,
@@ -1609,9 +1795,9 @@ async function handleReportsCompare(req, res) {
   return;
 }
 
-  // 「自动测试巡检报告」：跨作业的周期性汇总——按时间窗口聚合各自动测试作业的目标模型，
-  // 出调度健康 + 逐模型小结 + 每模型一张稳定性趋势图，落报告中心（登录即用，只读既有数据、不发起测试）。
-  // 传 { profileId } 则只出该单个模型的巡检报告（作业/告警/图均限定到它，报告名带渠道_模型前缀，报告中心可按渠道/模型筛）。
+// 「自动测试巡检报告」：跨作业的周期性汇总——按时间窗口聚合各自动测试作业的目标模型，
+// 出调度健康 + 逐模型小结 + 每模型一张稳定性趋势图，落报告中心（登录即用，只读既有数据、不发起测试）。
+// 传 { profileId } 则只出该单个模型的巡检报告（作业/告警/图均限定到它，报告名带渠道_模型前缀，报告中心可按渠道/模型筛）。
 async function handleReportsAutoTestDigest(req, res) {
   const body = await readJson(req);
   // 时间窗口：24h / 7天(168) / 30天(720)，默认 7 天。
@@ -1689,8 +1875,8 @@ async function handleReportsAutoTestDigest(req, res) {
   });
   // 告警：单模型模式按渠道名过滤回归告警（告警按 profile_name 记录）。
   const soloInfo = soloProfileId ? infoOf(soloProfileId) : null;
-  const regressionAlerts = (await queryRegressionAlerts(soloProfileId ? { profileId: soloProfileId, limit: 200 } : { limit: 200 })).filter((a) =>
-    withinWindow(a.created_at),
+  const regressionAlerts = (await queryRegressionAlerts(soloProfileId ? { profileId: soloProfileId, limit: 200 } : { limit: 200 })).filter(
+    (a) => withinWindow(a.created_at),
   );
   const highRiskAlerts = soloProfileId ? [] : await listAlerts();
 
@@ -1703,7 +1889,9 @@ async function handleReportsAutoTestDigest(req, res) {
   // 单模型报告名带 渠道_模型 前缀（供报告中心按渠道/模型筛选）；聚合报告无前缀。
   const soloProfile = soloProfileId ? profiles.find((p) => p.id === soloProfileId) : null;
   const soloSlug = soloProfile ? sanitizeReportBaseName(reportTargetSlug(soloProfile)) : "";
-  const baseName = soloSlug ? `${soloSlug}_autodigest_${stamp}_${randomUUID().slice(0, 4)}` : `autodigest_${stamp}_${randomUUID().slice(0, 4)}`;
+  const baseName = soloSlug
+    ? `${soloSlug}_autodigest_${stamp}_${randomUUID().slice(0, 4)}`
+    : `autodigest_${stamp}_${randomUUID().slice(0, 4)}`;
   await saveReportFiles(baseName, markdown, scopeLabel ? `自动测试巡检报告 · ${soloInfo.label}` : "自动测试巡检报告", { chartNonce });
   sendJson(res, 200, {
     reportId: sanitizeReportBaseName(baseName),
@@ -1715,13 +1903,13 @@ async function handleReportsAutoTestDigest(req, res) {
   return;
 }
 
-  // 在浏览器里查看一份报告 HTML（Docker/远程部署看报告的正路：应用内浮层 iframe 或新标签页打开）。
-  // 鉴权同其它 /api/*（已登录即可读）。文件名经 sanitizeReportBaseName 防目录穿越；报告为纯静态
-  // HTML+CSS、无脚本，再叠加 nosniff + 禁脚本 CSP，直开标签页也无 XSS 面。
+// 在浏览器里查看一份报告 HTML（Docker/远程部署看报告的正路：应用内浮层 iframe 或新标签页打开）。
+// 鉴权同其它 /api/*（已登录即可读）。文件名经 sanitizeReportBaseName 防目录穿越；报告为纯静态
+// HTML+CSS、无脚本，再叠加 nosniff + 禁脚本 CSP，直开标签页也无 XSS 面。
 async function handleReportView(req, res, { params }) {
   const id = sanitizeReportBaseName(params.id);
   try {
-    const html = await readFile(join(REPORTS_DIR, `${id}.html`), "utf8");
+    const html = await readReportFileText(join(REPORTS_DIR, `${id}.html`));
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "X-Content-Type-Options": "nosniff",
@@ -1735,7 +1923,7 @@ async function handleReportView(req, res, { params }) {
   return;
 }
 
-  // 单渠道趋势 + 基线回归 + 告警（?profileId=...）
+// 单渠道趋势 + 基线回归 + 告警（?profileId=...）
 async function handleTrend(req, res, { url }) {
   const profileId = url.searchParams.get("profileId") || "";
   if (!profileId) {
@@ -1749,19 +1937,23 @@ async function handleTrend(req, res, { url }) {
   return;
 }
 
-  // 最近回归告警（全渠道；?limit=N）
+// 最近回归告警（全渠道；?limit=N）
 async function handleAlerts(req, res, { url }) {
   const limit = Number(url.searchParams.get("limit")) || 50;
   sendJson(res, 200, await queryRegressionAlerts({ limit }));
   return;
 }
 
-  // 累计测试真实消耗（成本可观测；?days=N 限定窗口，?mine=1 仅本人）
+// 累计测试真实消耗（成本可观测；?days=N 限定窗口，?mine=1 仅本人）
 async function handleSpend(req, res, { url }) {
   const days = Number(url.searchParams.get("days"));
   const sinceMs = Number.isFinite(days) && days > 0 ? Date.now() - days * 24 * 3600 * 1000 : undefined;
   const runBy = url.searchParams.get("mine") === "1" ? req.session?.username : undefined;
-  sendJson(res, 200, (await querySpendSummary({ runBy, sinceMs })) || { runs: 0, totalActualCost: 0, totalEstimatedCost: 0, currency: "USD" });
+  sendJson(
+    res,
+    200,
+    (await querySpendSummary({ runBy, sinceMs })) || { runs: 0, totalActualCost: 0, totalEstimatedCost: 0, currency: "USD" },
+  );
   return;
 }
 

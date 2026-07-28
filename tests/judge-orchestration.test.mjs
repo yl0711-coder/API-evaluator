@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  assessJudgePanel,
-  buildJudgePrompt,
-  parseJudgeScore,
-  runMultiJudge,
-} from "../server/judge-orchestration.mjs";
+import { assessJudgePanel, buildJudgePrompt, parseJudgeScore, runMultiJudge } from "../server/judge-orchestration.mjs";
 
 test("buildJudgePrompt is blind and asks for a parseable score", () => {
   const p = buildJudgePrompt({ question: "Q", answer: "A", rubric: "看准确性", scale: 100 });

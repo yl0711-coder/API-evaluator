@@ -342,10 +342,9 @@ test("scenario reports explain content safety risks in plain language", async ()
 test("完整返回：成功给回答全文；失败给未截断的上游响应体；无响应体则如实标注已截断", async () => {
   const reporting = await import(`../server/reporting.mjs?case=fullresp-${Date.now()}`);
   // 造一段超过 summarizeText 上限(500)的 SSE，尾部放一个哨兵——它只可能来自未截断的全文。
-  const sse = Array.from(
-    { length: 40 },
-    (_, i) => `data: {"choices":[{"delta":{"content":""},"index":${i}}],"usage":null}`,
-  ).join("\n\n") + '\n\ndata: {"choices":[],"usage":{"prompt_tokens":143,"completion_tokens":0}}\n\ndata: [DONE]';
+  const sse =
+    Array.from({ length: 40 }, (_, i) => `data: {"choices":[{"delta":{"content":""},"index":${i}}],"usage":null}`).join("\n\n") +
+    '\n\ndata: {"choices":[],"usage":{"prompt_tokens":143,"completion_tokens":0}}\n\ndata: [DONE]';
   assert.ok(sse.length > 500, "样本必须长过摘要上限，否则测不出截断");
 
   const base = {

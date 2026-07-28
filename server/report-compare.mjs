@@ -8,6 +8,9 @@
 // 指纹横向对照（与同模型其它渠道是否一致）、准入分项、逐场景失败原因、按难度档位拆解，以支撑有深度的对比。
 // 缺失值 `-` 一律解析为 null（不当 0）。
 import { compareProportions, mcnemarTest, pairedTTest, wilcoxonSignedRank, wilsonInterval } from "./stats.mjs";
+// 「场景结论」与报告里显示的那列同源：调同一个纯函数，而非解析它渲染出的文字（见 scenarioDataFromSummary）。
+// reporting.mjs 无顶层 I/O（实测 import 14ms、不碰盘），故本模块仍是纯函数、可离线单测。
+import { buildScenarioReviewAdvice } from "./reporting.mjs";
 
 // —— 对比专用统计量（配对分析 / 效果量 / 两样本 bootstrap）——
 // 依据 Miller 2024《Adding Error Bars to Evals》：同名场景是「配对」样本，应用配对差值（含相关项）
@@ -18,7 +21,11 @@ function pearson(a, b) {
   const xs = [];
   const ys = [];
   const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) if (Number.isFinite(a[i]) && Number.isFinite(b[i])) { xs.push(a[i]); ys.push(b[i]); }
+  for (let i = 0; i < n; i++)
+    if (Number.isFinite(a[i]) && Number.isFinite(b[i])) {
+      xs.push(a[i]);
+      ys.push(b[i]);
+    }
   const m = xs.length;
   if (m < 2) return null;
   const mx = xs.reduce((s, v) => s + v, 0) / m;
@@ -43,7 +50,11 @@ function cliffsDelta(a, b) {
   if (!A.length || !B.length) return { delta: null, magnitude: "样本不足" };
   let gt = 0;
   let lt = 0;
-  for (const x of A) for (const y of B) { if (x > y) gt++; else if (x < y) lt++; }
+  for (const x of A)
+    for (const y of B) {
+      if (x > y) gt++;
+      else if (x < y) lt++;
+    }
   const delta = (gt - lt) / (A.length * B.length);
   const m = Math.abs(delta);
   return { delta, magnitude: m < 0.147 ? "可忽略" : m < 0.33 ? "小" : m < 0.474 ? "中" : "大" };
@@ -90,7 +101,14 @@ function bootstrapDiffCI(aVals, bVals, { stat = median, resamples = 2000, seed =
     diffs[r] = stat(ra) - stat(rb);
   }
   diffs.sort((x, y) => x - y);
-  return { point: stat(A) - stat(B), lower: quantileSorted(diffs, alpha / 2), upper: quantileSorted(diffs, 1 - alpha / 2), n: Math.min(A.length, B.length), statA: stat(A), statB: stat(B) };
+  return {
+    point: stat(A) - stat(B),
+    lower: quantileSorted(diffs, alpha / 2),
+    upper: quantileSorted(diffs, 1 - alpha / 2),
+    n: Math.min(A.length, B.length),
+    statA: stat(A),
+    statB: stat(B),
+  };
 }
 
 // —— 基础文本工具 ——
@@ -232,11 +250,12 @@ export function parseReportBaseName(name) {
 
 export function detectReportType(name, md) {
   const t = parseReportBaseName(name).type;
-  if (t === "run" || t === "scenario" || t === "admission") return t;
+  if (t === "run" || t === "scenario" || t === "admission" || t === "load") return t;
   const head = String(md || "").slice(0, 200);
   if (head.includes("稳定性测试报告")) return "run";
   if (head.includes("场景测试报告")) return "scenario";
   if (head.includes("准入评测报告")) return "admission";
+  if (head.includes("压力测试报告")) return "load";
   return t || "unknown";
 }
 
@@ -342,6 +361,109 @@ export function parseScenarioReport(md) {
   return { type: "scenario", repeats, scenarios };
 }
 
+// —— 场景报告：从结构化 summary 直接构造（不解析 markdown）——
+// 数据源＝test_runs.raw_json，即当初喂给 formatScenarioReport 的同一个 summary 对象。
+// 这条路取代 parseScenarioReport 成为主路径；md 解析退居兜底（老报告/孤儿报告仍走它）。
+//
+// 为什么值得换：parseScenarioReport 靠中文表头找列（colIndex(headers,"平均质量分")），
+// 表头一改就返回 -1、整条链静默降级成 null，对比结果悄悄算错且不报错（B2）。
+// 而这些数字本来就以原生数值存在库里，没必要从渲染后的表格里再猜回来。
+//
+// 实证（227 份真实报告的差分实验）：compare 实际会读到的 145 份场景报告全部单 API、
+// 100% 有 raw_json；两条路取出的 成功率/质量分/耗时/P95 零分歧。
+// 唯一的表示差异是「全失败场景」——md 写「-」解析得 null，库里存 0，库侧更精确。
+//
+// 返回值刻意与 parseScenarioReport 逐字段同形，便于二者互换与等价测试。
+export function scenarioDataFromSummary(summary) {
+  if (!summary || typeof summary !== "object") return null;
+  const results = Array.isArray(summary.results) ? summary.results : [];
+  if (!results.length) return null;
+  const repeats = Number(summary.repeats) || 1;
+  const scenarios = [];
+  for (const result of results) {
+    for (const s of result.scenarios || []) {
+      const name = s.scenarioName;
+      if (!name) continue;
+      // 与 reporting 同源：问题摘要列＝`issues.join("; ") || "-"`（见 reporting.mjs 场景明细表构造）。
+      // 空 issues 必须给 "-" 而非 ""：下游 aggregateSubject 用 `rows.map(r=>r.issue).filter(Boolean)[0]`
+      // 挑代表值，"-" 是 truthy 而 "" 是 falsy，两者会选出不同的行 —— 给 "" 就是静默改行为。
+      // （契约测试第一次跑就抓到了这点。）
+      const issue = (Array.isArray(s.issues) ? s.issues.join("; ") : "") || "-";
+      const rate = typeof s.successRate === "number" ? s.successRate : null;
+      scenarios.push({
+        name,
+        tier: scenarioTier(name),
+        rate,
+        succ: rate == null ? null : Math.round(rate * repeats),
+        total: repeats,
+        quality: numOrNull(s.avgQualityScore),
+        avgMs: numOrNull(s.avgTotalMs),
+        p95: numOrNull(s.p95TotalMs),
+        issue,
+        // 场景结论：调 reporting 的同一个纯函数，而不是解析它渲染出的那列文字。
+        conclusion: buildScenarioReviewAdvice(s).verdict || "",
+        errored: isErrorIssue(issue),
+      });
+    }
+  }
+  return { type: "scenario", repeats, scenarios };
+}
+
+const numOrNull = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+// —— 稳定性(run)报告：用结构化 summary 覆盖那些靠 kv() 查中文标签得来的数值 ——
+// 入参 base ＝ parseRunReport(md) 的结果；summary ＝ test_runs.raw_json。
+// 返回 base 的副本，数值字段改用库里的原生值。
+//
+// 为什么是「覆盖」而非「完全取代」（与 scenario 的做法不同）：
+//   parseRunReport 的 16 个数值字段靠 kv(s4,"平均首包") 这类中文标签取值，标签一改就返回 null——
+//   这些字段库里都有（已核实 compare 可读的 38 份 run 报告 100% 齐全），故全部改从库里取。
+//   但 latencySamples/latencyRounds 是逐轮原始样本，被 slimSummaryForStorage 砍掉了，库里没有；
+//   而它们要喂 bootstrapDiffCI 算两模型延迟差的置信区间，是对比的统计核心，不能丢。
+//   逐轮数据只在 test_requests 里，取它就得按 case_id 过滤——那张表是所有请求的共享日志，
+//   混着准入探测、指纹探测，以及 ai-report-analysis（生成报告里那段 AI 分析的 LLM 调用，
+//   34 个 run 中招）。差分实验实测：不过滤就会把 23 秒的 AI 调用当成一次测试轮，
+//   平均耗时从 9285ms 变成 12733ms —— 那是在造一个新的静默算错。
+//   故本次不碰 test_requests：样本继续从 md 的「单轮明细」表拿。
+//
+// 残留耦合与它为何可接受：单轮明细表仍靠 3 个表头（结果/总耗时/首包）解析。
+//   但此时聚合值已来自库，万一表头变了 → latencyRounds 为空 → latencyStatsFrom 会
+//   自动回退到这些聚合值并标 recomputed:false（那是它本就有的兜底）。
+//   即：从「静默算错」变成「优雅降级为正确的聚合值」，只损失 bootstrap 置信区间。
+//   契约测试 tests/report-compare-contract.test.mjs 另行钉住这 3 个表头。
+//
+// 不覆盖的字段（库里没有对应结构化值，仍从 md 来）：
+//   ci95Text / baselineText / baselineRegressed / billingAudit / tokenInflation —— 均为文本或从文本反推。
+export function overlayRunDataFromSummary(base, summary) {
+  if (!base || !summary || typeof summary !== "object") return base;
+  const pick = (key, fallback) => (typeof summary[key] === "number" && Number.isFinite(summary[key]) ? summary[key] : fallback);
+  const rounds = pick("rounds", base.rounds);
+  const rate = typeof summary.successRate === "number" ? summary.successRate : base.rate;
+  const succ = pick("successCount", base.succ);
+  return {
+    ...base,
+    rate,
+    succ,
+    // total：md 的成功率写作「80% (8/10)」，pctCount 从括号里取分母；库里对应 rounds。
+    total: pick("rounds", base.total),
+    avgFirstByteMs: pick("avgFirstByteMs", base.avgFirstByteMs),
+    avgTotalMs: pick("avgTotalMs", base.avgTotalMs),
+    p50TotalMs: pick("p50TotalMs", base.p50TotalMs),
+    p95TotalMs: pick("p95TotalMs", base.p95TotalMs),
+    p99TotalMs: pick("p99TotalMs", base.p99TotalMs),
+    minMs: pick("minTotalMs", base.minMs),
+    maxMs: pick("maxTotalMs", base.maxMs),
+    avgOutputChars: pick("avgOutputChars", base.avgOutputChars),
+    inputTokens: pick("inputTokens", base.inputTokens),
+    outputTokens: pick("outputTokens", base.outputTokens),
+    estCost: pick("estimatedCost", base.estCost),
+    rounds,
+    concurrency: pick("concurrency", base.concurrency),
+    // errorCounts：库里是 { normalized_error: count } 对象，与 parseErrorDist 的产出同形。
+    errorCounts: summary.errorCounts && typeof summary.errorCounts === "object" ? summary.errorCounts : base.errorCounts,
+  };
+}
+
 export function parseAdmissionReport(md) {
   const s1 = section(md, "准入结论");
   const s3 = section(md, "关键指标");
@@ -400,18 +522,154 @@ export function parseAdmissionReport(md) {
   };
 }
 
-function parseOne(name, md) {
+// —— 压力测试(load)报告解析 ——
+// 压测报告有两种体（server/load-test.mjs）：单点（一个负载值一组数字）与扫描（负载→吞吐/尾延迟曲线表，
+// 逐行即一个负载点）。二者在这里统一转成 { type:"load", mode, points:[...] }，points 即负载点数组，
+// 单点报告只有 1 个元素。负载点用 (mode, offered) 做键——开环(req/s)与闭环(并发)量纲不同，不可互相配对，
+// 故 mode 随每个 point 一起带出（虽然同一份报告内 mode 恒定，但下游按点配对时更方便直接从 point 上取）。
+//
+// 延迟分位在报告里以「0.80s」这类秒计文本呈现（load-test.mjs 的 fmtMs），需转回毫秒；「—」= 缺失(null)。
+function secTextToMs(s) {
+  const m = String(s || "").match(/(-?\d+(?:\.\d+)?)\s*s/);
+  return m ? Math.round(Number(m[1]) * 1000) : null;
+}
+// 报告里的百分比是整数（load-test.mjs 的 pct：Math.round(v*100)），如 "80%" → 0.8。
+function pctToRate(s) {
+  const m = String(s || "").match(/(\d+(?:\.\d+)?)\s*%/);
+  return m ? Number(m[1]) / 100 : null;
+}
+
+// 单点报告的「错误构成」小节是纯 bullet 列表（非表格）：按 HTTP 状态码/超时分类统计 429 与 超时+5xx，
+// 口径对齐扫描报告表格的「429」「超时+5xx」两列，方便单点/扫描两种来源在 aggregateSubject 里同构处理。
+function parseLoadErrorBullets(errSectionText) {
+  let http429 = 0;
+  let timeoutAnd5xx = 0;
+  let genSaturated = 0;
+  for (const line of String(errSectionText || "").split(/\r?\n/)) {
+    // 原因短语（上游可控的 statusText）可能自带冒号，故贪心吃到【行尾】的「：数字」再取计数，
+    // 不能用 [^:：]* 停在短语内第一个冒号上（那会整行匹配失败 → 429/5xx 少计）。
+    const httpM = line.match(/^-\s*HTTP\s+(\d+).*[:：]\s*(\d+)\s*$/);
+    if (httpM) {
+      const code = Number(httpM[1]);
+      const count = Number(httpM[2]);
+      if (code === 429) http429 += count;
+      else if (code >= 500) timeoutAnd5xx += count;
+      continue;
+    }
+    const timeoutM = line.match(/^-\s*超时[:：]\s*(\d+)/);
+    if (timeoutM) {
+      timeoutAnd5xx += Number(timeoutM[1]);
+      continue;
+    }
+    const gsM = line.match(/^-\s*发生器受限[:：]\s*(\d+)/);
+    if (gsM) genSaturated += Number(gsM[1]);
+  }
+  return { http429, timeoutAnd5xx, genSaturated };
+}
+
+export function parseLoadReport(md) {
+  const text = String(md || "");
+  const modeLine = (text.match(/^-\s*模式[:：].*$/m) || [""])[0];
+  const mode = /开环/.test(modeLine) ? "open" : "closed";
+  const isSweep = /##\s*负载\s*→\s*吞吐/.test(text);
+
+  if (isSweep) {
+    const { headers, rows } = parseTable(section(text, "负载 → 吞吐"));
+    // 精确匹配（非 includes）：表头同时有「TTFT p95」和「p95」两列，colIndex 的 includes 匹配会让
+    // "p95" 误命中排在前面的「TTFT p95」——这里两列都要，必须按去空格后的整串相等区分。
+    const exactCol = (keyword) => headers.findIndex((h) => h.trim() === keyword);
+    const ci = {
+      qps: colIndex(headers, "QPS"),
+      tok: colIndex(headers, "tok/s"),
+      rate: colIndex(headers, "成功率"),
+      p95: exactCol("p95"),
+      p99: exactCol("p99"),
+      p429: colIndex(headers, "429"),
+      timeout5xx: colIndex(headers, "超时"),
+      genSat: colIndex(headers, "发生器受限"),
+    };
+    const points = rows
+      .map((cells) => ({
+        mode,
+        offered: num(cell(cells, 0)),
+        qps: num(cell(cells, ci.qps)),
+        tokensPerSecond: num(cell(cells, ci.tok)),
+        successRate: pctToRate(cell(cells, ci.rate)),
+        p95: secTextToMs(cell(cells, ci.p95)),
+        p99: secTextToMs(cell(cells, ci.p99)),
+        http429: num(cell(cells, ci.p429)),
+        timeoutAnd5xx: num(cell(cells, ci.timeout5xx)),
+        genSaturated: num(cell(cells, ci.genSat)),
+      }))
+      .filter((p) => Number.isFinite(p.offered));
+    return { type: "load", mode, points };
+  }
+
+  // 单点报告。
+  const offeredM = text.match(/^-\s*(?:并发|目标速率)[:：]\s*(\d+(?:\.\d+)?)/m);
+  const s1 = section(text, "吞吐与成功率");
+  const successM = s1.match(/成功：(\d+)（(\d+(?:\.\d+)?)%）\s*吞吐\s*QPS[:：]\s*([\d.]+)/);
+  const tokM = s1.match(/输出吞吐[:：]\s*([\d.]+)\s*tok\/s/);
+  const latRow = parseTable(section(text, "延迟分布"));
+  const latCells = latRow.rows[0] || [];
+  const errs = parseLoadErrorBullets(section(text, "错误构成"));
+  const point = {
+    mode,
+    offered: offeredM ? Number(offeredM[1]) : null,
+    qps: successM ? Number(successM[3]) : null,
+    tokensPerSecond: tokM ? Number(tokM[1]) : null,
+    successRate: successM ? Number(successM[2]) / 100 : null,
+    p50: secTextToMs(latCells[0]),
+    p90: secTextToMs(latCells[1]),
+    p95: secTextToMs(latCells[2]),
+    p99: secTextToMs(latCells[3]),
+    max: secTextToMs(latCells[4]),
+    avg: secTextToMs(latCells[5]),
+    http429: errs.http429,
+    timeoutAnd5xx: errs.timeoutAnd5xx,
+    genSaturated: errs.genSaturated,
+  };
+  // offered 解析失败（报告头部格式意外）→ 空点集，与扫描路径的 Number.isFinite 护栏同规则：
+  // 没有负载值的点无法参与 (mode, offered) 配对，留着只会在对比表里渲染出「负载 null」。
+  return { type: "load", mode, points: Number.isFinite(point.offered) ? [point] : [] };
+}
+
+// summary：该报告对应的结构化数据（test_runs.raw_json），由调用方从库里取来挂在 file 上；
+// 取不到就是 undefined。目前只有场景报告走结构化路，其余仍解析 markdown。
+//
+// 为什么场景报告优先读结构化数据：解析 md 靠中文表头找列，表头一改就静默降级成 null、
+// 对比结果悄悄算错且不报错（B2）。而这些数字本来就以原生数值存在库里。
+// md 解析保留为兜底——老报告、孤儿报告、库不可用时仍要能对比。
+function parseOne(name, md, summary) {
   const type = detectReportType(name, md);
-  if (type === "run") return { name, type, data: parseRunReport(md) };
-  if (type === "scenario") return { name, type, data: parseScenarioReport(md) };
+  if (type === "run") {
+    // 稳定性：数值字段改从库里取（覆盖），逐轮样本仍从 md 拿 —— 原因见 overlayRunDataFromSummary。
+    const base = parseRunReport(md);
+    return { name, type, data: summary ? overlayRunDataFromSummary(base, summary) : base, source: summary ? "db+md" : "md" };
+  }
+  if (type === "scenario") {
+    const structured = summary ? scenarioDataFromSummary(summary) : null;
+    return { name, type, data: structured || parseScenarioReport(md), source: structured ? "db" : "md" };
+  }
   if (type === "admission") return { name, type, data: parseAdmissionReport(md) };
+  if (type === "load") return { name, type, data: parseLoadReport(md) };
   return { name, type, data: null };
+}
+
+// 一份场景报告文件里【全部】场景名（一份报告可含多条场景行：批量测试选多个场景会落一个文件）。
+// 解析不出任何场景行时按文件名兜底，保持与旧的单场景去重同口径。
+function scenarioNamesOf(md, fallbackName) {
+  const names = parseScenarioReport(md)
+    .scenarios.map((s) => s.name)
+    .filter(Boolean);
+  return names.length ? names : [fallbackName];
 }
 
 // —— 选取「最近」报告 ——
 // 入参 files: [{ name, md, mtimeMs }]（某一对象的全部匹配报告）。
-// 取最新 1 份 run、最新 1 份 admission；scenario 按「场景名」去重、每个场景保留最新一份。
-// 返回给 aggregateSubject 用的 [{ name, md }]。纯函数（不读盘），便于离线单测。
+// 取最新 1 份 run、最新 1 份 admission；scenario 按「场景名」去重、每个场景由「含它的最新文件」贡献
+// （一份文件可含多条场景行，见下方贪心集合覆盖注释）。返回给 aggregateSubject 用的 [{ name, md }]。
+// 纯函数（不读盘），便于离线单测。
 export function pickRecentReports(files) {
   const withMeta = (files || []).map((f) => ({ ...f, type: detectReportType(f.name, f.md), mtimeMs: Number(f.mtimeMs) || 0 }));
   const byRecency = (a, b) => b.mtimeMs - a.mtimeMs;
@@ -421,40 +679,80 @@ export function pickRecentReports(files) {
   if (latestRun) picked.push(latestRun);
   const latestAdm = withMeta.filter((f) => f.type === "admission").sort(byRecency)[0];
   if (latestAdm) picked.push(latestAdm);
+  // load：同 run/admission，只取最新 1 份——压测报告本身就是一次运行的完整聚合（可含多个负载点），
+  // 不像场景需要跨报告去重合并；多次压测通常是想看最新一次的容量表现，不做历史池化。
+  const latestLoad = withMeta.filter((f) => f.type === "load").sort(byRecency)[0];
+  if (latestLoad) picked.push(latestLoad);
 
-  // scenario：按场景名保留最新一份（每份场景报告只测一个场景）。
+  // scenario：目标是「每个场景名保留最新一份」。但一份报告文件可含【多条】场景行（批量测试选多个
+  // 场景落一个文件），旧写法只拿 scenarios[0] 当整份文件的身份去重——两份多场景报告只要【首条】场景
+  // 名相同，较旧那份里其余场景就被整份连坐丢弃、从此在共有/差集里彻底消失（本次修复的根因）。
+  // 改为「贪心集合覆盖 + 行级授权」：从新到旧遍历，只要一份文件仍带来【尚未见过】的场景名就保留它，
+  // 并把「这份文件实际贡献的场景名」记在 scenarioAllow 上——下游 aggregateSubject 只取每份文件被
+  // 授权的行。由此每个场景名都由「含它的最新文件」独家供数：既不会被同批异名场景连累丢弃（原 bug），
+  // 也不会让旧文件里同名场景的陈旧行混进聚合稀释最新结果（若只保留文件不做行级授权，重测某场景后
+  // 旧数据仍会被按名池化进来，均值被陈旧结果拉偏）。
   const scen = withMeta.filter((f) => f.type === "scenario").sort(byRecency);
   const seen = new Set();
   for (const f of scen) {
-    const name = parseScenarioReport(f.md).scenarios[0]?.name || f.name; // 无法解析场景名时按文件名兜底去重
-    if (seen.has(name)) continue;
-    seen.add(name);
-    picked.push(f);
+    const names = scenarioNamesOf(f.md, f.name);
+    const fresh = names.filter((n) => !seen.has(n));
+    if (fresh.length) {
+      for (const n of fresh) seen.add(n);
+      picked.push({ ...f, scenarioAllow: fresh });
+    }
   }
-  return picked.map((f) => ({ name: f.name, md: f.md }));
+  return picked.map((f) => ({ name: f.name, md: f.md, ...(f.scenarioAllow ? { scenarioAllow: f.scenarioAllow } : {}) }));
 }
 
 // —— 等量对比：只保留两方【共有】的报告 ——
 // 入参为两侧各自 pickRecentReports 的结果 [{name, md}]。为让「用于对比的报告数量」两方相等：
 //   · 场景：只留两方都测过的同名场景（取交集），单方独有的丢弃；
 //   · 稳定性(run) / 准入(admission)：仅当两方都有该类时才纳入，否则该类两方都不用。
-// 由此两侧逐类数量相等、总数也相等（以较少一方为准）。返回 [balancedA, balancedB]。纯函数、便于单测。
+//   · 压力测试(load)：**不做该类等量收紧**，单方独有的压测报告仍放行——压测报告内部是多负载点的
+//     子结构，与场景更像，理应支持"仅一方测过某负载点"；具体到哪些负载点能配对留给 buildComparison。
+// 由此 run/admission/scenario 三类两侧数量相等，但 load 类两侧数量可能不同（总数也可能不同）。
+// 返回 [balancedA, balancedB]。纯函数、便于单测。
 export function balanceCommonReports(pickedA, pickedB) {
   const tag = (files) => (files || []).map((f) => ({ ...f, type: detectReportType(f.name, f.md) }));
-  const scenName = (f) => parseScenarioReport(f.md).scenarios[0]?.name || f.name; // 与 pickRecentReports 同口径
+  // 一份场景报告文件的【有效】场景名：优先用 pickRecentReports 标注的行级授权 scenarioAllow
+  // （= 该文件独家供数的场景名），无授权标注（直接调用本函数的老路径/测试）则退回文件里全部场景行。
+  const namesOf = (f) => (Array.isArray(f.scenarioAllow) && f.scenarioAllow.length ? f.scenarioAllow : scenarioNamesOf(f.md, f.name));
   const A = tag(pickedA);
   const B = tag(pickedB);
   const has = (arr, t) => arr.some((f) => f.type === t);
   const keepRun = has(A, "run") && has(B, "run");
   const keepAdm = has(A, "admission") && has(B, "admission");
-  const namesB = new Set(B.filter((f) => f.type === "scenario").map(scenName));
+  // 两方共有的场景名：按【每份文件的有效场景名】取并集后再求交集，避免多场景报告只认首条场景导致
+  // 共有场景漏判（与本次修复的根因同源）。
+  const scenNamesB = new Set(B.filter((f) => f.type === "scenario").flatMap(namesOf));
   const common = new Set(
     A.filter((f) => f.type === "scenario")
-      .map(scenName)
-      .filter((n) => namesB.has(n)),
+      .flatMap(namesOf)
+      .filter((n) => scenNamesB.has(n)),
   );
-  const keep = (f) => (f.type === "run" ? keepRun : f.type === "admission" ? keepAdm : f.type === "scenario" ? common.has(scenName(f)) : false);
-  const trim = (arr) => arr.filter(keep).map((f) => ({ name: f.name, md: f.md }));
+  // 场景文件：只要它【含有至少一个共有场景名】就保留（该文件里同批的单方独有场景会作为副产品带入，
+  // 但下游 commonScenarioNames 按聚合后的场景名取交集、buildComparison 按名分 matched/onlyA/onlyB，
+  // 独有场景不会污染「共有」口径与通过率判定）。
+  // load：**放行**（不像 run/admission 要求双方都有才纳入）——压测报告内部是多负载点的子结构，
+  // 与场景更像：一份报告里可能既有双方共有的负载点、也有单方独有的。若在这里按"整份报告要或不要"
+  // 收紧，会把"A 有压测报告、B 没有"的报告在此处直接连整份丢弃，buildComparison 里专门写的
+  // onlyA/onlyB「仅一方测过的负载点」判断永远轮不到执行，报告还会误报「两个对象都没有压力测试报告」
+  // ——这不是口径收紧，是把真实数据静默删没了。具体到哪些负载点能配对/哪些单方独有，
+  // 完全交给 buildComparison 按 (mode, offered) 精确匹配即可，此处不做文件级过滤。
+  const keep = (f) =>
+    f.type === "run"
+      ? keepRun
+      : f.type === "admission"
+        ? keepAdm
+        : f.type === "load"
+          ? true
+          : f.type === "scenario"
+            ? namesOf(f).some((n) => common.has(n))
+            : false;
+  // trim 时保留 scenarioAllow：行级授权要一路带到 aggregateSubject 才生效，在这里丢掉等于白标。
+  const trim = (arr) =>
+    arr.filter(keep).map((f) => ({ name: f.name, md: f.md, ...(f.scenarioAllow ? { scenarioAllow: f.scenarioAllow } : {}) }));
   return [trim(A), trim(B)];
 }
 
@@ -469,16 +767,51 @@ export function commonScenarioNames(filesA, filesB) {
   return aggA.scenarios.filter((s) => namesB.has(s.name)).map((s) => ({ name: s.name, tier: s.tier || null }));
 }
 
+// 取两方【单方独有】的场景（供「补齐单方场景」按钮用）：onlyA = A 测过但 B 没测过（需要在 B 上补），
+// onlyB 反之。口径与 commonScenarioNames 一致（同样先按名聚合），只是取差集而非交集。
+export function exclusiveScenarioNames(filesA, filesB) {
+  const aggA = aggregateSubject({ files: filesA });
+  const aggB = aggregateSubject({ files: filesB });
+  const namesA = new Set(aggA.scenarios.map((s) => s.name));
+  const namesB = new Set(aggB.scenarios.map((s) => s.name));
+  return {
+    onlyA: aggA.scenarios.filter((s) => !namesB.has(s.name)).map((s) => ({ name: s.name, tier: s.tier || null })),
+    onlyB: aggB.scenarios.filter((s) => !namesA.has(s.name)).map((s) => ({ name: s.name, tier: s.tier || null })),
+  };
+}
+
 // —— 对象画像聚合（全部聚合）——
 
 // scenarioFilter?: Set<string> —— 若给定，只保留名在其中的场景【行】（在按名归组后过滤，
 // 因此对「一份报告含多个场景」也精确到单个场景）。scenarioPass / tiers / quality 等一切场景派生量
 // 都随之只算被选场景，令「用户自选场景」在多场景报告下也能真正生效。
+// files: [{ name, md, mtimeMs, summary?, scenarioAllow? }] —— summary 为该报告的结构化数据（test_runs.raw_json），
+// 由调用方（server.mjs 的 loadBalancedCompareFiles）从库里取；没有则回退解析 md。
+// scenarioAllow 为 pickRecentReports 标注的行级授权（该文件独家供数的场景名）：一份多场景文件因携带
+// 独有场景被保留时，其与更新文件重名的场景行不得混入聚合稀释最新结果——授权外的行在此按文件跳过。
+// 本模块不连库，保持纯函数、可离线单测。
+
+// 场景名匹配用的规范化：折叠空白 + 去首尾空白。授权名来自 md 表格解析（写入时换行被渲染成空格、
+// 单元格被 trim），而行名在挂 DB summary 时是库里的原始 scenarioName——名字含换行/首尾空白时两边
+// 字面不同但语义相同，规范化后才能对上；不规范化会把 DB 行误判为"授权外"而丢弃。
+const normScenName = (s) =>
+  String(s ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+
 export function aggregateSubject({ files = [], label, scenarioFilter } = {}) {
-  const parsed = files.map((f) => parseOne(f.name, f.md));
+  const parsed = files.map((f) => ({
+    ...parseOne(f.name, f.md, f.summary),
+    allow: Array.isArray(f.scenarioAllow) && f.scenarioAllow.length ? new Set(f.scenarioAllow.map(normScenName)) : null,
+  }));
   const runs = parsed.filter((p) => p.type === "run").map((p) => p.data);
-  const scens = parsed.filter((p) => p.type === "scenario").map((p) => p.data);
+  const scens = parsed.filter((p) => p.type === "scenario").map((p) => ({ data: p.data, allow: p.allow }));
   const adms = parsed.filter((p) => p.type === "admission").map((p) => p.data);
+  const loads = parsed.filter((p) => p.type === "load").map((p) => p.data);
+  // 所有文件的授权名并集（「已被认领」的场景名）。行级过滤的保底：一行只有在其名字被【别的文件】
+  // 认领时才跳过；名字无人认领（md 渲染改变了名字导致与 DB 原始名对不上，如名字含 `|`）则放行——
+  // 此时没有任何更新文件在供数同名场景，丢掉它就是纯数据丢失；放行最坏也只是旧行为的按名池化。
+  const claimedScenNames = new Set(scens.flatMap((s) => (s.allow ? [...s.allow] : [])));
 
   let displayLabel = label || null;
   if (!displayLabel) {
@@ -537,12 +870,19 @@ export function aggregateSubject({ files = [], label, scenarioFilter } = {}) {
     billingAudit: runs.map((r) => r.billingAudit).find((t) => t && /疑似|异常/.test(t)) || null,
   };
 
-  // 场景：按名归组（跨多份报告求均值/池化）。
+  // 场景：按名归组（跨多份报告求均值/池化）。带行级授权的文件（scenarioAllow）只贡献授权内的行——
+  // 授权外的行是「更新文件里已有同名场景」的陈旧数据，混入会稀释最新结果。匹配走规范化名字，
+  // 且仅在该名字确实被别的文件认领时才跳过（见 claimedScenNames 的保底说明）。
   const byName = new Map();
-  for (const sc of scens) for (const row of sc.scenarios) {
-    if (!byName.has(row.name)) byName.set(row.name, []);
-    byName.get(row.name).push(row);
-  }
+  for (const { data: sc, allow } of scens)
+    for (const row of sc.scenarios) {
+      if (allow) {
+        const key = normScenName(row.name);
+        if (!allow.has(key) && claimedScenNames.has(key)) continue;
+      }
+      if (!byName.has(row.name)) byName.set(row.name, []);
+      byName.get(row.name).push(row);
+    }
   const scenarios = [...byName.entries()]
     .filter(([name]) => !(scenarioFilter instanceof Set) || scenarioFilter.has(name))
     .map(([name, rows]) => {
@@ -579,7 +919,13 @@ export function aggregateSubject({ files = [], label, scenarioFilter } = {}) {
   const tiers = [...tierMap.entries()].map(([tier, arr]) => {
     const succ = arr.reduce((x, s) => x + (s.succ || 0), 0);
     const total = arr.reduce((x, s) => x + (s.total || 0), 0);
-    return { tier, count: arr.length, passRate: total ? succ / total : null, quality: avg(arr.map((s) => s.quality)), errored: arr.filter((s) => s.errored).length };
+    return {
+      tier,
+      count: arr.length,
+      passRate: total ? succ / total : null,
+      quality: avg(arr.map((s) => s.quality)),
+      errored: arr.filter((s) => s.errored).length,
+    };
   });
 
   const admissionParsed = parsed.filter((p) => p.type === "admission");
@@ -589,11 +935,17 @@ export function aggregateSubject({ files = [], label, scenarioFilter } = {}) {
   const tokenIn = runs.reduce((s, r) => s + (r.inputTokens || 0), 0) + adms.reduce((s, r) => s + (r.inputTokens || 0), 0);
   const tokenOut = runs.reduce((s, r) => s + (r.outputTokens || 0), 0) + adms.reduce((s, r) => s + (r.outputTokens || 0), 0);
 
+  // 压力测试负载点：一份报告即代表「当次运行的完整聚合」，不做跨报告池化（噪音大、取最新更可信，
+  // 与 run/scenario 的"多次累加提升样本量"性质不同——见 pickRecentReports 对 load 只留最新一份的注释）。
+  // 正常情况下 loads 最多 1 份（pickRecentReports 已去重）；若异常多份，简单摊平——重复的
+  // (mode, offered) 键由 buildComparison 显式去重（保留首个），两侧同一规则。
+  const loadPoints = loads.flatMap((l) => l.points || []);
+
   return {
     label: displayLabel,
     channel: meta.channel || null,
     model: meta.model || null,
-    reportCounts: { run: runs.length, scenario: scens.length, admission: adms.length, total: files.length },
+    reportCounts: { run: runs.length, scenario: scens.length, admission: adms.length, load: loads.length, total: files.length },
     stability,
     integrity,
     latency: (() => {
@@ -606,6 +958,7 @@ export function aggregateSubject({ files = [], label, scenarioFilter } = {}) {
     tiers,
     admission,
     tokens: { input: tokenIn, output: tokenOut },
+    loadPoints,
   };
 }
 
@@ -618,7 +971,10 @@ function diff(x, y) {
 
 // 最近秩百分位（与稳定性报告口径一致：sorted[ceil(p·n)-1]），空集合→null。
 function nearestRankPct(values, p) {
-  const arr = (values || []).filter(Number.isFinite).slice().sort((x, y) => x - y);
+  const arr = (values || [])
+    .filter(Number.isFinite)
+    .slice()
+    .sort((x, y) => x - y);
   if (!arr.length) return null;
   return arr[Math.min(arr.length - 1, Math.max(0, Math.ceil(p * arr.length) - 1))];
 }
@@ -671,7 +1027,10 @@ export function buildComparison(a, b) {
   };
   a.scenarioPass = commonPass("a");
   b.scenarioPass = commonPass("b");
-  const scenVerdict = compareProportions(a.scenarioPass.succ, a.scenarioPass.total, b.scenarioPass.succ, b.scenarioPass.total, { labelA: a.label, labelB: b.label });
+  const scenVerdict = compareProportions(a.scenarioPass.succ, a.scenarioPass.total, b.scenarioPass.succ, b.scenarioPass.total, {
+    labelA: a.label,
+    labelB: b.label,
+  });
 
   // 档位并排（两边并集）。
   const tierNames = [...new Set([...a.tiers.map((t) => t.tier), ...b.tiers.map((t) => t.tier)])];
@@ -728,6 +1087,49 @@ export function buildComparison(a, b) {
     p95: bootstrapDiffCI(a.latency.samples, b.latency.samples, { stat: p95stat }),
   };
 
+  // —— 压力测试负载点配对：键为 (mode, offered)，开环(req/s)与闭环(并发)量纲不同、绝不互相配对。——
+  // 压测数字本身是大量请求聚合后的确定性统计量（非重复抽样），不套配对 t 检验/CI 那套统计功效手段
+  // （那是为场景重复次数少、需要弥补抽样误差设计的），这里只看点估计差值/变化率，更诚实。
+  const loadKey = (p) => `${p.mode}:${p.offered}`;
+  // 同键去重（保留报告顺序里的第一个）：runLoadTest 的负载序列不去重（用户可输入 "30,30"），一份
+  // 报告可含重复 (mode, offered) 点。不去重时 A 侧重复会产出重复的 matched 行，B 侧重复会被 Map
+  // 覆盖静默吞掉——两侧行为还不一致。统一显式去重，两侧同一规则。
+  const dedupeByKey = (pts) => {
+    const seen = new Set();
+    const out = [];
+    for (const p of pts || []) {
+      const k = loadKey(p);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(p);
+    }
+    return out;
+  };
+  const aLoadPts = dedupeByKey(a.loadPoints);
+  const bLoadPts = dedupeByKey(b.loadPoints);
+  const mapLoadB = new Map(bLoadPts.map((p) => [loadKey(p), p]));
+  const loadMatched = [];
+  const seenBKeys = new Set();
+  for (const pa of aLoadPts) {
+    const pb = mapLoadB.get(loadKey(pa));
+    if (pb) {
+      seenBKeys.add(loadKey(pa));
+      loadMatched.push({
+        mode: pa.mode,
+        offered: pa.offered,
+        a: pa,
+        b: pb,
+        qpsDelta: diff(pa.qps, pb.qps),
+        p95Delta: diff(pa.p95, pb.p95),
+        p99Delta: diff(pa.p99, pb.p99),
+        successRateDelta: diff(pa.successRate, pb.successRate),
+      });
+    }
+  }
+  const loadOnlyA = aLoadPts.filter((p) => !mapLoadB.has(loadKey(p)));
+  const loadOnlyB = bLoadPts.filter((p) => !seenBKeys.has(loadKey(p)));
+  const loadComparison = { matched: loadMatched, onlyA: loadOnlyA, onlyB: loadOnlyB };
+
   return {
     a,
     b,
@@ -737,6 +1139,7 @@ export function buildComparison(a, b) {
     pairedQuality,
     pairedPass,
     latency,
+    loadComparison,
   };
 }
 
@@ -755,14 +1158,22 @@ function signed(v, unit = "") {
 }
 // 带符号（用于差值/CI 边界，0 记 +0）；CI 文案；p 值；两位小数（效果量/相关）。
 const sgn = (v, unit = "") => (v == null || Number.isNaN(v) ? "-" : `${v < 0 ? "−" : "+"}${round(Math.abs(v))}${unit}`);
-const fmtCI = (ci, unit = "") => (ci && Number.isFinite(ci[0]) && Number.isFinite(ci[1]) ? `[${sgn(ci[0], unit)}, ${sgn(ci[1], unit)}]` : "样本不足");
+const fmtCI = (ci, unit = "") =>
+  ci && Number.isFinite(ci[0]) && Number.isFinite(ci[1]) ? `[${sgn(ci[0], unit)}, ${sgn(ci[1], unit)}]` : "样本不足";
 const fmtP = (p) => (p == null ? "-" : p < 0.001 ? "<0.001" : p.toFixed(3));
 const r2 = (v) => (Number.isFinite(v) ? v.toFixed(2) : "-");
 const ciExcludesZero = (ci) => Boolean(ci) && Number.isFinite(ci[0]) && Number.isFinite(ci[1]) && (ci[0] > 0 || ci[1] < 0);
-const escapeCell = (s) => String(s ?? "").replace(/\\+$/g, "").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+const escapeCell = (s) =>
+  String(s ?? "")
+    .replace(/\\+$/g, "")
+    .replace(/\|/g, "\\|")
+    .replace(/\s+/g, " ")
+    .trim();
 // 诊断表里的问题摘要可能较长，截断到可读长度（保留信息、不撑破表格）。
 const shortText = (s, n = 36) => {
-  const t = String(s ?? "").replace(/\s+/g, " ").trim();
+  const t = String(s ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   return t.length > n ? `${t.slice(0, n)}…` : t;
 };
 const stabCell = (s) => (s.stability ? `${pct(s.stability.rate)}（${s.stability.succ}/${s.stability.total}）` : "-");
@@ -791,11 +1202,18 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   const L = [];
   L.push("# 模型对比报告", "");
   L.push(`生成时间：${beijingTime(generatedAt)}（北京时间）`, "");
-  L.push(`- 对象 A：**${a.label}**（报告 ${a.reportCounts.total} 份：场景 ${a.reportCounts.scenario} / 稳定性 ${a.reportCounts.run} / 准入 ${a.reportCounts.admission}）`);
-  L.push(`- 对象 B：**${b.label}**（报告 ${b.reportCounts.total} 份：场景 ${b.reportCounts.scenario} / 稳定性 ${b.reportCounts.run} / 准入 ${b.reportCounts.admission}）`);
+  const loadCountText = (rc) => (rc.load ? ` / 压测 ${rc.load}` : "");
+  L.push(
+    `- 对象 A：**${a.label}**（报告 ${a.reportCounts.total} 份：场景 ${a.reportCounts.scenario} / 稳定性 ${a.reportCounts.run} / 准入 ${a.reportCounts.admission}${loadCountText(a.reportCounts)}）`,
+  );
+  L.push(
+    `- 对象 B：**${b.label}**（报告 ${b.reportCounts.total} 份：场景 ${b.reportCounts.scenario} / 稳定性 ${b.reportCounts.run} / 准入 ${b.reportCounts.admission}${loadCountText(b.reportCounts)}）`,
+  );
   if (balancedToCommon) {
     L.push("");
-    L.push("> 为等量对比，双方仅采用**共有**的报告：同名场景取交集，稳定性 / 准入需两方都测过才纳入（单方独有的已排除），故两方报告数量相同。");
+    L.push(
+      "> 为等量对比，双方仅采用**共有**的报告：同名场景取交集，稳定性 / 准入需两方都测过才纳入（单方独有的已排除）；压力测试按负载点单独判断——共有负载点参与对比，单方独有的负载点仍列出（见第6节），故两方报告数量可能不同。",
+    );
   }
   L.push("");
 
@@ -824,7 +1242,9 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   L.push(`| 场景通过率 | ${passCell(a)} | ${passCell(b)} | ${verdictCell(cmp.verdicts.scenarioPass)} |`);
   L.push("");
   const pp = cmp.pairedPass;
-  L.push(`- 配对通过率检验（同名场景 n=${cmp.scenarioQuality.matched.length}）：两边结果不一致的场景里，对象A过/对象B不过=${pp.b}、对象A不过/对象B过=${pp.c}，${pp.method === "none" ? "没有结果不一致的场景 → 无法判定" : `p=${fmtP(pp.pValue)}${pp.pValue < 0.05 ? " → **差异显著**" : ""}`}`);
+  L.push(
+    `- 配对通过率检验（同名场景 n=${cmp.scenarioQuality.matched.length}）：两边结果不一致的场景里，对象A过/对象B不过=${pp.b}、对象A不过/对象B过=${pp.c}，${pp.method === "none" ? "没有结果不一致的场景 → 无法判定" : `p=${fmtP(pp.pValue)}${pp.pValue < 0.05 ? " → **差异显著**" : ""}`}`,
+  );
   L.push("> 同名场景是同一批题目上的配对结果，通过率只看两边结果不一致的场景做头对头比较，比各自独立区间是否重叠更能分辨差异。");
   const ea = errSummary(a);
   const eb = errSummary(b);
@@ -836,22 +1256,30 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   const lb = b.latency?.stats || {};
   L.push("## 2. 延迟（稳定性轮次，含失败轮，长尾/样本有限，仅供参考）", "");
   L.push("| 指标 | 对象A | 对象B | 对象A−对象B |", "|---:|---:|---:|---:|");
-  for (const [label, key] of [["平均总耗时", "avgTotalMs"], ["平均首包", "avgFirstByteMs"], ["P50 总耗时", "p50TotalMs"], ["慢请求 P95", "p95TotalMs"], ["尾部 P99", "p99TotalMs"]]) {
+  for (const [label, key] of [
+    ["平均总耗时", "avgTotalMs"],
+    ["平均首包", "avgFirstByteMs"],
+    ["P50 总耗时", "p50TotalMs"],
+    ["慢请求 P95", "p95TotalMs"],
+    ["尾部 P99", "p99TotalMs"],
+  ]) {
     const va = la[key];
     const vb = lb[key];
     L.push(`| ${label} | ${fmt(va, " ms")} | ${fmt(vb, " ms")} | ${signed(diff(va, vb), " ms")} |`);
   }
   L.push("");
   if (la.recomputed || lb.recomputed) {
-    L.push(
-      `> 上表延迟已**包含所有有耗时记录的失败轮**——计入失败：对象A ${la.failed} 轮、对象B ${lb.failed} 轮。`,
-    );
+    L.push(`> 上表延迟已**包含所有有耗时记录的失败轮**——计入失败：对象A ${la.failed} 轮、对象B ${lb.failed} 轮。`);
     L.push("");
   }
   const lat = cmp.latency;
   L.push(`- 延迟样本量（含失败轮）：对象A n=${lat.aN} · 对象B n=${lat.bN}`);
-  if (lat.median.point != null) L.push(`- 中位总耗时差 对象A−对象B = ${sgn(lat.median.point, " ms")}，95% 置信区间 ${fmtCI([lat.median.lower, lat.median.upper], " ms")}（对象A 中位 ${fmt(lat.median.statA, " ms")} / 对象B 中位 ${fmt(lat.median.statB, " ms")}）${ciExcludesZero([lat.median.lower, lat.median.upper]) ? " → **中位延迟差异显著**" : ""}`);
-  if (lat.p95.point != null) L.push(`- P95 总耗时差 对象A−对象B = ${sgn(lat.p95.point, " ms")}，95% 置信区间 ${fmtCI([lat.p95.lower, lat.p95.upper], " ms")}`);
+  if (lat.median.point != null)
+    L.push(
+      `- 中位总耗时差 对象A−对象B = ${sgn(lat.median.point, " ms")}，95% 置信区间 ${fmtCI([lat.median.lower, lat.median.upper], " ms")}（对象A 中位 ${fmt(lat.median.statA, " ms")} / 对象B 中位 ${fmt(lat.median.statB, " ms")}）${ciExcludesZero([lat.median.lower, lat.median.upper]) ? " → **中位延迟差异显著**" : ""}`,
+    );
+  if (lat.p95.point != null)
+    L.push(`- P95 总耗时差 对象A−对象B = ${sgn(lat.p95.point, " ms")}，95% 置信区间 ${fmtCI([lat.p95.lower, lat.p95.upper], " ms")}`);
   L.push("> 延迟是长尾分布，用中位数/尾部而非平均值；两组独立、区间由重采样估计（随机种子固定、可复现）。");
   L.push("");
 
@@ -866,7 +1294,9 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
     L.push(`| 分词器 R² | ${fmt(a.admission?.tokenizerR2)} | ${fmt(b.admission?.tokenizerR2)} |`);
     L.push(`| 标称/自述家族 | ${escapeCell(famCell(a.admission))} | ${escapeCell(famCell(b.admission))} |`);
     // 分项通过/失败
-    const items = [...new Set([...(a.admission ? Object.keys(a.admission.items) : []), ...(b.admission ? Object.keys(b.admission.items) : [])])];
+    const items = [
+      ...new Set([...(a.admission ? Object.keys(a.admission.items) : []), ...(b.admission ? Object.keys(b.admission.items) : [])]),
+    ];
     if (items.length) {
       L.push("");
       L.push("准入分项结果：", "");
@@ -885,10 +1315,16 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   for (const r of cmp.tierRows) {
     const qa = r.a?.quality;
     const qb = r.b?.quality;
-    L.push(`| ${r.tier} | ${r.a ? pct(r.a.passRate) : "-"} | ${fmt(qa)} | ${r.b ? pct(r.b.passRate) : "-"} | ${fmt(qb)} | ${signed(diff(qa, qb))} |`);
+    L.push(
+      `| ${r.tier} | ${r.a ? pct(r.a.passRate) : "-"} | ${fmt(qa)} | ${r.b ? pct(r.b.passRate) : "-"} | ${fmt(qb)} | ${signed(diff(qa, qb))} |`,
+    );
   }
   L.push("");
-  const errNote = (subj) => subj.tiers.filter((t) => t.errored > 0).map((t) => `${t.tier}(${t.errored})`).join("、");
+  const errNote = (subj) =>
+    subj.tiers
+      .filter((t) => t.errored > 0)
+      .map((t) => `${t.tier}(${t.errored})`)
+      .join("、");
   const ena = errNote(a);
   const enb = errNote(b);
   if (ena || enb) L.push(`- 含错误型失败（限流/超时，属可用性问题、非能力低分）的档位：对象A: ${ena || "无"} · 对象B: ${enb || "无"}`);
@@ -896,13 +1332,17 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
 
   // 5. 逐场景诊断
   L.push("## 5. 逐场景诊断（配对场景，含失败原因）", "");
-  L.push(`- 总体平均质量分：对象A ${fmt(a.quality.mean)}（${a.quality.n} 个场景） · 对象B ${fmt(b.quality.mean)}（${b.quality.n} 个场景） · 对象A−对象B ${signed(diff(a.quality.mean, b.quality.mean))}`);
+  L.push(
+    `- 总体平均质量分：对象A ${fmt(a.quality.mean)}（${a.quality.n} 个场景） · 对象B ${fmt(b.quality.mean)}（${b.quality.n} 个场景） · 对象A−对象B ${signed(diff(a.quality.mean, b.quality.mean))}`,
+  );
   const pq = cmp.pairedQuality;
   L.push("");
   if (cmp.scenarioQuality.matched.length) {
     L.push("| 场景 | 档位 | 对象A 质量 | 对象B 质量 | 对象A−对象B | 对象A 问题 | 对象B 问题 |", "|---|---|---|---|---|---|---|");
     for (const m of cmp.scenarioQuality.matched) {
-      L.push(`| ${escapeCell(m.name)} | ${escapeCell(m.tier)} | ${fmt(m.a.quality)} | ${fmt(m.b.quality)} | ${signed(m.delta)} | ${escapeCell(shortText(m.a.issue) || "—")} | ${escapeCell(shortText(m.b.issue) || "—")} |`);
+      L.push(
+        `| ${escapeCell(m.name)} | ${escapeCell(m.tier)} | ${fmt(m.a.quality)} | ${fmt(m.b.quality)} | ${signed(m.delta)} | ${escapeCell(shortText(m.a.issue) || "—")} | ${escapeCell(shortText(m.b.issue) || "—")} |`,
+      );
     }
     L.push("");
     const big = cmp.scenarioQuality.matched.filter((m) => Number.isFinite(m.delta) && Math.abs(m.delta) >= 40);
@@ -912,7 +1352,9 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
         const winner = m.delta > 0 ? a.label : b.label;
         const loser = m.delta > 0 ? b.label : a.label;
         const loserIssue = m.delta > 0 ? m.b.issue : m.a.issue;
-        L.push(`- **${escapeCell(m.name)}**：${winner} ${fmt(Math.abs(m.delta))} 分优于 ${loser}；落后方问题：${escapeCell(shortText(loserIssue, 60) || "未记录")}。`);
+        L.push(
+          `- **${escapeCell(m.name)}**：${winner} ${fmt(Math.abs(m.delta))} 分优于 ${loser}；落后方问题：${escapeCell(shortText(loserIssue, 60) || "未记录")}。`,
+        );
       }
       L.push("");
     }
@@ -925,21 +1367,65 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   // 配对差值分析：统计口径细节、非主线结论，放本节最下方，以「> 注释」呈现（同第 2/4 节末尾说明的样式）。
   if (pq.n >= 1) {
     L.push(`> **配对差值分析**（同名场景 n=${pq.n}，同一批题目上配对比较，比各自独立平均更能分辨差异）：`);
-    L.push(`> · 质量分平均差 对象A−对象B = ${sgn(pq.meanDiff)}${pq.ci ? `，95% 置信区间 ${fmtCI(pq.ci)}` : "（样本不足，无区间）"} → ${pq.ci ? (ciExcludesZero(pq.ci) ? "**差异显著（区间不含 0）**" : "**区间含 0**") : "样本不足"}`);
-    if (pq.corr != null) L.push(`> · 配对相关 r=${r2(pq.corr)}（正相关时配对比较更稳）；符号秩 p=${fmtP(pq.pWilcoxon)}；配对均值检验 p=${fmtP(pq.pT)}`);
-    L.push(`> · 效果量 δ=${pq.cliff.delta != null ? r2(pq.cliff.delta) : "-"}（${pq.cliff.magnitude}，阈值 0.15/0.33/0.47=小/中/大）；胜/平/负（对象A 视角）= ${pq.win}/${pq.tie}/${pq.loss}，符号检验 p=${fmtP(pq.signP)}`, "");
+    L.push(
+      `> · 质量分平均差 对象A−对象B = ${sgn(pq.meanDiff)}${pq.ci ? `，95% 置信区间 ${fmtCI(pq.ci)}` : "（样本不足，无区间）"} → ${pq.ci ? (ciExcludesZero(pq.ci) ? "**差异显著（区间不含 0）**" : "**区间含 0**") : "样本不足"}`,
+    );
+    if (pq.corr != null)
+      L.push(`> · 配对相关 r=${r2(pq.corr)}（正相关时配对比较更稳）；符号秩 p=${fmtP(pq.pWilcoxon)}；配对均值检验 p=${fmtP(pq.pT)}`);
+    L.push(
+      `> · 效果量 δ=${pq.cliff.delta != null ? r2(pq.cliff.delta) : "-"}（${pq.cliff.magnitude}，阈值 0.15/0.33/0.47=小/中/大）；胜/平/负（对象A 视角）= ${pq.win}/${pq.tie}/${pq.loss}，符号检验 p=${fmtP(pq.signP)}`,
+      "",
+    );
   }
 
-  // 6. 总结
-  L.push("## 6. 总结", "");
+  // 6. 压力测试对比。与第3节（准入）同惯例：小节标题始终出现，两方都没压测报告时给一句说明而非留空。
+  const lc = cmp.loadComparison;
+  L.push("## 6. 压力测试对比", "");
+  if (lc && (lc.matched.length || lc.onlyA.length || lc.onlyB.length)) {
+    L.push(
+      "> 负载点按“模式（开环速率 req/s / 闭环并发）+ 负载值”精确配对；不同模式的点量纲不同，不互相比较。压测数字是单次运行的确定性聚合值（非重复抽样），故只看差值/变化率，不套置信区间。",
+      "",
+    );
+    if (lc.matched.length) {
+      L.push(
+        "| 模式 | 负载 | QPS(A) | QPS(B) | ΔQPS | 成功率(A) | 成功率(B) | p95(A) | p95(B) | Δp95 | p99(A) | p99(B) | Δp99 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+      );
+      for (const m of lc.matched) {
+        const unit = m.mode === "open" ? "req/s" : "并发";
+        L.push(
+          `| ${m.mode === "open" ? "开环" : "闭环"} | ${m.offered} ${unit} | ${fmt(m.a.qps)} | ${fmt(m.b.qps)} | ${signed(m.qpsDelta)} | ${pct(m.a.successRate)} | ${pct(m.b.successRate)} | ${fmt(m.a.p95, " ms")} | ${fmt(m.b.p95, " ms")} | ${signed(m.p95Delta, " ms")} | ${fmt(m.a.p99, " ms")} | ${fmt(m.b.p99, " ms")} | ${signed(m.p99Delta, " ms")} |`,
+        );
+      }
+      L.push("");
+    } else {
+      L.push("> 两个对象没有可配对的同负载点（模式或负载值均不一致），无法逐点对比。", "");
+    }
+    const loadName = (p) => `${p.mode === "open" ? "开环" : "闭环"} ${p.offered}${p.mode === "open" ? " req/s" : ""}`;
+    if (lc.onlyA.length) L.push(`- 仅对象A 测过的负载点：${lc.onlyA.map((p) => escapeCell(loadName(p))).join("、")}`);
+    if (lc.onlyB.length) L.push(`- 仅对象B 测过的负载点：${lc.onlyB.map((p) => escapeCell(loadName(p))).join("、")}`);
+    L.push("");
+  } else {
+    L.push("> 两个对象都没有压力测试报告，跳过压测对比。", "");
+  }
+  L.push("");
+
+  // 7. 总结
+  L.push("## 7. 总结", "");
   for (const line of overallConclusions(cmp)) L.push(`- ${line}`);
   L.push("");
 
   L.push("## 方法学与免责", "");
-  L.push("- 同名场景为**配对样本**：质量分用配对差值 + 95% CI（Miller 2024《Adding Error Bars to Evals》），通过率头对头用 **McNemar**（只看结果不一致的场景），比「两条独立置信区间是否重叠」更有功效。");
-  L.push("- 效果量：质量分用 **Cliff's δ**（非参数；阈值 0.147/0.33/0.474 = 小/中/大）+ 胜平负符号检验；成功率/通过率用 **Cohen's h**（两比例效应量 h = 2·arcsin√p₁ − 2·arcsin√p₂；阈值 0.2/0.5/0.8 = 小/中/大，量纲无关、0/1 边界稳定）。回答「差多少」而不只是「差不差」。");
+  L.push(
+    "- 同名场景为**配对样本**：质量分用配对差值 + 95% CI（Miller 2024《Adding Error Bars to Evals》），通过率头对头用 **McNemar**（只看结果不一致的场景），比「两条独立置信区间是否重叠」更有功效。",
+  );
+  L.push(
+    "- 效果量：质量分用 **Cliff's δ**（非参数；阈值 0.147/0.33/0.474 = 小/中/大）+ 胜平负符号检验；成功率/通过率用 **Cohen's h**（两比例效应量 h = 2·arcsin√p₁ − 2·arcsin√p₂；阈值 0.2/0.5/0.8 = 小/中/大，量纲无关、0/1 边界稳定）。回答「差多少」而不只是「差不差」。",
+  );
   L.push("- 单对象成功率仍给 Wilson 置信区间；延迟重尾，用中位/P95 的两样本 bootstrap 百分位 CI（种子固定、可复现），不用均值。");
-  L.push("- 显著性判据：看差值的 95% CI 是否含 0。为便于决策，成功率/质量类结论一律按点估计给出「谁更好」；若区间重叠或含 0（统计证据尚不充分），请结合样本量谨慎采纳。");
+  L.push(
+    "- 显著性判据：看差值的 95% CI 是否含 0。为便于决策，成功率/质量类结论一律按点估计给出「谁更好」；若区间重叠或含 0（统计证据尚不充分），请结合样本量谨慎采纳。",
+  );
   L.push("- 质量分为规则化评分，非人工质量评审；身份/纯度判断均为黑盒概率结论，仅「疑似 / 需上游解释」。");
   L.push("- 本报告依据既有评测报告聚合，未重新发起请求；标注 |Δ|≥40 的场景建议人工复核原始回答。");
   return L.join("\n");
@@ -978,7 +1464,13 @@ function decisiveProportion(v, labelA, labelB) {
   const loser = pa > pb ? labelB : labelA;
   const significant = Boolean(v.significant);
   const h = cohensH(pa, pb);
-  return { winner, loser, significant, text: significant ? `${winner} 明显优于 ${loser}` : `${winner} 更好`, effect: `效应量 h ${r2(Math.abs(h))}，${hMagnitude(h)}` };
+  return {
+    winner,
+    loser,
+    significant,
+    text: significant ? `${winner} 明显优于 ${loser}` : `${winner} 更好`,
+    effect: `效应量 h ${r2(Math.abs(h))}，${hMagnitude(h)}`,
+  };
 }
 
 // 综合投票：可用性 / 通过率 / 质量三项各按点估计投一票，得票多者为整体更优方（激进：不要求显著）。
@@ -1067,10 +1559,16 @@ function overallConclusions(cmp) {
     );
   } else {
     const qd = diff(a.quality.mean, b.quality.mean);
-    if (qd != null) out.push(qd === 0 ? `平均质量分：两者相当（配对样本不足，仅作描述）。` : `平均质量分：**${qd > 0 ? a.label : b.label} 更高**（对象A−对象B ${signed(qd)} 分，配对样本不足，仅作参考）。`);
+    if (qd != null)
+      out.push(
+        qd === 0
+          ? `平均质量分：两者相当（配对样本不足，仅作描述）。`
+          : `平均质量分：**${qd > 0 ? a.label : b.label} 更高**（对象A−对象B ${signed(qd)} 分，配对样本不足，仅作参考）。`,
+      );
   }
   const ld = diff(a.latency?.stats?.p95TotalMs, b.latency?.stats?.p95TotalMs);
-  if (ld != null && Math.abs(ld) >= 1) out.push(`P95 延迟：**${ld < 0 ? a.label : b.label} 更快**约 ${fmt(Math.abs(ld), " ms")}（延迟长尾、含失败轮）。`);
+  if (ld != null && Math.abs(ld) >= 1)
+    out.push(`P95 延迟：**${ld < 0 ? a.label : b.label} 更快**约 ${fmt(Math.abs(ld), " ms")}（延迟长尾、含失败轮）。`);
   // 综合判断（激进）：多数维度点估计领先者即整体更优。
   const ov = overallVote(cmp);
   out.push(
@@ -1086,14 +1584,43 @@ export function buildCompareAnalysisPrompt(cmp) {
   const { a, b } = cmp;
   const facts = [];
   facts.push(`对象A(所用模型)=${a.label}；对象B(要对比的模型)=${b.label}`);
-  facts.push(`稳定性成功率：对象A ${stabCell(a)}，对象B ${stabCell(b)}；场景通过率：对象A ${passCell(a)}，对象B ${passCell(b)}（配对通过率检验 p=${fmtP(cmp.pairedPass.pValue)}）`);
+  facts.push(
+    `稳定性成功率：对象A ${stabCell(a)}，对象B ${stabCell(b)}；场景通过率：对象A ${passCell(a)}，对象B ${passCell(b)}（配对通过率检验 p=${fmtP(cmp.pairedPass.pValue)}）`,
+  );
   facts.push(
     "按难度档位(通过率/均分)：" +
-      cmp.tierRows.map((r) => `${r.tier}: 对象A ${r.a ? pct(r.a.passRate) : "-"}/${fmt(r.a?.quality)}，对象B ${r.b ? pct(r.b.passRate) : "-"}/${fmt(r.b?.quality)}`).join("；"),
+      cmp.tierRows
+        .map(
+          (r) =>
+            `${r.tier}: 对象A ${r.a ? pct(r.a.passRate) : "-"}/${fmt(r.a?.quality)}，对象B ${r.b ? pct(r.b.passRate) : "-"}/${fmt(r.b?.quality)}`,
+        )
+        .join("；"),
   );
   const pq = cmp.pairedQuality;
-  if (pq.n) facts.push(`配对质量差 对象A−对象B=${sgn(pq.meanDiff)}（95% 置信区间 ${pq.ci ? fmtCI(pq.ci) : "样本不足"}），效果量 δ=${pq.cliff.delta != null ? r2(pq.cliff.delta) : "-"}(${pq.cliff.magnitude})，胜/平/负=${pq.win}/${pq.tie}/${pq.loss}`);
-  if (cmp.latency.median.point != null) facts.push(`中位延迟差 对象A−对象B=${sgn(cmp.latency.median.point, " ms")}（95% 置信区间 ${fmtCI([cmp.latency.median.lower, cmp.latency.median.upper], " ms")}）`);
+  if (pq.n)
+    facts.push(
+      `配对质量差 对象A−对象B=${sgn(pq.meanDiff)}（95% 置信区间 ${pq.ci ? fmtCI(pq.ci) : "样本不足"}），效果量 δ=${pq.cliff.delta != null ? r2(pq.cliff.delta) : "-"}(${pq.cliff.magnitude})，胜/平/负=${pq.win}/${pq.tie}/${pq.loss}`,
+    );
+  if (cmp.latency.median.point != null)
+    facts.push(
+      `中位延迟差 对象A−对象B=${sgn(cmp.latency.median.point, " ms")}（95% 置信区间 ${fmtCI([cmp.latency.median.lower, cmp.latency.median.upper], " ms")}）`,
+    );
+  // 压测负载点配对结果（有配对点才给；单方独有点仅计数提示，避免 AI 拿单侧数字硬比）。
+  const lcp = cmp.loadComparison;
+  if (lcp?.matched?.length) {
+    facts.push(
+      "压力测试(同负载点配对)：" +
+        lcp.matched
+          .map(
+            (m) =>
+              `${m.mode === "open" ? "开环" : "闭环"}${m.offered}: QPS 对象A ${fmt(m.a.qps)}/对象B ${fmt(m.b.qps)}，p99 对象A ${fmt(m.a.p99, "ms")}/对象B ${fmt(m.b.p99, "ms")}，成功率 对象A ${pct(m.a.successRate)}/对象B ${pct(m.b.successRate)}`,
+          )
+          .join("；"),
+    );
+  }
+  if (lcp && (lcp.onlyA?.length || lcp.onlyB?.length)) {
+    facts.push(`压测负载点覆盖差异：仅对象A测过 ${lcp.onlyA.length} 个、仅对象B测过 ${lcp.onlyB.length} 个（无法配对，不作强弱依据）`);
+  }
   for (const s of [a, b]) {
     const risks = [];
     if (s.integrity.baselineRegressed) risks.push("稳定性退化");
@@ -1103,7 +1630,11 @@ export function buildCompareAnalysisPrompt(cmp) {
     if (risks.length) facts.push(`${s.label} 风险：${risks.join("、")}`);
   }
   const ov = overallVote(cmp);
-  facts.push(ov.winner ? `综合点估计：${ov.winner} 在可用性/通过率/质量里于 ${ov.lead}/${ov.total} 项领先，整体更优` : "综合点估计：两者互有胜负、整体相当");
+  facts.push(
+    ov.winner
+      ? `综合点估计：${ov.winner} 在可用性/通过率/质量里于 ${ov.lead}/${ov.total} 项领先，整体更优`
+      : "综合点估计：两者互有胜负、整体相当",
+  );
   return [
     "你是资深 AI 评测分析师，判断果断、但措辞委婉得体、对两方都留有分寸。下面是对两个模型（对象A=所用模型，对象B=要对比的模型）依据既有评测报告做的结构化对比（含点估计与统计判定）。",
     "请用中文写一段 150–300 字的对比叙述，要求：",

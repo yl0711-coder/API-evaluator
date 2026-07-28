@@ -13,7 +13,17 @@ import {
 
 function mockProfileForm() {
   const field = () => ({ value: "", placeholder: "" });
-  return { elements: { provider: field(), protocol: field(), maxTokens: field(), timeoutMs: field(), baseUrl: field(), defaultModel: field(), notes: field() } };
+  return {
+    elements: {
+      provider: field(),
+      protocol: field(),
+      maxTokens: field(),
+      timeoutMs: field(),
+      baseUrl: field(),
+      defaultModel: field(),
+      notes: field(),
+    },
+  };
 }
 
 test("profile templates cover common model families with valid shape", () => {
@@ -23,7 +33,14 @@ test("profile templates cover common model families with valid shape", () => {
     assert.ok(["openai_compatible", "openai_chat", "claude_messages"].includes(template.protocol), `${key} 协议非法`);
   }
   // 用户点名要能配的常见模型家族都有预设
-  for (const key of ["gemini_openai_compatible", "kimi_openai_compatible", "doubao_openai_compatible", "glm_openai_compatible", "qwen_openai_compatible", "grok_openai_compatible"]) {
+  for (const key of [
+    "gemini_openai_compatible",
+    "kimi_openai_compatible",
+    "doubao_openai_compatible",
+    "glm_openai_compatible",
+    "qwen_openai_compatible",
+    "grok_openai_compatible",
+  ]) {
     assert.ok(PROFILE_TEMPLATES[key], `缺预设 ${key}`);
   }
   // 选预设能把协议/厂商自动填进表单

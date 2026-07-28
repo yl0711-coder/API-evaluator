@@ -92,8 +92,12 @@ export function buildHaystack({ filler, needle, depthRatio = 0.5, repeats = 50 }
 
 // 判分：模型回答里是否取回了 needle 的答案（归一化子串匹配）。
 export function scoreNeedleRetrieval(response, needleAnswer) {
-  const text = String(response || "").toLowerCase().replace(/\s+/g, "");
-  const target = String(needleAnswer || "").toLowerCase().replace(/\s+/g, "");
+  const text = String(response || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  const target = String(needleAnswer || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
   if (!target) return { retrieved: false, score: 0, note: "未指定 needle 答案" };
   const retrieved = text.includes(target);
   return { retrieved, score: retrieved ? 1 : 0 };
@@ -225,12 +229,18 @@ function extractAnswer(response) {
   // 取最后一处，避免命中题面里的示例标签。再剥一层答案标签（奥赛填空等会把 "Answer: ..." 整行放进来）。
   const sols = [...text.matchAll(/<solution>\s*([\s\S]*?)\s*<\/solution>/gi)];
   if (sols.length) return afterAnswerLabel(sols[sols.length - 1][1].trim());
-  text = text.replace(/```[a-zA-Z0-9_-]*\n?/g, "").replace(/```/g, "").trim();
+  text = text
+    .replace(/```[a-zA-Z0-9_-]*\n?/g, "")
+    .replace(/```/g, "")
+    .trim();
   const boxed = text.match(/\\boxed\{([^}]*)\}/);
   if (boxed) return boxed[1].trim();
   const labeled = afterAnswerLabel(text);
   if (labeled !== text) return labeled; // 命中答案标签
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   return lines.length ? lines[lines.length - 1] : text;
 }
 
@@ -262,7 +272,10 @@ export function scoreExactAnswer(response, expected, opts = {}) {
     }
   }
   // 失败信息同时给出「期望」与「抽取」，避免误以为抽取值==模型回答就该判对（真正比对的是期望答案）。
-  const expectedText = accepted.map((x) => String(x)).join(" / ").slice(0, 80);
+  const expectedText = accepted
+    .map((x) => String(x))
+    .join(" / ")
+    .slice(0, 80);
   return { passed: false, score: 0, extracted: candidate, issues: [`答案不符（期望：${expectedText}；抽取：${candidate.slice(0, 60)}）`] };
 }
 
@@ -302,7 +315,10 @@ function parseStructured(text) {
   }
   const loose = parseLooseJson(t);
   if (loose != null) return loose;
-  const lines = t.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = t
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   if (lines.length > 1) {
     const arr = [];
     for (const ln of lines) {
@@ -385,7 +401,14 @@ export function scoreTableReformat(response, expected) {
   if (!expRows) return { passed: false, score: 0, matched: 0, total: 0, issues: ["expected 不是可解析的表格"] };
   const got = parseStructured(String(response || ""));
   const gotRows = toRowList(got);
-  if (!gotRows) return { passed: false, score: 0, matched: 0, total: expRows.length, issues: ["模型输出不是可解析的表格（应为行对象数组/JSON/JSONL）"] };
+  if (!gotRows)
+    return {
+      passed: false,
+      score: 0,
+      matched: 0,
+      total: expRows.length,
+      issues: ["模型输出不是可解析的表格（应为行对象数组/JSON/JSONL）"],
+    };
   const expN = expRows.map(normalizeRow);
   const gotN = gotRows.map(normalizeRow);
   const used = new Array(gotN.length).fill(false);

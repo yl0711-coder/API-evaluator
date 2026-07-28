@@ -8,9 +8,7 @@ import { reportViewUrl } from "./report-overlay.js";
 export function renderScenarioSummary(container, result) {
   // 优先用 profileDigest：任务通道会剥掉重字段 results/records，digest 是不被剥离的轻量副本。
   const source = result.profileDigest || result.results || [];
-  const profiles = [...source].sort(
-    (a, b) => (b.avgQualityScore || 0) - (a.avgQualityScore || 0),
-  );
+  const profiles = [...source].sort((a, b) => (b.avgQualityScore || 0) - (a.avgQualityScore || 0));
   if (profiles.length === 0) {
     container.innerHTML = `<p class="muted">本轮没有有效结果。</p>`;
     return;
@@ -33,7 +31,7 @@ export function renderScenarioSummary(container, result) {
     `;
   });
 
-  // 每模型一篇：列出各模型报告链接（点开新标签查看）；无 reports 时回落单篇路径展示。
+  // reportCard 内含 <a> 链接标签和 escapeHtml() 转义过的数据——HTML 标签刻意不转义
   const reports = Array.isArray(result.reports) ? result.reports.filter((r) => r && r.id) : [];
   const reportCard = reports.length
     ? `

@@ -66,10 +66,17 @@ test("writeJsonAtomic：并发写同一文件——目标始终是完整 JSON、
   try {
     const file = join(dir, "data.json");
     const results = await Promise.allSettled(Array.from({ length: 16 }, (_, i) => writeJsonAtomic(file, { writer: i })));
-    assert.ok(results.some((r) => r.status === "fulfilled"), "至少一次写落地");
+    assert.ok(
+      results.some((r) => r.status === "fulfilled"),
+      "至少一次写落地",
+    );
     const parsed = JSON.parse(await readFile(file, "utf8")); // 不抛 = 未被写成半截
     assert.equal(typeof parsed.writer, "number", "目标是某次完整写的内容");
-    assert.deepEqual((await readdir(dir)).filter((f) => f.endsWith(".tmp")), [], "失败分支也清掉了临时文件，无残留");
+    assert.deepEqual(
+      (await readdir(dir)).filter((f) => f.endsWith(".tmp")),
+      [],
+      "失败分支也清掉了临时文件，无残留",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -81,7 +88,10 @@ test("writeFileAtomic：写文本内容正确、无临时残留（用于主加�
     const file = join(dir, "local-secret.key");
     await writeFileAtomic(file, "deadbeefcafe", { encoding: "utf8", mode: 0o600 });
     assert.equal(await readFile(file, "utf8"), "deadbeefcafe");
-    assert.deepEqual((await readdir(dir)).filter((f) => f.endsWith(".tmp")), []);
+    assert.deepEqual(
+      (await readdir(dir)).filter((f) => f.endsWith(".tmp")),
+      [],
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

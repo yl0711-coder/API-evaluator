@@ -5,7 +5,15 @@ import { applyPricingMigration } from "../server/migrate-pricing.mjs";
 
 test("applyPricingMigration：把渠道现值复制到旧形状模型目标", () => {
   const channels = [
-    { id: "c1", maxTokens: 1024, timeoutMs: 120000, inputPricePerMTokens: 3, outputPricePerMTokens: 15, inputSellPricePerMTokens: 5, outputSellPricePerMTokens: 25 },
+    {
+      id: "c1",
+      maxTokens: 1024,
+      timeoutMs: 120000,
+      inputPricePerMTokens: 3,
+      outputPricePerMTokens: 15,
+      inputSellPricePerMTokens: 5,
+      outputSellPricePerMTokens: 25,
+    },
     { id: "c2" }, // 渠道没配任何参数/单价
   ];
   const targets = [
@@ -15,7 +23,12 @@ test("applyPricingMigration：把渠道现值复制到旧形状模型目标", ()
   const { migrated } = applyPricingMigration(targets, channels);
   assert.equal(migrated, 2);
   assert.deepEqual(
-    { maxTokens: targets[0].maxTokens, timeoutMs: targets[0].timeoutMs, input: targets[0].inputPricePerMTokens, sellOut: targets[0].outputSellPricePerMTokens },
+    {
+      maxTokens: targets[0].maxTokens,
+      timeoutMs: targets[0].timeoutMs,
+      input: targets[0].inputPricePerMTokens,
+      sellOut: targets[0].outputSellPricePerMTokens,
+    },
     { maxTokens: 1024, timeoutMs: 120000, input: 3, sellOut: 25 },
   );
   // 渠道无值 → 参数落默认，单价落 null。

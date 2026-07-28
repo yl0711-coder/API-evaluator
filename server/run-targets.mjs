@@ -11,9 +11,7 @@ export async function loadRunnableProfiles() {
   const [profiles, channels, targets] = await Promise.all([loadProfiles(), loadChannels(), loadModelTargets()]);
   const byChannel = new Map(channels.map((channel) => [channel.id, channel]));
   const channelIds = new Set(channels.map((channel) => channel.id));
-  const resolved = targets
-    .map((target) => resolveTestTarget(target, byChannel.get(target.channelId)))
-    .filter(Boolean);
+  const resolved = targets.map((target) => resolveTestTarget(target, byChannel.get(target.channelId))).filter(Boolean);
   const seen = new Set();
   const out = [];
   for (const item of resolved) {

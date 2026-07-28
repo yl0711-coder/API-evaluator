@@ -30,7 +30,8 @@ export const CODING_SCENARIOS = [
     name: "代码：字符串反转",
     category: "coding",
     difficulty: "small",
-    prompt: "请用 JavaScript 写一个函数 reverseString(s)，接收一个字符串，返回字符顺序反转后的字符串。只需给出函数代码，可附一句说明。例如 reverseString('abc') 应返回 'cba'。",
+    prompt:
+      "请用 JavaScript 写一个函数 reverseString(s)，接收一个字符串，返回字符顺序反转后的字符串。只需给出函数代码，可附一句说明。例如 reverseString('abc') 应返回 'cba'。",
     minChars: 30,
     requiredAny: ["function", "reverseString", "reverse", "split", "=>"],
   },
@@ -39,7 +40,8 @@ export const CODING_SCENARIOS = [
     name: "代码：数组去重",
     category: "coding",
     difficulty: "small",
-    prompt: "用 JavaScript 写一个函数 unique(arr)，返回去掉重复元素后的新数组，并保持元素首次出现的顺序。给出函数代码并简述实现思路。例如 unique([1,2,2,3,1]) 应返回 [1,2,3]。",
+    prompt:
+      "用 JavaScript 写一个函数 unique(arr)，返回去掉重复元素后的新数组，并保持元素首次出现的顺序。给出函数代码并简述实现思路。例如 unique([1,2,2,3,1]) 应返回 [1,2,3]。",
     minChars: 40,
     requiredAny: ["Set", "unique", "function", "filter", "indexOf", "=>"],
   },
@@ -57,7 +59,8 @@ export const CODING_SCENARIOS = [
     name: "代码：SQL 查询 Top-N",
     category: "coding",
     difficulty: "normal",
-    prompt: "给定一张订单表 orders(user_id, amount)，写一条 SQL：统计每个用户的订单总金额，并按总金额从高到低取前 5 名。给出 SQL 语句并简要说明。",
+    prompt:
+      "给定一张订单表 orders(user_id, amount)，写一条 SQL：统计每个用户的订单总金额，并按总金额从高到低取前 5 名。给出 SQL 语句并简要说明。",
     minChars: 50,
     requiredAny: ["SELECT", "GROUP BY", "SUM", "ORDER BY", "LIMIT", "DESC"],
   },
@@ -66,7 +69,8 @@ export const CODING_SCENARIOS = [
     name: "代码：带重试的上游请求",
     category: "coding",
     difficulty: "normal",
-    prompt: "你在维护一个调用上游 API 的网关。请用 JavaScript 写一个 fetchWithRetry(url, options, retries) 函数：请求失败时最多重试 retries 次，每次重试前按指数退避等待。给出完整函数，并说明退避策略。",
+    prompt:
+      "你在维护一个调用上游 API 的网关。请用 JavaScript 写一个 fetchWithRetry(url, options, retries) 函数：请求失败时最多重试 retries 次，每次重试前按指数退避等待。给出完整函数，并说明退避策略。",
     minChars: 80,
     requiredAny: ["retry", "重试", "退避", "backoff", "fetch", "async", "await"],
   },
@@ -75,7 +79,8 @@ export const CODING_SCENARIOS = [
     name: "代码：安全解析 JSON",
     category: "coding",
     difficulty: "normal",
-    prompt: "网关经常要解析上游返回的 JSON，偶尔会收到非法 JSON 导致抛错。请写一个 safeParse(text, fallback) 函数：能正常解析就返回对象，解析失败返回 fallback，绝不抛出异常。给出函数代码并说明为何要这样处理。",
+    prompt:
+      "网关经常要解析上游返回的 JSON，偶尔会收到非法 JSON 导致抛错。请写一个 safeParse(text, fallback) 函数：能正常解析就返回对象，解析失败返回 fallback，绝不抛出异常。给出函数代码并说明为何要这样处理。",
     minChars: 60,
     requiredAny: ["try", "catch", "JSON.parse", "fallback", "异常", "return"],
   },
@@ -84,7 +89,8 @@ export const CODING_SCENARIOS = [
     name: "代码：解释 async/await",
     category: "coding",
     difficulty: "normal",
-    prompt: "请用通俗的语言向初级工程师解释 JavaScript 中 async/await 的作用，以及它与直接使用 Promise.then 相比的好处。要求结合一个简单代码示例，说明为什么 await 能让异步代码写得像同步一样。",
+    prompt:
+      "请用通俗的语言向初级工程师解释 JavaScript 中 async/await 的作用，以及它与直接使用 Promise.then 相比的好处。要求结合一个简单代码示例，说明为什么 await 能让异步代码写得像同步一样。",
     minChars: 100,
     requiredAny: ["async", "await", "Promise", "异步", "同步", "then"],
   },

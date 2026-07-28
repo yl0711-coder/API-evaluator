@@ -32,17 +32,11 @@ export function parseLooseJson(text) {
 }
 
 export function summarizeText(text) {
-  return redactSensitiveText(text)
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 500);
+  return redactSensitiveText(text).replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
 export function redactSensitiveText(text) {
-  return SECRET_VALUE_PATTERNS.reduce(
-    (value, pattern) => value.replace(pattern, "[redacted-secret]"),
-    String(text || ""),
-  );
+  return SECRET_VALUE_PATTERNS.reduce((value, pattern) => value.replace(pattern, "[redacted-secret]"), String(text || ""));
 }
 
 // 原子写：建目录 → 写【唯一】同目录临时文件 → rename 到位。rename 在同一文件系统上是原子的，
@@ -147,7 +141,10 @@ export function mean(values) {
 }
 
 export function percentile(values, ratio) {
-  const clean = values.filter(isFiniteNumber).map(Number).sort((a, b) => a - b);
+  const clean = values
+    .filter(isFiniteNumber)
+    .map(Number)
+    .sort((a, b) => a - b);
   if (clean.length === 0) return null;
   const index = Math.ceil(clean.length * ratio) - 1;
   return clean[Math.max(0, Math.min(clean.length - 1, index))];
@@ -203,12 +200,5 @@ export function sendJson(res, status, data) {
 }
 
 export function hasProxyEnv() {
-  return [
-    "all_proxy",
-    "ALL_PROXY",
-    "http_proxy",
-    "HTTP_PROXY",
-    "https_proxy",
-    "HTTPS_PROXY",
-  ].some((key) => Boolean(process.env[key]));
+  return ["all_proxy", "ALL_PROXY", "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"].some((key) => Boolean(process.env[key]));
 }

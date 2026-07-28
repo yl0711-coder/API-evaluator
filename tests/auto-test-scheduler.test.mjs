@@ -19,8 +19,14 @@ function makeStore(initial) {
   return {
     loadJobs: async () => jobs.map((j) => ({ ...j })),
     updateJobs: (mutator) => {
-      const next = chain.then(() => runOnce(mutator), () => runOnce(mutator));
-      chain = next.then(() => {}, () => {});
+      const next = chain.then(
+        () => runOnce(mutator),
+        () => runOnce(mutator),
+      );
+      chain = next.then(
+        () => {},
+        () => {},
+      );
       return next;
     },
     snapshot: () => jobs,
@@ -46,7 +52,13 @@ function makeRunners(overrides = {}) {
   };
 }
 
-const reportIdFromHtmlPath = (p) => (p ? String(p).split("/").pop().replace(/\.html$/, "") : "");
+const reportIdFromHtmlPath = (p) =>
+  p
+    ? String(p)
+        .split("/")
+        .pop()
+        .replace(/\.html$/, "")
+    : "";
 const NOW = Date.parse("2026-07-02T12:00:00.000Z");
 
 function build(store, runners, extra = {}) {
@@ -77,8 +89,25 @@ test("kind→runner 映射与 payload 正确", async () => {
   const store = makeStore([
     { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
     { id: "b", targetId: "ta", kind: "admission", periodHours: 1, enabled: true, nextRunAt: null, options: { packageLevel: "deep" } },
-    { id: "c", targetId: "ts", kind: "stability", periodHours: 1, enabled: true, nextRunAt: null, options: { rounds: 20, concurrency: 3, prompt: "自定义文案" } },
-    { id: "d", targetId: "tc", kind: "scenario", periodHours: 1, enabled: true, nextRunAt: null, scenarioIds: ["s1", "s2"], options: { repeats: 2 } },
+    {
+      id: "c",
+      targetId: "ts",
+      kind: "stability",
+      periodHours: 1,
+      enabled: true,
+      nextRunAt: null,
+      options: { rounds: 20, concurrency: 3, prompt: "自定义文案" },
+    },
+    {
+      id: "d",
+      targetId: "tc",
+      kind: "scenario",
+      periodHours: 1,
+      enabled: true,
+      nextRunAt: null,
+      scenarioIds: ["s1", "s2"],
+      options: { repeats: 2 },
+    },
   ]);
   const { calls, runners } = makeRunners();
   await build(store, runners).tick();
@@ -90,18 +119,14 @@ test("kind→runner 映射与 payload 正确", async () => {
 });
 
 test("scenario 作业无选题 → 回退默认 connectivity-basic", async () => {
-  const store = makeStore([
-    { id: "d", targetId: "tc", kind: "scenario", periodHours: 1, enabled: true, nextRunAt: null, scenarioIds: [] },
-  ]);
+  const store = makeStore([{ id: "d", targetId: "tc", kind: "scenario", periodHours: 1, enabled: true, nextRunAt: null, scenarioIds: [] }]);
   const { calls, runners } = makeRunners();
   await build(store, runners).tick();
   assert.deepEqual(calls[0].payload.scenarioIds, ["connectivity-basic"]);
 });
 
 test("触发后：lastRunAt/nextRunAt/lastStatus/lastReportId 更新", async () => {
-  const store = makeStore([
-    { id: "a", targetId: "tq", kind: "quick", periodHours: 3, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeStore([{ id: "a", targetId: "tq", kind: "quick", periodHours: 3, enabled: true, nextRunAt: null }]);
   const { runners } = makeRunners();
   await build(store, runners).tick();
   const job = store.snapshot()[0];
@@ -123,7 +148,11 @@ test("runner 抛错 → 该作业 lastStatus=failed + lastError；其他作业�
     },
   });
   let logged = null;
-  await build(store, runners, { logError: (err, job) => { logged = { msg: err.message, id: job.id }; } }).tick();
+  await build(store, runners, {
+    logError: (err, job) => {
+      logged = { msg: err.message, id: job.id };
+    },
+  }).tick();
   const boom = store.snapshot().find((j) => j.id === "boom");
   const ok = store.snapshot().find((j) => j.id === "ok");
   assert.equal(boom.lastStatus, "failed");
@@ -134,9 +163,7 @@ test("runner 抛错 → 该作业 lastStatus=failed + lastError；其他作业�
 });
 
 test("config 级失败（runner 返回 success:false）→ failed 且带 lastError", async () => {
-  const store = makeStore([
-    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeStore([{ id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
   const { runners } = makeRunners({
     runQuickVerify: () => ({ success: false, normalizedError: "profile_not_found", message: "没有找到被测 API 配置。" }),
   });
@@ -171,14 +198,20 @@ test("并发闸：maxConcurrent=1 时，多作业同刻到期也一次只跑一�
   assert.equal(started.length, 2, "第一个完成后第二个才开始");
   resolvers[1]();
   await p;
-  assert.equal(store.snapshot().every((j) => j.lastStatus === "success"), true, "两条最终都跑完");
+  assert.equal(
+    store.snapshot().every((j) => j.lastStatus === "success"),
+    true,
+    "两条最终都跑完",
+  );
 });
 
 test("熔断：连续失败达阈值 → 自动停用（enabled=false, nextRunAt=null, autoDisabledAt+原因）", async () => {
-  const store = makeStore([
-    { id: "f", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
-  const { runners } = makeRunners({ runQuickVerify: () => { throw new Error("挂了"); } });
+  const store = makeStore([{ id: "f", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
+  const { runners } = makeRunners({
+    runQuickVerify: () => {
+      throw new Error("挂了");
+    },
+  });
   const scheduler = build(store, runners, { maxConsecutiveFailures: 3 });
   for (let i = 0; i < 3; i++) await scheduler.fireJob(store.snapshot()[0]);
   const job = store.snapshot()[0];
@@ -201,9 +234,7 @@ test("熔断计数：一次成功即复位 consecutiveFailures=0，不停用", a
 });
 
 test("config 级失败（success:false）也累加熔断计数并可触发停用", async () => {
-  const store = makeStore([
-    { id: "f", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeStore([{ id: "f", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
   const { runners } = makeRunners({
     runQuickVerify: () => ({ success: false, normalizedError: "profile_not_found" }),
   });
@@ -216,10 +247,12 @@ test("config 级失败（success:false）也累加熔断计数并可触发停用
 });
 
 test("熔断阈值=0 → 永不自动停用（仅累加计数）", async () => {
-  const store = makeStore([
-    { id: "f", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
-  const { runners } = makeRunners({ runQuickVerify: () => { throw new Error("x"); } });
+  const store = makeStore([{ id: "f", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
+  const { runners } = makeRunners({
+    runQuickVerify: () => {
+      throw new Error("x");
+    },
+  });
   const scheduler = build(store, runners, { maxConsecutiveFailures: 0 });
   for (let i = 0; i < 6; i++) await scheduler.fireJob(store.snapshot()[0]);
   const job = store.snapshot()[0];
@@ -229,7 +262,16 @@ test("熔断阈值=0 → 永不自动停用（仅累加计数）", async () => {
 
 test("对账：启动时把僵尸 running 归位为 interrupted 并计一次失败；非 running 不动", async () => {
   const store = makeStore([
-    { id: "zombie", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null, lastStatus: "running", consecutiveFailures: 0 },
+    {
+      id: "zombie",
+      targetId: "tq",
+      kind: "quick",
+      periodHours: 1,
+      enabled: true,
+      nextRunAt: null,
+      lastStatus: "running",
+      consecutiveFailures: 0,
+    },
     { id: "normal", targetId: "ts", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null, lastStatus: "success" },
   ]);
   const { runners } = makeRunners();
@@ -244,7 +286,16 @@ test("对账：启动时把僵尸 running 归位为 interrupted 并计一次失�
 
 test("对账：僵尸作业濒临阈值 → 这次中断失败直接触发熔断停用（收敛 OOM 崩溃循环）", async () => {
   const store = makeStore([
-    { id: "z", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: "2026-07-02T13:00:00.000Z", lastStatus: "running", consecutiveFailures: 2 },
+    {
+      id: "z",
+      targetId: "tq",
+      kind: "quick",
+      periodHours: 1,
+      enabled: true,
+      nextRunAt: "2026-07-02T13:00:00.000Z",
+      lastStatus: "running",
+      consecutiveFailures: 2,
+    },
   ]);
   const { runners } = makeRunners();
   await build(store, runners, { maxConsecutiveFailures: 3 }).reconcileInterruptedJobs();
@@ -256,12 +307,13 @@ test("对账：僵尸作业濒临阈值 → 这次中断失败直接触发熔断
 });
 
 test("防重入：fireJob 运行中期间同一作业不被再次触发", async () => {
-  const store = makeStore([
-    { id: "slow", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeStore([{ id: "slow", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
   let resolveRun;
   const { calls, runners } = makeRunners({
-    runQuickVerify: () => new Promise((r) => { resolveRun = () => r({ success: true }); }),
+    runQuickVerify: () =>
+      new Promise((r) => {
+        resolveRun = () => r({ success: true });
+      }),
   });
   const scheduler = build(store, runners);
   const first = scheduler.tick(); // 触发 slow，卡在 pending
@@ -273,9 +325,7 @@ test("防重入：fireJob 运行中期间同一作业不被再次触发", async 
 });
 
 test("runJobNow：作业不存在 → { ok:false }，不触发任何 runner", async () => {
-  const store = makeStore([
-    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeStore([{ id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
   const { calls, runners } = makeRunners();
   const res = await build(store, runners).runJobNow("missing");
   assert.equal(res.ok, false);
@@ -284,9 +334,7 @@ test("runJobNow：作业不存在 → { ok:false }，不触发任何 runner", as
 });
 
 test("runJobNow：后台触发存在的作业 → { ok:true } 且最终写回运行态（含重算 nextRunAt）", async () => {
-  const store = makeStore([
-    { id: "a", targetId: "tq", kind: "quick", periodHours: 2, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeStore([{ id: "a", targetId: "tq", kind: "quick", periodHours: 2, enabled: true, nextRunAt: null }]);
   const { calls, runners } = makeRunners();
   const res = await build(store, runners).runJobNow("a");
   assert.deepEqual(res, { ok: true }, "受理即返回，不阻塞等测试跑完");
@@ -299,12 +347,13 @@ test("runJobNow：后台触发存在的作业 → { ok:true } 且最终写回运
 });
 
 test("runJobNow：作业正在运行 → { ok:false }，不重复触发", async () => {
-  const store = makeStore([
-    { id: "slow", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeStore([{ id: "slow", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
   let resolveRun;
   const { calls, runners } = makeRunners({
-    runQuickVerify: () => new Promise((r) => { resolveRun = () => r({ success: true }); }),
+    runQuickVerify: () =>
+      new Promise((r) => {
+        resolveRun = () => r({ success: true });
+      }),
   });
   const scheduler = build(store, runners);
   const first = await scheduler.runJobNow("slow"); // 后台触发，卡在 pending runner
@@ -320,7 +369,15 @@ test("runJobNow：作业正在运行 → { ok:false }，不重复触发", async 
 
 test("runJobNow：手动运行放行已停用作业（绕过 enabled 门禁），但不改其启用态", async () => {
   const store = makeStore([
-    { id: "off", targetId: "tq", kind: "quick", periodHours: 1, enabled: false, nextRunAt: null, autoDisabledAt: "2026-07-01T00:00:00.000Z" },
+    {
+      id: "off",
+      targetId: "tq",
+      kind: "quick",
+      periodHours: 1,
+      enabled: false,
+      nextRunAt: null,
+      autoDisabledAt: "2026-07-01T00:00:00.000Z",
+    },
   ]);
   const { calls, runners } = makeRunners();
   const res = await build(store, runners).runJobNow("off");
@@ -351,9 +408,7 @@ function makeFailingStore(initial) {
 }
 
 test("盘写失败：tick 不拒绝（否则 void tick() → unhandledRejection → 杀进程）（P2-4 回归）", async () => {
-  const store = makeFailingStore([
-    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeFailingStore([{ id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
   const { runners } = makeRunners();
   const logged = [];
   const scheduler = build(store, runners, { logError: (err, job) => logged.push({ code: err.code, id: job?.id }) });
@@ -363,9 +418,7 @@ test("盘写失败：tick 不拒绝（否则 void tick() → unhandledRejection 
 });
 
 test("盘写失败：runJobNow 的后台 fireJob 不产生无人接管的拒绝（P2-4 回归）", async () => {
-  const store = makeFailingStore([
-    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeFailingStore([{ id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
   const { runners } = makeRunners();
   const scheduler = build(store, runners, { logError: () => {} });
 
@@ -401,9 +454,7 @@ test("盘写失败：两个作业各自失败，互不拖累，且都不拒绝�
 });
 
 test("盘写失败后占位被解除，盘恢复前的下一轮仍会重试（P2-4 回归）", async () => {
-  const store = makeFailingStore([
-    { id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },
-  ]);
+  const store = makeFailingStore([{ id: "a", targetId: "tq", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null }]);
   const { runners } = makeRunners();
   const logged = [];
   const scheduler = build(store, runners, { logError: (err, job) => logged.push(job?.id) });
@@ -446,7 +497,10 @@ test("跑完后回写失败：结果丢了但进程活着（P2-4 回归，第二
   // 两条日志对应真实的失败链路：成功分支回写(第2次写)失败 → 内层 catch 记一次 → 它再试着
   // 回写 "failed" 状态(第3次写) → 又失败 → 从内层 catch 里冒出来 → 外层兜底记第二次。
   // 过去没有外层兜底，第二次失败就是那个杀进程的 unhandledRejection。
-  assert.deepEqual(logged, [{ code: "ENOSPC", id: "a" }, { code: "ENOSPC", id: "a" }]);
+  assert.deepEqual(logged, [
+    { code: "ENOSPC", id: "a" },
+    { code: "ENOSPC", id: "a" },
+  ]);
   // 盘上停在 "running"：这是可接受的降级，启动时的 reconcileInterruptedJobs 会把它归位为 interrupted。
   assert.equal(store.snapshot()[0].lastStatus, "running", "回写没成功，状态停在占位值");
   assert.equal(scheduler.runningJobIds.size, 0, "内存占位仍必须解除");

@@ -33,7 +33,6 @@ export function createStandardEvalController({
     if (running) return; // 防双击/确认框 await 期间重复提交（最贵流程，重复=重复扣额度）
     const payload = Object.fromEntries(new FormData(form).entries());
     const scenarioIds = pickStandardScenarioIds(state.scenarios);
-    state.latestStandardProfileId = payload.profileId || "";
     if (!payload.profileId) {
       toast("请先选择一个被测 API。", true);
       return;
@@ -145,7 +144,12 @@ async function runStandardEvaluation({ payload, scenarioIds, state, progressElem
     method: "POST",
     body: JSON.stringify({ profileId: payload.profileId, prompt: payload.prompt }),
   });
-  setStandardStep(progressElement, "quick", quick.success ? "done" : "failed", quick.success ? "快速测试成功。" : quick.normalizedError || "快速测试失败。");
+  setStandardStep(
+    progressElement,
+    "quick",
+    quick.success ? "done" : "failed",
+    quick.success ? "快速测试成功。" : quick.normalizedError || "快速测试失败。",
+  );
   if (!quick.success) {
     const error = new Error(`快速测试失败：${quick.normalizedError || quick.message || "请检查配置。"}`);
     error.normalizedError = quick.normalizedError;
@@ -171,7 +175,12 @@ async function runStandardEvaluation({ payload, scenarioIds, state, progressElem
     },
     taskProgressElement,
   );
-  setStandardStep(progressElement, "stability", "done", `稳定性测试完成：成功率 ${stability.successRateText || "-"}，慢请求参考 ${stability.p95TotalMs ?? "-"} ms。`);
+  setStandardStep(
+    progressElement,
+    "stability",
+    "done",
+    `稳定性测试完成：成功率 ${stability.successRateText || "-"}，慢请求参考 ${stability.p95TotalMs ?? "-"} ms。`,
+  );
 
   let scenario = null;
   if (scenarioIds.length > 0) {
@@ -190,7 +199,9 @@ async function runStandardEvaluation({ payload, scenarioIds, state, progressElem
       },
       taskProgressElement,
     );
-    const score = Math.round(average(scenario.results?.map((item) => item.avgQualityScore).filter((value) => Number.isFinite(value)) || []) || 0);
+    const score = Math.round(
+      average(scenario.results?.map((item) => item.avgQualityScore).filter((value) => Number.isFinite(value)) || []) || 0,
+    );
     setStandardStep(progressElement, "scenario", "done", `场景测试完成：平均质量分 ${score || "-"}。`);
   } else {
     setStandardStep(progressElement, "scenario", "skipped", "暂无可用场景，已跳过。");

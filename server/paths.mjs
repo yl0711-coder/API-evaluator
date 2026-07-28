@@ -27,6 +27,10 @@ export const AUTO_TEST_JOBS_FILE = join(CONFIG_DIR, "auto-test-jobs.json");
 export const HIGH_RISK_ALERTS_FILE = join(CONFIG_DIR, "high-risk-alerts.json");
 // 邮件报警的发信配置（SMTP 服务器/端口/账号/发件人/收件人）；密码不在此，走加密库（secret-store）。
 export const NOTIFY_CONFIG_FILE = join(CONFIG_DIR, "notify-config.json");
+// 报警规则配置：管理员自定义的阈值报警规则定义（持久卷 /data）。
+export const ALERT_RULES_FILE = join(CONFIG_DIR, "alert-rules.json");
+// 报警规则触发状态：各规则×目标的上次触发时间（冷却判断用），与规则定义分离避免频繁写入污染配置文件。
+export const ALERT_RULE_STATE_FILE = join(CONFIG_DIR, "alert-rule-state.json");
 export const SQLITE_DB_FILE = envCompat("SQLITE_DB") || join(DATA_DIR, "evaluator.db");
 export const REQUEST_LOG_FILE = join(LOGS_DIR, "requests.jsonl");
 export const TEST_RUNS_FILE = join(LOGS_DIR, "test-runs.jsonl");
