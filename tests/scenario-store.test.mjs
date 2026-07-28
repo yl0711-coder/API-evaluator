@@ -102,7 +102,10 @@ test("upsert 校验：name 含竖线 | 或换行 → ok:false，不写入", asyn
   const withPipe = await upsertScenario({ id: "bad-name-pipe", name: "对比 A|B 两种写法", prompt: "p" }, { persist: false });
   assert.equal(withPipe.ok, false);
   assert.match(withPipe.userMessage, /竖线|换行/);
-  assert.equal(getAllScenariosForAdmin().some((s) => s.id === "bad-name-pipe"), false);
+  assert.equal(
+    getAllScenariosForAdmin().some((s) => s.id === "bad-name-pipe"),
+    false,
+  );
 
   const withNewline = await upsertScenario({ id: "bad-name-nl", name: "换行\n场景名", prompt: "p" }, { persist: false });
   assert.equal(withNewline.ok, false);

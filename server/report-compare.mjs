@@ -726,7 +726,11 @@ export function balanceCommonReports(pickedA, pickedB) {
   // 两方共有的场景名：按【每份文件的有效场景名】取并集后再求交集，避免多场景报告只认首条场景导致
   // 共有场景漏判（与本次修复的根因同源）。
   const scenNamesB = new Set(B.filter((f) => f.type === "scenario").flatMap(namesOf));
-  const common = new Set(A.filter((f) => f.type === "scenario").flatMap(namesOf).filter((n) => scenNamesB.has(n)));
+  const common = new Set(
+    A.filter((f) => f.type === "scenario")
+      .flatMap(namesOf)
+      .filter((n) => scenNamesB.has(n)),
+  );
   // 场景文件：只要它【含有至少一个共有场景名】就保留（该文件里同批的单方独有场景会作为副产品带入，
   // 但下游 commonScenarioNames 按聚合后的场景名取交集、buildComparison 按名分 matched/onlyA/onlyB，
   // 独有场景不会污染「共有」口径与通过率判定）。

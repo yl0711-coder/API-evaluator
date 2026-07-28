@@ -300,7 +300,14 @@ test("行级授权回归：旧文件因独有场景被保留时，其与新文�
     rows.map(([n, q]) => `| ${n} | 100% | ${q} |`).join("\n") +
     "\n";
   const files = [
-    { name: "old_batch", md: scenMd([["场景X", 20], ["场景B", 70]]), mtimeMs: 1 },
+    {
+      name: "old_batch",
+      md: scenMd([
+        ["场景X", 20],
+        ["场景B", 70],
+      ]),
+      mtimeMs: 1,
+    },
     { name: "new_single", md: scenMd([["场景X", 90]]), mtimeMs: 2 },
   ];
   const picked = pickRecentReports(files);
@@ -315,7 +322,16 @@ test("行级授权回归：旧文件因独有场景被保留时，其与新文�
   const b = agg.scenarios.find((s) => s.name === "场景B");
   assert.equal(b.quality, 70, "场景B 正常由旧文件供数");
   // 授权要能穿过 balanceCommonReports 存活（否则白标）：对侧也测过 X 和 B 时，X 仍只取最新值。
-  const filesOther = [{ name: "other", md: scenMd([["场景X", 50], ["场景B", 50]]), mtimeMs: 1 }];
+  const filesOther = [
+    {
+      name: "other",
+      md: scenMd([
+        ["场景X", 50],
+        ["场景B", 50],
+      ]),
+      mtimeMs: 1,
+    },
+  ];
   const [balA] = balanceCommonReports(picked, pickRecentReports(filesOther));
   const aggBal = aggregateSubject({ files: balA });
   assert.equal(aggBal.scenarios.find((s) => s.name === "场景X").quality, 90, "经 balance 后授权仍生效，X 不被陈旧行稀释");
@@ -345,13 +361,23 @@ test("行级授权口径回归：挂 DB summary 后行名来自库（可能含�
   });
   // 新文件测了 场景X；旧文件测了 场景X + 「换行 场景」（DB 原始名带 \n，md 里渲染成空格）。
   const files = [
-    { name: "old", md: scenMd([["场景X", 20], ["换行 场景", 70]]), mtimeMs: 1 },
+    {
+      name: "old",
+      md: scenMd([
+        ["场景X", 20],
+        ["换行 场景", 70],
+      ]),
+      mtimeMs: 1,
+    },
     { name: "new", md: scenMd([["场景X", 90]]), mtimeMs: 2 },
   ];
   const picked = pickRecentReports(files);
   // 模拟 attachSummaries：给旧文件挂 DB summary，行名用【原始】带换行的名字。
   const oldPicked = picked.find((f) => f.name === "old");
-  oldPicked.summary = mkSummary([["场景X", 20], ["换行\n场景", 70]]);
+  oldPicked.summary = mkSummary([
+    ["场景X", 20],
+    ["换行\n场景", 70],
+  ]);
   const agg = aggregateSubject({ files: picked });
   const wrapped = agg.scenarios.find((s) => s.name.includes("换行"));
   assert.ok(wrapped, "DB 原始名含换行的场景不得因 md/DB 名字字面不同而被授权过滤误丢");
@@ -360,11 +386,12 @@ test("行级授权口径回归：挂 DB summary 后行名来自库（可能含�
 
   // 无人认领的名字放行（保底）：DB 行名与任何 md 授权名都对不上（如名字含 |，md 表格解析已碎）——
   // 此时没有任何更新文件在供数同名场景，丢掉它就是纯数据丢失，必须保留。
-  const files2 = [
-    { name: "only", md: scenMd([["正常场景", 80]]), mtimeMs: 1 },
-  ];
+  const files2 = [{ name: "only", md: scenMd([["正常场景", 80]]), mtimeMs: 1 }];
   const picked2 = pickRecentReports(files2);
-  picked2[0].summary = mkSummary([["正常场景", 80], ["带|管道的场景", 60]]);
+  picked2[0].summary = mkSummary([
+    ["正常场景", 80],
+    ["带|管道的场景", 60],
+  ]);
   const agg2 = aggregateSubject({ files: picked2 });
   assert.ok(
     agg2.scenarios.some((s) => s.name === "带|管道的场景"),
@@ -571,8 +598,16 @@ test("exclusiveScenarioNames：取两方单方独有场景（供「补齐单方�
     { name: "b-s123", md: scenMd("逻辑谜题", "数学题", "翻译题") },
   ];
   const { onlyA, onlyB } = exclusiveScenarioNames(filesA, filesB);
-  assert.deepEqual(onlyA.map((s) => s.name), ["编程题"], "onlyA = A 测过但 B 没测过");
-  assert.deepEqual(onlyB.map((s) => s.name), ["翻译题"], "onlyB = B 测过但 A 没测过");
+  assert.deepEqual(
+    onlyA.map((s) => s.name),
+    ["编程题"],
+    "onlyA = A 测过但 B 没测过",
+  );
+  assert.deepEqual(
+    onlyB.map((s) => s.name),
+    ["翻译题"],
+    "onlyB = B 测过但 A 没测过",
+  );
   // 互补校验：共有 + 单方独有(各自) 应覆盖两方场景全集，且共有/独有不重叠。
   const common = new Set(commonScenarioNames(filesA, filesB).map((s) => s.name));
   assert.ok(!common.has("编程题") && !common.has("翻译题"), "独有场景不应出现在共有集合里");
@@ -733,7 +768,10 @@ test("buildComparison：负载点按 (mode, offered) 精确配对；不同 mode 
   // A 独有：closed/20 与 open/10（后者与 B 的 closed/10 数值一样但 mode 不同，不得被误配）。
   const onlyAKeys = cmp.loadComparison.onlyA.map((p) => `${p.mode}:${p.offered}`).sort();
   assert.deepEqual(onlyAKeys, ["closed:20", "open:10"], "closed/20 与 open/10 均未被配对");
-  assert.deepEqual(cmp.loadComparison.onlyB.map((p) => `${p.mode}:${p.offered}`), ["closed:30"]);
+  assert.deepEqual(
+    cmp.loadComparison.onlyB.map((p) => `${p.mode}:${p.offered}`),
+    ["closed:30"],
+  );
 });
 
 test("formatCompareReportMarkdown：压力测试对比节——有数据时出表格，无数据时给说明而非空表格", () => {
