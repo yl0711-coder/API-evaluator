@@ -1256,9 +1256,14 @@ export function buildComparison(a, b) {
     onlyA: stillOnlyA,
     onlyB: stillOnlyB,
     summary: loadSummary,
+    // 去重后的两侧完整压测点集（未经共有性过滤），供综合评分算 goodput 用——
+    // 不能用 matched/interpolatedMatched（那是"配对成功的子集"），综合评分要看的是
+    // 各自曲线独立算出的拐点吞吐量，压测种类不一致也能各自算、互相比。
+    aPoints: aLoadPts,
+    bPoints: bLoadPts,
   };
 
-  return {
+  const cmpWithoutScore = {
     a,
     b,
     verdicts: { stability: stabVerdict, scenarioPass: scenVerdict },
@@ -1269,6 +1274,75 @@ export function buildComparison(a, b) {
     latency,
     loadComparison,
   };
+  return { ...cmpWithoutScore, overallScore: computeOverallScore(cmpWithoutScore) };
+}
+
+// —— 综合评分（相对分）：把可用性/质量/压测三个维度各压成 [-1,1] 的效应量，加权合成后
+// 映射成两个对象的分数（和恒为100）。分数含义是"A 相对 B 综合谁更强、强多少"，不是绝对量表——
+// 没有"90分=优秀"这类绝对基准，50分才是唯一有意义的锚点（打平）。——
+const OVERALL_SCORE_WEIGHTS = { availability: 0.35, quality: 0.3, load: 0.35 };
+
+// Cohen's h 理论上界是 π（2·arcsin(1) − 2·arcsin(0) 的两倍），除以 π 压到 [-1,1]。
+function cohensHEffect(v, labelA, labelB) {
+  if (!v || String(v.verdict || "").includes("样本不足")) return null;
+  const pa = v.a?.point;
+  const pb = v.b?.point;
+  if (!Number.isFinite(pa) || !Number.isFinite(pb)) return null;
+  return cohensH(pa, pb) / Math.PI;
+}
+
+// 拐点吞吐量（goodput）比值 → 效应量：两边独立算 simpleKnee，不要求压测种类对齐，
+// 这正是绕开"压测种类不一致就没法比"限制的关键——各自曲线各算各的拐点，只比结果。
+// tanh(ln(ratio)/ln4)：4倍差距时效应量≈0.76，8倍≈0.96，1倍=0（打平）。
+function loadGoodputEffect(aPoints, bPoints) {
+  if (!aPoints?.length && !bPoints?.length) return null; // 双方都没有压测数据，不能拿"都没测"当打平
+  const goodputOf = (pts) => {
+    const { point } = simpleKnee(pts);
+    return point ? point.qps * point.successRate : 0; // 最低负载点就不健康 → 测不出可用容量，记 0（非"无数据"）
+  };
+  const ga = goodputOf(aPoints);
+  const gb = goodputOf(bPoints);
+  if (ga === 0 && gb === 0) return 0;
+  if (ga === 0 || gb === 0) return ga > gb ? 1 : -1; // 一方 0、一方 >0：对数比值不稳定，直接给方向明确的极值
+  return Math.tanh(Math.log(ga / gb) / Math.log(4));
+}
+
+export function computeOverallScore(cmp) {
+  const { a, b } = cmp;
+  const dims = {
+    availability: { effect: null, weight: 0 },
+    quality: { effect: null, weight: 0 },
+    load: { effect: null, weight: 0 },
+  };
+
+  const hAvail = [
+    cohensHEffect(cmp.verdicts.stability, a.label, b.label),
+    cohensHEffect(cmp.verdicts.scenarioPass, a.label, b.label),
+  ].filter((v) => v != null);
+  if (hAvail.length) dims.availability.effect = hAvail.reduce((s, v) => s + v, 0) / hAvail.length;
+
+  const pq = cmp.pairedQuality;
+  if (pq && pq.n >= 2 && Number.isFinite(pq.cliff?.delta)) dims.quality.effect = pq.cliff.delta;
+
+  dims.load.effect = loadGoodputEffect(cmp.loadComparison?.aPoints, cmp.loadComparison?.bPoints);
+
+  let weightedSum = 0;
+  let weightTotal = 0;
+  for (const key of Object.keys(dims)) {
+    if (dims[key].effect == null) continue;
+    weightedSum += OVERALL_SCORE_WEIGHTS[key] * dims[key].effect;
+    weightTotal += OVERALL_SCORE_WEIGHTS[key];
+  }
+  if (weightTotal === 0) return { scoreA: null, scoreB: null, effect: null, dims };
+
+  // 按比例重新归一化：缺失维度的权重不会消失，也不会被当 0 分打平，而是分给仍参与的维度。
+  for (const key of Object.keys(dims)) {
+    dims[key].weight = dims[key].effect == null ? 0 : OVERALL_SCORE_WEIGHTS[key] / weightTotal;
+  }
+  const effect = weightedSum / weightTotal;
+  const scoreA = Math.round(50 + 50 * effect);
+  const scoreB = 100 - scoreA;
+  return { scoreA, scoreB, effect, dims };
 }
 
 // —— Markdown 产出 ——
@@ -1358,6 +1432,39 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
     L.push("");
     L.push("> 依据两个对象在报告中心已有的评测报告聚合对比。延迟为长尾分布、样本有限，仅作参考。", "");
   }
+
+  // 综合评分（相对分）：紧跟结论速览之后，作为其补充；不占用后续小节编号。
+  const os = cmp.overallScore;
+  L.push("## 综合评分（相对分，A + B = 100）", "");
+  if (os && os.scoreA != null) {
+    L.push(`**对象A：${os.scoreA} 分　对象B：${os.scoreB} 分**`, "");
+    L.push(
+      "> 分数含义：不是绝对质量分，是「对象A 相对对象B 综合谁更强、强多少」的相对分，50 分为打平。按可用性 / 质量 / 压力测试加权合成；压测用**拐点吞吐量**（推荐容量点的 QPS × 成功率）比较，不要求两侧压测种类一致。",
+      "",
+    );
+    const dimLabel = { availability: "可用性", quality: "质量", load: "压力测试" };
+    const dimNote = {
+      availability: "稳定性成功率 / 场景通过率的比例效果量均值",
+      quality: "同名场景配对质量分效果量",
+      load: "拐点吞吐量（goodput）比值",
+    };
+    L.push("| 维度 | 权重 | 效应量(对象A相对对象B) | 说明 |", "|---|---:|---:|---|");
+    for (const key of ["availability", "quality", "load"]) {
+      const d = os.dims[key];
+      const baseW = Math.round(OVERALL_SCORE_WEIGHTS[key] * 100);
+      if (d.effect == null) {
+        L.push(`| ${dimLabel[key]} | ${baseW}%（未参与：样本不足） | - | - |`);
+      } else {
+        const actualW = Math.round(d.weight * 100);
+        const weightText = actualW === baseW ? `${baseW}%` : `${baseW}%（实际${actualW}%，已按比例归一化）`;
+        L.push(`| ${dimLabel[key]} | ${weightText} | ${sgn(d.effect)} | ${dimNote[key]} |`);
+      }
+    }
+    L.push("", "> 任一维度样本不足时不参与合成，权重按比例分给其余维度，不会被当作 0 分打平。", "");
+  } else {
+    L.push("> 数据不足，无法给出综合评分（可用性/质量/压测三个维度均样本不足）。", "");
+  }
+  L.push("");
 
   // 1. 可用性与通过率
   L.push("## 1. 可用性与通过率", "");
@@ -1601,6 +1708,9 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
     "- 显著性判据：看差值的 95% CI 是否含 0。为便于决策，成功率/质量类结论一律按点估计给出「谁更好」；若区间重叠或含 0（统计证据尚不充分），请结合样本量谨慎采纳。",
   );
   L.push("- 质量分为规则化评分，非人工质量评审；身份/纯度判断均为黑盒概率结论，仅「疑似 / 需上游解释」。");
+  L.push(
+    `- 综合评分：可用性效果量用 **Cohen's h** 均值（除以 π 归一到 [-1,1]）；质量效果量用 **Cliff's δ**；压测效果量 = tanh(ln(A拐点吞吐量/B拐点吞吐量) / ln4)（4 倍差距对应约 0.76，1 倍即打平）；三者按 ${Math.round(OVERALL_SCORE_WEIGHTS.availability * 100)}% / ${Math.round(OVERALL_SCORE_WEIGHTS.quality * 100)}% / ${Math.round(OVERALL_SCORE_WEIGHTS.load * 100)}% 加权，缺失维度的权重按比例分给其余维度，不当 0 分处理；分数 = 50 ± 50×合成效应量，是相对分而非绝对量表。`,
+  );
   L.push("- 本报告依据既有评测报告聚合，未重新发起请求；标注 |Δ|≥40 的场景建议人工复核原始回答。");
   return L.join("\n");
 }
@@ -1819,6 +1929,10 @@ export function buildCompareAnalysisPrompt(cmp) {
       ? `综合点估计：${ov.winner} 在可用性/通过率/质量里于 ${ov.lead}/${ov.total} 项领先，整体更优`
       : "综合点估计：两者互有胜负、整体相当",
   );
+  const os = cmp.overallScore;
+  if (os?.scoreA != null) {
+    facts.push(`综合评分（相对分，A+B=100，50分为打平）：对象A ${os.scoreA} 分 / 对象B ${os.scoreB} 分，合成效应量 E=${sgn(os.effect)}`);
+  }
   return [
     "你是资深 AI 评测分析师，判断果断、但措辞委婉得体、对两方都留有分寸。下面是对两个模型（对象A=所用模型，对象B=要对比的模型）依据既有评测报告做的结构化对比（含点估计与统计判定）。",
     "请用中文写一段 150–300 字的对比叙述，要求：",

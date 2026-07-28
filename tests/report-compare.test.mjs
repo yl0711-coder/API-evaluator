@@ -24,6 +24,7 @@ import {
   buildCompareAnalysisPrompt,
   interpolateLoadPoint,
   simpleKnee,
+  computeOverallScore,
 } from "../server/report-compare.mjs";
 import { aggregate, formatSinglePointReport, formatSweepReport, findKnee } from "../server/load-test.mjs";
 
@@ -850,6 +851,145 @@ test("buildComparison：跨 mode（一方开环一方闭环）退化为曲线汇
   assert.equal(cmp.loadComparison.summary.a.peakQps, 8);
   assert.equal(cmp.loadComparison.summary.b.knee.point.offered, 5, "B 第二点成功率跌破 99%，推荐点取前一点");
   assert.equal(cmp.loadComparison.summary.b.peakQps, 4);
+});
+
+function mkFullAgg(overrides = {}) {
+  return {
+    label: "x",
+    channel: null,
+    model: null,
+    reportCounts: { run: 0, scenario: 0, admission: 0, load: 0, total: 0 },
+    stability: null,
+    integrity: { errorCounts: {} },
+    latency: { samples: [], rounds: [], stats: {} },
+    scenarioPass: { succ: 0, total: 0, rate: null },
+    quality: { mean: null, n: 0 },
+    scenarios: [],
+    tiers: [],
+    admission: null,
+    tokens: { input: 0, output: 0 },
+    loadPoints: [],
+    ...overrides,
+  };
+}
+
+test("computeOverallScore：三维皆有数据 → 手算效应量与合成分一致", () => {
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    scenarios: [{ name: "s1", quality: 80, rate: 1, succ: 1, total: 1 }],
+    loadPoints: [{ mode: "closed", offered: 10, qps: 10, successRate: 1, p95: 100, p99: 120 }],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 7, total: 10 },
+    scenarios: [{ name: "s1", quality: 30, rate: 1, succ: 1, total: 1 }],
+    loadPoints: [{ mode: "closed", offered: 10, qps: 2.5, successRate: 1, p95: 300, p99: 400 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  // 可用性：稳定性 9/10 vs 7/10 的 Cohen's h（场景通过率两边都是 1/1，h=0，均值只受稳定性拉动）。
+  const phi = (p) => 2 * Math.asin(Math.sqrt(p));
+  const hStab = (phi(0.9) - phi(0.7)) / Math.PI;
+  assert.ok(Math.abs(os.dims.availability.effect - hStab / 2) < 1e-6, "可用性效应量=稳定性h与通过率h(=0)的均值");
+  // 质量：仅 1 对配对场景，n<2，质量维度应为 null（不参与合成）。
+  assert.equal(os.dims.quality.effect, null, "配对样本 n=1 时质量维度样本不足，不参与合成");
+  // 压测：goodput A=10*1=10，B=2.5*1=2.5，比值4倍 → tanh(ln4/ln4)=tanh(1)。
+  assert.ok(Math.abs(os.dims.load.effect - Math.tanh(1)) < 1e-6, "压测效应量=tanh(ln(10/2.5)/ln4)=tanh(1)");
+  // 权重按比例重新归一化到 availability+load（quality 缺失）。
+  const wSum = 0.35 + 0.35;
+  assert.ok(Math.abs(os.dims.availability.weight - 0.35 / wSum) < 1e-6);
+  assert.ok(Math.abs(os.dims.load.weight - 0.35 / wSum) < 1e-6);
+  assert.equal(os.dims.quality.weight, 0);
+  const expectedE = (0.35 * (hStab / 2) + 0.35 * Math.tanh(1)) / wSum;
+  assert.ok(Math.abs(os.effect - expectedE) < 1e-6);
+  assert.equal(os.scoreA, Math.round(50 + 50 * expectedE));
+  assert.equal(os.scoreA + os.scoreB, 100, "两分数之和恒为100");
+});
+
+test("computeOverallScore：压测数据双方均缺失 → load 维度为 null，权重归一化到可用性+质量", () => {
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    scenarios: [
+      { name: "s1", quality: 80, rate: 1, succ: 1, total: 1 },
+      { name: "s2", quality: 70, rate: 1, succ: 1, total: 1 },
+    ],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 6, total: 10 },
+    scenarios: [
+      { name: "s1", quality: 50, rate: 1, succ: 1, total: 1 },
+      { name: "s2", quality: 40, rate: 0, succ: 0, total: 1 },
+    ],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, null, "双方都没有压测数据，load 维度不参与");
+  assert.equal(os.dims.load.weight, 0);
+  const wSum = 0.35 + 0.3;
+  assert.ok(Math.abs(os.dims.availability.weight - 0.35 / wSum) < 1e-6);
+  assert.ok(Math.abs(os.dims.quality.weight - 0.3 / wSum) < 1e-6);
+  assert.ok(Math.abs(os.dims.availability.weight + os.dims.quality.weight - 1) < 1e-6, "剩余权重之和为1");
+  assert.equal(os.scoreA + os.scoreB, 100);
+});
+
+test("computeOverallScore：压测一方 goodput=0（基准点即不健康）、另一方>0 → 效应量为满值±1，非 NaN/Infinity", () => {
+  const a = mkFullAgg({
+    label: "A",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 0.5, http429: 0 }], // 基准点不健康 → goodput=0
+  });
+  const b = mkFullAgg({
+    label: "B",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, -1, "A goodput=0、B>0 → A 处于劣势，效应量应为 -1");
+  assert.ok(Number.isFinite(os.dims.load.effect));
+
+  const cmp2 = buildComparison(b, a); // 调换顺序，验证方向对称
+  const os2 = computeOverallScore(cmp2);
+  assert.equal(os2.dims.load.effect, 1);
+});
+
+test("computeOverallScore：三维皆样本不足 → 整体返回 null，不编造 50/50", () => {
+  const a = mkFullAgg({ label: "A" });
+  const b = mkFullAgg({ label: "B" });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.scoreA, null);
+  assert.equal(os.scoreB, null);
+  assert.equal(os.effect, null);
+});
+
+test("formatCompareReportMarkdown：综合评分小节渲染——有分数时显示表格，数据不足时给出说明", () => {
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    scenarios: [{ name: "s1", quality: 80, rate: 1, succ: 1, total: 1 }],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 6, total: 10 },
+    scenarios: [{ name: "s1", quality: 40, rate: 1, succ: 1, total: 1 }],
+  });
+  const cmp = buildComparison(a, b);
+  const md = formatCompareReportMarkdown(cmp, { generatedAt: "2026-07-28T00:00:00Z" });
+  assert.match(md, /## 综合评分（相对分，A \+ B = 100）/);
+  assert.match(md, /对象A：\d+ 分　对象B：\d+ 分/);
+  assert.match(md, /压力测试 \| 35%（未参与：样本不足） \| - \| - \|/);
+  // 综合评分小节必须在结论速览之后、第1节之前。
+  const idxOverview = md.indexOf("## 结论速览");
+  const idxScore = md.indexOf("## 综合评分");
+  const idxSec1 = md.indexOf("## 1. 可用性与通过率");
+  assert.ok(idxOverview < idxScore && idxScore < idxSec1, "综合评分小节应位于结论速览之后、第1节之前");
+
+  const emptyCmp = buildComparison(mkFullAgg({ label: "A" }), mkFullAgg({ label: "B" }));
+  const mdEmpty = formatCompareReportMarkdown(emptyCmp, { generatedAt: "2026-07-28T00:00:00Z" });
+  assert.match(mdEmpty, /数据不足，无法给出综合评分/);
+  assert.ok(!mdEmpty.includes("对象A：") || !/对象A：\d+ 分/.test(mdEmpty), "数据不足时不应渲染出分数");
 });
 
 test("formatCompareReportMarkdown：压力测试对比节——有数据时出表格，无数据时给说明而非空表格", () => {
