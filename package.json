@@ -48,6 +48,6 @@
   "dependencies": {
     "gpt-tokenizer": "^3.4.0",
     "mysql2": "^3.22.5",
-    "nodemailer": "^6.9.0"
+    "nodemailer": "9.0.3"
   }
 }
