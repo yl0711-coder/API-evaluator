@@ -195,3 +195,40 @@ test("指标值缺失（undefined/null）→ 视为不满足，不误报", async
     assert.equal(await getLastFiredAt("alr_0", "p1"), null);
   });
 });
+
+// 回归：发信失败（如 SMTP 故障）不应计入冷却——否则整个冷却窗口内即使指标持续恶化也不会重试，
+// 恰是最该报警却失声的场景。用注入的 sendAlertMailFn 模拟发信抛错。
+test("发信失败 → 不 markFired，下一次评估仍会立即重试（不受冷却阻挡）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, cooldownHours: 1 });
+    let calls = 0;
+    const failingSend = async () => {
+      calls += 1;
+      throw new Error("连接超时");
+    };
+    await evaluateAlertRules({ successRate: 0.1, profileId: "p1" }, { sendAlertMailFn: failingSend });
+    assert.equal(calls, 1);
+    assert.equal(await getLastFiredAt("alr_0", "all"), null, "发信失败不应记为已触发");
+
+    // 立即再评估一次（模拟下一轮测试跑完）：不受冷却阻挡，应再次尝试发信。
+    await evaluateAlertRules({ successRate: 0.05, profileId: "p1" }, { sendAlertMailFn: failingSend });
+    assert.equal(calls, 2, "冷却未被假触发占用，第二次应再次尝试发信");
+  });
+});
+
+test("发信成功 → markFired；随后一次发信失败也不清空已有的冷却记录", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, cooldownHours: 1 });
+    let shouldFail = false;
+    const flakySend = async () => {
+      if (shouldFail) throw new Error("连接超时");
+    };
+    await evaluateAlertRules({ successRate: 0.1, profileId: "p1" }, { sendAlertMailFn: flakySend });
+    const firedAt = await getLastFiredAt("alr_0", "all");
+    assert.ok(firedAt, "首次发信成功应记为已触发");
+
+    shouldFail = true;
+    await evaluateAlertRules({ successRate: 0.05, profileId: "p1" }, { sendAlertMailFn: flakySend });
+    assert.equal(await getLastFiredAt("alr_0", "all"), firedAt, "冷却期内即使又尝试发信（且失败），触发时间也不应被覆盖或清空");
+  });
+});

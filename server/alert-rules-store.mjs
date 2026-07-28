@@ -34,6 +34,11 @@ export async function loadRules() {
     if (!existsSync(rulesFile)) return [];
     const raw = JSON.parse((await readFile(rulesFile, "utf8")) || "[]");
     if (!Array.isArray(raw)) return [];
+    // 已知问题（暂不修）：normalizeRule 每次都会盖一个新的 updatedAt（见下方函数），而这里是【读取】
+    // 路径、不落盘——纯读取（如两次 GET /api/alert-rules）之间 updatedAt 会跳动，前端显示的
+    // 「更新时间」因此失真；编辑某一条规则时，同批 loadRules() 读出的其它未改动规则也会被
+    // 连带刷出相同的 updatedAt（updateRules 的 mutator 只改了目标那条，但 saveRules 落盘的是
+    // 这次 loadRules() 归一化后的整个数组）。只是显示层的时间戳失真，不影响规则本身的匹配/冷却逻辑。
     return raw.map((rule) => normalizeRule(rule, rule)).filter(Boolean);
   } catch {
     return [];

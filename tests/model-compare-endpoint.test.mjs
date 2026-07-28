@@ -133,8 +133,14 @@ function admissionReportMd(grade, composite) {
 // 与 A/B 用同一个负载点(closed/30)以便配对对比；B 稳定性略逊，压测这里也给出可区分的数字。
 function loadReportMd(offered, succOk) {
   const samples = succOk
-    ? [{ ms: 500, ok: true, status: 200, err: "", warmup: false }, { ms: 600, ok: true, status: 200, err: "", warmup: false }]
-    : [{ ms: 900, ok: true, status: 200, err: "", warmup: false }, { ms: null, ok: false, status: 429, err: "rate_limited", warmup: false }];
+    ? [
+        { ms: 500, ok: true, status: 200, err: "", warmup: false },
+        { ms: 600, ok: true, status: 200, err: "", warmup: false },
+      ]
+    : [
+        { ms: 900, ok: true, status: 200, err: "", warmup: false },
+        { ms: null, ok: false, status: 429, err: "rate_limited", warmup: false },
+      ];
   const point = aggregate({ samples, mode: "closed", offered, durationSec: 10 });
   return formatSinglePointReport(
     {
@@ -292,7 +298,11 @@ test("/api/reports/compare/gaps：追加一份仅 A 测过的新场景 → onlyA
   );
   const r = await post("/api/reports/compare/gaps", cookie, { a: A, b: B });
   assert.equal(r.status, 200, `期望 200，实为 ${r.status}：${JSON.stringify(r.body)}`);
-  assert.deepEqual(r.body.onlyA.map((s) => s.name), ["编程题"], "A 独有新场景应出现在 onlyA");
+  assert.deepEqual(
+    r.body.onlyA.map((s) => s.name),
+    ["编程题"],
+    "A 独有新场景应出现在 onlyA",
+  );
   assert.deepEqual(r.body.onlyB, [], "B 仍无独有场景");
 });
 

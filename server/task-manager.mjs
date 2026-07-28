@@ -22,6 +22,20 @@ export function createTaskManager({
   onRunComplete, // (result) => void：任务完成回调（用于高危报告提示等），best-effort
 }) {
   const tasks = new Map();
+  // scenario 任务去重键 → taskId（供「模型比对·补齐单方场景」防双花）：该功能逐个真实调用付费
+  // API，若某次轮询因网络抖动被前端误判失败，用户很容易对同一 {模型, 场景} 再点一次补齐。
+  // 必须由调用方在 payload.idempotencyKey 显式带上非空字符串才生效——绝不能按 profileIds/
+  // scenarioIds 的形状去猜「是不是补齐场景」：普通的「复杂场景测试」表单完全可以只选 1 个模型 +
+  // 1 个场景（并不罕见），而 tasks 这个 Map 是整个进程共享的内存态、不区分发起者/会话，
+  // 按形状推断会把两个语义完全不同的请求（比如同一对模型+场景，但 repeats 不同）错误合并成一个，
+  // 调用方会拿到别人那次任务的结果而不是自己发起的。显式 opt-in 才能保证只去重真正想去重的调用。
+  // 只做进程内最佳努力：不是跨进程/跨副本的强一致锁，多开一个后端实例仍可能重复创建。
+  const activeScenarioKeys = new Map();
+  function scenarioIdempotencyKey(type, payload) {
+    if (type !== "scenario") return null;
+    const key = String(payload?.idempotencyKey ?? "").trim();
+    return key || null;
+  }
   // 全局重测试并发上限，超出排队。避免多任务并发拖垮宿主或同机其它服务的资源。
   let runningSlots = 0;
   const slotWaiters = [];
@@ -98,6 +112,16 @@ export function createTaskManager({
   }
 
   async function createTask(type, payload) {
+    const scenarioKey = scenarioIdempotencyKey(type, payload);
+    if (scenarioKey) {
+      const existingId = activeScenarioKeys.get(scenarioKey);
+      const existing = existingId ? tasks.get(existingId) : null;
+      // 命中且仍在跑/排队 → 直接把已有任务原样交回，绝不再起一个真实调用（防双花）。
+      // 命中但已结束（completed/failed/cancelled）→ 视为过期键，走下面正常建新任务。
+      if (existing && (existing.status === "running" || existing.status === "queued")) {
+        return existing;
+      }
+    }
     const queued = !slotAvailable();
     const tasksAhead = runningSlots + slotWaiters.length; // 在跑 + 已排在前面
     const etaSeconds = queued ? Math.max(10, Math.ceil((tasksAhead + 1) / maxSlots()) * avgTaskSeconds()) : 0;
@@ -125,12 +149,16 @@ export function createTaskManager({
       errorId: "",
     };
     tasks.set(task.id, task);
+    if (scenarioKey) activeScenarioKeys.set(scenarioKey, task.id);
     await appendTaskEvent(taskEventsFile, task, queued ? "queued" : "started", {
       payload: summarizeTaskPayload(task.type, payload, { normalizeProfileIds, normalizeScenarioIds }),
     });
     // Run in the background so HTTP handlers can return 202 immediately.
     // 经全局并发槽位调度：超出上限的任务会排队，等空闲槽位再执行。
-    void runWithSlot(task, payload);
+    void runWithSlot(task, payload).finally(() => {
+      // 任务结束（无论成功/失败/取消）即释放去重键，让后续对同一 {模型,场景} 的补齐可以重新发起。
+      if (scenarioKey && activeScenarioKeys.get(scenarioKey) === task.id) activeScenarioKeys.delete(scenarioKey);
+    });
     return task;
   }
 

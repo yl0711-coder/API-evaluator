@@ -62,14 +62,18 @@ export function __resetWriteChainForTest() {
 // 下次运行时刻。双模式：
 //   - 数字入参 computeNextRunAt(periodHours, fromMs)：间隔模式，推 periodHours 小时（老调用，保持兼容）。
 //   - 对象入参 computeNextRunAt(job, fromMs)：有 job.cron 走 cron；否则退回 job.periodHours 间隔。
-// cron 无匹配（理论上 366 天内不触发）时回退成 24h 间隔，绝不返回 null 卡死调度。
+// cron 366 天内无匹配（见下方分支注释：真实可构造，非纯理论）时回退成 24h 间隔，绝不返回 null 卡死调度。
 export function computeNextRunAt(jobOrPeriod, fromMs = Date.now()) {
   if (jobOrPeriod && typeof jobOrPeriod === "object") {
     const job = jobOrPeriod;
     if (job.cron) {
       const next = cronNextAfter(job.cron, fromMs);
       if (next != null) return new Date(next).toISOString();
-      // cron 解析出但 366 天无匹配（不该发生）：退回 24h，留一条兜底触发。
+      // cron 解析【语法】合法但 366 天内无匹配日期时才会落到这里——不是"不该发生"的兜底，
+      // 而是真实可构造的输入（如 `0 0 30 2 *`：2 月没有 30 号，永远不会命中）。validateJob 只查
+      // parseCron 是否抛错，不检查语义上"是否存在任何匹配日期"，故这类表达式会通过校验，
+      // 然后在这里悄悄退回每天固定时间跑一次，用户毫无提示地得到一个跟预期完全不同的调度。
+      // 已知问题（暂不修）：改进方向是 validateJob 里试算一次 cronNextAfter，无匹配就直接拒绝保存。
       return new Date(fromMs + 24 * 3600 * 1000).toISOString();
     }
     return intervalNextRunAt(job.periodHours, fromMs);

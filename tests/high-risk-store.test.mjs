@@ -94,6 +94,30 @@ test("scenario：逐模型 —— 质量分<60 或该模型结论 fail 命中", 
   assert.ok(items.some((i) => i.reason.includes("不推荐")));
 });
 
+test("label 带渠道名：profileName 已含模型名（渠道迁移后的 name）时不重复拼接", () => {
+  const items = collectHighRiskReports({
+    type: "admission",
+    grade: "F",
+    profileName: "我的渠道 / gpt-4o",
+    model: "gpt-4o",
+    reportHtmlPath: html("a_m1_admission_20260101_000000_i1"),
+  });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].label, "准入 · 我的渠道 / gpt-4o");
+});
+
+test("label 带渠道名：老 profile 的 profileName 只是渠道名时补上模型名", () => {
+  const items = collectHighRiskReports({
+    type: "admission",
+    grade: "F",
+    profileName: "我的渠道",
+    model: "gpt-4o",
+    reportHtmlPath: html("a_m1_admission_20260101_000000_i2"),
+  });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].label, "准入 · 我的渠道 / gpt-4o");
+});
+
 test("batch-admission：逐模型 grade D/E/F/X 或分<60 命中", () => {
   const items = collectHighRiskReports({
     type: "batch-admission",

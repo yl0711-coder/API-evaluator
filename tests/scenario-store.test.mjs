@@ -97,6 +97,24 @@ test("upsert 校验：缺 id / 空 prompt → ok:false", async () => {
   assert.equal((await upsertScenario({ id: "z", prompt: "" }, { persist: false })).ok, false);
 });
 
+// 回归：name 含 | 或换行会在报告对比内核里因转义前后不一致而静默丢场景，见 store.mjs 顶部注释。
+test("upsert 校验：name 含竖线 | 或换行 → ok:false，不写入", async () => {
+  const withPipe = await upsertScenario({ id: "bad-name-pipe", name: "对比 A|B 两种写法", prompt: "p" }, { persist: false });
+  assert.equal(withPipe.ok, false);
+  assert.match(withPipe.userMessage, /竖线|换行/);
+  assert.equal(
+    getAllScenariosForAdmin().some((s) => s.id === "bad-name-pipe"),
+    false,
+  );
+
+  const withNewline = await upsertScenario({ id: "bad-name-nl", name: "换行\n场景名", prompt: "p" }, { persist: false });
+  assert.equal(withNewline.ok, false);
+
+  // 没有 name 字段（用 id 兜底展示）时不受影响。
+  const noName = await upsertScenario({ id: "no-name-ok", prompt: "p" }, { persist: false });
+  assert.equal(noName.ok, true);
+});
+
 test("delete：移除场景；不存在 → found:false", async () => {
   await upsertScenario({ id: "store-test-del", category: "basic", difficulty: "small", prompt: "p" }, { persist: false });
   const r = await deleteScenario("store-test-del", { persist: false });

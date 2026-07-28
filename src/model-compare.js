@@ -243,6 +243,9 @@ export function createModelCompare({ state, confirm }) {
   }
 
   // 把场景名映射为场景 id：state.scenarios 是当前生效的题库（可能已改名/下架场景不在其中）。
+  // 已知问题（暂不修）：场景 name 没有唯一性校验（server/scenarios/store.mjs 的 validateScenario
+  // 只查 id/prompt），若题库里存在同名但内容不同的场景，find 只取第一个匹配——补齐时可能选中
+  // 「同名但已不是原本被测的那道题」，且完全静默、无告警。触发条件较窄（需管理员曾创建过重名场景）。
   function scenarioIdByName(name) {
     const s = (state.scenarios || []).find((x) => x.name === name);
     return s ? s.id : null;
@@ -287,6 +290,9 @@ export function createModelCompare({ state, confirm }) {
           detail: "确认后会逐个开始测试，可能耗时较久，请不要关闭窗口。",
           confirmLabel: "确认开始补齐",
           cancelLabel: "先不运行",
+          // 已知问题（暂不修）：tone 只看场景数量，不看真实花费——场景之间 token 消耗差异可能很大
+          // （几百 token 的简单题 vs 上万 token 的长文任务），3 个贵场景可能比 15 个便宜场景花得更多，
+          // 但后者反而会标红。改进方向是接入 cost-estimates.js 按场景类别估算，本次不做。
           tone: jobs.length >= 10 ? "danger" : "normal",
         })
       : window.confirm(detail);
@@ -305,11 +311,19 @@ export function createModelCompare({ state, confirm }) {
       const p = gapProgress.querySelector("p");
       if (p) p.textContent = `补齐中 ${i + 1}/${jobs.length}：《${job.scenarioName}》→ 补给对象 ${job.forLabel} (0%)`;
       try {
+        // idempotencyKey：显式声明去重身份（服务端 task-manager 只信这个字段，不按 payload
+        // 形状猜）。补齐同一 {模型, 场景} 时用同一个键，让"轮询误报失败后用户再点一次补齐"
+        // 拿到的是同一个仍在跑的任务，而不是发起第二次真实付费调用。
         await runRemoteTask(
           state,
           "mc-gap-fill",
           "scenario",
-          { profileIds: [job.targetId], scenarioIds: [job.scenarioId], repeats: 1 },
+          {
+            profileIds: [job.targetId],
+            scenarioIds: [job.scenarioId],
+            repeats: 1,
+            idempotencyKey: `mc-gap-fill:${job.targetId}:${job.scenarioId}`,
+          },
           gapProgress,
         );
       } catch (error) {

@@ -232,6 +232,10 @@ async function loadBalancedCompareFiles(A, B) {
     // 限流：run/admission 共享最近 6 份（沿用 load 类型加入前的原始预算）；load 独立取最近 6 份——
     // 三者混在一个预算里时，密集调参跑压测（6 份以上近期 load 文件）会把 run/admission 全部挤出候选，
     // 对比里稳定性/准入静默消失（磁盘上明明有）。场景需要按名去重，最多取最近 60 份读盘。
+    // 已知问题（暂不修）：场景是按【文件数】限流（取最近 60 份场景报告），而 pickRecentReports 是
+    // 按【场景名】去重（一份文件可含多条场景行，理论上也可能撞名）。内置场景库已有约 89 个场景，
+    // 若用户实际跑过的场景种类数超过 60，排序在候选池之外的稀有场景会连去重环节都进不去，被静默漏掉
+    // （不报错，只是「共有场景数」会比实际偏小）。多数部署场景种类不会跑到这么全，暂按可接受风险处理。
     const chosen = [
       ...metas.filter((m) => m.type === "run" || m.type === "admission").slice(0, 6),
       ...metas.filter((m) => m.type === "load").slice(0, 6),
