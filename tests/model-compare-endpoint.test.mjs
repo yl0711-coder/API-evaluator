@@ -276,7 +276,7 @@ test("压力测试单方独有：B 没有压测报告时，A 的压测数据不�
     assert.ok(!/压测/.test(r.body.notes.b), "B 确实没有压测报告");
     assert.match(r.body.markdown, /## 6\. 压力测试对比/);
     assert.ok(!r.body.markdown.includes("两个对象都没有压力测试报告"), "A 明明有压测报告，不得声称双方都没有");
-    assert.match(r.body.markdown, /仅对象A 测过的负载点/, "A 独有的负载点应被列出，而非静默消失");
+    assert.match(r.body.markdown, /仅对象A 测过、且无法插值估计的负载点/, "A 独有的负载点应被列出，而非静默消失");
   } finally {
     await rename(bLoadBackup, bLoadPath); // 恢复现场，不影响后续测试
   }
