@@ -170,8 +170,8 @@ test("task manager runs batch admission tasks", async () => {
 });
 
 // 回归：「模型比对·补齐单方场景」逐个真实调用付费 API，若某次误判失败用户很容易对同一
-// {模型,场景} 再点一次补齐——createTask 对单模型单场景的 scenario 任务应去重，防双花。
-test("scenario 任务去重：同一 profileId+scenarioId 的单模型单场景任务仍在跑时，重复创建返回同一个任务", async () => {
+// {模型,场景} 再点一次补齐——带同一 idempotencyKey 的 scenario 任务应去重，防双花。
+test("scenario 任务去重：带相同 idempotencyKey 的任务仍在跑时，重复创建返回同一个任务", async () => {
   const dir = await mkdtemp(join(tmpdir(), "evaluator-task-scenario-dedup-test-"));
   let releaseRunner;
   const gate = new Promise((resolve) => {
@@ -190,7 +190,7 @@ test("scenario 任务去重：同一 profileId+scenarioId 的单模型单场景�
       },
     });
 
-    const payload = { profileIds: ["p1"], scenarioIds: ["s1"], repeats: 1 };
+    const payload = { profileIds: ["p1"], scenarioIds: ["s1"], repeats: 1, idempotencyKey: "mc-gap-fill:p1:s1" };
     const first = await manager.createTask("scenario", payload);
     const second = await manager.createTask("scenario", payload);
     assert.equal(second.id, first.id, "第二次创建应拿到同一个 in-flight 任务，不新建");
@@ -199,7 +199,7 @@ test("scenario 任务去重：同一 profileId+scenarioId 的单模型单场景�
     releaseRunner();
     await waitFor(() => first.status === "completed");
 
-    // 任务结束后去重键已释放，同样的 {模型,场景} 可以重新发起（不是永久锁死）。
+    // 任务结束后去重键已释放，同样的 key 可以重新发起（不是永久锁死）。
     const third = await manager.createTask("scenario", payload);
     assert.notEqual(third.id, first.id, "上一轮已结束，应能正常发起新一轮");
   } finally {
@@ -207,8 +207,44 @@ test("scenario 任务去重：同一 profileId+scenarioId 的单模型单场景�
   }
 });
 
-test("scenario 任务去重：多模型或多场景（批量场景测试）不受去重影响，各自正常创建", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-scenario-nodedup-test-"));
+// 回归：去重键必须由调用方显式声明（payload.idempotencyKey），绝不能按 profileIds/scenarioIds
+// 的形状去猜「是不是补齐场景」——否则会把「普通复杂场景测试表单只选了 1 模型 1 场景」这种
+// 完全正常、语义不同的请求，跟同时发生的补齐流程错误合并成一个任务。
+test("scenario 任务不去重：即便 profileIds/scenarioIds 都恰好是长度1（形似补齐），没带 idempotencyKey 就正常各自新建", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-scenario-noshape-dedup-test-"));
+  let releaseRunner;
+  const gate = new Promise((resolve) => {
+    releaseRunner = resolve;
+  });
+  try {
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runStabilityTest: async () => ({}),
+      runBatchAdmissionTest: async () => ({}),
+      runBatchStabilityTest: async () => ({}),
+      runScenarioTest: async () => {
+        await gate;
+        return { type: "scenario", results: [] };
+      },
+    });
+
+    // 同一对 {模型,场景}，但没有 idempotencyKey（普通场景测试表单的真实 payload 形状）。
+    const payload = { profileIds: ["p1"], scenarioIds: ["s1"], repeats: 3 };
+    const first = await manager.createTask("scenario", payload);
+    const second = await manager.createTask("scenario", payload);
+    assert.notEqual(second.id, first.id, "没带 idempotencyKey 就不应去重，各自建新任务");
+    assert.equal(manager.tasks.size, 2);
+
+    releaseRunner();
+    await waitFor(() => first.status === "completed" && second.status === "completed");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+test("scenario 任务去重：不同 idempotencyKey 各自正常创建，互不影响", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-scenario-diffkey-test-"));
   try {
     const manager = createTaskManager({
       taskEventsFile: join(dir, "task-events.jsonl"),
@@ -219,11 +255,11 @@ test("scenario 任务去重：多模型或多场景（批量场景测试）不�
       runScenarioTest: async () => ({ type: "scenario", results: [] }),
     });
 
-    const multiModel = await manager.createTask("scenario", { profileIds: ["p1", "p2"], scenarioIds: ["s1"], repeats: 1 });
-    const multiScenario = await manager.createTask("scenario", { profileIds: ["p1", "p2"], scenarioIds: ["s1"], repeats: 1 });
-    assert.notEqual(multiScenario.id, multiModel.id, "多模型形态不去重，各自新建");
+    const a = await manager.createTask("scenario", { profileIds: ["p1"], scenarioIds: ["s1"], repeats: 1, idempotencyKey: "k1" });
+    const b = await manager.createTask("scenario", { profileIds: ["p2"], scenarioIds: ["s2"], repeats: 1, idempotencyKey: "k2" });
+    assert.notEqual(b.id, a.id, "不同 key 不应去重");
 
-    await waitFor(() => multiModel.status === "completed" && multiScenario.status === "completed");
+    await waitFor(() => a.status === "completed" && b.status === "completed");
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }

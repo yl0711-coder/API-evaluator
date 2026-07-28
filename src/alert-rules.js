@@ -2,10 +2,11 @@
 // 「报警规则」：任意登录管理员可自定义阈值报警规则——测试运行完成后，若某项原始指标触发阈值即发信提醒。
 // 不复用高危/回归判定逻辑，直接对运行结果的原始数值/等级字段做比较。表单沿用「自动测试配置」页的
 // .panel.form-grid 观感；范围用「全部」单选 + 复用的级联渠道/模型选择器（无「全部」选项时补一个单选切换）。
-import { escapeHtml, toast } from "./client-utils.js";
+import { escapeHtml, toast, renderMarkdown } from "./client-utils.js";
 import { api } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
+import alertRulesGuideDoc from "./docs/alert-rules-guide.md?raw";
 
 const METRIC_LABEL = {
   successRate: "成功率",
@@ -63,7 +64,29 @@ export function createAlertRules({ state, confirm }) {
   const enabledInput = requireElement("#ar-enabled");
   const resetBtn = requireElement("#ar-reset");
   const reloadBtn = requireElement("#ar-reload");
+  const metricDocBtn = requireElement("#ar-metric-doc");
   const listBox = requireElement("#ar-rule-list");
+
+  // 新标签页渲染 md 文档，与「测试场景维护」页的评分器/类别说明同款惯用法。
+  function openDocInNewTab(title, md) {
+    const w = window.open("", "_blank");
+    if (!w) {
+      toast("浏览器拦截了弹窗，请允许后重试。", true);
+      return;
+    }
+    const style =
+      "body{font-family:system-ui,'Segoe UI',sans-serif;max-width:880px;margin:24px auto;padding:0 20px;line-height:1.7;color:#1b2330}" +
+      "h1{font-size:24px}h2{font-size:19px;margin-top:1.6em}h3{font-size:16px}" +
+      "code{background:#f2f4f7;padding:1px 5px;border-radius:4px;font-size:.92em}" +
+      "pre{background:#f2f4f7;padding:12px;border-radius:8px;overflow:auto}" +
+      "table{border-collapse:collapse;width:100%;margin:12px 0}" +
+      "th,td{border:1px solid #d4d9e0;padding:6px 10px;text-align:left;font-size:14px}th{background:#f2f4f7}";
+    w.document.write(
+      `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${style}</style></head><body>${renderMarkdown(md)}</body></html>`,
+    );
+    w.document.close();
+  }
+  metricDocBtn.addEventListener("click", () => openDocInNewTab("报警规则说明", alertRulesGuideDoc));
 
   const cascade = createCascadeTargetPicker(channelSelect, modelSelect);
 
