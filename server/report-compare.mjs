@@ -726,7 +726,11 @@ export function balanceCommonReports(pickedA, pickedB) {
   // 两方共有的场景名：按【每份文件的有效场景名】取并集后再求交集，避免多场景报告只认首条场景导致
   // 共有场景漏判（与本次修复的根因同源）。
   const scenNamesB = new Set(B.filter((f) => f.type === "scenario").flatMap(namesOf));
-  const common = new Set(A.filter((f) => f.type === "scenario").flatMap(namesOf).filter((n) => scenNamesB.has(n)));
+  const common = new Set(
+    A.filter((f) => f.type === "scenario")
+      .flatMap(namesOf)
+      .filter((n) => scenNamesB.has(n)),
+  );
   // 场景文件：只要它【含有至少一个共有场景名】就保留（该文件里同批的单方独有场景会作为副产品带入，
   // 但下游 commonScenarioNames 按聚合后的场景名取交集、buildComparison 按名分 matched/onlyA/onlyB，
   // 独有场景不会污染「共有」口径与通过率判定）。
@@ -994,6 +998,68 @@ function latencyStatsFrom(rounds, fallback) {
   };
 }
 
+// —— 压测负载点：不完全一致时的降级比较 ——
+
+// 同 mode 的负载点集合里，在 offered 两侧找最近的真实点做线性插值；offered 落在范围外
+// （比 min 更小或比 max 更大）时不外推——外推值不可信，直接返回 null 让调用方留在 onlyA/onlyB。
+// points 至少需要 2 个不同 offered 的点才能插值；只有 1 个点时无法确定斜率。
+export function interpolateLoadPoint(points, offered) {
+  const pts = (points || [])
+    .filter((p) => Number.isFinite(p.offered))
+    .slice()
+    .sort((x, y) => x.offered - y.offered);
+  if (pts.length < 2) return null;
+  const lo = pts[0].offered;
+  const hi = pts[pts.length - 1].offered;
+  if (offered < lo || offered > hi) return null;
+  // 精确落在某个真实点上（含边界）：直接复用该点，不必插值引入误差。
+  const exact = pts.find((p) => p.offered === offered);
+  if (exact) return { ...exact, offered, interpFrom: null };
+  let left = pts[0];
+  let right = pts[pts.length - 1];
+  for (let i = 0; i < pts.length - 1; i += 1) {
+    if (pts[i].offered <= offered && offered <= pts[i + 1].offered) {
+      left = pts[i];
+      right = pts[i + 1];
+      break;
+    }
+  }
+  const span = right.offered - left.offered;
+  const t = span === 0 ? 0 : (offered - left.offered) / span;
+  const lerp = (field) => {
+    const lv = left[field];
+    const rv = right[field];
+    if (!Number.isFinite(lv) || !Number.isFinite(rv)) return null;
+    return lv + (rv - lv) * t;
+  };
+  return {
+    mode: left.mode,
+    offered,
+    qps: lerp("qps"),
+    tokensPerSecond: lerp("tokensPerSecond"),
+    successRate: lerp("successRate"),
+    p95: lerp("p95"),
+    p99: lerp("p99"),
+    interpFrom: { left: left.offered, right: right.offered },
+  };
+}
+
+// 轻量拐点检测：只依赖 parseLoadReport 已解析出的扁平字段（不耦合 load-test.mjs 内部的
+// { errors:{}, latency:{} } 嵌套形状），逐点按 offered 升序判定「首个不健康点」的前一点为推荐容量。
+// 判定简化为「成功率<99% 或出现 429」，不区分服务端/客户端饱和类型——report-compare 侧数据本来就
+// 没有 genSaturated 判定所需的完整上下文，做不到 load-test.mjs 那么细，此处只求给出一个可用的参考点。
+export function simpleKnee(points) {
+  const pts = (points || []).filter((p) => Number.isFinite(p.offered)).sort((x, y) => x.offered - y.offered);
+  if (!pts.length) return { index: -1, point: null };
+  const unhealthy = (p) => (Number.isFinite(p.successRate) && p.successRate < 0.99) || (Number.isFinite(p.http429) && p.http429 > 0);
+  if (unhealthy(pts[0])) return { index: -1, point: null };
+  for (let i = 1; i < pts.length; i += 1) {
+    if (unhealthy(pts[i])) return { index: i - 1, point: pts[i - 1] };
+  }
+  const last = pts.length - 1;
+  return { index: last, point: pts[last] };
+}
+
 export function buildComparison(a, b) {
   const stabVerdict =
     a.stability && b.stability
@@ -1124,7 +1190,73 @@ export function buildComparison(a, b) {
   }
   const loadOnlyA = aLoadPts.filter((p) => !mapLoadB.has(loadKey(p)));
   const loadOnlyB = bLoadPts.filter((p) => !seenBKeys.has(loadKey(p)));
-  const loadComparison = { matched: loadMatched, onlyA: loadOnlyA, onlyB: loadOnlyB };
+
+  // —— 降级比较①：精确配不上时，在对方【同 mode】曲线上线性插值试一次。——
+  // 只对「未被精确匹配收编」的独有点尝试，插值成功就从 onlyA/onlyB 里移走（不重复出现在两处）。
+  // 跨 mode 的点永远插不出来（interpolateLoadPoint 按传入的同 mode 子集找区间），量纲不同不互相估。
+  const loadInterpolatedMatched = [];
+  const stillOnlyA = [];
+  for (const pa of loadOnlyA) {
+    const sameModeB = bLoadPts.filter((p) => p.mode === pa.mode);
+    const interp = interpolateLoadPoint(sameModeB, pa.offered);
+    if (interp) {
+      loadInterpolatedMatched.push({
+        mode: pa.mode,
+        offered: pa.offered,
+        a: pa,
+        b: interp,
+        qpsDelta: diff(pa.qps, interp.qps),
+        p95Delta: diff(pa.p95, interp.p95),
+        p99Delta: diff(pa.p99, interp.p99),
+        successRateDelta: diff(pa.successRate, interp.successRate),
+        interpolatedSide: "b",
+        interpFrom: interp.interpFrom,
+      });
+    } else {
+      stillOnlyA.push(pa);
+    }
+  }
+  const stillOnlyB = [];
+  for (const pb of loadOnlyB) {
+    const sameModeA = aLoadPts.filter((p) => p.mode === pb.mode);
+    const interp = interpolateLoadPoint(sameModeA, pb.offered);
+    if (interp) {
+      loadInterpolatedMatched.push({
+        mode: pb.mode,
+        offered: pb.offered,
+        a: interp,
+        b: pb,
+        qpsDelta: diff(interp.qps, pb.qps),
+        p95Delta: diff(interp.p95, pb.p95),
+        p99Delta: diff(interp.p99, pb.p99),
+        successRateDelta: diff(interp.successRate, pb.successRate),
+        interpolatedSide: "a",
+        interpFrom: interp.interpFrom,
+      });
+    } else {
+      stillOnlyB.push(pb);
+    }
+  }
+
+  // —— 降级比较②：逐点（含插值）比较完全没有结果时（跨 mode，或同 mode 但 offered 范围不重叠），
+  // 退化成整条曲线的汇总特征值比较——推荐容量点 + 峰值 QPS/tok·s，不逐点比、只看曲线轮廓。——
+  const peakOf = (pts, field) =>
+    (pts || []).reduce((m, p) => (Number.isFinite(p[field]) && (m == null || p[field] > m) ? p[field] : m), null);
+  const loadSummary =
+    !loadMatched.length && !loadInterpolatedMatched.length && aLoadPts.length && bLoadPts.length
+      ? {
+          a: { knee: simpleKnee(aLoadPts), peakQps: peakOf(aLoadPts, "qps"), peakTokensPerSecond: peakOf(aLoadPts, "tokensPerSecond") },
+          b: { knee: simpleKnee(bLoadPts), peakQps: peakOf(bLoadPts, "qps"), peakTokensPerSecond: peakOf(bLoadPts, "tokensPerSecond") },
+        }
+      : null;
+
+  const loadComparison = {
+    matched: loadMatched,
+    interpolatedMatched: loadInterpolatedMatched,
+    onlyA: stillOnlyA,
+    onlyB: stillOnlyB,
+    summary: loadSummary,
+  };
 
   return {
     a,
@@ -1377,11 +1509,27 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   // 6. 压力测试对比。与第3节（准入）同惯例：小节标题始终出现，两方都没压测报告时给一句说明而非留空。
   const lc = cmp.loadComparison;
   L.push("## 6. 压力测试对比", "");
-  if (lc && (lc.matched.length || lc.onlyA.length || lc.onlyB.length)) {
+  const hasAnyLoadSignal = lc && (lc.matched.length || lc.interpolatedMatched.length || lc.onlyA.length || lc.onlyB.length || lc.summary);
+  if (hasAnyLoadSignal) {
     L.push(
       "> 负载点按“模式（开环速率 req/s / 闭环并发）+ 负载值”精确配对；不同模式的点量纲不同，不互相比较。压测数字是单次运行的确定性聚合值（非重复抽样），故只看差值/变化率，不套置信区间。",
       "",
     );
+    const loadRowCells = (mode, offered, ma, mb, unit) => [
+      mode === "open" ? "开环" : "闭环",
+      `${offered} ${unit}`,
+      fmt(ma.qps),
+      fmt(mb.qps),
+      signed(diff(ma.qps, mb.qps)),
+      pct(ma.successRate),
+      pct(mb.successRate),
+      fmt(ma.p95, " ms"),
+      fmt(mb.p95, " ms"),
+      signed(diff(ma.p95, mb.p95)),
+      fmt(ma.p99, " ms"),
+      fmt(mb.p99, " ms"),
+      signed(diff(ma.p99, mb.p99)),
+    ];
     if (lc.matched.length) {
       L.push(
         "| 模式 | 负载 | QPS(A) | QPS(B) | ΔQPS | 成功率(A) | 成功率(B) | p95(A) | p95(B) | Δp95 | p99(A) | p99(B) | Δp99 |",
@@ -1389,18 +1537,48 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
       );
       for (const m of lc.matched) {
         const unit = m.mode === "open" ? "req/s" : "并发";
-        L.push(
-          `| ${m.mode === "open" ? "开环" : "闭环"} | ${m.offered} ${unit} | ${fmt(m.a.qps)} | ${fmt(m.b.qps)} | ${signed(m.qpsDelta)} | ${pct(m.a.successRate)} | ${pct(m.b.successRate)} | ${fmt(m.a.p95, " ms")} | ${fmt(m.b.p95, " ms")} | ${signed(m.p95Delta, " ms")} | ${fmt(m.a.p99, " ms")} | ${fmt(m.b.p99, " ms")} | ${signed(m.p99Delta, " ms")} |`,
-        );
+        L.push(`| ${loadRowCells(m.mode, m.offered, m.a, m.b, unit).join(" | ")} |`);
       }
       L.push("");
-    } else {
+    } else if (!lc.interpolatedMatched.length && !lc.summary) {
       L.push("> 两个对象没有可配对的同负载点（模式或负载值均不一致），无法逐点对比。", "");
     }
+    if (lc.interpolatedMatched.length) {
+      L.push("> 以下负载点两侧数值不完全相等，已在同模式曲线上做**线性插值估计**，非实测数据，仅供参考：", "");
+      L.push(
+        "| 模式 | 负载 | QPS(A) | QPS(B) | ΔQPS | 成功率(A) | 成功率(B) | p95(A) | p95(B) | Δp95 | p99(A) | p99(B) | Δp99 | 估计方 | 插值区间 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
+      );
+      for (const m of lc.interpolatedMatched) {
+        const unit = m.mode === "open" ? "req/s" : "并发";
+        const side = m.interpolatedSide === "a" ? "对象A" : "对象B";
+        const from = m.interpFrom ? `${m.interpFrom.left}–${m.interpFrom.right}` : "—";
+        L.push(`| ${loadRowCells(m.mode, m.offered, m.a, m.b, unit).join(" | ")} | ${side} | ${from} |`);
+      }
+      L.push("");
+    }
     const loadName = (p) => `${p.mode === "open" ? "开环" : "闭环"} ${p.offered}${p.mode === "open" ? " req/s" : ""}`;
-    if (lc.onlyA.length) L.push(`- 仅对象A 测过的负载点：${lc.onlyA.map((p) => escapeCell(loadName(p))).join("、")}`);
-    if (lc.onlyB.length) L.push(`- 仅对象B 测过的负载点：${lc.onlyB.map((p) => escapeCell(loadName(p))).join("、")}`);
-    L.push("");
+    if (lc.onlyA.length) L.push(`- 仅对象A 测过、且无法插值估计的负载点：${lc.onlyA.map((p) => escapeCell(loadName(p))).join("、")}`);
+    if (lc.onlyB.length) L.push(`- 仅对象B 测过、且无法插值估计的负载点：${lc.onlyB.map((p) => escapeCell(loadName(p))).join("、")}`);
+    if (lc.onlyA.length || lc.onlyB.length) L.push("");
+    if (lc.summary) {
+      L.push(
+        "> 因两侧压测**模式不同或负载范围不重叠**，逐点与插值比较均无法进行，以下改为整条曲线的**汇总特征值比较**（非逐点比较）：",
+        "",
+      );
+      const kneeLine = (label, s) => {
+        const kp = s.knee.point;
+        const kneeText = kp
+          ? `${kp.mode === "open" ? "开环" : "闭环"} ${kp.offered}（QPS ${fmt(kp.qps)}，成功率 ${pct(kp.successRate)}，p99 ${fmt(kp.p99, " ms")}）`
+          : "无（最低负载点即不健康）";
+        L.push(
+          `- ${label}：推荐容量点 ${kneeText}；峰值 QPS ${fmt(s.peakQps)}${s.peakTokensPerSecond != null ? `，峰值输出 ${fmt(s.peakTokensPerSecond)} tok/s` : ""}`,
+        );
+      };
+      kneeLine("对象A", lc.summary.a);
+      kneeLine("对象B", lc.summary.b);
+      L.push("");
+    }
   } else {
     L.push("> 两个对象都没有压力测试报告，跳过压测对比。", "");
   }
@@ -1605,7 +1783,7 @@ export function buildCompareAnalysisPrompt(cmp) {
   const lcp = cmp.loadComparison;
   if (lcp?.matched?.length) {
     facts.push(
-      "压力测试(同负载点配对)：" +
+      "压力测试(同负载点精确配对)：" +
         lcp.matched
           .map(
             (m) =>
@@ -1614,8 +1792,18 @@ export function buildCompareAnalysisPrompt(cmp) {
           .join("；"),
     );
   }
+  if (lcp?.interpolatedMatched?.length) {
+    facts.push(`压力测试(插值估计，非实测)：共 ${lcp.interpolatedMatched.length} 个负载点通过线性插值估算得到，叙述中须明确标注为估计值`);
+  }
+  if (lcp?.summary) {
+    facts.push(
+      `压力测试(曲线汇总对比，因模式或负载范围不重叠无法逐点比)：对象A 峰值QPS ${fmt(lcp.summary.a.peakQps)}/对象B 峰值QPS ${fmt(lcp.summary.b.peakQps)}`,
+    );
+  }
   if (lcp && (lcp.onlyA?.length || lcp.onlyB?.length)) {
-    facts.push(`压测负载点覆盖差异：仅对象A测过 ${lcp.onlyA.length} 个、仅对象B测过 ${lcp.onlyB.length} 个（无法配对，不作强弱依据）`);
+    facts.push(
+      `压测负载点覆盖差异：仅对象A测过 ${lcp.onlyA.length} 个、仅对象B测过 ${lcp.onlyB.length} 个（无法配对或插值，不作强弱依据）`,
+    );
   }
   for (const s of [a, b]) {
     const risks = [];

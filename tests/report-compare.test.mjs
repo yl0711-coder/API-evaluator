@@ -22,6 +22,8 @@ import {
   formatCompareReportMarkdown,
   pickRecentReports,
   buildCompareAnalysisPrompt,
+  interpolateLoadPoint,
+  simpleKnee,
 } from "../server/report-compare.mjs";
 import { aggregate, formatSinglePointReport, formatSweepReport, findKnee } from "../server/load-test.mjs";
 
@@ -300,7 +302,14 @@ test("行级授权回归：旧文件因独有场景被保留时，其与新文�
     rows.map(([n, q]) => `| ${n} | 100% | ${q} |`).join("\n") +
     "\n";
   const files = [
-    { name: "old_batch", md: scenMd([["场景X", 20], ["场景B", 70]]), mtimeMs: 1 },
+    {
+      name: "old_batch",
+      md: scenMd([
+        ["场景X", 20],
+        ["场景B", 70],
+      ]),
+      mtimeMs: 1,
+    },
     { name: "new_single", md: scenMd([["场景X", 90]]), mtimeMs: 2 },
   ];
   const picked = pickRecentReports(files);
@@ -315,7 +324,16 @@ test("行级授权回归：旧文件因独有场景被保留时，其与新文�
   const b = agg.scenarios.find((s) => s.name === "场景B");
   assert.equal(b.quality, 70, "场景B 正常由旧文件供数");
   // 授权要能穿过 balanceCommonReports 存活（否则白标）：对侧也测过 X 和 B 时，X 仍只取最新值。
-  const filesOther = [{ name: "other", md: scenMd([["场景X", 50], ["场景B", 50]]), mtimeMs: 1 }];
+  const filesOther = [
+    {
+      name: "other",
+      md: scenMd([
+        ["场景X", 50],
+        ["场景B", 50],
+      ]),
+      mtimeMs: 1,
+    },
+  ];
   const [balA] = balanceCommonReports(picked, pickRecentReports(filesOther));
   const aggBal = aggregateSubject({ files: balA });
   assert.equal(aggBal.scenarios.find((s) => s.name === "场景X").quality, 90, "经 balance 后授权仍生效，X 不被陈旧行稀释");
@@ -345,13 +363,23 @@ test("行级授权口径回归：挂 DB summary 后行名来自库（可能含�
   });
   // 新文件测了 场景X；旧文件测了 场景X + 「换行 场景」（DB 原始名带 \n，md 里渲染成空格）。
   const files = [
-    { name: "old", md: scenMd([["场景X", 20], ["换行 场景", 70]]), mtimeMs: 1 },
+    {
+      name: "old",
+      md: scenMd([
+        ["场景X", 20],
+        ["换行 场景", 70],
+      ]),
+      mtimeMs: 1,
+    },
     { name: "new", md: scenMd([["场景X", 90]]), mtimeMs: 2 },
   ];
   const picked = pickRecentReports(files);
   // 模拟 attachSummaries：给旧文件挂 DB summary，行名用【原始】带换行的名字。
   const oldPicked = picked.find((f) => f.name === "old");
-  oldPicked.summary = mkSummary([["场景X", 20], ["换行\n场景", 70]]);
+  oldPicked.summary = mkSummary([
+    ["场景X", 20],
+    ["换行\n场景", 70],
+  ]);
   const agg = aggregateSubject({ files: picked });
   const wrapped = agg.scenarios.find((s) => s.name.includes("换行"));
   assert.ok(wrapped, "DB 原始名含换行的场景不得因 md/DB 名字字面不同而被授权过滤误丢");
@@ -360,11 +388,12 @@ test("行级授权口径回归：挂 DB summary 后行名来自库（可能含�
 
   // 无人认领的名字放行（保底）：DB 行名与任何 md 授权名都对不上（如名字含 |，md 表格解析已碎）——
   // 此时没有任何更新文件在供数同名场景，丢掉它就是纯数据丢失，必须保留。
-  const files2 = [
-    { name: "only", md: scenMd([["正常场景", 80]]), mtimeMs: 1 },
-  ];
+  const files2 = [{ name: "only", md: scenMd([["正常场景", 80]]), mtimeMs: 1 }];
   const picked2 = pickRecentReports(files2);
-  picked2[0].summary = mkSummary([["正常场景", 80], ["带|管道的场景", 60]]);
+  picked2[0].summary = mkSummary([
+    ["正常场景", 80],
+    ["带|管道的场景", 60],
+  ]);
   const agg2 = aggregateSubject({ files: picked2 });
   assert.ok(
     agg2.scenarios.some((s) => s.name === "带|管道的场景"),
@@ -571,8 +600,16 @@ test("exclusiveScenarioNames：取两方单方独有场景（供「补齐单方�
     { name: "b-s123", md: scenMd("逻辑谜题", "数学题", "翻译题") },
   ];
   const { onlyA, onlyB } = exclusiveScenarioNames(filesA, filesB);
-  assert.deepEqual(onlyA.map((s) => s.name), ["编程题"], "onlyA = A 测过但 B 没测过");
-  assert.deepEqual(onlyB.map((s) => s.name), ["翻译题"], "onlyB = B 测过但 A 没测过");
+  assert.deepEqual(
+    onlyA.map((s) => s.name),
+    ["编程题"],
+    "onlyA = A 测过但 B 没测过",
+  );
+  assert.deepEqual(
+    onlyB.map((s) => s.name),
+    ["翻译题"],
+    "onlyB = B 测过但 A 没测过",
+  );
   // 互补校验：共有 + 单方独有(各自) 应覆盖两方场景全集，且共有/独有不重叠。
   const common = new Set(commonScenarioNames(filesA, filesB).map((s) => s.name));
   assert.ok(!common.has("编程题") && !common.has("翻译题"), "独有场景不应出现在共有集合里");
@@ -702,10 +739,10 @@ test("端到端回归：一方有压测报告、另一方完全没有压测报�
 
   const md = formatCompareReportMarkdown(cmp, { generatedAt: "2026-01-01T00:00:00Z" });
   assert.ok(!md.includes("两个对象都没有压力测试报告"), "A 明明有压测报告，不得声称双方都没有");
-  assert.match(md, /仅对象A 测过的负载点/);
+  assert.match(md, /仅对象A 测过、且无法插值估计的负载点/);
 });
 
-test("buildComparison：负载点按 (mode, offered) 精确配对；不同 mode 不互相配对；单方独有归入 onlyA/onlyB", () => {
+test("buildComparison：负载点按 (mode, offered) 精确配对；不同 mode 不互相配对；单方独有归入 onlyA/onlyB（除非能插值）", () => {
   const mkAgg = (pts) => ({
     label: "x",
     scenarios: [],
@@ -724,16 +761,95 @@ test("buildComparison：负载点按 (mode, offered) 精确配对；不同 mode 
     { mode: "closed", offered: 30, qps: 6, successRate: 1, p95: 700, p99: 800 }, // B 独有
   ]);
   const cmp = buildComparison(a, b);
-  assert.equal(cmp.loadComparison.matched.length, 1, "只有 closed/10 两边都有，唯一配对");
+  assert.equal(cmp.loadComparison.matched.length, 1, "只有 closed/10 两边都有，唯一精确配对");
   const m = cmp.loadComparison.matched[0];
   assert.equal(m.mode, "closed");
   assert.equal(m.offered, 10);
   assert.equal(m.qpsDelta, 1, "5-4=1");
   assert.equal(m.p95Delta, -50, "500-550=-50");
-  // A 独有：closed/20 与 open/10（后者与 B 的 closed/10 数值一样但 mode 不同，不得被误配）。
+  // closed/20 落在 B 的 closed 区间 [10,30] 内 → 应被插值收编，不再算 onlyA。
+  assert.equal(cmp.loadComparison.interpolatedMatched.length, 1, "closed/20 应被插值配对");
+  const im = cmp.loadComparison.interpolatedMatched[0];
+  assert.equal(im.offered, 20);
+  assert.equal(im.interpolatedSide, "b", "是 B 侧被插值出来的虚拟点");
+  // B 在 closed 上是 10→30 之间线性插值：offered=20 是中点，qps=(4+6)/2=5，p95=(550+700)/2=625。
+  assert.equal(im.b.qps, 5);
+  assert.equal(im.b.p95, 625);
+  // A 独有：open/10（B 侧没有任何 open 点，插不出来，只能留在 onlyA）。
   const onlyAKeys = cmp.loadComparison.onlyA.map((p) => `${p.mode}:${p.offered}`).sort();
-  assert.deepEqual(onlyAKeys, ["closed:20", "open:10"], "closed/20 与 open/10 均未被配对");
-  assert.deepEqual(cmp.loadComparison.onlyB.map((p) => `${p.mode}:${p.offered}`), ["closed:30"]);
+  assert.deepEqual(onlyAKeys, ["open:10"], "open/10 无法在只有 closed 点的 B 曲线上插值");
+  // B 的 closed:30 落在 A 的 closed 区间 [10,20] 之外（30>20），不外推，仍留在 onlyB。
+  assert.deepEqual(
+    cmp.loadComparison.onlyB.map((p) => `${p.mode}:${p.offered}`),
+    ["closed:30"],
+  );
+});
+
+test("interpolateLoadPoint：范围外不外推、单点不插值、精确落点直接复用", () => {
+  const pts = [
+    { mode: "closed", offered: 10, qps: 5, successRate: 1, p95: 500, p99: 600 },
+    { mode: "closed", offered: 30, qps: 9, successRate: 0.9, p95: 900, p99: 1000 },
+  ];
+  assert.equal(interpolateLoadPoint(pts, 5), null, "5 < min(10)，不外推");
+  assert.equal(interpolateLoadPoint(pts, 35), null, "35 > max(30)，不外推");
+  assert.equal(interpolateLoadPoint([pts[0]], 20), null, "只有 1 个真实点，无法确定斜率");
+  const mid = interpolateLoadPoint(pts, 20);
+  assert.equal(mid.qps, 7, "(5+9)/2=7，20 是中点");
+  assert.equal(mid.p95, 700, "(500+900)/2=700");
+  assert.deepEqual(mid.interpFrom, { left: 10, right: 30 });
+  const exact = interpolateLoadPoint(pts, 10);
+  assert.equal(exact.qps, 5, "精确落在真实点上，直接复用而非重新插值");
+});
+
+test("simpleKnee：全程健康取最后一点；首点即不健康返回 -1；中途转坏取前一点", () => {
+  const healthy = [
+    { offered: 10, successRate: 1, http429: 0 },
+    { offered: 20, successRate: 1, http429: 0 },
+  ];
+  assert.equal(simpleKnee(healthy).index, 1);
+  assert.equal(simpleKnee(healthy).point.offered, 20);
+
+  const badBaseline = [
+    { offered: 10, successRate: 0.5, http429: 0 },
+    { offered: 20, successRate: 1, http429: 0 },
+  ];
+  assert.equal(simpleKnee(badBaseline).index, -1);
+  assert.equal(simpleKnee(badBaseline).point, null);
+
+  const turnsBad = [
+    { offered: 10, successRate: 1, http429: 0 },
+    { offered: 20, successRate: 1, http429: 0 },
+    { offered: 30, successRate: 0.5, http429: 2 },
+  ];
+  assert.equal(simpleKnee(turnsBad).index, 1);
+  assert.equal(simpleKnee(turnsBad).point.offered, 20);
+});
+
+test("buildComparison：跨 mode（一方开环一方闭环）退化为曲线汇总对比 summary", () => {
+  const mkAgg = (pts) => ({
+    label: "x",
+    scenarios: [],
+    tiers: [],
+    latency: { samples: [] },
+    quality: { mean: null, n: 0 },
+    loadPoints: pts,
+  });
+  const a = mkAgg([
+    { mode: "closed", offered: 10, qps: 5, successRate: 1, p95: 500, p99: 600 },
+    { mode: "closed", offered: 20, qps: 8, successRate: 1, p95: 700, p99: 800 },
+  ]);
+  const b = mkAgg([
+    { mode: "open", offered: 5, qps: 4, successRate: 1, p95: 400, p99: 450 },
+    { mode: "open", offered: 15, qps: 0.5, successRate: 0.8, p95: 900, p99: 1200 },
+  ]);
+  const cmp = buildComparison(a, b);
+  assert.equal(cmp.loadComparison.matched.length, 0);
+  assert.equal(cmp.loadComparison.interpolatedMatched.length, 0, "跨 mode 不互相插值");
+  assert.ok(cmp.loadComparison.summary, "无法逐点/插值比较时应退化为 summary");
+  assert.equal(cmp.loadComparison.summary.a.knee.point.offered, 20, "A 全程健康，推荐点取最后一点");
+  assert.equal(cmp.loadComparison.summary.a.peakQps, 8);
+  assert.equal(cmp.loadComparison.summary.b.knee.point.offered, 5, "B 第二点成功率跌破 99%，推荐点取前一点");
+  assert.equal(cmp.loadComparison.summary.b.peakQps, 4);
 });
 
 test("formatCompareReportMarkdown：压力测试对比节——有数据时出表格，无数据时给说明而非空表格", () => {
