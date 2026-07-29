@@ -114,17 +114,33 @@ test("estimateAdmissionBatchCost：多渠道逐个累加请求数（单渠道内
 });
 
 // ---- 标准评测 ----
-test("estimateStandardCost：请求数 = 1(快检) + 轮数 + 场景数", () => {
-  const e = estimateStandardCost({ rounds: 3 }, 2);
-  assert.equal(e.requests, 6); // 1+3+2
-  assert.equal(e.risk, "低"); // rounds<10
+test("estimateStandardCost：单模型 = 6(快速测试/quick-verify) + 10(固定稳定性轮数) + 标准准入(11)", () => {
+  const e = estimateStandardCost({ modelNames: ["demo-model"] });
+  const admission = estimateAdmissionCost({ packageLevel: "standard", modelName: "demo-model" });
+  assert.equal(e.requests, 6 + 10 + admission.requests);
+  assert.equal(e.risk, "中"); // 27 次请求 ≥ 24 门槛
 });
 
-test("estimateStandardCost：勾选 AI 分析（有场景→2次分析）把低风险抬升为中", () => {
-  const e = estimateStandardCost({ rounds: 3, useAiReportAnalysis: "1" }, 2);
-  assert.equal(e.requests, 8); // 6 + 2 次分析
-  assert.equal(e.highTokens, 2400 + 2 * 1800); // 基础 high 2400 + 2×1800
-  assert.equal(e.risk, "中"); // 2×1800=3600 ≥3000 → upgradeRisk 低→中
+test("estimateStandardCost：多模型请求数按模型数线性叠加（顺序执行、不并发不影响预估）", () => {
+  const one = estimateStandardCost({ modelNames: ["m1"] });
+  const two = estimateStandardCost({ modelNames: ["m1", "m2"] });
+  assert.equal(two.requests, one.requests * 2);
+});
+
+test("estimateStandardCost：勾选「这是 Claude 渠道」额外加 4 个模型的快速准入(5 次/个)", () => {
+  const without = estimateStandardCost({ modelNames: ["m1"] });
+  const withClaude = estimateStandardCost({ modelNames: ["m1"], isClaudeChannel: "1" });
+  assert.equal(withClaude.requests, without.requests + 4 * 5);
+});
+
+test("estimateStandardCost：勾选 AI 分析按「模型数×2」累加（稳定性+标准准入各触发一次），claude 探测不触发", () => {
+  const withoutClaude = estimateStandardCost({ modelNames: ["m1", "m2"], useAiReportAnalysis: "1" });
+  assert.equal(withoutClaude.requests, estimateStandardCost({ modelNames: ["m1", "m2"] }).requests + 2 * 2);
+
+  // 勾选 claude 渠道后，AI 分析次数不应额外增加（4 个 tier probe 探测调用没有 useAiReportAnalysis）。
+  const withClaude = estimateStandardCost({ modelNames: ["m1", "m2"], useAiReportAnalysis: "1", isClaudeChannel: "1" });
+  const withClaudeNoAi = estimateStandardCost({ modelNames: ["m1", "m2"], isClaudeChannel: "1" });
+  assert.equal(withClaude.requests, withClaudeNoAi.requests + 2 * 2);
 });
 
 // ---- 压测（闭环/开环请求数模型不同） ----

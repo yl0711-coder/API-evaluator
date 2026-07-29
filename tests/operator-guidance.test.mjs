@@ -65,16 +65,23 @@ test("operator guidance recommends next step after standard evaluation", () => {
   const passAdvice = buildStandardNextStepAdvice({
     quick: { success: true },
     stability: { successRate: 1, p95TotalMs: 1200 },
-    scenario: { results: [{ avgQualityScore: 80 }] },
+    admission: { grade: "A" },
   });
   assert.match(passAdvice.join("\n"), /复制交付模板/);
 
   const failAdvice = buildStandardNextStepAdvice({
     quick: { success: false },
     stability: null,
-    scenario: null,
+    admission: null,
   });
   assert.match(failAdvice.join("\n"), /不要继续消耗 token/);
+
+  const gradeFailAdvice = buildStandardNextStepAdvice({
+    quick: { success: true },
+    stability: { successRate: 1, p95TotalMs: 1200 },
+    admission: { grade: "D" },
+  });
+  assert.match(gradeFailAdvice.join("\n"), /标准准入等级为 D/);
 });
 
 test("operator guidance validates API profile configuration before save", () => {
@@ -121,7 +128,7 @@ test("operator guidance builds plain-language summary and action buttons", () =>
   const summary = buildStandardOperatorSummary({
     quick: { success: true },
     stability: { successRate: 1, p95TotalMs: 1000 },
-    scenario: { results: [{ avgQualityScore: 85 }] },
+    admission: { grade: "A" },
   });
   assert.equal(summary.level, "pass");
   assert.match(summary.title, /初筛通过/);
@@ -130,21 +137,29 @@ test("operator guidance builds plain-language summary and action buttons", () =>
   const passActions = buildStandardActionPlan({
     quick: { success: true },
     stability: { successRate: 1, p95TotalMs: 1000 },
-    scenario: { results: [{ avgQualityScore: 85 }] },
+    admission: { grade: "A" },
   });
   assert.deepEqual(
     passActions.map((action) => action.action),
-    ["handoff", "stability-basic", "scenario-basic"],
+    ["handoff", "stability-candidate", "admission-deep"],
   );
   assert.equal(passActions[0].kind, "primary");
 
   const actions = buildStandardActionPlan({
     quick: { success: false },
     stability: null,
-    scenario: null,
+    admission: null,
   });
   assert.deepEqual(
     actions.map((action) => action.action),
     ["profile-config", "quick-retry"],
   );
+
+  const gradeFailSummary = buildStandardOperatorSummary({
+    quick: { success: true },
+    stability: { successRate: 1, p95TotalMs: 1000 },
+    admission: { grade: "E" },
+  });
+  assert.equal(gradeFailSummary.level, "fail");
+  assert.match(gradeFailSummary.title, /标准准入等级为 E/);
 });
