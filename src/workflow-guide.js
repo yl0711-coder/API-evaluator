@@ -57,7 +57,7 @@ export function getNextWorkflowStep(status) {
       step: "standard",
       page: "standard-eval",
       title: "运行一次标准评测",
-      detail: "标准评测会自动完成连通、低轮稳定性和少量场景初筛，普通操作员不需要先进入高级测试。",
+      detail: "标准评测会对选中的模型依次完成快速测试、稳定性测试和标准准入初筛，普通操作员不需要先进入高级测试。",
       button: "去标准评测",
     };
   }

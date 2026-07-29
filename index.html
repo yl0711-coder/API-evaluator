@@ -153,7 +153,7 @@
             </label>
             <label>
               测试包
-              <select name="packageLevel">
+              <select name="packageLevel" id="admission-package-level">
                 <option value="quick">快速准入：5 次请求</option>
                 <option value="standard" selected>标准准入：11-12 次请求</option>
                 <option value="deep">深度准入：12-13 次请求</option>
@@ -227,7 +227,7 @@
           <div class="section-header">
             <div>
               <h2><span class="step">第 4 步 · 标准评测</span>标准评测</h2>
-              <p class="section-desc">推荐优先使用这一页。它是一键流程，会自动执行快速测试、稳定性测试和少量复杂场景测试。单独的稳定性/场景测试属于高级复测。</p>
+              <p class="section-desc">选一个渠道后可勾选多个模型，每个模型顺序（不并发）依次执行快速测试、10 轮稳定性测试和标准准入评测。单独的稳定性/准入测试属于高级复测。</p>
             </div>
           </div>
 
@@ -241,42 +241,31 @@
               </article>
               <article class="guide-card">
                 <span>第 2 步</span>
-                <strong>3 轮稳定性</strong>
-                <p>用低成本方式观察是否有超时、空响应或上游错误。</p>
+                <strong>10 轮稳定性</strong>
+                <p>观察是否有超时、空响应或上游错误。</p>
               </article>
               <article class="guide-card">
                 <span>第 3 步</span>
-                <strong>少量复杂场景</strong>
-                <p>只跑 2 个轻量场景，快速判断是否值得进入深度复测。</p>
+                <strong>标准准入</strong>
+                <p>检查结构化输出、工具调用、流式响应等能力项，取代原来的场景测试。</p>
+              </article>
+              <article class="guide-card">
+                <span>可选</span>
+                <strong>Claude 新档位快速准入</strong>
+                <p>勾选“这是 Claude 渠道”后，会额外对 4 个常见新档位模型各跑一次快速准入，帮助尽早发现新模型是否已可用。</p>
               </article>
             </div>
           </details>
 
           <form id="standard-eval-form" class="panel form-grid">
-            <label>
-              被测渠道
-              <select id="standard-channel-select"></select>
-            </label>
-            <label>
-              被测模型
-              <select name="profileId" id="standard-profile-select" disabled></select>
-            </label>
-            <label>
-              稳定性轮数
-              <select name="rounds">
-                <option value="3" selected>3 轮：标准快速评测</option>
-                <option value="10">10 轮：更稳妥但更耗额度</option>
-              </select>
-            </label>
-            <label class="wide">
-              快速测试文案场景
-              <select id="standard-prompt-preset"></select>
-              <small id="standard-prompt-hint" class="field-hint">标准评测会先用这段文案做快速连通验证，建议保持低成本。</small>
-            </label>
-            <label class="wide">
-              当前测试文案（选择“自定义”后可编辑）
-              <textarea name="prompt"></textarea>
-              <small class="field-hint">默认由上方场景自动生成，普通用户不需要自己写。</small>
+            <div class="wide" id="standard-picker"></div>
+            <select name="profileIds" id="standard-profile-select" multiple hidden></select>
+            <label class="wide checkbox-option">
+              <input name="isClaudeChannel" id="standard-is-claude" type="checkbox" value="1" />
+              <span>
+                这是 Claude 渠道
+                <small>勾选后会额外对 claude-opus-4-6 / claude-opus-4-7 / claude-opus-4-8 / claude-sonnet-4-6 各跑一次快速准入（临时探测，不会写入模型管理列表）。</small>
+              </span>
             </label>
             <label class="wide checkbox-option">
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
@@ -290,28 +279,7 @@
 
           <div class="panel">
             <h3>标准评测进度</h3>
-            <div id="standard-eval-progress" class="standard-flow">
-              <article class="flow-step" data-standard-step="quick">
-                <span>1</span>
-                <strong>快速测试</strong>
-                <small>等待开始。</small>
-              </article>
-              <article class="flow-step" data-standard-step="stability">
-                <span>2</span>
-                <strong>稳定性测试</strong>
-                <small>等待开始。</small>
-              </article>
-              <article class="flow-step" data-standard-step="scenario">
-                <span>3</span>
-                <strong>复杂场景</strong>
-                <small>等待开始。</small>
-              </article>
-            </div>
-            <div id="standard-task-progress" class="progress-panel hidden">
-              <div class="progress-bar"><span></span></div>
-              <p class="muted">等待任务开始。</p>
-              <button id="cancel-standard-task" class="secondary" type="button">取消当前任务</button>
-            </div>
+            <div id="standard-eval-progress" class="standard-flow"></div>
           </div>
 
           <div class="panel">

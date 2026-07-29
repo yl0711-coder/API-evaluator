@@ -67,7 +67,6 @@ import {
   runAdmissionTest,
   runBatchAdmissionTest,
   runBatchStabilityTest,
-  runQuickTest,
   runQuickVerify,
   runScenarioTest,
   runStabilityTest,
@@ -489,7 +488,6 @@ const API_ROUTES = [
   ["DELETE", "/api/model-targets/:id", handleModelTargetDelete],
 
   // 同步测试：直接在请求里跑完并返回结果（耗时长的走下面的 /api/tasks 异步任务）
-  ["POST", "/api/tests/quick", handleTestQuick],
   ["POST", "/api/tests/quick-verify", handleTestQuickVerify],
   ["POST", "/api/tests/admission", handleTestAdmission],
   ["POST", "/api/tests/batch-admission", handleTestBatchAdmission],
@@ -1499,13 +1497,6 @@ async function handleModelTargetDelete(req, res, { params }) {
   const targets = await loadModelTargets();
   await saveModelTargets(targets.filter((item) => item.id !== id));
   sendJson(res, 200, { ok: true });
-  return;
-}
-
-async function handleTestQuick(req, res) {
-  const body = await readJson(req);
-  const result = await runQuickTest(body.profileId, body.prompt || "");
-  sendJson(res, 200, result);
   return;
 }
 

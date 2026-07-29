@@ -7,6 +7,19 @@ import { loadChannels } from "./channel-store.mjs";
 import { loadModelTargets } from "./model-target-store.mjs";
 import { resolveTestTarget } from "./channel-model.mjs";
 
+// 临时（不落库）目标：复用某渠道的 baseUrl/Key/协议，但模型名任填——不需要先在「模型管理」
+// 建一条正式的 model-target 记录。用于「标准评测」对渠道下尚未登记的模型做一次性探测
+// （如新上线的 Claude 档位快速核验），跑完即弃、不出现在模型管理列表里。
+// 找不到渠道 / 渠道已禁用 → 返回 null，调用方据此报错（与 loadRunnableProfiles 找不到目标同等对待）。
+export async function resolveAdhocTarget({ channelId, model }) {
+  const channels = await loadChannels();
+  const channel = channels.find((item) => item.id === channelId);
+  if (!channel || channel.status === "disabled") return null;
+  const modelName = String(model || "").trim();
+  if (!modelName) return null;
+  return resolveTestTarget({ id: `adhoc:${channelId}:${modelName}`, channelId, model: modelName, maxTokens: 512, timeoutMs: 300000 }, channel);
+}
+
 export async function loadRunnableProfiles() {
   const [profiles, channels, targets] = await Promise.all([loadProfiles(), loadChannels(), loadModelTargets()]);
   const byChannel = new Map(channels.map((channel) => [channel.id, channel]));

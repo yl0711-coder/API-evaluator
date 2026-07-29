@@ -7,7 +7,7 @@ import { buildAiAnalysisResult, buildAiReportAnalysisPrompt, isAiReportAnalysisE
 import { getSettings } from "./settings-store.mjs";
 import { getTestScenarios } from "./scenarios/index.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
-import { loadRunnableProfiles } from "./run-targets.mjs";
+import { loadRunnableProfiles, resolveAdhocTarget } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
 import { computeEarnedTags, applyEarnedTags } from "./scenario-tag-award.mjs";
 import { P95_LATENCY_OK_MS, P95_LATENCY_SLOW_MS } from "./constants.mjs";
@@ -103,24 +103,6 @@ export function buildReportId(type, headSlug) {
   const hash = crypto.randomUUID().slice(0, 4);
   const head = (headSlug || "").trim() || "多目标";
   return `${head}_${type}_${stamp}_${hash}`;
-}
-
-export async function runQuickTest(profileId, prompt) {
-  const profiles = await loadRunnableProfiles();
-  const profile = profiles.find((item) => item.id === profileId);
-  if (!profile) {
-    return {
-      success: false,
-      normalizedError: "profile_not_found",
-      message: "没有找到被测 API 配置。",
-    };
-  }
-
-  return executeTestRequest(profile, prompt, {
-    runId: "quick-test",
-    caseId: "quick-connectivity",
-    writeLog: true,
-  });
 }
 
 // 轻量快检（quick-verify）：固定一小撮探针、输出封顶控成本，一次性给出
@@ -312,8 +294,7 @@ function normalizePredicted(predicted) {
 }
 
 export async function runAdmissionTest(body, taskContext = {}) {
-  const profiles = await loadRunnableProfiles();
-  const profile = profiles.find((item) => item.id === body.profileId);
+  const profile = await resolveAdmissionProfile(body);
   if (!profile) {
     throw new Error("没有找到被测 API 配置。");
   }
@@ -556,6 +537,20 @@ export async function runStabilityTest(body, taskContext = {}) {
       updateTaskProgress(taskContext, completed, total, `稳定性测试进行中：${completed}/${total} 轮`);
     },
   });
+}
+
+// 准入目标解析：优先 body.profileId（已登记的模型目标）；若带 channelId+model 且没有匹配的
+// profileId，走临时（不落库）目标——用于对渠道下尚未登记的模型做一次性快速准入探测。
+async function resolveAdmissionProfile(body) {
+  if (body.profileId) {
+    const profiles = await loadRunnableProfiles();
+    const profile = profiles.find((item) => item.id === body.profileId);
+    if (profile) return profile;
+  }
+  if (body.channelId && body.model) {
+    return resolveAdhocTarget({ channelId: body.channelId, model: body.model });
+  }
+  return null;
 }
 
 function buildAdmissionCases(packageLevel, modelName = "") {

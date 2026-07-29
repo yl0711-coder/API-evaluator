@@ -320,21 +320,19 @@ export function buildErrorAdviceText(errorLike) {
   ].join("\n");
 }
 
-export function buildStandardNextStepAdvice({ quick, stability, scenario }) {
+// 标准评测单模型判定：quick(快速测试) + stability(10轮稳定性) + admission(标准准入，取代原场景测试)。
+// admission.grade 沿用准入评测的 A-F/X 等级；A/B 视为可交付，C 需观察，D/E/F/X 不建议。
+export function buildStandardNextStepAdvice({ quick, stability, admission }) {
   if (!quick?.success) {
     return ["快速测试没有通过，先不要继续消耗 token。", "下一步：回到 API 配置，检查 Base URL、协议、模型名和 Key，然后重新跑快速测试。"];
   }
 
   const successRate = Number(stability?.successRate ?? 0);
   const p95 = Number(stability?.p95TotalMs ?? 0);
-  const scenarioScores = scenario?.results?.map((item) => Number(item.avgQualityScore)).filter(Number.isFinite) || [];
-  const avgScore = scenarioScores.length ? scenarioScores.reduce((sum, value) => sum + value, 0) / scenarioScores.length : null;
+  const grade = admission?.grade || null;
 
-  if (successRate >= 0.95 && (!p95 || p95 <= 30000) && (avgScore === null || avgScore >= 70)) {
-    return [
-      "初筛结果可用，可以进入更正式的复测。",
-      "下一步：先复制交付模板给负责人；如果负责人要求更稳妥，再跑 10 轮稳定性或基础全量场景包。",
-    ];
+  if (successRate >= 0.95 && (!p95 || p95 <= 30000) && (grade === null || ["A", "B"].includes(grade))) {
+    return ["初筛结果可用，可以进入更正式的复测。", "下一步：先复制交付模板给负责人；如果负责人要求更稳妥，再跑 30 轮稳定性或深度准入。"];
   }
 
   if (successRate < 0.9) {
@@ -345,28 +343,31 @@ export function buildStandardNextStepAdvice({ quick, stability, scenario }) {
     return ["能跑通，但响应偏慢。", "下一步：确认业务是否能接受等待时间；如不能接受，换低延迟渠道或降低复杂任务输入长度。"];
   }
 
+  if (grade && !["A", "B"].includes(grade)) {
+    return [`标准准入等级为 ${grade}，暂不建议直接开放。`, "下一步：查看准入报告里的分项结果，确认是结构化输出、工具调用还是标称一致性出了问题。"];
+  }
+
   return ["结果需要人工复核。", "下一步：查看报告中心的错误诊断和输出摘要，再决定是否扩大轮数。"];
 }
 
-export function buildStandardOperatorSummary({ quick, stability, scenario }) {
+export function buildStandardOperatorSummary({ quick, stability, admission }) {
   if (!quick?.success) {
     return {
       level: "fail",
       title: "这条 API 现在还不能进入正式测试",
-      detail: "快速测试已经失败，继续跑稳定性或场景测试只会浪费额度。先修配置，再复测。",
+      detail: "快速测试已经失败，继续跑稳定性或准入评测只会浪费额度。先修配置，再复测。",
     };
   }
 
   const successRate = Number(stability?.successRate ?? 0);
   const p95 = Number(stability?.p95TotalMs ?? 0);
-  const scenarioScores = scenario?.results?.map((item) => Number(item.avgQualityScore)).filter(Number.isFinite) || [];
-  const avgScore = scenarioScores.length ? scenarioScores.reduce((sum, value) => sum + value, 0) / scenarioScores.length : null;
+  const grade = admission?.grade || null;
 
-  if (successRate >= 0.95 && (!p95 || p95 <= 30000) && (avgScore === null || avgScore >= 70)) {
+  if (successRate >= 0.95 && (!p95 || p95 <= 30000) && (grade === null || ["A", "B"].includes(grade))) {
     return {
       level: "pass",
       title: "初筛通过，值得进入下一轮复测",
-      detail: "这条 API 基本可用。可以先复制交付模板给负责人；如果要更稳妥，再跑 10 轮稳定性或完整场景包。",
+      detail: "这条 API 基本可用。可以先复制交付模板给负责人；如果要更稳妥，再跑 30 轮稳定性或深度准入。",
     };
   }
 
@@ -386,6 +387,14 @@ export function buildStandardOperatorSummary({ quick, stability, scenario }) {
     };
   }
 
+  if (grade && !["A", "B"].includes(grade)) {
+    return {
+      level: "fail",
+      title: `标准准入等级为 ${grade}，暂不建议开放`,
+      detail: "快速测试和稳定性都正常，但标准准入没有达到可交付水平。查看准入报告的分项结果再决定。",
+    };
+  }
+
   return {
     level: "watch",
     title: "结果需要人工复核",
@@ -393,7 +402,7 @@ export function buildStandardOperatorSummary({ quick, stability, scenario }) {
   };
 }
 
-export function buildStandardActionPlan({ quick, stability, scenario }) {
+export function buildStandardActionPlan({ quick, stability, admission }) {
   if (!quick?.success) {
     return [
       { label: "回 API 配置检查", action: "profile-config", kind: "primary" },
@@ -401,12 +410,12 @@ export function buildStandardActionPlan({ quick, stability, scenario }) {
     ];
   }
 
-  const summary = buildStandardOperatorSummary({ quick, stability, scenario });
+  const summary = buildStandardOperatorSummary({ quick, stability, admission });
   if (summary.level === "pass") {
     return [
       { label: "复制交付模板", action: "handoff", kind: "primary" },
-      { label: "跑 10 轮稳定性", action: "stability-basic", kind: "secondary" },
-      { label: "跑基础全量场景", action: "scenario-basic", kind: "secondary" },
+      { label: "跑 30 轮稳定性", action: "stability-candidate", kind: "secondary" },
+      { label: "跑深度准入", action: "admission-deep", kind: "secondary" },
     ];
   }
 
