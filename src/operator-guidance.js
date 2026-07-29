@@ -344,7 +344,10 @@ export function buildStandardNextStepAdvice({ quick, stability, admission }) {
   }
 
   if (grade && !["A", "B"].includes(grade)) {
-    return [`标准准入等级为 ${grade}，暂不建议直接开放。`, "下一步：查看准入报告里的分项结果，确认是结构化输出、工具调用还是标称一致性出了问题。"];
+    return [
+      `标准准入等级为 ${grade}，暂不建议直接开放。`,
+      "下一步：查看准入报告里的分项结果，确认是结构化输出、工具调用还是标称一致性出了问题。",
+    ];
   }
 
   return ["结果需要人工复核。", "下一步：查看报告中心的错误诊断和输出摘要，再决定是否扩大轮数。"];

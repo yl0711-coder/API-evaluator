@@ -17,7 +17,10 @@ export async function resolveAdhocTarget({ channelId, model }) {
   if (!channel || channel.status === "disabled") return null;
   const modelName = String(model || "").trim();
   if (!modelName) return null;
-  return resolveTestTarget({ id: `adhoc:${channelId}:${modelName}`, channelId, model: modelName, maxTokens: 512, timeoutMs: 300000 }, channel);
+  return resolveTestTarget(
+    { id: `adhoc:${channelId}:${modelName}`, channelId, model: modelName, maxTokens: 512, timeoutMs: 300000 },
+    channel,
+  );
 }
 
 export async function loadRunnableProfiles() {

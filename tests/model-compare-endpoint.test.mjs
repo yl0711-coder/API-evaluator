@@ -220,7 +220,11 @@ test("/api/reports/compare/gaps：追加一份仅 A 测过的新场景 → onlyA
   );
   const r = await post("/api/reports/compare/gaps", cookie, { a: A, b: B });
   assert.equal(r.status, 200, `期望 200，实为 ${r.status}：${JSON.stringify(r.body)}`);
-  assert.deepEqual(r.body.onlyA.map((s) => s.name), ["编程题"], "A 独有新场景应出现在 onlyA");
+  assert.deepEqual(
+    r.body.onlyA.map((s) => s.name),
+    ["编程题"],
+    "A 独有新场景应出现在 onlyA",
+  );
   assert.deepEqual(r.body.onlyB, [], "B 仍无独有场景");
 });
 

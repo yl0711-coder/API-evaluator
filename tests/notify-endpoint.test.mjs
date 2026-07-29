@@ -99,7 +99,11 @@ test("门禁：未登录 → 401（GET/PUT/POST 全部方法）", async () => {
   assert.ok(ready, "server 未就绪");
   const g = await fetch(`http://127.0.0.1:${PORT}/api/notify/config`);
   assert.equal(g.status, 401);
-  const p = await fetch(`http://127.0.0.1:${PORT}/api/notify/config`, { method: "PUT", body: "{}", headers: { "content-type": "application/json" } });
+  const p = await fetch(`http://127.0.0.1:${PORT}/api/notify/config`, {
+    method: "PUT",
+    body: "{}",
+    headers: { "content-type": "application/json" },
+  });
   assert.equal(p.status, 401);
   const t = await fetch(`http://127.0.0.1:${PORT}/api/notify/test`, { method: "POST" });
   assert.equal(t.status, 401);

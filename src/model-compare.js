@@ -315,7 +315,12 @@ export function createModelCompare({ state, confirm }) {
           state,
           "mc-gap-fill",
           "scenario",
-          { profileIds: [job.targetId], scenarioIds: [job.scenarioId], repeats: 1, idempotencyKey: `mc-gap-fill:${job.targetId}:${job.scenarioId}` },
+          {
+            profileIds: [job.targetId],
+            scenarioIds: [job.scenarioId],
+            repeats: 1,
+            idempotencyKey: `mc-gap-fill:${job.targetId}:${job.scenarioId}`,
+          },
           gapProgress,
         );
       } catch (error) {

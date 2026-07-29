@@ -373,8 +373,16 @@ test("exclusiveScenarioNames：取两方单方独有场景（供「补齐单方�
     { name: "b-s123", md: scenMd("逻辑谜题", "数学题", "翻译题") },
   ];
   const { onlyA, onlyB } = exclusiveScenarioNames(filesA, filesB);
-  assert.deepEqual(onlyA.map((s) => s.name), ["编程题"], "onlyA = A 测过但 B 没测过");
-  assert.deepEqual(onlyB.map((s) => s.name), ["翻译题"], "onlyB = B 测过但 A 没测过");
+  assert.deepEqual(
+    onlyA.map((s) => s.name),
+    ["编程题"],
+    "onlyA = A 测过但 B 没测过",
+  );
+  assert.deepEqual(
+    onlyB.map((s) => s.name),
+    ["翻译题"],
+    "onlyB = B 测过但 A 没测过",
+  );
   // 互补校验：共有 + 单方独有(各自) 应覆盖两方场景全集，且共有/独有不重叠。
   const common = new Set(commonScenarioNames(filesA, filesB).map((s) => s.name));
   assert.ok(!common.has("编程题") && !common.has("翻译题"), "独有场景不应出现在共有集合里");

@@ -34,7 +34,8 @@ const sendJson = (res, code, obj) => {
 
 test("runAdmissionTest：channelId+model 临时目标可跑快速准入，不需要预先登记模型目标", async () => {
   await withMockUpstream(
-    (req, res) => sendJson(res, 200, { choices: [{ message: { content: "admission ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }),
+    (req, res) =>
+      sendJson(res, 200, { choices: [{ message: { content: "admission ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }),
     async (baseUrl) => {
       const channel = await channelStore.attachChannelKey(
         {
