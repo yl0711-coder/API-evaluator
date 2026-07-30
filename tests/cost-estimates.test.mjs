@@ -36,6 +36,25 @@ test("estimateStabilityCost：缺 rounds 时按默认 10 估", () => {
   assert.equal(e.requests, 10);
 });
 
+test("estimateStabilityCost：有 groups 时按各组 repeats 求和，忽略 rounds", () => {
+  const e = estimateStabilityCost({
+    rounds: 999,
+    groups: [
+      { presetId: "basic", repeats: 3 },
+      { presetId: "coding", repeats: 3 },
+      { presetId: "custom", repeats: 1 },
+    ],
+  });
+  assert.equal(e.requests, 7);
+  assert.equal(e.lowTokens, 7 * 80);
+  assert.equal(e.highTokens, 7 * 200);
+});
+
+test("estimateStabilityCost：空 groups 数组回落到 rounds", () => {
+  const e = estimateStabilityCost({ rounds: 5, groups: [] });
+  assert.equal(e.requests, 5);
+});
+
 // ---- AI 分析加价（横切所有带 payload 的估算） ----
 test("勾选 AI 分析：额外 +1 请求、token +[800,1800]（稳定性为例）", () => {
   const base = estimateStabilityCost({ rounds: 10 });

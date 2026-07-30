@@ -770,6 +770,38 @@ label {
   line-height: 1.55;
 }
 
+/* 稳定性测试：多组文案选择器（每个预设一行 + 数量框，custom 行内含自定义文案 textarea）。 */
+.stability-group-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.stability-group-row {
+  border: 1px solid #25334a;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.stability-group-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-weight: 700;
+  cursor: default;
+}
+
+.stability-group-repeats {
+  width: 64px;
+  flex: none;
+}
+
+.stability-custom-prompt {
+  width: 100%;
+}
+
 /* 模型比对 · 自选场景复选清单 */
 .mc-scenarios {
   margin-top: 10px;
@@ -1783,6 +1815,25 @@ button.danger {
 
 .wide-summary {
   grid-column: 1 / -1;
+}
+
+.stability-group-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+
+.stability-group-table th,
+.stability-group-table td {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 13px;
+}
+
+.stability-group-table th {
+  color: var(--text);
+  background: rgba(246, 181, 107, 0.12);
 }
 
 /* 场景测试「汇总结论」逐 API 卡：指标横排，结论标题比单目标卡略小以容纳多行 */

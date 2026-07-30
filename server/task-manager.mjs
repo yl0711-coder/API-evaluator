@@ -281,6 +281,9 @@ export function normalizeTaskType(type) {
 
 export function estimateTaskUnits(type, payload, { normalizeProfileIds, normalizeScenarioIds }) {
   if (type === "stability") {
+    if (Array.isArray(payload.groups) && payload.groups.length > 0) {
+      return payload.groups.reduce((sum, group) => sum + clampNumber(group.repeats, 1, 20, 1), 0);
+    }
     return clampNumber(payload.rounds, 1, 100, 10);
   }
   if (type === "load-test") {
@@ -377,6 +380,17 @@ export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
 
 export function summarizeTaskPayload(type, payload, { normalizeProfileIds, normalizeScenarioIds }) {
   if (type === "stability") {
+    if (Array.isArray(payload.groups) && payload.groups.length > 0) {
+      return {
+        profileId: payload.profileId || "",
+        groups: payload.groups.map((group) => ({
+          presetId: group.presetId ?? null,
+          repeats: clampNumber(group.repeats, 1, 20, 1),
+        })),
+        concurrency: clampNumber(payload.concurrency, 1, 5, 1),
+        promptPreview: "<多组>",
+      };
+    }
     return {
       profileId: payload.profileId || "",
       rounds: clampNumber(payload.rounds, 1, 100, 10),

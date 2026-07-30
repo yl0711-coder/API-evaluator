@@ -476,15 +476,6 @@
           </details>
 
           <form id="stability-test-form" class="panel form-grid">
-            <label class="wide">
-              测试模板
-              <select id="stability-template">
-                <option value="smoke">快速筛查：3 轮，并发 1</option>
-                <option value="basic" selected>基础稳定性：10 轮，并发 1</option>
-                <option value="candidate">候选渠道复测：30 轮，并发 1</option>
-                <option value="concurrency">轻并发观察：10 轮，并发 2</option>
-              </select>
-            </label>
             <label>
               被测渠道
               <select id="stability-channel-select"></select>
@@ -494,11 +485,6 @@
               <select name="profileId" id="stability-profile-select" disabled></select>
             </label>
             <label>
-              测试轮数
-              <input type="number" name="rounds" id="stability-rounds" min="1" max="100" step="1" value="10" />
-              <small class="field-hint">1-100 轮，默认 10 轮（基础稳定性）。</small>
-            </label>
-            <label>
               并发数
               <select name="concurrency">
                 <option value="1" selected>1：顺序测试，最稳妥</option>
@@ -506,15 +492,11 @@
                 <option value="3">3：观察网关波动</option>
               </select>
             </label>
+            <p id="stability-request-total" class="field-hint">共 0 次请求（0 组）</p>
             <label class="wide">
-              测试文案场景
-              <select id="stability-prompt-preset"></select>
-              <small id="stability-prompt-hint" class="field-hint">选择一个代表性场景，工具会自动填入测试 Prompt。也可以选择自定义后自己写。</small>
-            </label>
-            <label class="wide">
-              当前测试文案（选择“自定义”后可编辑）
-              <textarea name="prompt"></textarea>
-              <small class="field-hint">默认由上方场景自动生成，普通用户不需要自己写。</small>
+              测试文案分组（每个场景一个数量框，0 表示不选该组；每组默认测 3 遍，自定义默认 1 遍）
+              <div id="stability-group-picker" class="stability-group-picker"></div>
+              <small class="field-hint">选中多个场景会在同一份报告里分组统计；也可以只加大同一个场景的数量做重复测试。</small>
             </label>
             <label class="wide checkbox-option">
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
@@ -547,14 +529,6 @@
             <summary>批量并发测试</summary>
             <p class="field-hint">用于多个模型或渠道横向对比。建议先选 2-3 个 API 小轮数筛查。</p>
             <form id="batch-test-form" class="form-grid">
-              <label class="wide">
-                测试模板
-                <select id="batch-template">
-                  <option value="batch-smoke">批量快速筛查：每个 API 3 轮</option>
-                  <option value="batch-basic" selected>批量基础对比：每个 API 10 轮</option>
-                  <option value="batch-candidate">批量候选复测：每个 API 30 轮</option>
-                </select>
-              </label>
               <div class="wide" id="batch-picker"></div>
               <select name="profileIds" id="batch-profile-select" multiple hidden></select>
               <label>

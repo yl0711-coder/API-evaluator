@@ -8,6 +8,40 @@ import { auditRunTokenUsage } from "./token-auditor.mjs";
 import { buildErrorDiagnostics, buildRecommendation, buildScenarioRecommendation, countErrors } from "./reporting.mjs";
 import { formatPercent, groupBy, isFiniteNumber, mean, percentile, summarizeText } from "./utils.mjs";
 
+// 缓存命中率：命中缓存的输入 token 占总输入 token 的比例。返回 null 表示该批记录
+// 完全没有缓存统计信号（如纯 OpenAI 协议无 usage 明细），区分于「有信号但真是 0 命中」。
+function computeCacheHitRate(records) {
+  const withSignal = records.filter(
+    (r) => isFiniteNumber(r.cacheReadTokens) && isFiniteNumber(r.inputTokens) && r.inputTokens > 0,
+  );
+  if (withSignal.length === 0) return null;
+  const totalInput = withSignal.reduce((sum, r) => sum + r.inputTokens, 0);
+  const totalCacheRead = withSignal.reduce((sum, r) => sum + (r.cacheReadTokens || 0), 0);
+  return totalInput > 0 ? totalCacheRead / totalInput : null;
+}
+
+function buildStabilityGroupBreakdown(records) {
+  const groups = groupBy(records, (record) => record.groupId ?? "default");
+  return Object.entries(groups).map(([groupId, items]) => {
+    const okItems = items.filter((item) => item.success);
+    const times = okItems.map((item) => item.totalMs).filter(isFiniteNumber);
+    const groupSuccessRate = items.length ? okItems.length / items.length : 0;
+    const cacheHitRate = computeCacheHitRate(items);
+    return {
+      groupId: groupId === "default" ? null : groupId,
+      promptPreview: summarizeText(items[0]?.groupPrompt || ""),
+      count: items.length,
+      successCount: okItems.length,
+      successRate: groupSuccessRate,
+      successRateText: formatPercent(groupSuccessRate),
+      avgTotalMs: Math.round(mean(times) || 0),
+      p95TotalMs: percentile(times, 0.95),
+      cacheHitRate,
+      cacheHitRateText: cacheHitRate == null ? null : formatPercent(cacheHitRate),
+    };
+  });
+}
+
 export function buildStabilitySummary({ runId, profile, records, rounds, concurrency, prompt, startedAt, endedAt }) {
   const successRecords = records.filter((item) => item.success);
   const failedRecords = records.filter((item) => !item.success);
@@ -21,6 +55,8 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
   const usageTotals = aggregateUsage(records);
   const { inputTokens, outputTokens } = usageTotals;
   const economics = estimateProfileRunEconomics(profile, { inputTokens, outputTokens });
+  const cacheHitRate = computeCacheHitRate(records);
+  const groups = buildStabilityGroupBreakdown(records);
   // 计费灌水审计（整轮聚合，复用 prompt/输出/usage，不发新请求）
   const tokenAudit = auditRunTokenUsage(
     records.map((item) => ({
@@ -63,6 +99,9 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
     cacheCreationTokens: usageTotals.cacheCreationTokens,
     cacheReadTokens: usageTotals.cacheReadTokens,
     reasoningTokens: usageTotals.reasoningTokens,
+    cacheHitRate,
+    cacheHitRateText: cacheHitRate == null ? null : formatPercent(cacheHitRate),
+    groups,
     tokenAudit,
     tokenAuditFindings: tokenAudit.flags || [],
     ...economics,
