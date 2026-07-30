@@ -174,5 +174,8 @@ test("readStabilityGroups：数量框超出 [0,20] 被夹紧", () => {
   const groups = readStabilityGroups(form);
   const basic = groups.find((g) => g.presetId === "basic");
   assert.equal(basic.repeats, 20);
-  assert.equal(groups.some((g) => g.presetId === "coding"), false);
+  assert.equal(
+    groups.some((g) => g.presetId === "coding"),
+    false,
+  );
 });
