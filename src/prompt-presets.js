@@ -243,3 +243,51 @@ function resolvePresetArgs(kindOrSelectedId, maybeSelectedId) {
     selectedId: kindOrSelectedId,
   };
 }
+
+// 读取分组选择器当前状态，组装成后端需要的 groups 数组。数量为 0 的预设不入选；
+// custom 预设额外要求填了非空文案，否则视为未选中（不阻塞提交，只是跳过这一组）。
+export function readStabilityGroups(form) {
+  const groups = [];
+  for (const preset of STABILITY_PROMPT_PRESETS) {
+    const input = form.querySelector(`.stability-group-repeats[data-preset-id="${preset.id}"]`);
+    const repeats = clampGroupRepeats(input?.value);
+    if (repeats <= 0) continue;
+    if (preset.id === "custom") {
+      const customPrompt = String(form.elements.prompt?.value || "").trim();
+      if (!customPrompt) continue;
+      groups.push({ presetId: preset.id, prompt: customPrompt, repeats });
+    } else {
+      groups.push({ presetId: preset.id, prompt: preset.prompt, repeats });
+    }
+  }
+  return groups;
+}
+
+function clampGroupRepeats(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(20, n);
+}
+
+// 为每个稳定性预设渲染一行「文案名 + 数量框」，custom 行额外含 textarea。
+// selectedRepeats: { presetId: number } 用于恢复已选数量（如重置为默认态时传入）。
+export function renderStabilityGroupPicker(selectedRepeats = {}) {
+  return STABILITY_PROMPT_PRESETS.map((preset) => {
+    const defaultRepeats = preset.id === "custom" ? 1 : 3;
+    const repeats = selectedRepeats[preset.id] ?? defaultRepeats;
+    const customTextarea =
+      preset.id === "custom"
+        ? `<textarea id="stability-prompt" name="prompt" rows="4" placeholder="在此输入自定义测试文案…" class="stability-custom-prompt"></textarea>`
+        : "";
+    return [
+      `<div class="stability-group-row" data-preset-id="${escapeHtml(preset.id)}">`,
+      `  <label class="stability-group-label" title="${escapeHtml(preset.hint)}">`,
+      `    <input type="number" class="stability-group-repeats" name="stability-repeats-${escapeHtml(preset.id)}"`,
+      `      min="0" max="20" value="${Number(repeats)}" data-preset-id="${escapeHtml(preset.id)}">`,
+      `    <span class="stability-group-name">${escapeHtml(preset.label)}</span>`,
+      `  </label>`,
+      customTextarea,
+      `</div>`,
+    ].join("\n");
+  }).join("\n");
+}

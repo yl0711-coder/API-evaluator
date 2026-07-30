@@ -5,7 +5,9 @@ import {
   BATCH_PROMPT_PRESETS,
   getPromptPreset,
   QUICK_PROMPT_PRESETS,
+  readStabilityGroups,
   renderPromptPresetOptions,
+  renderStabilityGroupPicker,
   STANDARD_PROMPT_PRESETS,
   STABILITY_PROMPT_PRESETS,
 } from "../src/prompt-presets.js";
@@ -116,3 +118,64 @@ function createClassList() {
     },
   };
 }
+
+// ── 分组选择器（多组×重复次数改造新增）──
+
+test("renderStabilityGroupPicker：每个预设一行，默认 basic 类=3、custom=1，custom 行含 textarea", () => {
+  const html = renderStabilityGroupPicker();
+  assert.equal((html.match(/stability-group-row/g) || []).length, STABILITY_PROMPT_PRESETS.length);
+  assert.match(html, /data-preset-id="basic"[\s\S]*?value="3"/);
+  assert.match(html, /data-preset-id="custom"[\s\S]*?value="1"/);
+  assert.match(html, /<textarea id="stability-prompt" name="prompt"/);
+});
+
+test("renderStabilityGroupPicker：传入 selectedRepeats 覆盖默认值", () => {
+  const html = renderStabilityGroupPicker({ basic: 0, coding: 5 });
+  assert.match(html, /data-preset-id="basic"[\s\S]*?value="0"/);
+  assert.match(html, /data-preset-id="coding"[\s\S]*?value="5"/);
+});
+
+function makeStabilityForm(repeatsByPresetId, customPromptValue = "") {
+  return {
+    querySelector(selector) {
+      const match = selector.match(/data-preset-id="([^"]+)"/);
+      const presetId = match?.[1];
+      if (!presetId || !(presetId in repeatsByPresetId)) return null;
+      return { value: String(repeatsByPresetId[presetId]) };
+    },
+    elements: { prompt: { value: customPromptValue } },
+  };
+}
+
+test("readStabilityGroups：数量为 0 的预设不入选", () => {
+  const form = makeStabilityForm({ basic: 3, coding: 0 });
+  const groups = readStabilityGroups(form);
+  assert.deepEqual(
+    groups.map((g) => g.presetId),
+    ["basic"],
+  );
+  assert.equal(groups[0].repeats, 3);
+  assert.equal(groups[0].prompt, getPromptPreset("stability", "basic").prompt);
+});
+
+test("readStabilityGroups：custom 数量>0 但文案为空 → 跳过该组", () => {
+  const form = makeStabilityForm({ basic: 0, custom: 2 }, "   ");
+  assert.deepEqual(readStabilityGroups(form), []);
+});
+
+test("readStabilityGroups：custom 数量>0 且文案非空 → 入选，携带用户文案", () => {
+  const form = makeStabilityForm({ custom: 2 }, "我的自定义测试文案");
+  const groups = readStabilityGroups(form);
+  assert.deepEqual(groups, [{ presetId: "custom", prompt: "我的自定义测试文案", repeats: 2 }]);
+});
+
+test("readStabilityGroups：数量框超出 [0,20] 被夹紧", () => {
+  const form = makeStabilityForm({ basic: 999, coding: -5 });
+  const groups = readStabilityGroups(form);
+  const basic = groups.find((g) => g.presetId === "basic");
+  assert.equal(basic.repeats, 20);
+  assert.equal(
+    groups.some((g) => g.presetId === "coding"),
+    false,
+  );
+});

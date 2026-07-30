@@ -46,3 +46,4 @@ app-data/
 .postman
 postman
 16-代码规范与可维护性检查-v0.6.2.md
+.audit/

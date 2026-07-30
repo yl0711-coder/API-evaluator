@@ -517,6 +517,13 @@ export function formatStabilityReport(summary, records, options = {}) {
   });
   const stabilityInsights = buildStabilityInsights(summary);
   const aiAnalysisSection = formatAiAnalysisPointer(options.aiAnalysis);
+  const showGroupBreakdown = (summary.groups?.length || 0) > 1;
+  const groupRows = showGroupBreakdown
+    ? summary.groups.map(
+        (group) =>
+          `| ${escapeMarkdownTable(group.groupId || "自定义")} | ${escapeMarkdownTable(redactSensitiveText(group.promptPreview || "-"))} | ${group.count} | ${group.successRateText} | ${group.avgTotalMs || "-"} | ${group.p95TotalMs ?? "-"} | ${group.cacheHitRateText ?? "无信号"} |`,
+      )
+    : [];
 
   return [
     `# 稳定性测试报告`,
@@ -546,7 +553,9 @@ export function formatStabilityReport(summary, records, options = {}) {
     `- 模型：${summary.model}`,
     `- 协议：${summary.protocol}`,
     `- 渠道标识：${summary.channelCode || "-"}`,
-    `- 测试轮数：${summary.rounds}`,
+    summary.groups?.length > 1
+      ? `- 测试轮数：${summary.rounds}（共 ${summary.groups.length} 组文案，各组次数见「分组明细」）`
+      : `- 测试轮数：${summary.rounds}`,
     `- 并发数：${summary.concurrency}`,
     `- 开始时间：${summary.startedAt}`,
     `- 结束时间：${summary.endedAt}`,
@@ -573,6 +582,7 @@ export function formatStabilityReport(summary, records, options = {}) {
     `- 估算收入：${formatEstimatedCost(summary.estimatedRevenue)}（基于 API 配置里的对外售卖单价）`,
     `- 估算毛利：${formatEstimatedCost(summary.estimatedGrossProfit)}，毛利率 ${formatEstimatedMargin(summary.estimatedGrossMargin)}`,
     `- 计费审计（估算对照粗筛）：${summary.tokenAudit?.verdict ?? "-"}`,
+    `- 缓存命中率：${summary.cacheHitRateText ?? "未提供缓存统计信号"}`,
     `- 本次真实消耗：${formatRunConsumption(summary.actualConsumption)}`,
     `- 基线回归：${formatRegression(summary.regression)}`,
     "",
@@ -602,7 +612,19 @@ export function formatStabilityReport(summary, records, options = {}) {
     "|---|---|---:|---:|---:|---:|---:|---:|---|",
     requestLines.join("\n"),
     "",
-    "## 10. 说明",
+    ...(showGroupBreakdown
+      ? [
+          "## 10. 分组明细",
+          "",
+          "> 本次测试选择了多组文案/多次重复，以下按组拆分统计（含各组缓存命中率）。",
+          "",
+          "| 组 | 文案摘要 | 次数 | 成功率 | 平均耗时 ms | P95 ms | 缓存命中率 |",
+          "|---|---|---:|---:|---:|---:|---:|",
+          groupRows.join("\n"),
+          "",
+        ]
+      : []),
+    `## ${showGroupBreakdown ? "11" : "10"}. 说明`,
     "",
     "- 报告不包含 API Key。",
     "- 第一节是业务结论，适合非技术人员阅读。",
@@ -1212,12 +1234,17 @@ function buildStabilityInsights(summary) {
         : "成功率低于可推荐区间，暂不建议继续投入复杂测试。";
   const errorText =
     failureCount === 0 ? "本轮没有失败请求。" : `本轮失败 ${failureCount} 次，主要错误类型：${getMainError(summary.errorCounts)}。`;
+  const cacheText =
+    summary.cacheHitRate == null
+      ? "- 缓存：未获得缓存统计信号（该渠道/协议可能不支持缓存明细）。"
+      : `- 缓存：命中率 ${summary.cacheHitRateText}，说明重复 Prompt 有效复用了缓存。`;
 
   return [
     `- 可用性：${successText}测试数据为 ${summary.successCount}/${summary.rounds} 成功，成功率 ${summary.successRateText}。`,
     `- 速度：${latencyText}平均总耗时 ${summary.avgTotalMs || "-"} ms。`,
     `- 失败情况：${errorText}`,
     `- 成本参考：输入 tokens ${summary.inputTokens ?? "-"}，输出 tokens ${summary.outputTokens ?? "-"}。`,
+    cacheText,
     "- 阅读顺序：先看本节判断能不能继续测，再看错误诊断确认失败原因，最后看单轮明细定位具体请求。",
   ];
 }
