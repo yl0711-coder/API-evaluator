@@ -228,7 +228,23 @@ export function createModelCompare({ state, confirm }) {
     }
   }
 
-  // 渲染「补齐单方场景」入口：两方都无独有场景（或差集接口失败）则隐藏按钮。
+  // 补齐清单：onlyA 中的场景补给 B，onlyB 中的场景补给 A。
+  function gapEntries() {
+    if (!gaps) return [];
+    return [
+      ...(gaps.onlyA || []).map((scenario, index) => ({ key: `a:${index}`, scenario, forLabel: "B" })),
+      ...(gaps.onlyB || []).map((scenario, index) => ({ key: `b:${index}`, scenario, forLabel: "A" })),
+    ];
+  }
+
+  function updateGapCount() {
+    const count = gapFillBox.querySelector("[data-mc-gap-count]");
+    if (!count) return;
+    const selected = gapFillBox.querySelectorAll("[data-mc-gap-choice]:checked").length;
+    count.textContent = `已选 ${selected} / ${gapEntries().length} 个待补场景`;
+  }
+
+  // 渲染「补齐单方场景」清单：默认全选，用户可在实际调用前缩小范围。
   function renderGaps(gapRes) {
     const onlyA = Array.isArray(gapRes?.onlyA) ? gapRes.onlyA : [];
     const onlyB = Array.isArray(gapRes?.onlyB) ? gapRes.onlyB : [];
@@ -238,7 +254,47 @@ export function createModelCompare({ state, confirm }) {
     }
     gaps = { onlyA, onlyB };
     gapFillBox.classList.remove("hidden");
-    gapHint.textContent = `发现 A 有 ${onlyA.length} 个场景 B 未测，B 有 ${onlyB.length} 个场景 A 未测。点击可自动为对方补测（真实消耗额度）。`;
+    gapHint.textContent = `发现 A 有 ${onlyA.length} 个场景 B 未测，B 有 ${onlyB.length} 个场景 A 未测。请选择需要补测的场景（真实消耗额度）。`;
+    const choiceBox = gapFillBox.querySelector("[data-mc-gap-choices]");
+    const entries = gapEntries();
+    const group = (forLabel) => entries.filter((entry) => entry.forLabel === forLabel);
+    const renderGroup = (forLabel) => {
+      const items = group(forLabel);
+      if (!items.length) return "";
+      const heading = forLabel === "A" ? "对象 B 已测，补给对象 A" : "对象 A 已测，补给对象 B";
+      return `
+        <div class="mc-gap-group">
+          <p class="field-hint">${heading}</p>
+          <div class="mc-scenario-list">
+            ${items
+              .map(
+                ({ key, scenario }) =>
+                  `<label class="mc-scenario-item"><input type="checkbox" data-mc-gap-choice value="${key}" checked /><span>${escapeHtml(scenario.name)}${scenario.tier ? ` <em>${escapeHtml(scenario.tier)}</em>` : ""}</span></label>`,
+              )
+              .join("")}
+          </div>
+        </div>`;
+    };
+    choiceBox.innerHTML = `
+      <div class="mc-scenario-tools">
+        <span class="field-hint" data-mc-gap-count></span>
+        <span class="mc-scenario-actions">
+          <button type="button" class="link-button" data-mc-gap-all>全选</button>
+          <button type="button" class="link-button" data-mc-gap-none>全不选</button>
+        </span>
+      </div>
+      ${renderGroup("B")}
+      ${renderGroup("A")}`;
+    choiceBox.querySelector("[data-mc-gap-all]").addEventListener("click", () => {
+      choiceBox.querySelectorAll("[data-mc-gap-choice]").forEach((el) => (el.checked = true));
+      updateGapCount();
+    });
+    choiceBox.querySelector("[data-mc-gap-none]").addEventListener("click", () => {
+      choiceBox.querySelectorAll("[data-mc-gap-choice]").forEach((el) => (el.checked = false));
+      updateGapCount();
+    });
+    choiceBox.onchange = updateGapCount;
+    updateGapCount();
     gapProgress.classList.add("hidden");
   }
 
@@ -259,18 +315,27 @@ export function createModelCompare({ state, confirm }) {
       toast("请先选好两个不同的模型。", true);
       return;
     }
-    // jobs：[{ targetId, scenarioId, scenarioName, forLabel }]；名字在当前题库里找不到 id 的场景（已改名/下架）跳过。
+    const selectedKeys = new Set([...gapFillBox.querySelectorAll("[data-mc-gap-choice]:checked")].map((el) => el.value));
+    if (!selectedKeys.size) {
+      toast("请至少选择一个要补齐的场景。", true);
+      return;
+    }
+    // jobs：[{ targetId, scenarioId, scenarioName, forLabel }]；只补齐用户勾选的条目，名字在当前题库里找不到 id 的场景（已改名/下架）跳过。
     const jobs = [];
     const skipped = [];
-    for (const s of gaps.onlyA) {
-      const scenarioId = scenarioIdByName(s.name);
-      if (scenarioId) jobs.push({ targetId: idB, scenarioId, scenarioName: s.name, forLabel: "B" });
-      else skipped.push(s.name);
-    }
-    for (const s of gaps.onlyB) {
-      const scenarioId = scenarioIdByName(s.name);
-      if (scenarioId) jobs.push({ targetId: idA, scenarioId, scenarioName: s.name, forLabel: "A" });
-      else skipped.push(s.name);
+    for (const entry of gapEntries()) {
+      if (!selectedKeys.has(entry.key)) continue;
+      const scenarioId = scenarioIdByName(entry.scenario.name);
+      if (scenarioId) {
+        jobs.push({
+          targetId: entry.forLabel === "A" ? idA : idB,
+          scenarioId,
+          scenarioName: entry.scenario.name,
+          forLabel: entry.forLabel,
+        });
+      } else {
+        skipped.push(entry.scenario.name);
+      }
     }
     if (!jobs.length) {
       toast("待补场景均已从当前题库下架/改名，无法自动补齐。", true);
