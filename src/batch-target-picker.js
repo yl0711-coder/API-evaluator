@@ -31,7 +31,8 @@ function buildIndex({ channels = [], modelTargets = [] } = {}) {
 }
 
 // 批量两维度选择器:渲染进 container,产出一组模型目标 id(getSelectedIds)。
-export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
+// fixedDim="A":只保留「一渠道·多模型」维度,隐藏 A/B 切换(标准评测只需要这一种用法)。
+export function createBatchTargetPicker(container, { hiddenSelect, fixedDim } = {}) {
   container.classList.add("batch-picker");
   container.innerHTML = `
     <div class="seg" role="tablist">
@@ -48,6 +49,8 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
     <p class="bp-echo"></p>
     <div class="chips bp-chips"></div>`;
 
+  const segEl = container.querySelector(".seg");
+  if (fixedDim) segEl.classList.add("hidden");
   const segBtns = [...container.querySelectorAll(".seg button")];
   const anchorLabel = container.querySelector(".bp-anchor-label");
   const anchor = container.querySelector(".bp-anchor");
@@ -56,8 +59,9 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
   const echo = container.querySelector(".bp-echo");
   const chips = container.querySelector(".bp-chips");
 
-  let dim = "A";
+  let dim = fixedDim || "A";
   let idx = { aChannels: [], targetsByChannel: () => [], bModels: [], targetsForModel: () => [] };
+  let rawTargets = [];
   const selected = new Set();
 
   // 同步到隐藏的 <select multiple>(全部置为 selected),让 updateEstimates / 提交 / 监听器 读法不变。
@@ -172,6 +176,7 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
 
   function refresh(stateData) {
     idx = buildIndex(stateData);
+    rawTargets = stateData?.modelTargets || [];
     // 尽量保留锚点
     const prevAnchor = anchor.value;
     buildAnchor();
@@ -185,5 +190,25 @@ export function createBatchTargetPicker(container, { hiddenSelect } = {}) {
     renderChips();
   }
 
-  return { refresh, getSelectedIds: () => [...selected] };
+  // 程序化跳转回填(供「快速测试失败面板」的“去标准评测”按钮用):把锚点定位到该模型目标所属
+  // 渠道(dim="A"),并只勾选这一个模型目标。找不到(已被删除/dim="B")则不做任何改动。
+  function selectSingle(targetId) {
+    if (dim !== "A" || !targetId) return;
+    const target = rawTargets.find((t) => t.id === targetId);
+    if (!target) return;
+    anchor.value = target.channelId;
+    selected.clear();
+    selected.add(targetId);
+    renderList();
+    renderChips();
+  }
+
+  return {
+    refresh,
+    getSelectedIds: () => [...selected],
+    // 当前锚点值：dim="A" 时是渠道 id,dim="B" 时是模型名。标准评测(fixedDim="A")用它拿渠道 id,
+    // 供「Claude 渠道额外快速准入」直接复用同一渠道的 baseUrl/Key。
+    getAnchorValue: () => anchor.value,
+    selectSingle,
+  };
 }

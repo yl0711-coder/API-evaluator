@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-30
+
+### Fixed
+- **模型比对压测维度：一方从未压测被误判为满值劣势** — `loadGoodputEffect`（`server/report-compare.mjs`）
+  曾把「从未做压测」（`loadPoints` 为空）与「压测过但最低负载点即不健康」都记成 goodput=0，
+  导致压根没跑过压测的一方在综合评分里被判定为 -1 满值劣势——这是把"没数据"冒充成了"测量到 0% 成功率"。
+  现改为：仅一方有压测数据时，数据不对等，load 维度不参与综合评分合成（`effect: null`，权重归一化到
+  可用性 + 质量维度），双方都测过时逻辑不变。补齐回归测试（`tests/report-compare.test.mjs`）。
+
+## [0.6.10] - 2026-07-28
+
+### Security
+- **升级 Nodemailer 至 9.0.3** — 修复旧版邮件依赖已披露的 `raw` 内容访问绕过及地址解析拒绝服务风险；
+  邮件报警与 SMTP 测试流程保持不变。
+- **CI 增加生产依赖安全闸** — CI 与镜像构建测试阶段均执行
+  `pnpm audit --prod --audit-level=high`，阻止带 high/critical 生产依赖漏洞的提交或发布标签产出镜像。
+
 ### Fixed / Hardened（上线前就绪检查）
 - **健康检查的「调度器活性」判定是死配置** — `deploy/docker-compose.evaluator.yml` 的健康检查断言
   `!(j.autoTest && j.autoTest.stale)` 以感知「进程活着但定时器僵死」，但 7月7日 `80624fc` 把调度器的

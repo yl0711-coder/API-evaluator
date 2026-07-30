@@ -52,17 +52,59 @@ export function estimateLoadTestCost(payload) {
   };
 }
 
-export function estimateStandardCost(payload, scenarioCount = 2) {
-  const rounds = Number(payload.rounds || 3);
-  const requests = 1 + rounds + scenarioCount;
+// 标准评测新流程（每个选中模型顺序执行、不并发）：
+//   快速测试(=/api/tests/quick-verify，连通+标称一致性+4个指纹探针=6次，输出封顶96 token)
+//   + 稳定性(固定10轮) + 标准准入(取代场景测试)。
+// 勾选“这是 Claude 渠道”时，额外对 4 个固定新档位模型各跑一次快速准入（临时探测，不计入 modelNames）。
+const STANDARD_STABILITY_ROUNDS = 10;
+const QUICK_VERIFY_REQUESTS = 6; // 见 server/test-runner.mjs runQuickVerify：1 连通 + 1 标称一致性 + 4 基础指纹探针
+const CLAUDE_TIER_PROBE_MODELS = ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6"];
+
+function estimateStandardCostForModel(modelName) {
+  const quick = {
+    requests: QUICK_VERIFY_REQUESTS,
+    lowTokens: QUICK_VERIFY_REQUESTS * TOKEN_ESTIMATES.short[0],
+    highTokens: QUICK_VERIFY_REQUESTS * TOKEN_ESTIMATES.short[1],
+  };
+  const stability = {
+    requests: STANDARD_STABILITY_ROUNDS,
+    lowTokens: STANDARD_STABILITY_ROUNDS * TOKEN_ESTIMATES.short[0],
+    highTokens: STANDARD_STABILITY_ROUNDS * TOKEN_ESTIMATES.short[1],
+  };
+  const admission = estimateAdmissionCost({ packageLevel: "standard", modelName });
+  return {
+    requests: quick.requests + stability.requests + admission.requests,
+    lowTokens: quick.lowTokens + stability.lowTokens + admission.lowTokens,
+    highTokens: quick.highTokens + stability.highTokens + admission.highTokens,
+  };
+}
+
+export function estimateStandardCost(payload) {
+  const modelNames = Array.isArray(payload.modelNames) && payload.modelNames.length ? payload.modelNames : [""];
+  const perModel = modelNames.map(estimateStandardCostForModel);
+  let requests = perModel.reduce((sum, e) => sum + e.requests, 0);
+  let lowTokens = perModel.reduce((sum, e) => sum + e.lowTokens, 0);
+  let highTokens = perModel.reduce((sum, e) => sum + e.highTokens, 0);
+  const isClaudeChannel = isCheckboxOn(payload.isClaudeChannel);
+  if (isClaudeChannel) {
+    for (const model of CLAUDE_TIER_PROBE_MODELS) {
+      const probe = estimateAdmissionCost({ packageLevel: "quick", modelName: model });
+      requests += probe.requests;
+      lowTokens += probe.lowTokens;
+      highTokens += probe.highTokens;
+    }
+  }
+  const modelCount = modelNames.length;
   const estimate = {
     requests,
-    lowTokens: TOKEN_ESTIMATES.short[0] + rounds * TOKEN_ESTIMATES.short[0] + scenarioCount * TOKEN_ESTIMATES.normal[0],
-    highTokens: TOKEN_ESTIMATES.short[1] + rounds * TOKEN_ESTIMATES.short[1] + scenarioCount * TOKEN_ESTIMATES.normal[1],
-    risk: rounds >= 10 ? "中" : "低",
-    note: "标准评测会依次执行快速测试、稳定性测试和少量场景测试，适合初筛。",
+    lowTokens,
+    highTokens,
+    risk: requests >= 60 ? "中高" : requests >= 24 ? "中" : "低",
+    note: `标准评测会对选中的 ${modelCount} 个模型逐个（不并发）依次执行快速测试、10 轮稳定性测试和标准准入评测${isClaudeChannel ? "，并额外对 4 个 Claude 新档位模型做快速准入" : ""}。`,
   };
-  return withAiAnalysisEstimate(payload, estimate, scenarioCount > 0 ? 2 : 1);
+  // 每个模型实际会各触发 2 次 AI 分析（稳定性一次 + 标准准入一次）；Claude 档位快速准入探测
+  // 不支持 AI 分析（调用时未传 useAiReportAnalysis），不计入此项。
+  return withAiAnalysisEstimate(payload, estimate, modelCount * 2);
 }
 
 export function estimateAdmissionCost(payload) {
@@ -187,7 +229,11 @@ function withAiAnalysisEstimate(payload, estimate, analysisRequests = 1) {
 }
 
 function isAiAnalysisChecked(payload) {
-  return payload?.useAiReportAnalysis === "1" || payload?.useAiReportAnalysis === "on" || payload?.useAiReportAnalysis === true;
+  return isCheckboxOn(payload?.useAiReportAnalysis);
+}
+
+function isCheckboxOn(value) {
+  return value === "1" || value === "on" || value === true;
 }
 
 function upgradeRisk(risk, extraHighTokens) {

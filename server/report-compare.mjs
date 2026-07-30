@@ -1295,10 +1295,15 @@ function cohensHEffect(v, labelA, labelB) {
 // 这正是绕开"压测种类不一致就没法比"限制的关键——各自曲线各算各的拐点，只比结果。
 // tanh(ln(ratio)/ln4)：4倍差距时效应量≈0.76，8倍≈0.96，1倍=0（打平）。
 function loadGoodputEffect(aPoints, bPoints) {
-  if (!aPoints?.length && !bPoints?.length) return null; // 双方都没有压测数据，不能拿"都没测"当打平
+  const aTested = Boolean(aPoints?.length);
+  const bTested = Boolean(bPoints?.length);
+  if (!aTested && !bTested) return null; // 双方都没有压测数据，不能拿"都没测"当打平
+  // 只有一方做过压测：另一方是「从未测」而非「测了但挂了」——不能把"没数据"当 0% 成功率，
+  // 那会让"从未压测"的一方在综合评分里被判定为满值劣势（本次修的根因）。数据不对等时不参与合成。
+  if (aTested !== bTested) return null;
   const goodputOf = (pts) => {
     const { point } = simpleKnee(pts);
-    return point ? point.qps * point.successRate : 0; // 最低负载点就不健康 → 测不出可用容量，记 0（非"无数据"）
+    return point ? point.qps * point.successRate : 0; // 双方都测过，但最低负载点就不健康 → 测不出可用容量，记 0（非"无数据"）
   };
   const ga = goodputOf(aPoints);
   const gb = goodputOf(bPoints);
