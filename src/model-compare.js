@@ -2,11 +2,12 @@
 // 「模型比对」（高级测试栏，登录即可用）：选「所用模型」(A) 与「要对比的模型」(B)，
 // 依据两者在报告中心各自最近的报告（1 稳定性 + 1 准入 + 每场景最新一份）做统计对比。
 // 后端 POST /api/reports/compare 产出并落盘一份「模型对比报告」，前端用浮层查看 + 可下载 md。
-import { escapeHtml, toast, downloadText } from "./client-utils.js";
+import { escapeHtml, toast, downloadText, formatNumber } from "./client-utils.js";
 import { api, runRemoteTask } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { openReportOverlay } from "./report-overlay.js";
+import { buildGapFillTaskPayload, summarizeGapFillEstimates } from "./model-compare-gap-fill.js";
 
 export function createModelCompare({ state, confirm }) {
   const form = requireElement("#mc-form");
@@ -194,6 +195,32 @@ export function createModelCompare({ state, confirm }) {
     gapFillBox.classList.add("hidden");
     gapHint.textContent = "";
     gapProgress.classList.add("hidden");
+    const choiceBox = gapFillBox.querySelector("[data-mc-gap-choices]");
+    if (choiceBox) choiceBox.innerHTML = "";
+    resetGapOptions();
+  }
+
+  function resetGapOptions() {
+    const options = gapFillBox.querySelector("[data-mc-gap-options]");
+    if (!options) return;
+    options.open = false;
+    options.querySelector("[data-mc-gap-max-tokens]").value = "";
+    options.querySelector("[data-mc-gap-timeout-ms]").value = "";
+    options.querySelector("[data-mc-gap-repeats]").value = "1";
+    options.querySelector("[data-mc-gap-request-concurrency]").value = "1";
+    options.querySelector("[data-mc-gap-full-response]").checked = false;
+    options.querySelector("[data-mc-gap-stream-request]").checked = false;
+  }
+
+  function readGapOptions() {
+    return {
+      maxTokens: gapFillBox.querySelector("[data-mc-gap-max-tokens]").value,
+      timeoutMs: gapFillBox.querySelector("[data-mc-gap-timeout-ms]").value,
+      repeats: gapFillBox.querySelector("[data-mc-gap-repeats]").value,
+      requestConcurrency: gapFillBox.querySelector("[data-mc-gap-request-concurrency]").value,
+      fullResponseInReport: gapFillBox.querySelector("[data-mc-gap-full-response]").checked,
+      streamRequest: gapFillBox.querySelector("[data-mc-gap-stream-request]").checked,
+    };
   }
 
   async function onLoadScenarios() {
@@ -320,6 +347,7 @@ export function createModelCompare({ state, confirm }) {
       toast("请至少选择一个要补齐的场景。", true);
       return;
     }
+    const rawOptions = readGapOptions();
     // jobs：[{ targetId, scenarioId, scenarioName, forLabel }]；只补齐用户勾选的条目，名字在当前题库里找不到 id 的场景（已改名/下架）跳过。
     const jobs = [];
     const skipped = [];
@@ -332,6 +360,12 @@ export function createModelCompare({ state, confirm }) {
           scenarioId,
           scenarioName: entry.scenario.name,
           forLabel: entry.forLabel,
+          payload: buildGapFillTaskPayload({
+            targetId: entry.forLabel === "A" ? idA : idB,
+            scenarioId,
+            rawOptions,
+            scenarios: state.scenarios,
+          }),
         });
       } else {
         skipped.push(entry.scenario.name);
@@ -341,9 +375,11 @@ export function createModelCompare({ state, confirm }) {
       toast("待补场景均已从当前题库下架/改名，无法自动补齐。", true);
       return;
     }
+    const estimate = summarizeGapFillEstimates(jobs.map((job) => job.payload));
 
     const detail = [
-      `将发起 ${jobs.length} 次场景测试（每次测 1 个场景），逐个进行、每次都真实调用被测 API、消耗额度。`,
+      `将补齐 ${jobs.length} 个选中场景，共发起 ${estimate.requests} 次场景请求，逐个进行、每次都真实调用被测 API。`,
+      `预计消耗 ${formatNumber(estimate.lowTokens)} - ${formatNumber(estimate.highTokens)} tokens。`,
       skipped.length ? `另有 ${skipped.length} 个场景已从当前题库下架/改名，无法补齐，将跳过：${skipped.join("、")}` : "",
     ]
       .filter(Boolean)
@@ -355,10 +391,7 @@ export function createModelCompare({ state, confirm }) {
           detail: "确认后会逐个开始测试，可能耗时较久，请不要关闭窗口。",
           confirmLabel: "确认开始补齐",
           cancelLabel: "先不运行",
-          // 已知问题（暂不修）：tone 只看场景数量，不看真实花费——场景之间 token 消耗差异可能很大
-          // （几百 token 的简单题 vs 上万 token 的长文任务），3 个贵场景可能比 15 个便宜场景花得更多，
-          // 但后者反而会标红。改进方向是接入 cost-estimates.js 按场景类别估算，本次不做。
-          tone: jobs.length >= 10 ? "danger" : "normal",
+          tone: estimate.risk === "高" || estimate.risk === "中高" ? "danger" : "normal",
         })
       : window.confirm(detail);
     if (!confirmed) return;
@@ -384,10 +417,7 @@ export function createModelCompare({ state, confirm }) {
           "mc-gap-fill",
           "scenario",
           {
-            profileIds: [job.targetId],
-            scenarioIds: [job.scenarioId],
-            repeats: 1,
-            idempotencyKey: `mc-gap-fill:${job.targetId}:${job.scenarioId}`,
+            ...job.payload,
           },
           gapProgress,
         );

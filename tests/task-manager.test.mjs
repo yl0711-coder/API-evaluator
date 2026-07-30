@@ -243,7 +243,7 @@ test("scenario 任务不去重：即便 profileIds/scenarioIds 都恰好是长�
   }
 });
 
-test("scenario 任务去重：不同 idempotencyKey 各自正常创建，互不影响", async () => {
+test("scenario 任务去重：不同高级设置的幂等键各自正常创建，互不影响", async () => {
   const dir = await mkdtemp(join(tmpdir(), "evaluator-task-scenario-diffkey-test-"));
   try {
     const manager = createTaskManager({
@@ -255,9 +255,19 @@ test("scenario 任务去重：不同 idempotencyKey 各自正常创建，互不�
       runScenarioTest: async () => ({ type: "scenario", results: [] }),
     });
 
-    const a = await manager.createTask("scenario", { profileIds: ["p1"], scenarioIds: ["s1"], repeats: 1, idempotencyKey: "k1" });
-    const b = await manager.createTask("scenario", { profileIds: ["p2"], scenarioIds: ["s2"], repeats: 1, idempotencyKey: "k2" });
-    assert.notEqual(b.id, a.id, "不同 key 不应去重");
+    const a = await manager.createTask("scenario", {
+      profileIds: ["p1"],
+      scenarioIds: ["s1"],
+      repeats: 1,
+      idempotencyKey: "mc-gap-fill:v2:p1:s1:default-default-1-1-0-0",
+    });
+    const b = await manager.createTask("scenario", {
+      profileIds: ["p1"],
+      scenarioIds: ["s1"],
+      repeats: 2,
+      idempotencyKey: "mc-gap-fill:v2:p1:s1:default-default-2-1-0-0",
+    });
+    assert.notEqual(b.id, a.id, "同一模型与场景但高级设置不同，不应复用旧任务");
 
     await waitFor(() => a.status === "completed" && b.status === "completed");
   } finally {
