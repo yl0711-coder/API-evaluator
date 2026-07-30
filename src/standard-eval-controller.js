@@ -30,8 +30,7 @@ export function createStandardEvalController({
   showPage,
   quickProfileSelect,
   stabilityProfileSelect,
-  stabilityTemplate,
-  applyStabilityTemplate,
+  applyStabilityGroupPreset,
   admissionChannelSelect,
   admissionProfileSelect,
   admissionPackageLevelSelect,
@@ -92,8 +91,7 @@ export function createStandardEvalController({
             showPage,
             quickProfileSelect,
             stabilityProfileSelect,
-            stabilityTemplate,
-            applyStabilityTemplate,
+            applyStabilityGroupPreset,
             admissionChannelSelect,
             admissionProfileSelect,
             admissionPackageLevelSelect,
@@ -123,8 +121,7 @@ export function createStandardEvalController({
             showPage,
             quickProfileSelect,
             stabilityProfileSelect,
-            stabilityTemplate,
-            applyStabilityTemplate,
+            applyStabilityGroupPreset,
             admissionChannelSelect,
             admissionProfileSelect,
             admissionPackageLevelSelect,
@@ -393,8 +390,7 @@ function runStandardNextAction({
   showPage,
   quickProfileSelect,
   stabilityProfileSelect,
-  stabilityTemplate,
-  applyStabilityTemplate,
+  applyStabilityGroupPreset,
   admissionChannelSelect,
   admissionProfileSelect,
   admissionPackageLevelSelect,
@@ -411,8 +407,7 @@ function runStandardNextAction({
   }
   if (action === "stability-candidate" || action === "stability-smoke") {
     if (profileId) stabilityProfileSelect.value = profileId;
-    stabilityTemplate.value = action === "stability-candidate" ? "candidate" : "smoke";
-    applyStabilityTemplate();
+    applyStabilityGroupPreset({ basic: action === "stability-candidate" ? 30 : 3 });
     showPage("stability-test");
     return;
   }

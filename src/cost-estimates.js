@@ -10,13 +10,14 @@ const TOKEN_ESTIMATES = {
 };
 
 export function estimateStabilityCost(payload) {
-  const requests = Number(payload.rounds || 10);
+  const groups = Array.isArray(payload.groups) && payload.groups.length ? payload.groups : [{ repeats: Number(payload.rounds || 10) }];
+  const requests = groups.reduce((sum, group) => sum + (group.repeats || 0), 0);
   return withAiAnalysisEstimate(payload, {
     requests,
     lowTokens: requests * TOKEN_ESTIMATES.short[0],
     highTokens: requests * TOKEN_ESTIMATES.short[1],
     risk: requests >= 30 ? "中高" : requests >= 10 ? "中" : "低",
-    note: "稳定性测试使用短 Prompt，主要看成功率、延迟和错误分布。",
+    note: "稳定性测试使用短 Prompt，主要看成功率、延迟、错误分布与缓存命中率。",
   });
 }
 
