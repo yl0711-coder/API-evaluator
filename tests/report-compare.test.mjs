@@ -954,6 +954,25 @@ test("computeOverallScore：压测一方 goodput=0（基准点即不健康）、
   assert.equal(os2.dims.load.effect, 1);
 });
 
+test("computeOverallScore：一方从未做压测（loadPoints 为空）、另一方压测健康 → load 维度不参与，不得判为满值劣势", () => {
+  // 复现的真实缺陷：loadGoodputEffect 曾把「从未压测」（points.length===0）与「压测但最低点即
+  // 不健康」都记成 goodput=0，导致「压根没测过」的一方被打成 -1 满值劣势——这不是测出来的结论，
+  // 是把「没数据」冒充成了「测量到 0% 成功率」。
+  const a = mkFullAgg({ label: "A(从未做压测)", loadPoints: [] });
+  const b = mkFullAgg({
+    label: "B(压测健康)",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, null, "一方从未测、另一方测过 → 数据不对等，load 维度不参与合成");
+  assert.equal(os.dims.load.weight, 0);
+
+  const cmp2 = buildComparison(b, a); // 调换顺序，同样不参与
+  const os2 = computeOverallScore(cmp2);
+  assert.equal(os2.dims.load.effect, null);
+});
+
 test("computeOverallScore：三维皆样本不足 → 整体返回 null，不编造 50/50", () => {
   const a = mkFullAgg({ label: "A" });
   const b = mkFullAgg({ label: "B" });
