@@ -86,7 +86,14 @@ for (const entry of OLD_PALETTE) {
   }
 
   if (hits.length) edits.push(...hits.map((h) => ({ ...h, token: entry.token, oldBase: entry.old, newBase: newVal, note: entry.note })));
-  report.push({ ...entry, newVal, status: hits.length ? "PLAN" : "NONE", count: hits.length, opaque: hits.filter((h) => h.kind === "opaque").length, alpha: hits.filter((h) => h.kind === "alpha").length });
+  report.push({
+    ...entry,
+    newVal,
+    status: hits.length ? "PLAN" : "NONE",
+    count: hits.length,
+    opaque: hits.filter((h) => h.kind === "opaque").length,
+    alpha: hits.filter((h) => h.kind === "alpha").length,
+  });
 }
 
 const lineOf = (i) => stripped.slice(0, i).split("\n").length;
