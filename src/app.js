@@ -138,14 +138,11 @@ const trendAlerts = requireElement("#trend-alerts");
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
-const standardPromptPreset = requireElement("#standard-prompt-preset");
-const standardPromptHint = requireElement("#standard-prompt-hint");
 const standardEvalSubmit = requireElement("#standard-eval-submit");
 const standardPlainResult = requireElement("#standard-plain-result");
 const standardEvalResult = requireElement("#standard-eval-result");
 const standardNextActions = requireElement("#standard-next-actions");
 const standardEvalProgress = requireElement("#standard-eval-progress");
-const standardTaskProgress = requireElement("#standard-task-progress");
 const admissionTestForm = requireElement("#admission-test-form");
 const admissionProfileSelect = requireElement("#admission-profile-select");
 const admissionSubmit = requireElement("#admission-submit");
@@ -197,12 +194,10 @@ const clientReplayBatch = requireElement("#client-replay-batch");
 // 单选「被测 API」级联选择器(渠道 → 模型),6 个运行页各一个。
 // 模型下拉沿用原 *-profile-select(仍 name="profileId"),所以表单提交与后端不变。
 const admissionCascade = createCascadeTargetPicker(requireElement("#admission-channel-select"), admissionProfileSelect);
-const standardCascade = createCascadeTargetPicker(requireElement("#standard-channel-select"), standardProfileSelect);
 const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
 const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
 // 注册到 _onProfileData（必须在顶层 await 之前，确保首次 loadProfiles 能刷到）。
 _onProfileData.push((data) => admissionCascade.refresh(data));
-_onProfileData.push((data) => standardCascade.refresh(data));
 _onProfileData.push((data) => quickVerifyCascade.refresh(data));
 _onProfileData.push((data) => stabilityCascade.refresh(data));
 const loadTestChannelSelect = requireElement("#load-test-channel-select");
@@ -234,10 +229,16 @@ const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-
 });
 const batchPicker = createBatchTargetPicker(requireElement("#batch-picker"), { hiddenSelect: batchProfileSelect });
 const scenarioPicker = createBatchTargetPicker(requireElement("#scenario-picker"), { hiddenSelect: scenarioProfileSelect });
+// 标准评测:固定「一渠道·多模型」维度(不给用户切成「一模型·多渠道」),选中的模型顺序执行标准评测。
+const standardPicker = createBatchTargetPicker(requireElement("#standard-picker"), {
+  hiddenSelect: standardProfileSelect,
+  fixedDim: "A",
+});
 // 注册到 _onProfileData（必须在顶层 await 之前）。
 _onProfileData.push((data) => admissionBatchPicker.refresh(data));
 _onProfileData.push((data) => batchPicker.refresh(data));
 _onProfileData.push((data) => scenarioPicker.refresh(data));
+_onProfileData.push((data) => standardPicker.refresh(data));
 // 「选择测试场景」复用 .batch-picker 勾选样式,真值写回隐藏的 scenarioCaseSelect。
 const scenarioCasePicker = createScenarioCasePicker(requireElement("#scenario-case-picker"), scenarioCaseSelect);
 
@@ -298,7 +299,7 @@ const quickFailurePanel = createQuickFailurePanel({
   retryQuickTest: () => quickVerifySubmit.click(),
   openProfiles: () => showPage("channels"),
   openStandardEval: (profileId) => {
-    if (profileId) standardCascade.setValue(profileId);
+    if (profileId) standardPicker.selectSingle(profileId);
     showPage("standard-eval");
   },
   openReports: () => showPage("reports"),
@@ -494,13 +495,11 @@ requireElement("#cancel-load-test-task").addEventListener("click", () => cancelR
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
-requireElement("#cancel-standard-task").addEventListener("click", () => cancelRemoteTask(state, "standard"));
 // 「补齐单方场景」逐个真实调用付费 API，只能取消当前这一条（循环下一条仍会照常发起）；
 // 与其它任务槽同一套 cancelRemoteTask，用于让用户能真正打断当前在跑的那次请求。
 requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => cancelRemoteTask(state, "mc-gap-fill"));
 stabilityTemplate.addEventListener("change", applyStabilityTemplate);
 batchTemplate.addEventListener("change", applyBatchTemplate);
-standardPromptPreset.addEventListener("change", applyStandardPromptPreset);
 stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
 // input 事件每敲一个字符就触发，updateEstimates 会重建面板 innerHTML（闪烁、低端机
@@ -645,7 +644,6 @@ createStandardEvalController({
   resultElement: standardEvalResult,
   nextActionsElement: standardNextActions,
   progressElement: standardEvalProgress,
-  taskProgressElement: standardTaskProgress,
   state,
   estimateCost: estimateStandardCost,
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),
@@ -655,8 +653,11 @@ createStandardEvalController({
   stabilityProfileSelect: stabilityProfileTarget,
   stabilityTemplate,
   applyStabilityTemplate,
-  scenarioProfileSelect,
+  admissionChannelSelect: admissionCascade,
+  admissionProfileSelect,
+  admissionPackageLevelSelect: requireElement("#admission-package-level"),
   updateEstimates: testForms.updateEstimates,
+  standardPicker,
 });
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
@@ -889,16 +890,6 @@ function applyBatchTemplate() {
   });
 }
 
-function applyStandardPromptPreset() {
-  applyPromptPresetToForm({
-    kind: "standard",
-    form: standardEvalForm,
-    select: standardPromptPreset,
-    hint: standardPromptHint,
-    updateEstimates: testForms.updateEstimates,
-  });
-}
-
 function applyStabilityPromptPreset() {
   applyPromptPresetToForm({
     kind: "stability",
@@ -925,10 +916,8 @@ function hydrateProjectInfoForm() {
 }
 
 function hydratePromptPresetSelects() {
-  standardPromptPreset.innerHTML = renderPromptPresetOptions("standard", "default");
   stabilityPromptPreset.innerHTML = renderPromptPresetOptions("stability", "basic");
   batchPromptPreset.innerHTML = renderPromptPresetOptions("batch", "fair-basic");
-  applyStandardPromptPreset();
   applyStabilityPromptPreset();
   applyBatchPromptPreset();
 }

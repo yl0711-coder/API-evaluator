@@ -22,6 +22,9 @@ import {
   formatCompareReportMarkdown,
   pickRecentReports,
   buildCompareAnalysisPrompt,
+  interpolateLoadPoint,
+  simpleKnee,
+  computeOverallScore,
 } from "../server/report-compare.mjs";
 import { aggregate, formatSinglePointReport, formatSweepReport, findKnee } from "../server/load-test.mjs";
 
@@ -737,10 +740,10 @@ test("端到端回归：一方有压测报告、另一方完全没有压测报�
 
   const md = formatCompareReportMarkdown(cmp, { generatedAt: "2026-01-01T00:00:00Z" });
   assert.ok(!md.includes("两个对象都没有压力测试报告"), "A 明明有压测报告，不得声称双方都没有");
-  assert.match(md, /仅对象A 测过的负载点/);
+  assert.match(md, /仅对象A 测过、且无法插值估计的负载点/);
 });
 
-test("buildComparison：负载点按 (mode, offered) 精确配对；不同 mode 不互相配对；单方独有归入 onlyA/onlyB", () => {
+test("buildComparison：负载点按 (mode, offered) 精确配对；不同 mode 不互相配对；单方独有归入 onlyA/onlyB（除非能插值）", () => {
   const mkAgg = (pts) => ({
     label: "x",
     scenarios: [],
@@ -759,19 +762,253 @@ test("buildComparison：负载点按 (mode, offered) 精确配对；不同 mode 
     { mode: "closed", offered: 30, qps: 6, successRate: 1, p95: 700, p99: 800 }, // B 独有
   ]);
   const cmp = buildComparison(a, b);
-  assert.equal(cmp.loadComparison.matched.length, 1, "只有 closed/10 两边都有，唯一配对");
+  assert.equal(cmp.loadComparison.matched.length, 1, "只有 closed/10 两边都有，唯一精确配对");
   const m = cmp.loadComparison.matched[0];
   assert.equal(m.mode, "closed");
   assert.equal(m.offered, 10);
   assert.equal(m.qpsDelta, 1, "5-4=1");
   assert.equal(m.p95Delta, -50, "500-550=-50");
-  // A 独有：closed/20 与 open/10（后者与 B 的 closed/10 数值一样但 mode 不同，不得被误配）。
+  // closed/20 落在 B 的 closed 区间 [10,30] 内 → 应被插值收编，不再算 onlyA。
+  assert.equal(cmp.loadComparison.interpolatedMatched.length, 1, "closed/20 应被插值配对");
+  const im = cmp.loadComparison.interpolatedMatched[0];
+  assert.equal(im.offered, 20);
+  assert.equal(im.interpolatedSide, "b", "是 B 侧被插值出来的虚拟点");
+  // B 在 closed 上是 10→30 之间线性插值：offered=20 是中点，qps=(4+6)/2=5，p95=(550+700)/2=625。
+  assert.equal(im.b.qps, 5);
+  assert.equal(im.b.p95, 625);
+  // A 独有：open/10（B 侧没有任何 open 点，插不出来，只能留在 onlyA）。
   const onlyAKeys = cmp.loadComparison.onlyA.map((p) => `${p.mode}:${p.offered}`).sort();
-  assert.deepEqual(onlyAKeys, ["closed:20", "open:10"], "closed/20 与 open/10 均未被配对");
+  assert.deepEqual(onlyAKeys, ["open:10"], "open/10 无法在只有 closed 点的 B 曲线上插值");
+  // B 的 closed:30 落在 A 的 closed 区间 [10,20] 之外（30>20），不外推，仍留在 onlyB。
   assert.deepEqual(
     cmp.loadComparison.onlyB.map((p) => `${p.mode}:${p.offered}`),
     ["closed:30"],
   );
+});
+
+test("interpolateLoadPoint：范围外不外推、单点不插值、精确落点直接复用", () => {
+  const pts = [
+    { mode: "closed", offered: 10, qps: 5, successRate: 1, p95: 500, p99: 600 },
+    { mode: "closed", offered: 30, qps: 9, successRate: 0.9, p95: 900, p99: 1000 },
+  ];
+  assert.equal(interpolateLoadPoint(pts, 5), null, "5 < min(10)，不外推");
+  assert.equal(interpolateLoadPoint(pts, 35), null, "35 > max(30)，不外推");
+  assert.equal(interpolateLoadPoint([pts[0]], 20), null, "只有 1 个真实点，无法确定斜率");
+  const mid = interpolateLoadPoint(pts, 20);
+  assert.equal(mid.qps, 7, "(5+9)/2=7，20 是中点");
+  assert.equal(mid.p95, 700, "(500+900)/2=700");
+  assert.deepEqual(mid.interpFrom, { left: 10, right: 30 });
+  const exact = interpolateLoadPoint(pts, 10);
+  assert.equal(exact.qps, 5, "精确落在真实点上，直接复用而非重新插值");
+});
+
+test("simpleKnee：全程健康取最后一点；首点即不健康返回 -1；中途转坏取前一点", () => {
+  const healthy = [
+    { offered: 10, successRate: 1, http429: 0 },
+    { offered: 20, successRate: 1, http429: 0 },
+  ];
+  assert.equal(simpleKnee(healthy).index, 1);
+  assert.equal(simpleKnee(healthy).point.offered, 20);
+
+  const badBaseline = [
+    { offered: 10, successRate: 0.5, http429: 0 },
+    { offered: 20, successRate: 1, http429: 0 },
+  ];
+  assert.equal(simpleKnee(badBaseline).index, -1);
+  assert.equal(simpleKnee(badBaseline).point, null);
+
+  const turnsBad = [
+    { offered: 10, successRate: 1, http429: 0 },
+    { offered: 20, successRate: 1, http429: 0 },
+    { offered: 30, successRate: 0.5, http429: 2 },
+  ];
+  assert.equal(simpleKnee(turnsBad).index, 1);
+  assert.equal(simpleKnee(turnsBad).point.offered, 20);
+});
+
+test("buildComparison：跨 mode（一方开环一方闭环）退化为曲线汇总对比 summary", () => {
+  const mkAgg = (pts) => ({
+    label: "x",
+    scenarios: [],
+    tiers: [],
+    latency: { samples: [] },
+    quality: { mean: null, n: 0 },
+    loadPoints: pts,
+  });
+  const a = mkAgg([
+    { mode: "closed", offered: 10, qps: 5, successRate: 1, p95: 500, p99: 600 },
+    { mode: "closed", offered: 20, qps: 8, successRate: 1, p95: 700, p99: 800 },
+  ]);
+  const b = mkAgg([
+    { mode: "open", offered: 5, qps: 4, successRate: 1, p95: 400, p99: 450 },
+    { mode: "open", offered: 15, qps: 0.5, successRate: 0.8, p95: 900, p99: 1200 },
+  ]);
+  const cmp = buildComparison(a, b);
+  assert.equal(cmp.loadComparison.matched.length, 0);
+  assert.equal(cmp.loadComparison.interpolatedMatched.length, 0, "跨 mode 不互相插值");
+  assert.ok(cmp.loadComparison.summary, "无法逐点/插值比较时应退化为 summary");
+  assert.equal(cmp.loadComparison.summary.a.knee.point.offered, 20, "A 全程健康，推荐点取最后一点");
+  assert.equal(cmp.loadComparison.summary.a.peakQps, 8);
+  assert.equal(cmp.loadComparison.summary.b.knee.point.offered, 5, "B 第二点成功率跌破 99%，推荐点取前一点");
+  assert.equal(cmp.loadComparison.summary.b.peakQps, 4);
+});
+
+function mkFullAgg(overrides = {}) {
+  return {
+    label: "x",
+    channel: null,
+    model: null,
+    reportCounts: { run: 0, scenario: 0, admission: 0, load: 0, total: 0 },
+    stability: null,
+    integrity: { errorCounts: {} },
+    latency: { samples: [], rounds: [], stats: {} },
+    scenarioPass: { succ: 0, total: 0, rate: null },
+    quality: { mean: null, n: 0 },
+    scenarios: [],
+    tiers: [],
+    admission: null,
+    tokens: { input: 0, output: 0 },
+    loadPoints: [],
+    ...overrides,
+  };
+}
+
+test("computeOverallScore：三维皆有数据 → 手算效应量与合成分一致", () => {
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    scenarios: [{ name: "s1", quality: 80, rate: 1, succ: 1, total: 1 }],
+    loadPoints: [{ mode: "closed", offered: 10, qps: 10, successRate: 1, p95: 100, p99: 120 }],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 7, total: 10 },
+    scenarios: [{ name: "s1", quality: 30, rate: 1, succ: 1, total: 1 }],
+    loadPoints: [{ mode: "closed", offered: 10, qps: 2.5, successRate: 1, p95: 300, p99: 400 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  // 可用性：稳定性 9/10 vs 7/10 的 Cohen's h（场景通过率两边都是 1/1，h=0，均值只受稳定性拉动）。
+  const phi = (p) => 2 * Math.asin(Math.sqrt(p));
+  const hStab = (phi(0.9) - phi(0.7)) / Math.PI;
+  assert.ok(Math.abs(os.dims.availability.effect - hStab / 2) < 1e-6, "可用性效应量=稳定性h与通过率h(=0)的均值");
+  // 质量：仅 1 对配对场景，n<2，质量维度应为 null（不参与合成）。
+  assert.equal(os.dims.quality.effect, null, "配对样本 n=1 时质量维度样本不足，不参与合成");
+  // 压测：goodput A=10*1=10，B=2.5*1=2.5，比值4倍 → tanh(ln4/ln4)=tanh(1)。
+  assert.ok(Math.abs(os.dims.load.effect - Math.tanh(1)) < 1e-6, "压测效应量=tanh(ln(10/2.5)/ln4)=tanh(1)");
+  // 权重按比例重新归一化到 availability+load（quality 缺失）。
+  const wSum = 0.35 + 0.35;
+  assert.ok(Math.abs(os.dims.availability.weight - 0.35 / wSum) < 1e-6);
+  assert.ok(Math.abs(os.dims.load.weight - 0.35 / wSum) < 1e-6);
+  assert.equal(os.dims.quality.weight, 0);
+  const expectedE = (0.35 * (hStab / 2) + 0.35 * Math.tanh(1)) / wSum;
+  assert.ok(Math.abs(os.effect - expectedE) < 1e-6);
+  assert.equal(os.scoreA, Math.round(50 + 50 * expectedE));
+  assert.equal(os.scoreA + os.scoreB, 100, "两分数之和恒为100");
+});
+
+test("computeOverallScore：压测数据双方均缺失 → load 维度为 null，权重归一化到可用性+质量", () => {
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    scenarios: [
+      { name: "s1", quality: 80, rate: 1, succ: 1, total: 1 },
+      { name: "s2", quality: 70, rate: 1, succ: 1, total: 1 },
+    ],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 6, total: 10 },
+    scenarios: [
+      { name: "s1", quality: 50, rate: 1, succ: 1, total: 1 },
+      { name: "s2", quality: 40, rate: 0, succ: 0, total: 1 },
+    ],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, null, "双方都没有压测数据，load 维度不参与");
+  assert.equal(os.dims.load.weight, 0);
+  const wSum = 0.35 + 0.3;
+  assert.ok(Math.abs(os.dims.availability.weight - 0.35 / wSum) < 1e-6);
+  assert.ok(Math.abs(os.dims.quality.weight - 0.3 / wSum) < 1e-6);
+  assert.ok(Math.abs(os.dims.availability.weight + os.dims.quality.weight - 1) < 1e-6, "剩余权重之和为1");
+  assert.equal(os.scoreA + os.scoreB, 100);
+});
+
+test("computeOverallScore：压测一方 goodput=0（基准点即不健康）、另一方>0 → 效应量为满值±1，非 NaN/Infinity", () => {
+  const a = mkFullAgg({
+    label: "A",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 0.5, http429: 0 }], // 基准点不健康 → goodput=0
+  });
+  const b = mkFullAgg({
+    label: "B",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, -1, "A goodput=0、B>0 → A 处于劣势，效应量应为 -1");
+  assert.ok(Number.isFinite(os.dims.load.effect));
+
+  const cmp2 = buildComparison(b, a); // 调换顺序，验证方向对称
+  const os2 = computeOverallScore(cmp2);
+  assert.equal(os2.dims.load.effect, 1);
+});
+
+test("computeOverallScore：一方从未做压测（loadPoints 为空）、另一方压测健康 → load 维度不参与，不得判为满值劣势", () => {
+  // 复现的真实缺陷：loadGoodputEffect 曾把「从未压测」（points.length===0）与「压测但最低点即
+  // 不健康」都记成 goodput=0，导致「压根没测过」的一方被打成 -1 满值劣势——这不是测出来的结论，
+  // 是把「没数据」冒充成了「测量到 0% 成功率」。
+  const a = mkFullAgg({ label: "A(从未做压测)", loadPoints: [] });
+  const b = mkFullAgg({
+    label: "B(压测健康)",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, null, "一方从未测、另一方测过 → 数据不对等，load 维度不参与合成");
+  assert.equal(os.dims.load.weight, 0);
+
+  const cmp2 = buildComparison(b, a); // 调换顺序，同样不参与
+  const os2 = computeOverallScore(cmp2);
+  assert.equal(os2.dims.load.effect, null);
+});
+
+test("computeOverallScore：三维皆样本不足 → 整体返回 null，不编造 50/50", () => {
+  const a = mkFullAgg({ label: "A" });
+  const b = mkFullAgg({ label: "B" });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.scoreA, null);
+  assert.equal(os.scoreB, null);
+  assert.equal(os.effect, null);
+});
+
+test("formatCompareReportMarkdown：综合评分小节渲染——有分数时显示表格，数据不足时给出说明", () => {
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    scenarios: [{ name: "s1", quality: 80, rate: 1, succ: 1, total: 1 }],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 6, total: 10 },
+    scenarios: [{ name: "s1", quality: 40, rate: 1, succ: 1, total: 1 }],
+  });
+  const cmp = buildComparison(a, b);
+  const md = formatCompareReportMarkdown(cmp, { generatedAt: "2026-07-28T00:00:00Z" });
+  assert.match(md, /## 综合评分（相对分，A \+ B = 100）/);
+  assert.match(md, /对象A：\d+ 分　对象B：\d+ 分/);
+  assert.match(md, /压力测试 \| 35%（未参与：样本不足） \| - \| - \|/);
+  // 综合评分小节必须在结论速览之后、第1节之前。
+  const idxOverview = md.indexOf("## 结论速览");
+  const idxScore = md.indexOf("## 综合评分");
+  const idxSec1 = md.indexOf("## 1. 可用性与通过率");
+  assert.ok(idxOverview < idxScore && idxScore < idxSec1, "综合评分小节应位于结论速览之后、第1节之前");
+
+  const emptyCmp = buildComparison(mkFullAgg({ label: "A" }), mkFullAgg({ label: "B" }));
+  const mdEmpty = formatCompareReportMarkdown(emptyCmp, { generatedAt: "2026-07-28T00:00:00Z" });
+  assert.match(mdEmpty, /数据不足，无法给出综合评分/);
+  assert.ok(!mdEmpty.includes("对象A：") || !/对象A：\d+ 分/.test(mdEmpty), "数据不足时不应渲染出分数");
 });
 
 test("formatCompareReportMarkdown：压力测试对比节——有数据时出表格，无数据时给说明而非空表格", () => {

@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-30
+
+### Security
+- **运行镜像升级并最小化** — Node 从 24.11.0 升级到 24.18.0，基础系统切换为仍在支持期内的
+  Alpine 3.24，并固定官方多架构镜像 digest；pnpm 升级到 11.18.0 且只存在于构建阶段。运行镜像
+  直接复制经 frozen lockfile 安装、裁剪后的生产依赖，移除 npm/Corepack/Yarn，改用非 root
+  `node` 用户。最终运行镜像的 OS 与 Node 生产依赖经 Trivy High/Critical 扫描均为 0；Docker
+  发布工作流新增最终运行镜像扫描闸，Trivy Action 固定到不可变提交，扫描不通过不会登录或推送镜像。
+- **旧数据卷权限安全迁移** — 旧镜像以 root 写入 `/data`，直接切换非 root 会让 SQLite 变为只读。
+  Compose 新增无网络、不挂 Docker Socket 的一次性 `data-permissions` 服务，只修正
+  `evaluator-data` 卷为 UID/GID 1000，成功后主服务才启动，避免静默降级或数据无法落盘。
+- **autoheal 更新并收窄运行权限** — 从存在已知漏洞的 `1.2.0` 更新到已扫描的不可变 digest，
+  禁用网络、只读根文件系统、禁止提权并移除全部 Linux capabilities；仍只认领
+  `autoheal=true` 的 API-evaluator 容器。
+
+## [0.7.0] - 2026-07-30
+
+### Fixed
+- **模型比对压测维度：一方从未压测被误判为满值劣势** — `loadGoodputEffect`（`server/report-compare.mjs`）
+  曾把「从未做压测」（`loadPoints` 为空）与「压测过但最低负载点即不健康」都记成 goodput=0，
+  导致压根没跑过压测的一方在综合评分里被判定为 -1 满值劣势——这是把"没数据"冒充成了"测量到 0% 成功率"。
+  现改为：仅一方有压测数据时，数据不对等，load 维度不参与综合评分合成（`effect: null`，权重归一化到
+  可用性 + 质量维度），双方都测过时逻辑不变。补齐回归测试（`tests/report-compare.test.mjs`）。
+
 ## [0.6.10] - 2026-07-28
 
 ### Security

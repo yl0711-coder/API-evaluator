@@ -1,6 +1,6 @@
 {
   "name": "api-evaluator",
-  "version": "0.6.10",
+  "version": "0.7.1",
   "private": false,
   "description": "Self-hosted evaluation platform for any OpenAI-compatible / Claude-compatible API gateway or relay: connectivity, stability, scenario and admission tests with cost estimates and exportable reports.",
   "license": "MIT",
@@ -24,7 +24,7 @@
     "benchmark",
     "model-testing"
   ],
-  "packageManager": "pnpm@11.2.2",
+  "packageManager": "pnpm@11.18.0",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:server": "node server.mjs",

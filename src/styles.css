@@ -555,6 +555,21 @@ code {
   gap: 14px;
 }
 
+/* 标准评测新流程:按模型分组展示步骤(每组内仍是 .standard-flow 三列)。 */
+.flow-model-group {
+  margin-bottom: 18px;
+}
+
+.flow-model-group h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+.flow-model-group:last-child {
+  margin-bottom: 0;
+}
+
 .flow-step {
   border: 1px solid var(--line);
   border-radius: 18px;
