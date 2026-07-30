@@ -1,17 +1,3 @@
-:root {
-  --bg: #08111f;
-  --panel: rgba(14, 24, 40, 0.84);
-  --panel-strong: #101b2e;
-  --text: #f5f0df;
-  --muted: #91a0b7;
-  --line: #25334a;
-  --accent: #f6b56b;
-  --good: #62dba7;
-  --bad: #f06d7d;
-  --blue: #6da9ff;
-  --soft: rgba(255, 255, 255, 0.055);
-}
-
 * {
   box-sizing: border-box;
 }
@@ -21,7 +7,7 @@ body {
   color: var(--text);
   font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
   background:
-    radial-gradient(circle at 20% 0%, rgba(246, 181, 107, 0.18), transparent 28rem),
+    radial-gradient(circle at 20% 0%, rgba(var(--accent-rgb), 0.18), transparent 28rem),
     radial-gradient(circle at 100% 10%, rgba(109, 169, 255, 0.14), transparent 26rem),
     linear-gradient(135deg, #08111f, #111827 48%, #071321);
   min-height: 100vh;
@@ -159,8 +145,8 @@ code {
 
 .nav-button.active,
 .nav-button:hover {
-  background: rgba(246, 181, 107, 0.12);
-  border-color: rgba(246, 181, 107, 0.34);
+  background: rgba(var(--accent-rgb), 0.12);
+  border-color: rgba(var(--accent-rgb), 0.34);
   color: var(--text);
 }
 
@@ -216,9 +202,9 @@ code {
 }
 
 .edition-banner {
-  border: 1px solid rgba(246, 181, 107, 0.28);
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
   border-radius: 18px;
-  background: rgba(246, 181, 107, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
   color: var(--muted);
   line-height: 1.6;
   padding: 12px 16px;
@@ -308,9 +294,9 @@ code {
 .hero-next-card {
   display: grid;
   align-content: center;
-  border: 1px solid rgba(246, 181, 107, 0.34);
+  border: 1px solid rgba(var(--accent-rgb), 0.34);
   border-radius: 22px;
-  background: radial-gradient(circle at 100% 0%, rgba(246, 181, 107, 0.18), transparent 12rem), rgba(8, 17, 31, 0.46);
+  background: radial-gradient(circle at 100% 0%, rgba(var(--accent-rgb), 0.18), transparent 12rem), rgba(8, 17, 31, 0.46);
   padding: 22px;
 }
 
@@ -539,10 +525,10 @@ code {
 }
 
 .workflow-step.current {
-  border-color: rgba(246, 181, 107, 0.72);
+  border-color: rgba(var(--accent-rgb), 0.72);
   box-shadow:
-    0 0 0 1px rgba(246, 181, 107, 0.18),
-    0 18px 50px rgba(246, 181, 107, 0.1);
+    0 0 0 1px rgba(var(--accent-rgb), 0.18),
+    0 18px 50px rgba(var(--accent-rgb), 0.1);
 }
 
 .workflow-step.current > span {
@@ -600,7 +586,7 @@ code {
 }
 
 .flow-step.running {
-  border-color: rgba(246, 181, 107, 0.72);
+  border-color: rgba(var(--accent-rgb), 0.72);
 }
 
 .flow-step.done {
@@ -1119,9 +1105,9 @@ button.quiet-action {
   display: grid;
   gap: 10px;
   justify-items: start;
-  border: 1px dashed rgba(246, 181, 107, 0.38);
+  border: 1px dashed rgba(var(--accent-rgb), 0.38);
   border-radius: 18px;
-  background: rgba(246, 181, 107, 0.07);
+  background: rgba(var(--accent-rgb), 0.07);
   padding: 18px;
   min-width: 0;
 }
@@ -1449,7 +1435,7 @@ button.quiet-action {
 }
 
 .warn-card {
-  border-color: rgba(246, 181, 107, 0.48);
+  border-color: rgba(var(--accent-rgb), 0.48);
 }
 
 .fail-card {
@@ -1461,7 +1447,7 @@ button.quiet-action {
 }
 
 .watch-card {
-  border-color: rgba(246, 181, 107, 0.48);
+  border-color: rgba(var(--accent-rgb), 0.48);
 }
 
 .check-panel,
@@ -1651,7 +1637,7 @@ button.quiet-action {
   display: grid;
   width: min(520px, 100%);
   gap: 16px;
-  border: 1px solid rgba(246, 181, 107, 0.38);
+  border: 1px solid rgba(var(--accent-rgb), 0.38);
   border-radius: 24px;
   background: #101b2e;
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.38);
@@ -1833,7 +1819,7 @@ button.danger {
 
 .stability-group-table th {
   color: var(--text);
-  background: rgba(246, 181, 107, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
 }
 
 /* 场景测试「汇总结论」逐 API 卡：指标横排，结论标题比单目标卡略小以容纳多行 */
@@ -1904,9 +1890,9 @@ button.danger {
 }
 
 .estimate-box {
-  border: 1px solid rgba(246, 181, 107, 0.28);
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
   border-radius: 16px;
-  background: rgba(246, 181, 107, 0.08);
+  background: rgba(var(--accent-rgb), 0.08);
   color: var(--text);
   line-height: 1.7;
   padding: 14px 16px;
@@ -1922,7 +1908,7 @@ button.danger {
 .meta-grid article {
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--soft);
   padding: 14px;
 }
 
@@ -2043,7 +2029,7 @@ button.danger {
 
 .manual-content th {
   color: var(--text);
-  background: rgba(246, 181, 107, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
 }
 
 .manual-table-wrap {
@@ -2142,9 +2128,9 @@ button.danger {
   border-left-color: var(--accent);
   /* 当前章节高亮：橙色文字辉光 + 左侧橙色渐变光晕 */
   text-shadow:
-    0 0 6px rgba(246, 181, 107, 0.75),
-    0 0 14px rgba(246, 181, 107, 0.45);
-  background: radial-gradient(120px 60% at left, rgba(246, 181, 107, 0.22), transparent 72%);
+    0 0 6px rgba(var(--accent-rgb), 0.75),
+    0 0 14px rgba(var(--accent-rgb), 0.45);
+  background: radial-gradient(120px 60% at left, rgba(var(--accent-rgb), 0.22), transparent 72%);
 }
 
 @media (max-width: 960px) {
@@ -2302,7 +2288,7 @@ button.danger {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(540px 200px at 12% -40%, rgba(246, 181, 107, 0.1), transparent 70%);
+  background: radial-gradient(540px 200px at 12% -40%, rgba(var(--accent-rgb), 0.1), transparent 70%);
   pointer-events: none;
 }
 .dash .pilot .eyebrow {
@@ -2357,8 +2343,8 @@ button.danger {
   background: var(--accent);
   font-weight: 700;
   box-shadow:
-    0 0 0 4px rgba(246, 181, 107, 0.18),
-    0 4px 14px rgba(246, 181, 107, 0.4);
+    0 0 0 4px rgba(var(--accent-rgb), 0.18),
+    0 4px 14px rgba(var(--accent-rgb), 0.4);
 }
 .dash .workflow-step.current .name {
   color: var(--text);
@@ -2472,7 +2458,7 @@ button.danger {
 }
 .dash .chip.warn {
   color: var(--accent);
-  border-color: rgba(246, 181, 107, 0.3);
+  border-color: rgba(var(--accent-rgb), 0.3);
 }
 .dash .chip.bad i {
   background: var(--bad);
@@ -2567,7 +2553,7 @@ button.danger {
 }
 .dash .verdict-pill.warn {
   color: var(--accent);
-  background: rgba(246, 181, 107, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
 }
 .dash .verdict-pill.bad {
   color: var(--bad);
@@ -2727,7 +2713,7 @@ input:focus,
 select:focus,
 textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(246, 181, 107, 0.14);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.14);
 }
 select:disabled {
   opacity: 0.55;
@@ -2756,9 +2742,9 @@ select:disabled {
   font-weight: 600;
 }
 .batch-picker .seg button.on {
-  background: rgba(246, 181, 107, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
   color: var(--accent);
-  border-color: rgba(246, 181, 107, 0.4);
+  border-color: rgba(var(--accent-rgb), 0.4);
 }
 .batch-picker .bp-anchor-label {
   display: block;
@@ -2827,7 +2813,7 @@ select:disabled {
   border-bottom: none;
 }
 .batch-picker .opt:hover {
-  background: rgba(246, 181, 107, 0.06);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 .batch-picker .opt.checked {
   border-left-color: var(--accent);
@@ -2849,17 +2835,17 @@ select:disabled {
 }
 .batch-picker .pill.good {
   color: var(--good);
-  border-color: rgba(95, 227, 176, 0.4);
+  border-color: rgba(var(--good-rgb), 0.4);
 }
 .batch-picker .pill.bad {
   color: var(--bad);
-  border-color: rgba(255, 122, 138, 0.4);
+  border-color: rgba(var(--bad-rgb), 0.4);
 }
 /* 场景能力标签：区别于灰色难度 pill，用强调色实心底，更醒目 */
 .batch-picker .pill.tag {
   color: var(--accent);
-  border-color: rgba(246, 181, 107, 0.4);
-  background: rgba(246, 181, 107, 0.12);
+  border-color: rgba(var(--accent-rgb), 0.4);
+  background: rgba(var(--accent-rgb), 0.12);
   font-weight: 600;
 }
 .batch-picker .bp-echo {
@@ -2911,11 +2897,11 @@ button.secondary {
 }
 button.primary {
   background: linear-gradient(145deg, var(--accent), #e89b4d);
-  box-shadow: 0 8px 22px rgba(246, 181, 107, 0.26);
+  box-shadow: 0 8px 22px rgba(var(--accent-rgb), 0.26);
 }
 button.primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 12px 28px rgba(246, 181, 107, 0.4);
+  box-shadow: 0 12px 28px rgba(var(--accent-rgb), 0.4);
 }
 button.secondary:hover:not(:disabled) {
   border-color: var(--accent);
@@ -3083,7 +3069,7 @@ button.secondary:hover:not(:disabled) {
   background: rgba(8, 17, 31, 0.4);
 }
 .cfg #profile-list .chan-row:hover {
-  border-color: rgba(246, 181, 107, 0.28);
+  border-color: rgba(var(--accent-rgb), 0.28);
 }
 .chan-health {
   width: 9px;
@@ -3137,7 +3123,7 @@ button.secondary:hover:not(:disabled) {
 }
 .chan-role.judge {
   color: var(--accent);
-  background: rgba(246, 181, 107, 0.13);
+  background: rgba(var(--accent-rgb), 0.13);
 }
 .chan-meta {
   color: var(--muted);
@@ -3156,7 +3142,7 @@ button.secondary:hover:not(:disabled) {
 }
 .chan-pill.warn {
   color: var(--accent);
-  background: rgba(246, 181, 107, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
 }
 .chan-pill.bad {
   color: var(--bad);
@@ -3286,8 +3272,8 @@ button.secondary:hover:not(:disabled) {
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
-  border: 1px solid rgba(246, 181, 107, 0.4);
-  background: rgba(246, 181, 107, 0.12);
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  background: rgba(var(--accent-rgb), 0.12);
   border-radius: 999px;
   padding: 2px 4px 2px 9px;
 }
@@ -3344,8 +3330,8 @@ button.secondary:hover:not(:disabled) {
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
-  border: 1px solid rgba(246, 181, 107, 0.4);
-  background: rgba(246, 181, 107, 0.12);
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
+  background: rgba(var(--accent-rgb), 0.12);
   border-radius: 999px;
   padding: 2px 4px 2px 9px;
 }
@@ -3390,7 +3376,7 @@ button.secondary:hover:not(:disabled) {
   border-color: var(--muted);
 }
 .tag-pick .tag-opt input:focus-visible + .tag-opt-face {
-  outline: 1px solid rgba(246, 181, 107, 0.6);
+  outline: 1px solid rgba(var(--accent-rgb), 0.6);
   outline-offset: 2px;
 }
 /* 选中态：橙底 + 深色加粗字（朴素，无渐变/发光/动画）*/
@@ -3588,6 +3574,14 @@ button.help-toggle:hover {
   --brand-soft: linear-gradient(120deg, rgba(246, 181, 107, 0.16), rgba(255, 122, 138, 0.16));
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", system-ui, sans-serif;
   --mono: "SF Mono", ui-monospace, "JetBrains Mono", monospace;
+  /* rgb 三元组：供 rgba(var(--x-rgb), a) 复用同一颜色的半透明衍生。
+     与 --x 同源，改一处即可同时改不透明色与所有半透明层。 */
+  --accent-rgb: 246, 181, 107;
+  --bad-rgb: 255, 122, 138;
+  --bg-rgb: 10, 14, 23;
+  --blue-rgb: 109, 180, 255;
+  --good-rgb: 95, 227, 176;
+  --panel-rgb: 20, 28, 46;
 }
 body {
   /* 字体与 demo 对齐：系统字(SF/苹方) + 抗锯齿，避免 WKWebView 里偏粗发糊 */
@@ -3596,9 +3590,9 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   background:
-    radial-gradient(900px 520px at 88% -6%, rgba(255, 122, 138, 0.1), transparent 60%),
-    radial-gradient(820px 480px at 4% 8%, rgba(246, 181, 107, 0.09), transparent 55%),
-    radial-gradient(700px 600px at 60% 108%, rgba(109, 180, 255, 0.07), transparent 60%), var(--bg);
+    radial-gradient(900px 520px at 88% -6%, rgba(var(--bad-rgb), 0.1), transparent 60%),
+    radial-gradient(820px 480px at 4% 8%, rgba(var(--accent-rgb), 0.09), transparent 55%),
+    radial-gradient(700px 600px at 60% 108%, rgba(var(--blue-rgb), 0.07), transparent 60%), var(--bg);
 }
 /* 表单控件继承系统字（旧 reset 里可能指定了别的）*/
 input,
@@ -3620,7 +3614,7 @@ button {
 }
 /* 侧边栏 */
 .sidebar {
-  background: linear-gradient(180deg, rgba(20, 28, 46, 0.5), rgba(10, 14, 23, 0.2));
+  background: linear-gradient(180deg, rgba(var(--panel-rgb), 0.5), rgba(var(--bg-rgb), 0.2));
   border-right: 1px solid var(--line);
 }
 .nav-button {
@@ -3634,7 +3628,7 @@ button {
   color: var(--text);
 }
 .nav-button.active {
-  background: linear-gradient(120deg, rgba(246, 181, 107, 0.38), rgba(255, 122, 138, 0.38));
+  background: linear-gradient(120deg, rgba(var(--accent-rgb), 0.38), rgba(var(--bad-rgb), 0.38));
   border-color: transparent;
   color: var(--text);
 }
@@ -3646,12 +3640,12 @@ button.primary,
 .btn-primary {
   background: var(--brand) !important;
   color: #1a0f08 !important;
-  box-shadow: 0 10px 26px rgba(255, 122, 138, 0.26);
+  box-shadow: 0 10px 26px rgba(var(--bad-rgb), 0.26);
 }
 button.primary:hover:not(:disabled),
 .btn-primary:hover {
   transform: translateY(-1px);
-  box-shadow: 0 16px 34px rgba(255, 122, 138, 0.4);
+  box-shadow: 0 16px 34px rgba(var(--bad-rgb), 0.4);
 }
 button.secondary {
   background: rgba(255, 255, 255, 0.04);
@@ -3673,7 +3667,7 @@ input:focus,
 select:focus,
 textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(246, 181, 107, 0.13);
+  box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.13);
 }
 /* 首页 stat 大数字与彩条延续 */
 .dash .stat .big,
@@ -3730,13 +3724,13 @@ textarea:focus {
 
 /* hero：暖色描边 + 右上角珊瑚辉光（与 .pilot::before 琥珀辉光叠加）*/
 .dash .hero {
-  border: 1px solid rgba(246, 181, 107, 0.22);
+  border: 1px solid rgba(var(--accent-rgb), 0.22);
 }
 .dash .hero::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(420px 220px at 90% 0%, rgba(255, 122, 138, 0.14), transparent 70%);
+  background: radial-gradient(420px 220px at 90% 0%, rgba(var(--bad-rgb), 0.14), transparent 70%);
   pointer-events: none;
 }
 
@@ -3762,7 +3756,7 @@ textarea:focus {
 
 /* 侧栏品牌：logo 珊瑚辉光 + 当前项品牌渐变指示条 */
 .brand-mark {
-  box-shadow: 0 8px 22px rgba(255, 122, 138, 0.28);
+  box-shadow: 0 8px 22px rgba(var(--bad-rgb), 0.28);
 }
 .nav-button {
   position: relative;
@@ -4272,7 +4266,7 @@ textarea:focus {
 }
 #auto-test-config .pill.danger {
   color: var(--bad);
-  border-color: rgba(255, 122, 138, 0.4);
+  border-color: rgba(var(--bad-rgb), 0.4);
 }
 
 /* SMTP 分区标题栏：标题贴左、同步按钮靠右贴同一行（同 .atc-list-head 思路），说明文字仍在下方独占一行。 */
@@ -4370,9 +4364,9 @@ body.better-lighting::after {
   background: linear-gradient(
     115deg,
     transparent 36%,
-    rgba(246, 181, 107, 0.1) 46%,
-    rgba(246, 181, 107, 0.16) 50%,
-    rgba(246, 181, 107, 0.1) 54%,
+    rgba(var(--accent-rgb), 0.1) 46%,
+    rgba(var(--accent-rgb), 0.16) 50%,
+    rgba(var(--accent-rgb), 0.1) 54%,
     transparent 64%
   );
   transform: translateZ(0);
