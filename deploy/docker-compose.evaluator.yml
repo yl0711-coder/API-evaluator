@@ -2,7 +2,7 @@
 # 要点：不映射宿主端口（仅在 docker 网络内暴露给反向代理）、mem/cpu 安全带、独立网络、/data 卷。
 # 启动（先在构建机/CI 构建镜像，再运行）：
 #   docker compose --env-file .env.evaluator -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
-x-evaluator-image: &evaluator-image api-evaluator:0.7.0
+x-evaluator-image: &evaluator-image api-evaluator:0.7.1
 
 services:
   # v0.7.0 之前的镜像以 root 运行，已有 evaluator-data 卷及其 SQLite/配置/报告文件通常属于 0:0。

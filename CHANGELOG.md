@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-30
+
 ### Security
 - **运行镜像升级并最小化** — Node 从 24.11.0 升级到 24.18.0，基础系统切换为仍在支持期内的
   Alpine 3.24，并固定官方多架构镜像 digest；pnpm 升级到 11.18.0 且只存在于构建阶段。运行镜像
