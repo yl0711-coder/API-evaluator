@@ -45,13 +45,14 @@ export async function api(path, options = {}) {
   return data;
 }
 
-export async function runRemoteTask(state, slot, type, payload, progressElement) {
+export async function runRemoteTask(state, slot, type, payload, progressElement, { onCreated } = {}) {
   const task = await api("/api/tasks", {
     method: "POST",
     body: JSON.stringify({ type, payload }),
   });
   state.activeTasks[slot] = task.id;
   renderTaskProgress(progressElement, task);
+  onCreated?.(task);
 
   const MAX_POLL_MS = 45 * 60 * 1000; // 兜底：后端任务僵死(仍 running)时，前端不至于无限轮询
   // 单次轮询失败（网络抖动/代理 502/后端重启瞬间）绝不能直接中止等待：任务在后端仍在跑、仍在计费，

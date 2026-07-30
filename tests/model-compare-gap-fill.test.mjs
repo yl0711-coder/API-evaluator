@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildGapFillTaskPayload, normalizeGapFillOptions, summarizeGapFillEstimates } from "../src/model-compare-gap-fill.js";
+import {
+  buildGapFillTaskPayload,
+  normalizeGapFillOptions,
+  runGapFillQueue,
+  summarizeGapFillEstimates,
+} from "../src/model-compare-gap-fill.js";
 
 const scenarios = [
   { id: "code", category: "coding" },
@@ -89,4 +94,40 @@ test("补齐高级设置：多项任务的确认预估按重复次数汇总", ()
   const second = buildGapFillTaskPayload({ targetId: "target-b", scenarioId: "long", rawOptions: { repeats: 2 }, scenarios });
   const total = summarizeGapFillEstimates([first, second]);
   assert.deepEqual(total, { requests: 4, lowTokens: 10000, highTokens: 26000, risk: "中高" });
+});
+
+test("补齐队列：请求取消后停止后续场景，不把被取消的当前任务算作失败", async () => {
+  const jobs = [{ id: "first" }, { id: "second" }, { id: "third" }];
+  const started = [];
+  let cancellationRequested = false;
+  const outcome = await runGapFillQueue({
+    jobs,
+    onJobStart: (job) => started.push(job.id),
+    isCancellationRequested: () => cancellationRequested,
+    runJob: async () => {
+      cancellationRequested = true;
+      throw new Error("任务已取消。");
+    },
+  });
+
+  assert.deepEqual(started, ["first"]);
+  assert.deepEqual(outcome, { cancelled: true, completed: 0, failures: [] });
+});
+
+test("补齐队列：已完成的场景保留结果，取消前未开始的场景不会提交", async () => {
+  const jobs = [{ id: "first" }, { id: "second" }, { id: "third" }];
+  const started = [];
+  let cancellationRequested = false;
+  const outcome = await runGapFillQueue({
+    jobs,
+    onJobStart: (job) => started.push(job.id),
+    isCancellationRequested: () => cancellationRequested,
+    runJob: async (job) => {
+      if (job.id === "first") return;
+      cancellationRequested = true;
+    },
+  });
+
+  assert.deepEqual(started, ["first", "second"]);
+  assert.deepEqual(outcome, { cancelled: true, completed: 2, failures: [] });
 });

@@ -78,3 +78,27 @@ export function summarizeGapFillEstimates(payloads) {
   const risk = totals.highTokens >= 100000 ? "高" : totals.highTokens >= 20000 ? "中高" : "中";
   return { ...totals, risk };
 }
+
+export async function runGapFillQueue({ jobs, onJobStart, runJob, isCancellationRequested }) {
+  const failures = [];
+  let completed = 0;
+
+  for (let index = 0; index < jobs.length; index += 1) {
+    if (isCancellationRequested()) {
+      return { cancelled: true, completed, failures };
+    }
+    const job = jobs[index];
+    onJobStart(job, index);
+    try {
+      await runJob(job);
+      completed += 1;
+    } catch (error) {
+      if (isCancellationRequested()) {
+        return { cancelled: true, completed, failures };
+      }
+      failures.push({ job, error });
+    }
+  }
+
+  return { cancelled: false, completed, failures };
+}

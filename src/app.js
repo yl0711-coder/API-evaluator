@@ -488,9 +488,7 @@ requireElement("#cancel-load-test-task").addEventListener("click", () => cancelR
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
-// 「补齐单方场景」逐个真实调用付费 API，只能取消当前这一条（循环下一条仍会照常发起）；
-// 与其它任务槽同一套 cancelRemoteTask，用于让用户能真正打断当前在跑的那次请求。
-requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => cancelRemoteTask(state, "mc-gap-fill"));
+requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => modelCompare.cancelGapFill());
 stabilityGroupPicker.addEventListener("input", () => updateStabilityRequestTotal());
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
 // input 事件每敲一个字符就触发，updateEstimates 会重建面板 innerHTML（闪烁、低端机

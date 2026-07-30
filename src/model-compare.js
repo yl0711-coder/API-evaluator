@@ -3,11 +3,11 @@
 // 依据两者在报告中心各自最近的报告（1 稳定性 + 1 准入 + 每场景最新一份）做统计对比。
 // 后端 POST /api/reports/compare 产出并落盘一份「模型对比报告」，前端用浮层查看 + 可下载 md。
 import { escapeHtml, toast, downloadText, formatNumber } from "./client-utils.js";
-import { api, runRemoteTask } from "./api-client.js";
+import { api, cancelRemoteTask, runRemoteTask } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { openReportOverlay } from "./report-overlay.js";
-import { buildGapFillTaskPayload, summarizeGapFillEstimates } from "./model-compare-gap-fill.js";
+import { buildGapFillTaskPayload, runGapFillQueue, summarizeGapFillEstimates } from "./model-compare-gap-fill.js";
 
 export function createModelCompare({ state, confirm }) {
   const form = requireElement("#mc-form");
@@ -37,6 +37,8 @@ export function createModelCompare({ state, confirm }) {
   // 「补齐单方场景」：{ onlyA: [{name,tier}], onlyB: [...] } | null（未算出 / 已重置）。
   // onlyA = A 测过但 B 没测过（需要补给 B）；onlyB 反之（需要补给 A）。
   let gaps = null;
+  let gapFillRunning = false;
+  let gapFillCancellationRequested = false;
 
   // 由模型目标 id 反查 { channel(渠道名), model, 曾用名 }，供后端按报告文件名匹配。
   // 带上渠道与模型的曾用名(aliases)，让改名前的历史报告也能被本模型认领。
@@ -396,41 +398,46 @@ export function createModelCompare({ state, confirm }) {
       : window.confirm(detail);
     if (!confirmed) return;
 
+    gapFillRunning = true;
+    gapFillCancellationRequested = false;
     fillGapsBtn.disabled = true;
     const prevLabel = fillGapsBtn.textContent;
-    const failures = [];
-    for (let i = 0; i < jobs.length; i += 1) {
-      const job = jobs[i];
-      fillGapsBtn.textContent = `补齐中…（${i + 1}/${jobs.length}）`;
-      // 中途换模型下拉会触发 resetGaps 把父容器 #mc-gap-fill 隐藏，但补测仍在逐个真实调用 API 计费——
-      // 每轮都把容器和进度条重新亮出来，绝不允许"额度在烧、界面上却什么都看不到"。
-      gapFillBox.classList.remove("hidden");
-      gapProgress.classList.remove("hidden");
-      const p = gapProgress.querySelector("p");
-      if (p) p.textContent = `补齐中 ${i + 1}/${jobs.length}：《${job.scenarioName}》→ 补给对象 ${job.forLabel} (0%)`;
-      try {
-        // idempotencyKey：显式声明去重身份（服务端 task-manager 只信这个字段，不按 payload
-        // 形状猜）。补齐同一 {模型, 场景} 时用同一个键，让"轮询误报失败后用户再点一次补齐"
-        // 拿到的是同一个仍在跑的任务，而不是发起第二次真实付费调用。
-        await runRemoteTask(
-          state,
-          "mc-gap-fill",
-          "scenario",
-          {
-            ...job.payload,
-          },
-          gapProgress,
-        );
-      } catch (error) {
-        failures.push(`${job.scenarioName}（补给 ${job.forLabel}）：${error.message}`);
-      }
+    let outcome;
+    try {
+      outcome = await runGapFillQueue({
+        jobs,
+        isCancellationRequested: () => gapFillCancellationRequested,
+        onJobStart: (job, index) => {
+          fillGapsBtn.textContent = `补齐中…（${index + 1}/${jobs.length}）`;
+          // 中途换模型下拉会触发 resetGaps 把父容器 #mc-gap-fill 隐藏，但补测仍在逐个真实调用 API 计费——
+          // 每轮都把容器和进度条重新亮出来，绝不允许"额度在烧、界面上却什么都看不到"。
+          gapFillBox.classList.remove("hidden");
+          gapProgress.classList.remove("hidden");
+          const p = gapProgress.querySelector("p");
+          if (p) p.textContent = `补齐中 ${index + 1}/${jobs.length}：《${job.scenarioName}》→ 补给对象 ${job.forLabel} (0%)`;
+        },
+        runJob: async (job) => {
+          // idempotencyKey：显式声明去重身份（服务端 task-manager 只信这个字段，不按 payload
+          // 形状猜）。补齐同一 {模型, 场景} 时用同一个键，让"轮询误报失败后用户再点一次补齐"
+          // 拿到的是同一个仍在跑的任务，而不是发起第二次真实付费调用。
+          await runRemoteTask(state, "mc-gap-fill", "scenario", { ...job.payload }, gapProgress, {
+            onCreated: () => {
+              if (gapFillCancellationRequested) void cancelRemoteTask(state, "mc-gap-fill");
+            },
+          });
+        },
+      });
+    } finally {
+      gapFillRunning = false;
+      fillGapsBtn.disabled = false;
+      fillGapsBtn.textContent = prevLabel;
+      gapProgress.classList.add("hidden");
     }
-    fillGapsBtn.disabled = false;
-    fillGapsBtn.textContent = prevLabel;
-    gapProgress.classList.add("hidden");
 
-    if (failures.length) {
-      toast(`补齐完成：${jobs.length - failures.length}/${jobs.length} 成功，${failures.length} 个失败。`, true);
+    if (outcome.cancelled) {
+      toast(`已取消本次补齐：${outcome.completed}/${jobs.length} 个场景已完成。`);
+    } else if (outcome.failures.length) {
+      toast(`补齐完成：${outcome.completed}/${jobs.length} 成功，${outcome.failures.length} 个失败。`, true);
     } else {
       toast(`补齐完成：${jobs.length} 个场景测试已全部完成。`);
     }
@@ -463,5 +470,16 @@ export function createModelCompare({ state, confirm }) {
     refreshTargets({ modelTargets: state.modelTargets, channels: state.channels, profiles: state.profiles });
   }
 
-  return { load, refreshTargets };
+  async function cancelGapFill() {
+    if (!gapFillRunning) {
+      toast("当前没有进行中的补齐任务。", true);
+      return;
+    }
+    gapFillCancellationRequested = true;
+    const p = gapProgress.querySelector("p");
+    if (p) p.textContent = "正在取消本次补齐，后续场景不会再开始。";
+    if (state.activeTasks["mc-gap-fill"]) await cancelRemoteTask(state, "mc-gap-fill");
+  }
+
+  return { load, refreshTargets, cancelGapFill };
 }
