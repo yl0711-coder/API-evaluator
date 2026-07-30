@@ -24,7 +24,7 @@
     "benchmark",
     "model-testing"
   ],
-  "packageManager": "pnpm@11.2.2",
+  "packageManager": "pnpm@11.18.0",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:server": "node server.mjs",
