@@ -1447,10 +1447,13 @@ function loadGoodputEffect(aPoints, bPoints) {
   if (aTested !== bTested) return null;
   const goodputOf = (pts) => {
     const { point } = simpleKnee(pts);
-    return point ? point.qps * point.successRate : 0; // 双方都测过，但最低负载点就不健康 → 测不出可用容量，记 0（非"无数据"）
+    if (!point) return 0; // 最低负载点就不健康 → 测不出可用容量，是真实测量结果，记 0
+    if (!Number.isFinite(point.qps) || !Number.isFinite(point.successRate)) return null; // 数据解析失败（如表头漂移），不可信，不能当0
+    return point.qps * point.successRate;
   };
   const ga = goodputOf(aPoints);
   const gb = goodputOf(bPoints);
+  if (ga == null || gb == null) return null; // 任一方数据不可信解析，不参与合成
   if (ga === 0 && gb === 0) return 0;
   if (ga === 0 || gb === 0) return ga > gb ? 1 : -1; // 一方 0、一方 >0：对数比值不稳定，直接给方向明确的极值
   return Math.tanh(Math.log(ga / gb) / Math.log(4));
@@ -1478,7 +1481,7 @@ export function computeOverallScore(cmp) {
   let weightedSum = 0;
   let weightTotal = 0;
   for (const key of Object.keys(dims)) {
-    if (dims[key].effect == null) continue;
+    if (!Number.isFinite(dims[key].effect)) continue; // 排除 null/undefined/NaN：NaN != null 为 true，仅判 == null 会让 NaN 漏网并污染合成分
     weightedSum += OVERALL_SCORE_WEIGHTS[key] * dims[key].effect;
     weightTotal += OVERALL_SCORE_WEIGHTS[key];
   }
@@ -1486,7 +1489,7 @@ export function computeOverallScore(cmp) {
 
   // 按比例重新归一化：缺失维度的权重不会消失，也不会被当 0 分打平，而是分给仍参与的维度。
   for (const key of Object.keys(dims)) {
-    dims[key].weight = dims[key].effect == null ? 0 : OVERALL_SCORE_WEIGHTS[key] / weightTotal;
+    dims[key].weight = Number.isFinite(dims[key].effect) ? OVERALL_SCORE_WEIGHTS[key] / weightTotal : 0;
   }
   const effect = weightedSum / weightTotal;
   const scoreA = Math.round(50 + 50 * effect);

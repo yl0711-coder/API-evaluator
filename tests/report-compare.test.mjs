@@ -1035,6 +1035,52 @@ test("computeOverallScore：三维皆样本不足 → 整体返回 null，不编
   assert.equal(os.effect, null);
 });
 
+test("computeOverallScore：压测点存在但 successRate 解析失败（如表头漂移）→ load 维度不参与，不得当0参与合成", () => {
+  // 复现的真实缺陷：表头从"成功率"漂移成"成功比例"等变体时，parseLoadReport 解析不到该列，
+  // successRate 落为 null；simpleKnee 的 unhealthy() 判断用 Number.isFinite 守卫，null 不算不健康，
+  // 于是被误判为"健康"一路选到推荐点，goodputOf 却在 `qps * successRate` 上因 JS 的 `x*null=0`
+  // 悄悄把它算成 0——和"从未压测"一样是把"解析失败"冒充成"测量到 0%"。
+  const a = mkFullAgg({
+    label: "A(表头漂移)",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: null, http429: 0 }],
+  });
+  const b = mkFullAgg({
+    label: "B(压测健康)",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, null, "一方数据解析失败、另一方正常 → load 维度不参与合成");
+  assert.equal(os.dims.load.weight, 0);
+
+  const cmp2 = buildComparison(b, a);
+  const os2 = computeOverallScore(cmp2);
+  assert.equal(os2.dims.load.effect, null);
+});
+
+test("computeOverallScore：某维度效应量意外为 NaN 时不得污染合成分（NaN != null 陷阱）", () => {
+  // computeOverallScore 用于判断维度是否参与合成的守卫必须用 Number.isFinite，不能只判 == null：
+  // JS 里 `NaN != null` 为 true，仅判 == null 会让 NaN 漏网，进而让 scoreA/scoreB 变成 NaN。
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 7, total: 10 },
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  cmp.pairedQuality = { n: 5, cliff: { delta: Number.NaN } }; // 模拟质量维度效应量意外为 NaN
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.quality.effect, null, "质量维度传入非法值时应保持 null（未被 NaN 污染）");
+  assert.equal(os.dims.quality.weight, 0, "NaN 效应量不得参与权重归一化");
+  assert.ok(Number.isFinite(os.scoreA), "scoreA 不得被 NaN 污染");
+  assert.ok(Number.isFinite(os.scoreB), "scoreB 不得被 NaN 污染");
+  assert.equal(os.scoreA + os.scoreB, 100);
+});
+
 test("formatCompareReportMarkdown：综合评分小节渲染——有分数时显示表格，数据不足时给出说明", () => {
   const a = mkFullAgg({
     label: "A",
