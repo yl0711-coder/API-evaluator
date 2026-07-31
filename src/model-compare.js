@@ -37,6 +37,8 @@ export function createModelCompare({ state, confirm }) {
   // 「补齐单方场景」：{ onlyA: [{name,tier}], onlyB: [...] } | null（未算出 / 已重置）。
   // onlyA = A 测过但 B 没测过（需要补给 B）；onlyB 反之（需要补给 A）。
   let gaps = null;
+  // 每次清空结果都会推进版本；迟到的请求不能把旧模型组合的表格重新写回页面。
+  let compareRevision = 0;
   let gapFillRunning = false;
   let gapFillCancellationRequested = false;
 
@@ -90,7 +92,7 @@ export function createModelCompare({ state, confirm }) {
     generateBtn.disabled = true;
     const prevLabel = generateBtn.textContent;
     generateBtn.textContent = aiInput.checked ? "生成中…（含 AI 叙述，可能较久）" : "生成中…";
-    resultBox.innerHTML = "";
+    const requestRevision = clearResult();
     try {
       const r = await api("/api/reports/compare", {
         method: "POST",
@@ -103,10 +105,11 @@ export function createModelCompare({ state, confirm }) {
           ...(scenarios ? { scenarios } : {}),
         }),
       });
+      if (requestRevision !== compareRevision) return;
       renderResult(r);
-      openReportOverlay(r.reportId, { title: "模型对比报告" });
       toast("对比报告已生成。");
     } catch (error) {
+      if (requestRevision !== compareRevision) return;
       toast(`生成失败：${error.message}`, true);
     } finally {
       generateBtn.disabled = false;
@@ -114,9 +117,97 @@ export function createModelCompare({ state, confirm }) {
     }
   }
 
-  function renderResult({ reportId, markdown, notes }) {
+  function clearResult() {
+    compareRevision += 1;
+    resultBox.innerHTML = "";
+    return compareRevision;
+  }
+
+  function formatMetricValue(row, side) {
+    const value = row?.[side === "a" ? "valueA" : "valueB"];
+    if (!Number.isFinite(value)) return "-";
+    if (row.format === "percent") return `${(value * 100).toFixed(1)}%`;
+    if (row.format === "milliseconds") return `${Math.round(value).toLocaleString("zh-CN")} ms`;
+    const fractionDigits = Math.abs(value) >= 100 || Number.isInteger(value) ? 0 : 1;
+    return `${value.toLocaleString("zh-CN", { maximumFractionDigits: fractionDigits })}${row.unit === "分" ? " 分" : row.unit === "有效 QPS" ? " 有效 QPS" : ""}`;
+  }
+
+  function comparisonCell(row, side) {
+    const winner = row.winner === side ? " is-winner" : "";
+    return `<td class="mc-compare-value${winner}"><strong>${escapeHtml(formatMetricValue(row, side))}</strong></td>`;
+  }
+
+  function shortIssue(issue) {
+    const text = String(issue || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return text.length > 42 ? `${text.slice(0, 42)}...` : text;
+  }
+
+  function scenarioCell(row, side) {
+    const data = row[side] || {};
+    const winner = row.winner === side ? " is-winner" : "";
+    const quality = Number.isFinite(data.quality) ? `${data.quality.toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 分` : "-";
+    const passRate = Number.isFinite(data.passRate) ? `${(data.passRate * 100).toFixed(1)}% 通过` : "通过率 -";
+    const avgMs = Number.isFinite(data.avgMs) ? `${Math.round(data.avgMs).toLocaleString("zh-CN")} ms` : "耗时 -";
+    const issue = shortIssue(data.issue);
+    return `<td class="mc-compare-value mc-scenario-value${winner}">
+      <strong>${escapeHtml(quality)}</strong>
+      <span>${escapeHtml(passRate)} · ${escapeHtml(avgMs)}</span>
+      ${issue ? `<small title="${escapeHtml(data.issue)}">${escapeHtml(issue)}</small>` : ""}
+    </td>`;
+  }
+
+  function renderComparison(comparison) {
+    if (!comparison || !Array.isArray(comparison.summary)) return "";
+    const subjectA = comparison.subjects?.a?.label || "对象 A";
+    const subjectB = comparison.subjects?.b?.label || "对象 B";
+    const summaryRows = comparison.summary
+      .map(
+        (row) => `<tr class="${row.status === "insufficient" ? "is-insufficient" : ""}">
+          <th scope="row"><span>${escapeHtml(row.label || "-")}</span>${row.detail ? `<small>${escapeHtml(row.detail)}</small>` : ""}</th>
+          ${comparisonCell(row, "a")}
+          ${comparisonCell(row, "b")}
+        </tr>`,
+      )
+      .join("");
+    const scenarios = Array.isArray(comparison.scenarios) ? comparison.scenarios : [];
+    const scenarioRows = scenarios
+      .map(
+        (row) => `<tr class="${row.status === "insufficient" ? "is-insufficient" : ""}">
+          <th scope="row"><span>${escapeHtml(row.name || "-")}</span>${row.tier ? `<small>${escapeHtml(row.tier)}</small>` : ""}</th>
+          ${scenarioCell(row, "a")}
+          ${scenarioCell(row, "b")}
+        </tr>`,
+      )
+      .join("");
+    return `
+      <section class="mc-compare-table" aria-label="模型对比摘要">
+        <div class="mc-compare-table-head">
+          <h3>直观对比</h3>
+          <span>${scenarios.length} 个共有场景</span>
+        </div>
+        <div class="mc-compare-scroll">
+          <table>
+            <thead><tr><th scope="col">指标</th><th scope="col">${escapeHtml(subjectA)}</th><th scope="col">${escapeHtml(subjectB)}</th></tr></thead>
+            <tbody>${summaryRows}</tbody>
+          </table>
+        </div>
+        <details class="mc-scenario-details">
+          <summary>逐场景对照 <span>${scenarios.length}</span></summary>
+          ${
+            scenarios.length
+              ? `<div class="mc-compare-scroll"><table><thead><tr><th scope="col">场景</th><th scope="col">${escapeHtml(subjectA)}</th><th scope="col">${escapeHtml(subjectB)}</th></tr></thead><tbody>${scenarioRows}</tbody></table></div>`
+              : '<p class="field-hint">没有可逐项配对的共有场景。</p>'
+          }
+        </details>
+      </section>`;
+  }
+
+  function renderResult({ reportId, markdown, notes, comparison }) {
     resultBox.innerHTML = `
-      <div class="panel" style="margin-top:14px">
+      <section class="mc-result" aria-live="polite">
+        ${renderComparison(comparison)}
         <div class="action-row" style="justify-content:flex-start">
           <button type="button" class="secondary" data-mc-view>查看报告</button>
           <button type="button" class="secondary" data-mc-download>下载 Markdown</button>
@@ -125,7 +216,7 @@ export function createModelCompare({ state, confirm }) {
           对象 A 采用报告：${escapeHtml(notes?.a || "-")}；对象 B 采用报告：${escapeHtml(notes?.b || "-")}。
           ${notes?.aiApplied ? "已附 AI 叙述。" : notes?.ai ? `AI 叙述：${escapeHtml(notes.ai)}` : ""}
         </p>
-      </div>`;
+      </section>`;
     resultBox.querySelector("[data-mc-view]").addEventListener("click", () => openReportOverlay(reportId, { title: "模型对比报告" }));
     resultBox.querySelector("[data-mc-download]").addEventListener("click", () => downloadText(`${reportId}.md`, markdown));
   }
@@ -184,6 +275,7 @@ export function createModelCompare({ state, confirm }) {
 
   // 清空场景选择：回到「未加载」态（生成时不带 scenarios → 用全部共有）。
   function resetScenarios() {
+    clearResult();
     loadedScenarios = null;
     scenariosBox.innerHTML = "";
     scenariosBox.classList.add("hidden");
@@ -238,6 +330,7 @@ export function createModelCompare({ state, confirm }) {
       toast("找不到所选模型信息，请刷新后重试。", true);
       return;
     }
+    clearResult();
     loadScenariosBtn.disabled = true;
     const prev = loadScenariosBtn.textContent;
     loadScenariosBtn.textContent = "加载中…";
@@ -454,7 +547,10 @@ export function createModelCompare({ state, confirm }) {
   loadScenariosBtn.addEventListener("click", onLoadScenarios);
   fillGapsBtn.addEventListener("click", onFillGaps);
   // 勾选变化 → 更新计数。挂在持久容器上，故只在此挂一次（放渲染函数里会每次渲染叠加）。
-  scenariosBox.addEventListener("change", updateScenarioCount);
+  scenariosBox.addEventListener("change", () => {
+    updateScenarioCount();
+    clearResult();
+  });
   // 换模型/渠道后，已加载的场景列表可能不再适用 → 重置，避免用旧场景生成。
   for (const el of [aChannel, aModel, bChannel, bModel]) el.addEventListener("change", resetScenarios);
 

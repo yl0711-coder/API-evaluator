@@ -1094,6 +1094,15 @@ export function buildComparison(a, b) {
     labelB: b.label,
   });
 
+  // 页面摘要的质量均分也必须基于同一批可配对场景。仅保留双方都有质量分的行，
+  // 否则单方独有场景会改变均分和高亮结果，和「共有场景对比」的口径相矛盾。
+  const commonQualityPairs = matched.filter((m) => Number.isFinite(m.a.quality) && Number.isFinite(m.b.quality));
+  const commonQuality = {
+    meanA: avg(commonQualityPairs.map((m) => m.a.quality)),
+    meanB: avg(commonQualityPairs.map((m) => m.b.quality)),
+    n: commonQualityPairs.length,
+  };
+
   // 档位并排（两边并集）。
   const tierNames = [...new Set([...a.tiers.map((t) => t.tier), ...b.tiers.map((t) => t.tier)])];
   const tierRows = tierNames.map((tier) => ({
@@ -1267,7 +1276,7 @@ export function buildComparison(a, b) {
     a,
     b,
     verdicts: { stability: stabVerdict, scenarioPass: scenVerdict },
-    scenarioQuality: { matched, onlyA, onlyB },
+    scenarioQuality: { matched, onlyA, onlyB, commonQuality },
     tierRows,
     pairedQuality,
     pairedPass,
@@ -1275,6 +1284,141 @@ export function buildComparison(a, b) {
     loadComparison,
   };
   return { ...cmpWithoutScore, overallScore: computeOverallScore(cmpWithoutScore) };
+}
+
+function comparisonViewWinner(valueA, valueB, direction) {
+  if (!Number.isFinite(valueA) || !Number.isFinite(valueB) || valueA === valueB) return null;
+  const aWins = direction === "lower" ? valueA < valueB : valueA > valueB;
+  return aWins ? "a" : "b";
+}
+
+function comparisonViewRow({ id, label, detail, format, unit, direction = "higher", valueA, valueB }) {
+  const a = Number.isFinite(valueA) ? valueA : null;
+  const b = Number.isFinite(valueB) ? valueB : null;
+  return {
+    id,
+    label,
+    detail: detail || null,
+    format,
+    unit,
+    direction,
+    valueA: a,
+    valueB: b,
+    winner: comparisonViewWinner(a, b, direction),
+    status: a == null || b == null ? "insufficient" : "ready",
+  };
+}
+
+function comparisonViewGoodput(points) {
+  const point = simpleKnee(points).point;
+  if (!Number.isFinite(point?.qps) || !Number.isFinite(point?.successRate)) return null;
+  return point.qps * point.successRate;
+}
+
+// Browser-facing projection for the model comparison matrix. Keep this separate from the full
+// comparison object so the UI consumes a deliberate, stable contract rather than report internals.
+export function buildComparisonView(cmp) {
+  const { a, b } = cmp;
+  const score = cmp.overallScore || {};
+  const aLatency = a.latency?.stats || {};
+  const bLatency = b.latency?.stats || {};
+  const commonQuality = cmp.scenarioQuality?.commonQuality || { meanA: null, meanB: null, n: 0 };
+  const summary = [
+    comparisonViewRow({
+      id: "overall-score",
+      label: "综合相对分",
+      detail: "A + B = 100，50 分为打平",
+      format: "number",
+      unit: "分",
+      valueA: score.scoreA,
+      valueB: score.scoreB,
+    }),
+    comparisonViewRow({
+      id: "stability-rate",
+      label: "稳定性成功率",
+      detail: "近期稳定性测试",
+      format: "percent",
+      unit: "%",
+      valueA: a.stability?.rate,
+      valueB: b.stability?.rate,
+    }),
+    comparisonViewRow({
+      id: "scenario-pass-rate",
+      label: "场景通过率",
+      detail: "仅计双方共有场景",
+      format: "percent",
+      unit: "%",
+      valueA: a.scenarioPass?.rate,
+      valueB: b.scenarioPass?.rate,
+    }),
+    comparisonViewRow({
+      id: "scenario-quality",
+      label: "平均质量分",
+      detail: `仅计双方共有且均有质量分的场景（${commonQuality.n} 个）`,
+      format: "number",
+      unit: "分",
+      valueA: commonQuality.meanA,
+      valueB: commonQuality.meanB,
+    }),
+    comparisonViewRow({
+      id: "p95-latency",
+      label: "P95 总耗时",
+      detail: "稳定性测试轮次，越低越好",
+      format: "milliseconds",
+      unit: "ms",
+      direction: "lower",
+      valueA: aLatency.p95TotalMs,
+      valueB: bLatency.p95TotalMs,
+    }),
+    comparisonViewRow({
+      id: "admission-score",
+      label: "准入综合分",
+      detail: "身份与能力准入评测",
+      format: "number",
+      unit: "分",
+      valueA: a.admission?.composite,
+      valueB: b.admission?.composite,
+    }),
+    comparisonViewRow({
+      id: "load-goodput",
+      label: "压测推荐容量",
+      detail: "推荐容量点的 QPS × 成功率",
+      format: "number",
+      unit: "有效 QPS",
+      valueA: comparisonViewGoodput(cmp.loadComparison?.aPoints),
+      valueB: comparisonViewGoodput(cmp.loadComparison?.bPoints),
+    }),
+  ];
+  const scenarios = cmp.scenarioQuality.matched.map((row) => {
+    const qualityA = Number.isFinite(row.a.quality) ? row.a.quality : null;
+    const qualityB = Number.isFinite(row.b.quality) ? row.b.quality : null;
+    return {
+      name: row.name,
+      tier: row.tier || null,
+      winner: comparisonViewWinner(qualityA, qualityB, "higher"),
+      status: qualityA == null || qualityB == null ? "insufficient" : "ready",
+      a: {
+        quality: qualityA,
+        passRate: Number.isFinite(row.a.rate) ? row.a.rate : null,
+        avgMs: Number.isFinite(row.a.avgMs) ? row.a.avgMs : null,
+        issue: row.a.issue || null,
+      },
+      b: {
+        quality: qualityB,
+        passRate: Number.isFinite(row.b.rate) ? row.b.rate : null,
+        avgMs: Number.isFinite(row.b.avgMs) ? row.b.avgMs : null,
+        issue: row.b.issue || null,
+      },
+    };
+  });
+  return {
+    subjects: {
+      a: { label: a.label },
+      b: { label: b.label },
+    },
+    summary,
+    scenarios,
+  };
 }
 
 // —— 综合评分（相对分）：把可用性/质量/压测三个维度各压成 [-1,1] 的效应量，加权合成后
