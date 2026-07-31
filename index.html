@@ -1601,13 +1601,53 @@
               <div id="mc-scenarios" class="mc-scenarios hidden"></div>
               <div id="mc-gap-fill" class="hidden" style="margin-top:10px">
                 <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
-                  <button type="button" id="mc-fill-gaps" class="secondary">补齐单方场景</button>
+                  <button type="button" id="mc-fill-gaps" class="secondary">补齐选中场景</button>
                   <span class="field-hint" id="mc-gap-hint"></span>
                 </div>
+                <div class="mc-scenarios" data-mc-gap-choices></div>
+                <details class="advanced-settings" data-mc-gap-options>
+                  <summary>高级设置</summary>
+                  <div class="form-grid advanced-settings-body">
+                    <label>
+                      最大输出
+                      <input data-mc-gap-max-tokens type="number" min="1" max="32768" placeholder="留空 = 场景默认 4096" />
+                      <small class="field-hint">仅本次补齐生效，最高 32768。</small>
+                    </label>
+                    <label>
+                      超时毫秒
+                      <input data-mc-gap-timeout-ms type="number" min="1000" max="600000" placeholder="留空 = 按模型配置" />
+                      <small class="field-hint">留空则按目标模型的超时配置。</small>
+                    </label>
+                    <label>
+                      每个场景重复次数
+                      <select data-mc-gap-repeats>
+                        <option value="1" selected>1 次：快速筛查</option>
+                        <option value="2">2 次：观察波动</option>
+                        <option value="3">3 次：更稳妥</option>
+                      </select>
+                    </label>
+                    <label>
+                      单 API 请求并发
+                      <select data-mc-gap-request-concurrency>
+                        <option value="1" selected>1：顺序请求</option>
+                        <option value="2">2：并发重复</option>
+                      </select>
+                      <small class="field-hint">仅在重复次数大于 1 时提高同一场景的并发。</small>
+                    </label>
+                    <label class="wide checkbox-option">
+                      <input data-mc-gap-full-response type="checkbox" value="1" />
+                      <span>在报告中完整显示返回</span>
+                    </label>
+                    <label class="wide checkbox-option">
+                      <input data-mc-gap-stream-request type="checkbox" value="1" />
+                      <span>发送流式请求（SSE）</span>
+                    </label>
+                  </div>
+                </details>
                 <div id="mc-gap-progress" class="progress-panel hidden">
                   <div class="progress-bar"><span></span></div>
                   <p class="muted">等待开始。</p>
-                  <button id="cancel-mc-gap-fill-task" class="secondary" type="button">取消当前场景</button>
+                  <button id="cancel-mc-gap-fill-task" class="secondary" type="button">取消本次补齐</button>
                 </div>
               </div>
             </div>

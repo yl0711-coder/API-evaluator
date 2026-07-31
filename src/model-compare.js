@@ -2,11 +2,12 @@
 // 「模型比对」（高级测试栏，登录即可用）：选「所用模型」(A) 与「要对比的模型」(B)，
 // 依据两者在报告中心各自最近的报告（1 稳定性 + 1 准入 + 每场景最新一份）做统计对比。
 // 后端 POST /api/reports/compare 产出并落盘一份「模型对比报告」，前端用浮层查看 + 可下载 md。
-import { escapeHtml, toast, downloadText } from "./client-utils.js";
-import { api, runRemoteTask } from "./api-client.js";
+import { escapeHtml, toast, downloadText, formatNumber } from "./client-utils.js";
+import { api, cancelRemoteTask, runRemoteTask } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { openReportOverlay } from "./report-overlay.js";
+import { buildGapFillTaskPayload, runGapFillQueue, summarizeGapFillEstimates } from "./model-compare-gap-fill.js";
 
 export function createModelCompare({ state, confirm }) {
   const form = requireElement("#mc-form");
@@ -38,6 +39,8 @@ export function createModelCompare({ state, confirm }) {
   let gaps = null;
   // 每次清空结果都会推进版本；迟到的请求不能把旧模型组合的表格重新写回页面。
   let compareRevision = 0;
+  let gapFillRunning = false;
+  let gapFillCancellationRequested = false;
 
   // 由模型目标 id 反查 { channel(渠道名), model, 曾用名 }，供后端按报告文件名匹配。
   // 带上渠道与模型的曾用名(aliases)，让改名前的历史报告也能被本模型认领。
@@ -286,6 +289,32 @@ export function createModelCompare({ state, confirm }) {
     gapFillBox.classList.add("hidden");
     gapHint.textContent = "";
     gapProgress.classList.add("hidden");
+    const choiceBox = gapFillBox.querySelector("[data-mc-gap-choices]");
+    if (choiceBox) choiceBox.innerHTML = "";
+    resetGapOptions();
+  }
+
+  function resetGapOptions() {
+    const options = gapFillBox.querySelector("[data-mc-gap-options]");
+    if (!options) return;
+    options.open = false;
+    options.querySelector("[data-mc-gap-max-tokens]").value = "";
+    options.querySelector("[data-mc-gap-timeout-ms]").value = "";
+    options.querySelector("[data-mc-gap-repeats]").value = "1";
+    options.querySelector("[data-mc-gap-request-concurrency]").value = "1";
+    options.querySelector("[data-mc-gap-full-response]").checked = false;
+    options.querySelector("[data-mc-gap-stream-request]").checked = false;
+  }
+
+  function readGapOptions() {
+    return {
+      maxTokens: gapFillBox.querySelector("[data-mc-gap-max-tokens]").value,
+      timeoutMs: gapFillBox.querySelector("[data-mc-gap-timeout-ms]").value,
+      repeats: gapFillBox.querySelector("[data-mc-gap-repeats]").value,
+      requestConcurrency: gapFillBox.querySelector("[data-mc-gap-request-concurrency]").value,
+      fullResponseInReport: gapFillBox.querySelector("[data-mc-gap-full-response]").checked,
+      streamRequest: gapFillBox.querySelector("[data-mc-gap-stream-request]").checked,
+    };
   }
 
   async function onLoadScenarios() {
@@ -321,7 +350,23 @@ export function createModelCompare({ state, confirm }) {
     }
   }
 
-  // 渲染「补齐单方场景」入口：两方都无独有场景（或差集接口失败）则隐藏按钮。
+  // 补齐清单：onlyA 中的场景补给 B，onlyB 中的场景补给 A。
+  function gapEntries() {
+    if (!gaps) return [];
+    return [
+      ...(gaps.onlyA || []).map((scenario, index) => ({ key: `a:${index}`, scenario, forLabel: "B" })),
+      ...(gaps.onlyB || []).map((scenario, index) => ({ key: `b:${index}`, scenario, forLabel: "A" })),
+    ];
+  }
+
+  function updateGapCount() {
+    const count = gapFillBox.querySelector("[data-mc-gap-count]");
+    if (!count) return;
+    const selected = gapFillBox.querySelectorAll("[data-mc-gap-choice]:checked").length;
+    count.textContent = `已选 ${selected} / ${gapEntries().length} 个待补场景`;
+  }
+
+  // 渲染「补齐单方场景」清单：默认全选，用户可在实际调用前缩小范围。
   function renderGaps(gapRes) {
     const onlyA = Array.isArray(gapRes?.onlyA) ? gapRes.onlyA : [];
     const onlyB = Array.isArray(gapRes?.onlyB) ? gapRes.onlyB : [];
@@ -331,7 +376,47 @@ export function createModelCompare({ state, confirm }) {
     }
     gaps = { onlyA, onlyB };
     gapFillBox.classList.remove("hidden");
-    gapHint.textContent = `发现 A 有 ${onlyA.length} 个场景 B 未测，B 有 ${onlyB.length} 个场景 A 未测。点击可自动为对方补测（真实消耗额度）。`;
+    gapHint.textContent = `发现 A 有 ${onlyA.length} 个场景 B 未测，B 有 ${onlyB.length} 个场景 A 未测。请选择需要补测的场景（真实消耗额度）。`;
+    const choiceBox = gapFillBox.querySelector("[data-mc-gap-choices]");
+    const entries = gapEntries();
+    const group = (forLabel) => entries.filter((entry) => entry.forLabel === forLabel);
+    const renderGroup = (forLabel) => {
+      const items = group(forLabel);
+      if (!items.length) return "";
+      const heading = forLabel === "A" ? "对象 B 已测，补给对象 A" : "对象 A 已测，补给对象 B";
+      return `
+        <div class="mc-gap-group">
+          <p class="field-hint">${heading}</p>
+          <div class="mc-scenario-list">
+            ${items
+              .map(
+                ({ key, scenario }) =>
+                  `<label class="mc-scenario-item"><input type="checkbox" data-mc-gap-choice value="${key}" checked /><span>${escapeHtml(scenario.name)}${scenario.tier ? ` <em>${escapeHtml(scenario.tier)}</em>` : ""}</span></label>`,
+              )
+              .join("")}
+          </div>
+        </div>`;
+    };
+    choiceBox.innerHTML = `
+      <div class="mc-scenario-tools">
+        <span class="field-hint" data-mc-gap-count></span>
+        <span class="mc-scenario-actions">
+          <button type="button" class="link-button" data-mc-gap-all>全选</button>
+          <button type="button" class="link-button" data-mc-gap-none>全不选</button>
+        </span>
+      </div>
+      ${renderGroup("B")}
+      ${renderGroup("A")}`;
+    choiceBox.querySelector("[data-mc-gap-all]").addEventListener("click", () => {
+      choiceBox.querySelectorAll("[data-mc-gap-choice]").forEach((el) => (el.checked = true));
+      updateGapCount();
+    });
+    choiceBox.querySelector("[data-mc-gap-none]").addEventListener("click", () => {
+      choiceBox.querySelectorAll("[data-mc-gap-choice]").forEach((el) => (el.checked = false));
+      updateGapCount();
+    });
+    choiceBox.onchange = updateGapCount;
+    updateGapCount();
     gapProgress.classList.add("hidden");
   }
 
@@ -352,26 +437,44 @@ export function createModelCompare({ state, confirm }) {
       toast("请先选好两个不同的模型。", true);
       return;
     }
-    // jobs：[{ targetId, scenarioId, scenarioName, forLabel }]；名字在当前题库里找不到 id 的场景（已改名/下架）跳过。
+    const selectedKeys = new Set([...gapFillBox.querySelectorAll("[data-mc-gap-choice]:checked")].map((el) => el.value));
+    if (!selectedKeys.size) {
+      toast("请至少选择一个要补齐的场景。", true);
+      return;
+    }
+    const rawOptions = readGapOptions();
+    // jobs：[{ targetId, scenarioId, scenarioName, forLabel }]；只补齐用户勾选的条目，名字在当前题库里找不到 id 的场景（已改名/下架）跳过。
     const jobs = [];
     const skipped = [];
-    for (const s of gaps.onlyA) {
-      const scenarioId = scenarioIdByName(s.name);
-      if (scenarioId) jobs.push({ targetId: idB, scenarioId, scenarioName: s.name, forLabel: "B" });
-      else skipped.push(s.name);
-    }
-    for (const s of gaps.onlyB) {
-      const scenarioId = scenarioIdByName(s.name);
-      if (scenarioId) jobs.push({ targetId: idA, scenarioId, scenarioName: s.name, forLabel: "A" });
-      else skipped.push(s.name);
+    for (const entry of gapEntries()) {
+      if (!selectedKeys.has(entry.key)) continue;
+      const scenarioId = scenarioIdByName(entry.scenario.name);
+      if (scenarioId) {
+        jobs.push({
+          targetId: entry.forLabel === "A" ? idA : idB,
+          scenarioId,
+          scenarioName: entry.scenario.name,
+          forLabel: entry.forLabel,
+          payload: buildGapFillTaskPayload({
+            targetId: entry.forLabel === "A" ? idA : idB,
+            scenarioId,
+            rawOptions,
+            scenarios: state.scenarios,
+          }),
+        });
+      } else {
+        skipped.push(entry.scenario.name);
+      }
     }
     if (!jobs.length) {
       toast("待补场景均已从当前题库下架/改名，无法自动补齐。", true);
       return;
     }
+    const estimate = summarizeGapFillEstimates(jobs.map((job) => job.payload));
 
     const detail = [
-      `将发起 ${jobs.length} 次场景测试（每次测 1 个场景），逐个进行、每次都真实调用被测 API、消耗额度。`,
+      `将补齐 ${jobs.length} 个选中场景，共发起 ${estimate.requests} 次场景请求，逐个进行、每次都真实调用被测 API。`,
+      `预计消耗 ${formatNumber(estimate.lowTokens)} - ${formatNumber(estimate.highTokens)} tokens。`,
       skipped.length ? `另有 ${skipped.length} 个场景已从当前题库下架/改名，无法补齐，将跳过：${skipped.join("、")}` : "",
     ]
       .filter(Boolean)
@@ -383,52 +486,51 @@ export function createModelCompare({ state, confirm }) {
           detail: "确认后会逐个开始测试，可能耗时较久，请不要关闭窗口。",
           confirmLabel: "确认开始补齐",
           cancelLabel: "先不运行",
-          // 已知问题（暂不修）：tone 只看场景数量，不看真实花费——场景之间 token 消耗差异可能很大
-          // （几百 token 的简单题 vs 上万 token 的长文任务），3 个贵场景可能比 15 个便宜场景花得更多，
-          // 但后者反而会标红。改进方向是接入 cost-estimates.js 按场景类别估算，本次不做。
-          tone: jobs.length >= 10 ? "danger" : "normal",
+          tone: estimate.risk === "高" || estimate.risk === "中高" ? "danger" : "normal",
         })
       : window.confirm(detail);
     if (!confirmed) return;
 
+    gapFillRunning = true;
+    gapFillCancellationRequested = false;
     fillGapsBtn.disabled = true;
     const prevLabel = fillGapsBtn.textContent;
-    const failures = [];
-    for (let i = 0; i < jobs.length; i += 1) {
-      const job = jobs[i];
-      fillGapsBtn.textContent = `补齐中…（${i + 1}/${jobs.length}）`;
-      // 中途换模型下拉会触发 resetGaps 把父容器 #mc-gap-fill 隐藏，但补测仍在逐个真实调用 API 计费——
-      // 每轮都把容器和进度条重新亮出来，绝不允许"额度在烧、界面上却什么都看不到"。
-      gapFillBox.classList.remove("hidden");
-      gapProgress.classList.remove("hidden");
-      const p = gapProgress.querySelector("p");
-      if (p) p.textContent = `补齐中 ${i + 1}/${jobs.length}：《${job.scenarioName}》→ 补给对象 ${job.forLabel} (0%)`;
-      try {
-        // idempotencyKey：显式声明去重身份（服务端 task-manager 只信这个字段，不按 payload
-        // 形状猜）。补齐同一 {模型, 场景} 时用同一个键，让"轮询误报失败后用户再点一次补齐"
-        // 拿到的是同一个仍在跑的任务，而不是发起第二次真实付费调用。
-        await runRemoteTask(
-          state,
-          "mc-gap-fill",
-          "scenario",
-          {
-            profileIds: [job.targetId],
-            scenarioIds: [job.scenarioId],
-            repeats: 1,
-            idempotencyKey: `mc-gap-fill:${job.targetId}:${job.scenarioId}`,
-          },
-          gapProgress,
-        );
-      } catch (error) {
-        failures.push(`${job.scenarioName}（补给 ${job.forLabel}）：${error.message}`);
-      }
+    let outcome;
+    try {
+      outcome = await runGapFillQueue({
+        jobs,
+        isCancellationRequested: () => gapFillCancellationRequested,
+        onJobStart: (job, index) => {
+          fillGapsBtn.textContent = `补齐中…（${index + 1}/${jobs.length}）`;
+          // 中途换模型下拉会触发 resetGaps 把父容器 #mc-gap-fill 隐藏，但补测仍在逐个真实调用 API 计费——
+          // 每轮都把容器和进度条重新亮出来，绝不允许"额度在烧、界面上却什么都看不到"。
+          gapFillBox.classList.remove("hidden");
+          gapProgress.classList.remove("hidden");
+          const p = gapProgress.querySelector("p");
+          if (p) p.textContent = `补齐中 ${index + 1}/${jobs.length}：《${job.scenarioName}》→ 补给对象 ${job.forLabel} (0%)`;
+        },
+        runJob: async (job) => {
+          // idempotencyKey：显式声明去重身份（服务端 task-manager 只信这个字段，不按 payload
+          // 形状猜）。补齐同一 {模型, 场景} 时用同一个键，让"轮询误报失败后用户再点一次补齐"
+          // 拿到的是同一个仍在跑的任务，而不是发起第二次真实付费调用。
+          await runRemoteTask(state, "mc-gap-fill", "scenario", { ...job.payload }, gapProgress, {
+            onCreated: () => {
+              if (gapFillCancellationRequested) void cancelRemoteTask(state, "mc-gap-fill");
+            },
+          });
+        },
+      });
+    } finally {
+      gapFillRunning = false;
+      fillGapsBtn.disabled = false;
+      fillGapsBtn.textContent = prevLabel;
+      gapProgress.classList.add("hidden");
     }
-    fillGapsBtn.disabled = false;
-    fillGapsBtn.textContent = prevLabel;
-    gapProgress.classList.add("hidden");
 
-    if (failures.length) {
-      toast(`补齐完成：${jobs.length - failures.length}/${jobs.length} 成功，${failures.length} 个失败。`, true);
+    if (outcome.cancelled) {
+      toast(`已取消本次补齐：${outcome.completed}/${jobs.length} 个场景已完成。`);
+    } else if (outcome.failures.length) {
+      toast(`补齐完成：${outcome.completed}/${jobs.length} 成功，${outcome.failures.length} 个失败。`, true);
     } else {
       toast(`补齐完成：${jobs.length} 个场景测试已全部完成。`);
     }
@@ -464,5 +566,16 @@ export function createModelCompare({ state, confirm }) {
     refreshTargets({ modelTargets: state.modelTargets, channels: state.channels, profiles: state.profiles });
   }
 
-  return { load, refreshTargets };
+  async function cancelGapFill() {
+    if (!gapFillRunning) {
+      toast("当前没有进行中的补齐任务。", true);
+      return;
+    }
+    gapFillCancellationRequested = true;
+    const p = gapProgress.querySelector("p");
+    if (p) p.textContent = "正在取消本次补齐，后续场景不会再开始。";
+    if (state.activeTasks["mc-gap-fill"]) await cancelRemoteTask(state, "mc-gap-fill");
+  }
+
+  return { load, refreshTargets, cancelGapFill };
 }
