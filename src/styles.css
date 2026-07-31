@@ -4579,7 +4579,7 @@ body.better-lighting::after {
   color: var(--bad);
 }
 
-@media (max-width: 680px) {
+@media (max-width: 760px) {
   .mc-compare-table-head {
     align-items: flex-start;
     flex-direction: column;
