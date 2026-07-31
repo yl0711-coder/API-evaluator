@@ -40,7 +40,7 @@ code {
 .sidebar {
   width: 260px; /* 固定宽度：收起时内部文字不重排，整块随 transform 平移 */
   border-right: 1px solid var(--line);
-  background: rgba(5, 12, 24, 0.78);
+  background: rgba(var(--bg-rgb), 0.78);
   padding: 24px 18px;
   min-height: 0;
   overflow-y: auto;
@@ -653,7 +653,7 @@ code {
 }
 
 .collapsible-panel {
-  background: rgba(14, 24, 40, 0.58);
+  background: rgba(var(--panel-rgb), 0.58);
 }
 
 .collapsible-panel summary {
@@ -731,9 +731,9 @@ label {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  border: 1px solid rgba(244, 180, 92, 0.28);
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
   border-radius: 16px;
-  background: rgba(244, 180, 92, 0.08);
+  background: rgba(var(--accent-rgb), 0.08);
   color: var(--text);
   padding: 13px 14px;
 }
@@ -1047,7 +1047,7 @@ textarea.readonly-prompt,
 textarea[readonly] {
   border-style: dashed;
   color: #d6dfef;
-  background: rgba(18, 32, 54, 0.68);
+  background: rgba(var(--panel-rgb), 0.68);
 }
 
 textarea.readonly-prompt:focus,
@@ -1074,18 +1074,12 @@ button.secondary {
   font-weight: 700;
 }
 
-button.primary {
-  background: var(--accent);
-  color: #111827;
-}
-
 button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
 }
 
 button.secondary {
-  background: rgba(255, 255, 255, 0.08);
   color: var(--text);
   border: 1px solid var(--line);
 }
@@ -1588,7 +1582,7 @@ button.quiet-action {
 .markdown-report {
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: rgba(5, 12, 24, 0.4);
+  background: rgba(var(--bg-rgb), 0.4);
   max-height: 520px;
   overflow: auto;
   padding: 16px;
@@ -1636,7 +1630,7 @@ button.quiet-action {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(3, 8, 18, 0.72);
+  background: rgba(var(--bg-rgb), 0.72);
   backdrop-filter: blur(8px);
 }
 
@@ -1700,6 +1694,7 @@ button.quiet-action {
 
 button.danger {
   border-color: rgba(var(--bad-rgb), 0.48);
+  /* 渐变终点 rgba(174,62,82) 比 --bad 深得多，是刻意的立体感处理，不是孤儿色，别归并 */
   background: linear-gradient(135deg, rgba(var(--bad-rgb), 0.95), rgba(174, 62, 82, 0.95));
   color: #fff7f8;
 }
@@ -2353,7 +2348,7 @@ button.danger {
 }
 .dash .workflow-step.current .bead {
   border-color: var(--accent);
-  color: #1a1206;
+  color: var(--on-accent);
   background: var(--accent);
   font-weight: 700;
   box-shadow:
@@ -2703,11 +2698,6 @@ button.danger {
 }
 
 /* ===== v2 全局视觉打磨：控制室质感（纯观感，不动 markup/ID/handler）===== */
-/* 面板：收紧圆角 + 减轻阴影（去臃肿，.dash 首页已单独覆盖不受影响）*/
-.panel {
-  border-radius: 16px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2);
-}
 /* 输入：收紧圆角 + 聚焦琥珀辉光 */
 input,
 select,
@@ -2894,7 +2884,7 @@ select:disabled {
   color: var(--muted);
   font-size: 13px;
 }
-/* 按钮：收紧圆角 + 主按钮渐变与悬浮抬升 */
+/* 按钮：收紧圆角 */
 button.primary,
 button.secondary {
   border-radius: 10px;
@@ -2904,14 +2894,6 @@ button.secondary {
     box-shadow 0.12s,
     border-color 0.15s,
     color 0.15s;
-}
-button.primary {
-  background: linear-gradient(145deg, var(--accent), #e89b4d);
-  box-shadow: 0 8px 22px rgba(var(--accent-rgb), 0.26);
-}
-button.primary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 12px 28px rgba(var(--accent-rgb), 0.4);
 }
 button.secondary:hover:not(:disabled) {
   border-color: var(--accent);
@@ -3398,7 +3380,7 @@ button.secondary:hover:not(:disabled) {
 }
 /* 选中态：橙底 + 深色加粗字（朴素，无渐变/发光/动画）*/
 .tag-pick .tag-opt input:checked + .tag-opt-face {
-  color: #1b1206;
+  color: var(--on-accent);
   font-weight: 700;
   border-color: var(--accent);
   background: var(--accent);
@@ -3610,6 +3592,9 @@ button.help-toggle:hover {
   --blue-rgb: 109, 180, 255;
   --good-rgb: 95, 227, 176;
   --panel-rgb: 20, 28, 46;
+  /* 强调色/成功色/中性色背景上的深色文字（暖色调）。#111827 是另一种偏冷的深色文字，
+     与此不同源，不并入——见 button.primary/.flow-step span 等处仍用 #111827。 */
+  --on-accent: #1a0f08;
 }
 body {
   /* 字体与 demo 对齐：系统字(SF/苹方) + 抗锯齿，避免 WKWebView 里偏粗发糊 */
@@ -3667,7 +3652,7 @@ button {
 button.primary,
 .btn-primary {
   background: var(--brand) !important;
-  color: #1a0f08 !important;
+  color: var(--on-accent) !important;
   box-shadow: 0 10px 26px rgba(var(--bad-rgb), 0.26);
 }
 button.primary:hover:not(:disabled),
@@ -3927,7 +3912,7 @@ textarea:focus {
 .report-overlay__backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(4, 8, 16, 0.62);
+  background: rgba(var(--bg-rgb), 0.62);
   backdrop-filter: blur(3px);
 }
 .report-overlay__panel {
