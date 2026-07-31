@@ -1,4 +1,5 @@
 import { estimateBatchCost, estimateScenarioCost, estimateStabilityCost, formatEstimate } from "./cost-estimates.js";
+import { readStabilityGroups } from "./prompt-presets.js";
 
 export function updateEstimateLabels({
   stabilityForm,
@@ -12,7 +13,9 @@ export function updateEstimateLabels({
   scenarioEstimate,
   scenarios,
 }) {
-  stabilityEstimate.textContent = formatEstimate(estimateStabilityCost(Object.fromEntries(new FormData(stabilityForm).entries())));
+  const stabilityPayload = Object.fromEntries(new FormData(stabilityForm).entries());
+  stabilityPayload.groups = readStabilityGroups(stabilityForm);
+  stabilityEstimate.textContent = formatEstimate(estimateStabilityCost(stabilityPayload));
 
   const batchPayload = Object.fromEntries(new FormData(batchForm).entries());
   batchPayload.profileIds = Array.from(batchProfileSelect.selectedOptions).map((option) => option.value);

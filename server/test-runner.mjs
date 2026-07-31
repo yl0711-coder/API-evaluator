@@ -997,25 +997,61 @@ function nextActionForAdmission(grade) {
   return "暂停接入，先修复 Key、模型名、权限或上游状态。";
 }
 
-async function runStabilityForProfile({ profile, body, taskContext = {}, onProgress = null }) {
+// 兜底文案：groups 缺失/为空/全部数量<=0 时退化为单组扁平路径（供旧调用方如
+// standard-eval-controller.js 的内联 /api/tests/stability、auto-test-scheduler.mjs 继续使用）。
+const DEFAULT_STABILITY_PROMPT = "请用两句话说明你可以正常工作，并返回当前测试编号。";
+
+function normalizeStabilityGroups(body) {
+  if (Array.isArray(body.groups) && body.groups.length > 0) {
+    const groups = body.groups
+      .map((group) => {
+        const repeats = Number(group.repeats);
+        if (!Number.isFinite(repeats) || repeats <= 0) return null;
+        return {
+          presetId: group.presetId != null ? String(group.presetId) : null,
+          prompt: String(group.prompt || "").trim() || DEFAULT_STABILITY_PROMPT,
+          repeats: clampNumber(repeats, 1, 20, 1),
+        };
+      })
+      .filter(Boolean);
+    if (groups.length > 0) return groups;
+  }
   const rounds = clampNumber(body.rounds, 1, 100, 10);
+  const prompt = String(body.prompt || "").trim() || DEFAULT_STABILITY_PROMPT;
+  return [{ presetId: null, prompt, repeats: rounds }];
+}
+
+async function runStabilityForProfile({ profile, body, taskContext = {}, onProgress = null }) {
   const concurrency = clampNumber(body.concurrency, 1, 5, 1);
-  const prompt = String(body.prompt || "").trim() || "请用两句话说明你可以正常工作，并返回当前测试编号。";
+  const groups = normalizeStabilityGroups(body);
+  const jobs = [];
+  for (const group of groups) {
+    for (let repeat = 1; repeat <= group.repeats; repeat += 1) {
+      jobs.push({ group, repeat });
+    }
+  }
+  const rounds = jobs.length;
   const runId = buildReportId("run", reportTargetSlug(profile));
   const startedAt = new Date();
   const records = [];
 
-  for (let index = 0; index < rounds; index += concurrency) {
+  for (let index = 0; index < jobs.length; index += concurrency) {
     assertTaskNotCancelled(taskContext);
-    const batch = Array.from({ length: Math.min(concurrency, rounds - index) }, (_, offset) => {
-      const round = index + offset + 1;
-      const casePrompt = buildRoundPrompt(prompt, round, rounds);
+    const batch = jobs.slice(index, index + concurrency).map((job, offset) => {
+      const globalRound = index + offset + 1;
+      const casePrompt = buildRoundPrompt(job.group.prompt, job.repeat, job.group.repeats);
       return executeTestRequest(profile, casePrompt, {
         runId,
-        caseId: `round-${round}`,
+        caseId: `round-${globalRound}`,
         writeLog: true,
         abortSignal: taskContext?.task?.abortController?.signal,
-      });
+      }).then((record) => ({
+        ...record,
+        groupId: job.group.presetId,
+        groupPrompt: job.group.prompt,
+        repeat: job.repeat,
+        repeatsInGroup: job.group.repeats,
+      }));
     });
     records.push(...(await Promise.all(batch)));
     onProgress?.(records.length, rounds);
@@ -1028,7 +1064,7 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
     records,
     rounds,
     concurrency,
-    prompt,
+    prompt: groups[0]?.prompt || DEFAULT_STABILITY_PROMPT,
     startedAt,
     endedAt,
   });

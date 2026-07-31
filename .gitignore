@@ -38,8 +38,6 @@ app-data/
 *.docx
 注意事项.txt
 
-AI配置模型与渠道操作指南.md
-AI批量写入模型标签指南.md
 --env-file
 
 *笔记.md
@@ -48,3 +46,4 @@ AI批量写入模型标签指南.md
 .postman
 postman
 16-代码规范与可维护性检查-v0.6.2.md
+.audit/

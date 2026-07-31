@@ -20,6 +20,7 @@ import {
   commonScenarioNames,
   exclusiveScenarioNames,
   formatCompareReportMarkdown,
+  buildComparisonView,
   pickRecentReports,
   buildCompareAnalysisPrompt,
   interpolateLoadPoint,
@@ -873,6 +874,57 @@ function mkFullAgg(overrides = {}) {
   };
 }
 
+test("buildComparisonView：摘要行按指标方向给出胜方，缺失压测不伪造结论", () => {
+  const a = mkFullAgg({
+    label: "模型 A",
+    stability: { succ: 9, total: 10, rate: 0.9 },
+    latency: { samples: [], rounds: [], stats: { p95TotalMs: 800 } },
+    scenarioPass: { succ: 3, total: 3, rate: 1 },
+    quality: { mean: 88, n: 1 },
+    scenarios: [{ name: "场景甲", tier: "中等", quality: 88, rate: 1, succ: 3, total: 3, avgMs: 900, issue: "" }],
+  });
+  const b = mkFullAgg({
+    label: "模型 B",
+    stability: { succ: 8, total: 10, rate: 0.8 },
+    latency: { samples: [], rounds: [], stats: { p95TotalMs: 1200 } },
+    scenarioPass: { succ: 2, total: 3, rate: 2 / 3 },
+    quality: { mean: 70, n: 1 },
+    scenarios: [{ name: "场景甲", tier: "中等", quality: 70, rate: 2 / 3, succ: 2, total: 3, avgMs: 1100, issue: "超时" }],
+  });
+  const view = buildComparisonView(buildComparison(a, b));
+  const row = (id) => view.summary.find((item) => item.id === id);
+  assert.equal(view.subjects.a.label, "模型 A");
+  assert.equal(row("stability-rate").winner, "a");
+  assert.equal(row("p95-latency").winner, "a", "延迟更低的一方胜出");
+  assert.equal(row("load-goodput").status, "insufficient", "未测压测不伪造成零容量");
+  assert.equal(view.scenarios[0].winner, "a");
+  assert.equal(view.scenarios[0].b.issue, "超时");
+});
+
+test("buildComparisonView：平均质量分只比较共有且双方都有质量分的场景", () => {
+  const a = mkFullAgg({
+    label: "模型 A",
+    quality: { mean: 75, n: 2 },
+    scenarios: [
+      { name: "共有场景", tier: "中等", quality: 50, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" },
+      { name: "A 独有场景", tier: "中等", quality: 100, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" },
+    ],
+  });
+  const b = mkFullAgg({
+    label: "模型 B",
+    quality: { mean: 70, n: 1 },
+    scenarios: [{ name: "共有场景", tier: "中等", quality: 70, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" }],
+  });
+
+  const cmp = buildComparison(a, b);
+  const qualityRow = buildComparisonView(cmp).summary.find((item) => item.id === "scenario-quality");
+  assert.equal(cmp.a.quality.mean, 75, "既有报告的全量质量分不被页面投影改写");
+  assert.equal(qualityRow.valueA, 50);
+  assert.equal(qualityRow.valueB, 70);
+  assert.equal(qualityRow.winner, "b", "独有场景不得改变共有场景质量分的胜方");
+  assert.match(qualityRow.detail, /1 个/);
+});
+
 test("computeOverallScore：三维皆有数据 → 手算效应量与合成分一致", () => {
   const a = mkFullAgg({
     label: "A",
@@ -981,6 +1033,52 @@ test("computeOverallScore：三维皆样本不足 → 整体返回 null，不编
   assert.equal(os.scoreA, null);
   assert.equal(os.scoreB, null);
   assert.equal(os.effect, null);
+});
+
+test("computeOverallScore：压测点存在但 successRate 解析失败（如表头漂移）→ load 维度不参与，不得当0参与合成", () => {
+  // 复现的真实缺陷：表头从"成功率"漂移成"成功比例"等变体时，parseLoadReport 解析不到该列，
+  // successRate 落为 null；simpleKnee 的 unhealthy() 判断用 Number.isFinite 守卫，null 不算不健康，
+  // 于是被误判为"健康"一路选到推荐点，goodputOf 却在 `qps * successRate` 上因 JS 的 `x*null=0`
+  // 悄悄把它算成 0——和"从未压测"一样是把"解析失败"冒充成"测量到 0%"。
+  const a = mkFullAgg({
+    label: "A(表头漂移)",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: null, http429: 0 }],
+  });
+  const b = mkFullAgg({
+    label: "B(压测健康)",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, null, "一方数据解析失败、另一方正常 → load 维度不参与合成");
+  assert.equal(os.dims.load.weight, 0);
+
+  const cmp2 = buildComparison(b, a);
+  const os2 = computeOverallScore(cmp2);
+  assert.equal(os2.dims.load.effect, null);
+});
+
+test("computeOverallScore：某维度效应量意外为 NaN 时不得污染合成分（NaN != null 陷阱）", () => {
+  // computeOverallScore 用于判断维度是否参与合成的守卫必须用 Number.isFinite，不能只判 == null：
+  // JS 里 `NaN != null` 为 true，仅判 == null 会让 NaN 漏网，进而让 scoreA/scoreB 变成 NaN。
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 7, total: 10 },
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  cmp.pairedQuality = { n: 5, cliff: { delta: Number.NaN } }; // 模拟质量维度效应量意外为 NaN
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.quality.effect, null, "质量维度传入非法值时应保持 null（未被 NaN 污染）");
+  assert.equal(os.dims.quality.weight, 0, "NaN 效应量不得参与权重归一化");
+  assert.ok(Number.isFinite(os.scoreA), "scoreA 不得被 NaN 污染");
+  assert.ok(Number.isFinite(os.scoreB), "scoreB 不得被 NaN 污染");
+  assert.equal(os.scoreA + os.scoreB, 100);
 });
 
 test("formatCompareReportMarkdown：综合评分小节渲染——有分数时显示表格，数据不足时给出说明", () => {

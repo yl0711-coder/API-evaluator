@@ -13,6 +13,7 @@ export function createTestForms({ state, els, deps }) {
     estimateAdmissionCost,
     estimateAdmissionBatchCost,
     estimateStabilityCost,
+    readStabilityGroups,
     estimateBatchCost,
     estimateScenarioCost,
     renderAdmissionResult,
@@ -101,7 +102,14 @@ export function createTestForms({ state, els, deps }) {
     taskType: "stability",
     confirmRun: (payload) => confirmAction(confirmExecution("稳定性测试", estimateStabilityCost(payload))),
     predict: (payload) => estimateStabilityCost(payload),
-    preparePayload: (payload) => payload,
+    preparePayload: (payload) => {
+      const groups = readStabilityGroups(els.stabilityTestForm);
+      if (!groups.length) {
+        toast("请至少选择一个测试文案分组（数量框大于 0）。", true);
+        return null;
+      }
+      return { ...payload, groups, rounds: groups.reduce((sum, group) => sum + group.repeats, 0) };
+    },
     beforeStart: (payload) => {
       els.stabilitySummary.innerHTML = `<p class="muted">正在进行 ${payload.rounds} 轮测试。请不要关闭窗口。</p>`;
     },

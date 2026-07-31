@@ -129,3 +129,66 @@ test("计费审计识别系统性输出灌水并作为复核项暴露", () => {
   assert.match(report, /疑似/); // 审计结论 + 复核块都会出现"疑似"
   assert.match(report, /需第二人签字/); // 高敏感结论触发复核
 });
+
+function makeGroupedRecords(groupsSpec) {
+  const records = [];
+  for (const spec of groupsSpec) {
+    const group = makeRecords(spec.successCount, spec.total, spec.options);
+    for (const record of group) {
+      record.groupId = spec.groupId;
+      record.groupPrompt = spec.groupPrompt || spec.groupId;
+    }
+    records.push(...group);
+  }
+  return records;
+}
+
+test("buildStabilitySummary 按 groupId 拆分多组统计", () => {
+  const records = makeGroupedRecords([
+    { groupId: "basic", groupPrompt: "基础", successCount: 3, total: 3 },
+    { groupId: "coding", groupPrompt: "编程", successCount: 1, total: 3 },
+  ]);
+  const summary = buildStabilitySummary({
+    runId: "run-groups",
+    profile: profile("g", "分组"),
+    records,
+    rounds: records.length,
+    concurrency: 1,
+    prompt: "基础",
+    startedAt: new Date("2026-06-02T00:00:00Z"),
+    endedAt: new Date("2026-06-02T00:01:00Z"),
+  });
+  assert.equal(summary.groups.length, 2);
+  const basic = summary.groups.find((g) => g.groupId === "basic");
+  const coding = summary.groups.find((g) => g.groupId === "coding");
+  assert.equal(basic.count, 3);
+  assert.equal(basic.successCount, 3);
+  assert.equal(coding.count, 3);
+  assert.equal(coding.successCount, 1);
+});
+
+test("buildStabilitySummary 无缓存信号时 cacheHitRate 为 null", () => {
+  const summary = makeStabilitySummary("a", "甲", 8, 10);
+  assert.equal(summary.cacheHitRate, null);
+  assert.equal(summary.cacheHitRateText, null);
+});
+
+test("buildStabilitySummary 有缓存信号时计算命中率", () => {
+  const records = makeRecords(4, 4);
+  for (const record of records) {
+    record.inputTokens = 100;
+    record.cacheReadTokens = 60;
+  }
+  const summary = buildStabilitySummary({
+    runId: "run-cache",
+    profile: profile("c", "缓存"),
+    records,
+    rounds: records.length,
+    concurrency: 1,
+    prompt: "ping",
+    startedAt: new Date("2026-06-02T00:00:00Z"),
+    endedAt: new Date("2026-06-02T00:01:00Z"),
+  });
+  assert.ok(summary.cacheHitRate > 0.59 && summary.cacheHitRate < 0.61);
+  assert.equal(summary.cacheHitRateText, "60%");
+});

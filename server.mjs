@@ -78,6 +78,7 @@ import {
   aggregateSubject,
   balanceCommonReports,
   buildComparison,
+  buildComparisonView,
   buildCompareAnalysisPrompt,
   commonScenarioNames,
   exclusiveScenarioNames,
@@ -1781,6 +1782,7 @@ async function handleReportsCompare(req, res) {
   sendJson(res, 200, {
     reportId,
     markdown,
+    comparison: buildComparisonView(cmp),
     notes: { a: usedNote(aggA), b: usedNote(aggB), ai: aiNote, aiApplied: Boolean(aiNarrative) },
   });
   return;

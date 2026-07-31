@@ -47,7 +47,7 @@ import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createBatchTargetPicker } from "./batch-target-picker.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
-import { applyPromptPresetToForm, renderPromptPresetOptions } from "./prompt-presets.js";
+import { applyPromptPresetToForm, readStabilityGroups, renderPromptPresetOptions, renderStabilityGroupPicker } from "./prompt-presets.js";
 import { createChannelAdmin } from "./channel-admin.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
@@ -55,10 +55,6 @@ import { renderStabilitySummary as renderStabilitySummaryPanel } from "./stabili
 import { renderScenarioSummary as renderScenarioSummaryPanel } from "./scenario-view.js";
 import { updateEstimateLabels } from "./test-estimates.js";
 import { createTaskFormController, requireSelectedValues } from "./test-form-controller.js";
-import {
-  applyBatchTemplate as applyBatchTemplateToForm,
-  applyStabilityTemplate as applyStabilityTemplateToForm,
-} from "./test-templates.js";
 import { hydrateProjectInfoForm as hydrateProjectInfoFormFields, loadProjectInfo, saveProjectInfo } from "./project-info.js";
 
 installClientErrorReporter();
@@ -243,10 +239,8 @@ _onProfileData.push((data) => standardPicker.refresh(data));
 const scenarioCasePicker = createScenarioCasePicker(requireElement("#scenario-case-picker"), scenarioCaseSelect);
 
 const taskEventList = requireElement("#task-event-list");
-const stabilityTemplate = requireElement("#stability-template");
-const batchTemplate = requireElement("#batch-template");
-const stabilityPromptPreset = requireElement("#stability-prompt-preset");
-const stabilityPromptHint = requireElement("#stability-prompt-hint");
+const stabilityGroupPicker = requireElement("#stability-group-picker");
+const stabilityRequestTotal = requireElement("#stability-request-total");
 const batchPromptPreset = requireElement("#batch-prompt-preset");
 const batchPromptHint = requireElement("#batch-prompt-hint");
 const stabilityEstimate = requireElement("#stability-estimate");
@@ -305,8 +299,7 @@ const quickFailurePanel = createQuickFailurePanel({
   openReports: () => showPage("reports"),
   openStabilitySmoke: (profileId) => {
     if (profileId) stabilityCascade.setValue(profileId);
-    stabilityTemplate.value = "smoke";
-    applyStabilityTemplate();
+    applyStabilityGroupPreset({ basic: 3 });
     showPage("stability-test");
   },
 });
@@ -495,12 +488,8 @@ requireElement("#cancel-load-test-task").addEventListener("click", () => cancelR
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
-// 「补齐单方场景」逐个真实调用付费 API，只能取消当前这一条（循环下一条仍会照常发起）；
-// 与其它任务槽同一套 cancelRemoteTask，用于让用户能真正打断当前在跑的那次请求。
-requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => cancelRemoteTask(state, "mc-gap-fill"));
-stabilityTemplate.addEventListener("change", applyStabilityTemplate);
-batchTemplate.addEventListener("change", applyBatchTemplate);
-stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
+requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => modelCompare.cancelGapFill());
+stabilityGroupPicker.addEventListener("input", () => updateStabilityRequestTotal());
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
 // input 事件每敲一个字符就触发，updateEstimates 会重建面板 innerHTML（闪烁、低端机
 // 输入延迟）。去抖 200ms，只在停止输入后渲染一次。
@@ -557,6 +546,7 @@ const testForms = createTestForms({
     estimateAdmissionCost,
     estimateAdmissionBatchCost,
     estimateStabilityCost,
+    readStabilityGroups,
     estimateBatchCost,
     estimateScenarioCost,
     renderAdmissionResult,
@@ -651,8 +641,7 @@ createStandardEvalController({
   showPage,
   quickProfileSelect: quickVerifyProfileTarget,
   stabilityProfileSelect: stabilityProfileTarget,
-  stabilityTemplate,
-  applyStabilityTemplate,
+  applyStabilityGroupPreset,
   admissionChannelSelect: admissionCascade,
   admissionProfileSelect,
   admissionPackageLevelSelect: requireElement("#admission-package-level"),
@@ -874,30 +863,20 @@ async function copyHandoffTemplate() {
   }
 }
 
-function applyStabilityTemplate() {
-  applyStabilityTemplateToForm({
-    form: stabilityTestForm,
-    template: stabilityTemplate,
-    updateEstimates: testForms.updateEstimates,
+// 分组选择器：把每个数量框重置为指定值（未列出的预设归零），用于「冒烟」「候选复测」等
+// 快捷入口（原来靠"测试模板"下拉，现在改成直接设置各组数量）。
+function applyStabilityGroupPreset(repeatsByPresetId) {
+  stabilityGroupPicker.querySelectorAll(".stability-group-repeats").forEach((input) => {
+    input.value = String(repeatsByPresetId[input.dataset.presetId] ?? 0);
   });
+  updateStabilityRequestTotal();
+  testForms.updateEstimates();
 }
 
-function applyBatchTemplate() {
-  applyBatchTemplateToForm({
-    form: batchTestForm,
-    template: batchTemplate,
-    updateEstimates: testForms.updateEstimates,
-  });
-}
-
-function applyStabilityPromptPreset() {
-  applyPromptPresetToForm({
-    kind: "stability",
-    form: stabilityTestForm,
-    select: stabilityPromptPreset,
-    hint: stabilityPromptHint,
-    updateEstimates: testForms.updateEstimates,
-  });
+function updateStabilityRequestTotal() {
+  const groups = readStabilityGroups(stabilityTestForm);
+  const totalRequests = groups.reduce((sum, group) => sum + group.repeats, 0);
+  stabilityRequestTotal.textContent = `共 ${totalRequests} 次请求（${groups.length} 组）`;
 }
 
 function applyBatchPromptPreset() {
@@ -916,9 +895,9 @@ function hydrateProjectInfoForm() {
 }
 
 function hydratePromptPresetSelects() {
-  stabilityPromptPreset.innerHTML = renderPromptPresetOptions("stability", "basic");
+  stabilityGroupPicker.innerHTML = renderStabilityGroupPicker();
+  updateStabilityRequestTotal();
   batchPromptPreset.innerHTML = renderPromptPresetOptions("batch", "fair-basic");
-  applyStabilityPromptPreset();
   applyBatchPromptPreset();
 }
 

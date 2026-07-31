@@ -231,7 +231,13 @@ test("无匹配报告 → 400 no_reports（指出缺报告的模型）", async (
 });
 
 test("正常两模型 → 200，产出对比报告并落盘", async () => {
-  const r = await post("/api/reports/compare", cookie, { a: A, b: B });
+  const r = await post("/api/reports/compare", cookie, {
+    a: A,
+    b: B,
+    aName: "测试对象 A",
+    bName: "测试对象 B",
+    scenarios: ["基础问答"],
+  });
   assert.equal(r.status, 200, `期望 200，实为 ${r.status}：${JSON.stringify(r.body)}`);
   assert.ok(r.body.reportId, "有 reportId");
   assert.match(r.body.reportId, /_vs_.*_compare_/, "reportId 含 _vs_…_compare_");
@@ -243,6 +249,14 @@ test("正常两模型 → 200，产出对比报告并落盘", async () => {
   assert.match(r.body.notes.a, /场景.*稳定性.*准入.*压测/);
   assert.match(r.body.notes.b, /场景.*稳定性.*准入.*压测/);
   assert.equal(r.body.notes.aiApplied, false, "未请求 AI → 不附叙述");
+  assert.equal(r.body.comparison.subjects.a.label, "测试对象 A");
+  assert.equal(r.body.comparison.subjects.b.label, "测试对象 B");
+  assert.equal(r.body.comparison.summary.find((row) => row.id === "stability-rate").winner, "a");
+  assert.equal(r.body.comparison.summary.find((row) => row.id === "p95-latency").direction, "lower");
+  assert.deepEqual(
+    r.body.comparison.scenarios.map((row) => row.name),
+    ["基础问答"],
+  );
   // 压力测试对比节：两侧都有 closed/30 负载点，应配对出表格行（非「跳过压测对比」的空说明）。
   assert.match(r.body.markdown, /## 6\. 压力测试对比/);
   assert.match(r.body.markdown, /闭环 \| 30 并发/);
