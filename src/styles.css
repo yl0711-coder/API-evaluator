@@ -4392,3 +4392,181 @@ body.better-lighting::after {
     animation: none;
   }
 }
+
+/* 模型比对：两列对象横向对照，较优结果以克制的绿色强调。 */
+.mc-result {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.mc-compare-table {
+  margin-bottom: 16px;
+}
+
+.mc-compare-table-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.mc-compare-table-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.mc-compare-table-head span,
+.mc-scenario-details summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mc-compare-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(8, 17, 31, 0.36);
+}
+
+.mc-compare-scroll table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 0;
+}
+
+.mc-compare-scroll th,
+.mc-compare-scroll td {
+  border: 0;
+  border-bottom: 1px solid rgba(145, 160, 183, 0.2);
+  padding: 13px 16px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.mc-compare-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.mc-compare-scroll tbody tr:last-child th,
+.mc-compare-scroll tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.mc-compare-scroll thead th:first-child,
+.mc-compare-scroll tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  min-width: 190px;
+  text-align: left;
+  background: #101b2e;
+}
+
+.mc-compare-scroll thead th:first-child {
+  z-index: 4;
+}
+
+.mc-compare-scroll tbody th span,
+.mc-compare-scroll tbody th small {
+  display: block;
+}
+
+.mc-compare-scroll tbody th span {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.mc-compare-scroll tbody th small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.mc-compare-value {
+  min-width: 180px;
+  color: var(--text);
+}
+
+.mc-compare-value strong,
+.mc-compare-value span,
+.mc-compare-value small {
+  display: block;
+}
+
+.mc-compare-value strong {
+  font-size: 17px;
+}
+
+.mc-compare-value.is-winner {
+  background: rgba(98, 219, 167, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(98, 219, 167, 0.16);
+}
+
+.mc-compare-value.is-winner strong {
+  color: var(--good);
+}
+
+.mc-compare-scroll tr.is-insufficient .mc-compare-value {
+  color: var(--muted);
+}
+
+.mc-scenario-details {
+  margin-top: 12px;
+  border-top: 1px solid rgba(145, 160, 183, 0.2);
+}
+
+.mc-scenario-details summary {
+  cursor: pointer;
+  padding: 13px 2px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.mc-scenario-value strong {
+  font-size: 15px;
+}
+
+.mc-scenario-value span,
+.mc-scenario-value small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.mc-scenario-value small {
+  color: var(--bad);
+}
+
+@media (max-width: 680px) {
+  .mc-compare-table-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .mc-compare-scroll th,
+  .mc-compare-scroll td {
+    padding: 11px 12px;
+  }
+
+  .mc-compare-scroll thead th:first-child,
+  .mc-compare-scroll tbody th {
+    min-width: 148px;
+  }
+
+  .mc-compare-value {
+    min-width: 156px;
+  }
+}

@@ -20,6 +20,7 @@ import {
   commonScenarioNames,
   exclusiveScenarioNames,
   formatCompareReportMarkdown,
+  buildComparisonView,
   pickRecentReports,
   buildCompareAnalysisPrompt,
   interpolateLoadPoint,
@@ -872,6 +873,57 @@ function mkFullAgg(overrides = {}) {
     ...overrides,
   };
 }
+
+test("buildComparisonView：摘要行按指标方向给出胜方，缺失压测不伪造结论", () => {
+  const a = mkFullAgg({
+    label: "模型 A",
+    stability: { succ: 9, total: 10, rate: 0.9 },
+    latency: { samples: [], rounds: [], stats: { p95TotalMs: 800 } },
+    scenarioPass: { succ: 3, total: 3, rate: 1 },
+    quality: { mean: 88, n: 1 },
+    scenarios: [{ name: "场景甲", tier: "中等", quality: 88, rate: 1, succ: 3, total: 3, avgMs: 900, issue: "" }],
+  });
+  const b = mkFullAgg({
+    label: "模型 B",
+    stability: { succ: 8, total: 10, rate: 0.8 },
+    latency: { samples: [], rounds: [], stats: { p95TotalMs: 1200 } },
+    scenarioPass: { succ: 2, total: 3, rate: 2 / 3 },
+    quality: { mean: 70, n: 1 },
+    scenarios: [{ name: "场景甲", tier: "中等", quality: 70, rate: 2 / 3, succ: 2, total: 3, avgMs: 1100, issue: "超时" }],
+  });
+  const view = buildComparisonView(buildComparison(a, b));
+  const row = (id) => view.summary.find((item) => item.id === id);
+  assert.equal(view.subjects.a.label, "模型 A");
+  assert.equal(row("stability-rate").winner, "a");
+  assert.equal(row("p95-latency").winner, "a", "延迟更低的一方胜出");
+  assert.equal(row("load-goodput").status, "insufficient", "未测压测不伪造成零容量");
+  assert.equal(view.scenarios[0].winner, "a");
+  assert.equal(view.scenarios[0].b.issue, "超时");
+});
+
+test("buildComparisonView：平均质量分只比较共有且双方都有质量分的场景", () => {
+  const a = mkFullAgg({
+    label: "模型 A",
+    quality: { mean: 75, n: 2 },
+    scenarios: [
+      { name: "共有场景", tier: "中等", quality: 50, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" },
+      { name: "A 独有场景", tier: "中等", quality: 100, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" },
+    ],
+  });
+  const b = mkFullAgg({
+    label: "模型 B",
+    quality: { mean: 70, n: 1 },
+    scenarios: [{ name: "共有场景", tier: "中等", quality: 70, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" }],
+  });
+
+  const cmp = buildComparison(a, b);
+  const qualityRow = buildComparisonView(cmp).summary.find((item) => item.id === "scenario-quality");
+  assert.equal(cmp.a.quality.mean, 75, "既有报告的全量质量分不被页面投影改写");
+  assert.equal(qualityRow.valueA, 50);
+  assert.equal(qualityRow.valueB, 70);
+  assert.equal(qualityRow.winner, "b", "独有场景不得改变共有场景质量分的胜方");
+  assert.match(qualityRow.detail, /1 个/);
+});
 
 test("computeOverallScore：三维皆有数据 → 手算效应量与合成分一致", () => {
   const a = mkFullAgg({
