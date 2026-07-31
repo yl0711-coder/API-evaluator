@@ -1221,6 +1221,13 @@ button.quiet-action {
   grid-template-columns: 1.1fr 0.7fr 0.5fr 0.6fr 1.5fr 1.2fr;
 }
 
+/* ============================================================
+   断点 lg · 1180px —— 内容区开始被压缩
+   与内容限宽 max-width: 1180px 同值：窗口窄到这里时，居中内容恰好不再有余量。
+   职责：宽网格（3+ 列）降级、行布局塌单列。
+   全站只允许 4 个断点：lg 1180 / md 980 / sm 860 / xs 760，
+   由 tests/css-breakpoints.test.mjs 钉住，别再「哪页挤了就补一个」。
+   ============================================================ */
 @media (max-width: 1180px) {
   .dashboard-hero {
     grid-template-columns: 1fr;
@@ -2133,7 +2140,10 @@ button.danger {
   background: radial-gradient(120px 60% at left, rgba(var(--accent-rgb), 0.22), transparent 72%);
 }
 
-@media (max-width: 960px) {
+/* 断点 md · 980px —— 内容区容不下双列（手册页那份，见下方 md 档说明）。
+   原为 960px：与 .cfg-grid 的 1080px、总览的 980px 做的是同一件事（双列塌单列），
+   三个值挤在 120px 区间内且无依据，已统一到 md。 */
+@media (max-width: 980px) {
   .manual-panel.doc-layout {
     grid-template-columns: 1fr;
   }
@@ -2171,6 +2181,11 @@ button.danger {
   background: var(--bad);
 }
 
+/* ============================================================
+   断点 sm · 860px —— 侧栏无法再与内容并存（唯一的结构性断点）
+   职责：260px 侧栏改为顶部可横向滚动的横条，其余一切网格塌单列。
+   与 lg/md 性质不同：那两档只是网格降级，这一档改变整体布局骨架。
+   ============================================================ */
 @media (max-width: 860px) {
   #app {
     grid-template-columns: 1fr;
@@ -2251,10 +2266,9 @@ button.danger {
     flex-direction: column;
   }
 
-  .row,
-  .request-row,
-  .test-run-row,
-  .task-row,
+  /* .row / .request-row / .test-run-row / .task-row 不在此列：
+     它们在 lg(1180px) 已设同值（grid-template-columns: 1fr; min-width: 0），
+     而 max-width 是叠加生效的（860px 屏幕同时命中 1180px），再写一遍是死代码。 */
   .ranking-card,
   .plain-card {
     grid-template-columns: 1fr;
@@ -2620,11 +2634,7 @@ button.danger {
   color: var(--muted);
   font-size: 13px;
 }
-@media (max-width: 980px) {
-  .dash .status-grid {
-    grid-template-columns: 1fr;
-  }
-}
+/* .dash .status-grid 的 md 档降级已并入下方总览 md 断点块（原在此处单独一个 980px 块）。 */
 .dash .links button.linklike {
   background: none;
   border: 0;
@@ -2977,7 +2987,11 @@ button.secondary:hover:not(:disabled) {
   font-size: 12px;
   line-height: 1.55;
 }
-@media (max-width: 1080px) {
+/* 断点 md · 980px —— 内容区容不下双列（API 配置页）。
+   原为 1080px。.cfg-grid 是 `minmax(0,1fr) + 340px` 双列：窗口 1080 时内容可用宽约
+   752px，340px 的贴士栏仍放得下，没必要那么早塌成单列；980 时约 652px 才是真的挤。
+   **这是行为改变**：980~1080 区间内该页会多保持双列一段。 */
+@media (max-width: 980px) {
   .cfg-grid {
     grid-template-columns: 1fr;
   }
@@ -3161,6 +3175,9 @@ button.secondary:hover:not(:disabled) {
   display: flex;
   gap: 8px;
 }
+/* 断点 xs · 760px —— sm 档之下的细化（手机竖屏）
+   刻意保留为独立断点：它不是「多列塌单列」，而是在已经单列的渠道行内部再调列数。
+   并入 sm(860) 会让渠道行在 860~760 之间提前变形，那是行为改变而非整理。 */
 @media (max-width: 760px) {
   .cfg #profile-list .chan-row {
     grid-template-columns: auto 1fr;
@@ -3721,7 +3738,15 @@ textarea:focus {
 .dash .bento .recent {
   grid-column: 1 / 4;
 }
+/* ============================================================
+   断点 md · 980px —— 内容区容不下双列（总览页）
+   职责：双列/三列网格塌单列。本块汇总总览页在 md 档的全部降级，
+   包括原先散在别处的 .dash .status-grid。
+   ============================================================ */
 @media (max-width: 980px) {
+  .dash .status-grid {
+    grid-template-columns: 1fr;
+  }
   .dash .bento {
     grid-template-columns: 1fr;
   }
