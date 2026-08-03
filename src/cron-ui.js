@@ -40,6 +40,11 @@ export function buildCron(sel) {
   const dow = buildDow(sel);
   const freq = sel.freq || "hourly";
 
+  if (freq === "fixed") {
+    const hours = normalizeFixedHours(sel.fixedHours);
+    return `0 ${hours.join(",")} * * ${dow}`;
+  }
+
   if (freq === "once") {
     const h = clampHour(sel.onceHour, 9);
     return `0 ${h} * * ${dow}`;
@@ -77,10 +82,21 @@ function clampHour(v, dflt) {
   return Number.isFinite(n) && n >= 0 && n <= 23 ? n : dflt;
 }
 
+function normalizeFixedHours(hours) {
+  const result = [...new Set((hours || []).map(Number).filter((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23))].sort(
+    (a, b) => a - b,
+  );
+  return result.length ? result : [9];
+}
+
 // 一句人话预览。
 export function describeSchedule(sel) {
   const daysText = describeDays(sel);
   const freq = sel.freq || "hourly";
+  if (freq === "fixed") {
+    const hours = normalizeFixedHours(sel.fixedHours).map((hour) => `${String(hour).padStart(2, "0")}:00`);
+    return `${daysText}，固定在 ${hours.join("、")} 运行`;
+  }
   if (freq === "once") {
     const h = clampHour(sel.onceHour, 9);
     return `${daysText}，每天 ${h}:00 跑一次`;
@@ -114,6 +130,7 @@ export function parseScheduleFromCron(cron) {
     endHour: 23,
     freq: "hourly",
     onceHour: 9,
+    fixedHours: [],
     matched: false,
   };
   const parts = String(cron || "")
@@ -131,6 +148,11 @@ export function parseScheduleFromCron(cron) {
   if (minute === "0" && /^\d+$/.test(hour)) {
     const h = Number(hour);
     if (h >= 0 && h <= 23) return { ...days, period: "custom", startHour: h, endHour: h, freq: "once", onceHour: h, matched: true };
+  }
+
+  const fixedHours = parseFixedHours(hour);
+  if (minute === "0" && fixedHours) {
+    return { ...days, period: "allday", startHour: 0, endHour: 23, freq: "fixed", onceHour: 9, fixedHours, matched: true };
   }
 
   // 窗口内频率。minute：*/M（分钟级）或 0（小时级）；hour：受控格式。
@@ -161,6 +183,13 @@ export function parseScheduleFromCron(cron) {
     onceHour: 9,
     matched: true,
   };
+}
+
+function parseFixedHours(field) {
+  if (!/^\d+(,\d+)+$/.test(field)) return null;
+  const hours = field.split(",").map(Number);
+  if (hours.some((hour) => hour < 0 || hour > 23) || new Set(hours).size !== hours.length) return null;
+  return hours;
 }
 
 function parseDow(dowRaw) {

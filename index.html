@@ -1241,12 +1241,14 @@
                   <option value="h6">每 6 小时</option>
                   <option value="h12">每 12 小时</option>
                   <option value="once">每天一次</option>
+                  <option value="fixed">固定时刻（可多选）</option>
                 </select>
               </label>
               <label id="atc-cron-once" class="hidden">
                 每天几点
                 <select id="atc-cron-once-hour"></select>
               </label>
+              <div id="atc-cron-fixed-hours" class="atc-fixed-hour-picker hidden" aria-label="固定运行时刻"></div>
               <small class="field-hint atc-cron-preview-line">
                 <span id="atc-cron-preview">每天全天，每小时一次</span>
               </small>
