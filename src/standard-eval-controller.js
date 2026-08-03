@@ -6,15 +6,29 @@ import {
   buildStandardNextStepAdvice,
   buildStandardOperatorSummary,
 } from "./operator-guidance.js";
+import { getPromptPreset } from "./prompt-presets.js";
 
 // 标准评测新流程（2026-07 改造）：
 //   ① 选择渠道后可多选模型，每个模型顺序（不并发）跑 快速测试(/api/tests/quick-verify，与「高级
-//      测试 · 快速测试」页同一个接口) -> 10 轮稳定性 -> 标准准入（取代原场景测试）。
+//      测试 · 快速测试」页同一个接口) -> 稳定性（3 组预设文案各 3 遍，共 9 轮：基础稳定性 +
+//      结构化输出 + 编程场景）-> 标准准入（取代原场景测试）。
 //   ② 勾选“这是 Claude 渠道”时，额外对 4 个固定新档位模型（claude-opus-4-6/4-7/4-8、claude-sonnet-4-6）
 //      各跑一次快速准入——这些模型很可能还没在“模型管理”里登记，故用 channelId+model 的临时目标（不落库）。
 // 不再走 /api/tasks 异步任务：三步都是同步接口，前端顺序 await 即可，进度按「模型 × 步骤」分组展示。
-const STABILITY_ROUNDS = "10";
+const STANDARD_STABILITY_PRESET_IDS = ["basic", "structured-json", "coding"];
+const STANDARD_STABILITY_REPEATS_PER_GROUP = 3;
+const STANDARD_STABILITY_TOTAL_ROUNDS = STANDARD_STABILITY_PRESET_IDS.length * STANDARD_STABILITY_REPEATS_PER_GROUP;
 const CLAUDE_TIER_PROBE_MODELS = ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6"];
+
+// 标准评测固定用 3 组预设文案（基础稳定性 + 结构化输出 + 编程场景），各测
+// STANDARD_STABILITY_REPEATS_PER_GROUP 遍，共 STANDARD_STABILITY_TOTAL_ROUNDS 轮——
+// 覆盖比单一基础文案更全面的能力面，同时复用「稳定性测试」页已有的分组批测机制。
+function buildStandardStabilityGroups() {
+  return STANDARD_STABILITY_PRESET_IDS.map((presetId) => {
+    const preset = getPromptPreset("stability", presetId);
+    return { presetId, prompt: preset.prompt, repeats: STANDARD_STABILITY_REPEATS_PER_GROUP };
+  });
+}
 
 export function createStandardEvalController({
   form,
@@ -146,7 +160,7 @@ function buildStepPlan(modelTargets, { isClaudeChannel, claudeChannelId }) {
     isTierProbe: false,
     steps: [
       { name: "quick", label: "快速测试" },
-      { name: "stability", label: "稳定性测试（10 轮）" },
+      { name: "stability", label: `稳定性测试（3 组 × 3 轮 = ${STANDARD_STABILITY_TOTAL_ROUNDS} 轮）` },
       { name: "admission", label: "标准准入" },
     ],
   }));
@@ -247,21 +261,21 @@ async function runModelGroup(group, progressElement, useAiReportAnalysis) {
     return { isTierProbe: false, profileId, profileName: label, quick, stability: null, admission: null };
   }
 
-  setStandardStep(progressElement, key, "stability", "running", "正在执行 10 轮稳定性测试。");
+  setStandardStep(
+    progressElement,
+    key,
+    "stability",
+    "running",
+    `正在执行稳定性测试（3 组预设文案，共 ${STANDARD_STABILITY_TOTAL_ROUNDS} 轮）。`,
+  );
   let stability;
   try {
     stability = await api("/api/tests/stability", {
       method: "POST",
       body: JSON.stringify({
         profileId,
-        rounds: STABILITY_ROUNDS,
         concurrency: "1",
-        prompt: [
-          "请用中文完成一次稳定性测试回答：",
-          "1. 用一句话说明你已正常响应。",
-          "2. 用两条要点说明评估 AI API 稳定性应该关注哪些指标。",
-          "3. 最后一行固定输出：测试完成。",
-        ].join("\n"),
+        groups: buildStandardStabilityGroups(),
         useAiReportAnalysis,
       }),
     });
@@ -452,11 +466,16 @@ function formatStandardResult(perModelResults) {
       "",
     );
     if (!stability) {
-      lines.push("### 稳定性测试（10 轮）", "", `- 已跳过（${error?.message || "快速测试未通过"}）`, "");
+      lines.push(
+        `### 稳定性测试（3 组 × 3 轮 = ${STANDARD_STABILITY_TOTAL_ROUNDS} 轮）`,
+        "",
+        `- 已跳过（${error?.message || "快速测试未通过"}）`,
+        "",
+      );
       continue;
     }
     lines.push(
-      "### 稳定性测试（10 轮）",
+      `### 稳定性测试（3 组 × 3 轮 = ${STANDARD_STABILITY_TOTAL_ROUNDS} 轮）`,
       "",
       `- 成功率：${stability.successRateText || "-"}`,
       `- 平均耗时：${stability.avgTotalMs || "-"} ms`,

@@ -320,7 +320,7 @@ export function buildErrorAdviceText(errorLike) {
   ].join("\n");
 }
 
-// 标准评测单模型判定：quick(快速测试) + stability(10轮稳定性) + admission(标准准入，取代原场景测试)。
+// 标准评测单模型判定：quick(快速测试) + stability(3组预设文案×3轮=9轮稳定性) + admission(标准准入，取代原场景测试)。
 // admission.grade 沿用准入评测的 A-F/X 等级；A/B 视为可交付，C 需观察，D/E/F/X 不建议。
 export function buildStandardNextStepAdvice({ quick, stability, admission }) {
   if (!quick?.success) {
