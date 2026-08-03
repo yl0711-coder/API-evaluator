@@ -7,7 +7,7 @@ import { api } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
-import { renderPromptPresetOptions, getPromptPreset } from "./prompt-presets.js";
+import { renderStabilityGroupPicker, readStabilityGroups } from "./prompt-presets.js";
 import { openReportOverlay } from "./report-overlay.js";
 import { buildCron, describeSchedule, parseScheduleFromCron } from "./cron-ui.js";
 
@@ -51,11 +51,10 @@ export function createAutoTestConfig({ state, confirm }) {
   const cronPreview = requireElement("#atc-cron-preview");
   const cronDowChecks = [0, 1, 2, 3, 4, 5, 6].map((d) => requireElement(`#atc-dow-${d}`));
   const enabledInput = requireElement("#atc-enabled");
-  const roundsSelect = requireElement("#atc-rounds");
   const concurrencySelect = requireElement("#atc-concurrency");
   const packageLevelSelect = requireElement("#atc-package-level");
-  const promptPresetSelect = requireElement("#atc-prompt-preset");
-  const promptInput = requireElement("#atc-prompt");
+  const stabilityGroupPicker = requireElement("#atc-stability-group-picker");
+  const stabilityRequestTotal = requireElement("#atc-stability-request-total");
   const scenarioSelect = requireElement("#atc-scenario-select");
   const scenarioPickerBox = requireElement("#atc-scenario-picker");
   const optStability = requireElement("#atc-opt-stability");
@@ -73,18 +72,40 @@ export function createAutoTestConfig({ state, confirm }) {
   // 背后写回隐藏的 <select multiple>；与场景测试页一致。
   const scenarioPicker = createScenarioCasePicker(scenarioPickerBox, scenarioSelect);
 
-  // 稳定性「测试文案场景」下拉：与稳定性页同源（复用 prompt-presets）。选预设自动填文案；自定义则可编辑。
-  promptPresetSelect.innerHTML = renderPromptPresetOptions("stability", "basic");
-  function applyPromptPreset() {
-    const preset = getPromptPreset("stability", promptPresetSelect.value);
-    const isCustom = preset.id === "custom";
-    promptInput.readOnly = !isCustom;
-    promptInput.classList.toggle("readonly-prompt", !isCustom);
-    if (isCustom) promptInput.focus();
-    else promptInput.value = preset.prompt;
+  // 稳定性「测试文案分组」：与稳定性测试页同款多组选择器（复用 prompt-presets），
+  // 每个预设一个数量框，可同时选多组各测若干遍，取代原来的单预设+单轮数。
+  // idPrefix 用 "atc" 避免与稳定性测试页的 #stability-prompt 撞 id（两页同时挂载在一个 DOM 里）。
+  function renderStabilityPicker(selectedRepeats = {}, customPrompt = "") {
+    stabilityGroupPicker.innerHTML = renderStabilityGroupPicker(selectedRepeats, "atc");
+    if (customPrompt) form.elements.prompt.value = customPrompt;
+    updateStabilityRequestTotal();
   }
-  promptPresetSelect.addEventListener("change", applyPromptPreset);
-  applyPromptPreset(); // 初始化：把默认预设文案填进 textarea（即便当前隐藏）
+  function updateStabilityRequestTotal() {
+    const groups = readStabilityGroups(form);
+    const totalRequests = groups.reduce((sum, group) => sum + group.repeats, 0);
+    stabilityRequestTotal.textContent = `共 ${totalRequests} 次请求（${groups.length} 组）`;
+  }
+  stabilityGroupPicker.addEventListener("input", updateStabilityRequestTotal);
+  renderStabilityPicker(); // 初始化：默认数量（即便当前隐藏）
+
+  // 回填编辑：把已存 job.options 转成 { repeats: {presetId: n}, customPrompt } 供 renderStabilityPicker 用。
+  // 兼容旧作业（改造前保存的扁平 rounds/promptPresetId/prompt，没有 groups 数组）：
+  // 折算成「该预设 repeats=rounds」的单组映射，自定义文案随之带回自定义框。
+  function stabilityPickerStateFromOptions(o) {
+    if (Array.isArray(o.groups) && o.groups.length > 0) {
+      const repeats = {};
+      let customPrompt = "";
+      for (const g of o.groups) {
+        if (!g || typeof g.presetId !== "string") continue;
+        repeats[g.presetId] = Number(g.repeats) || 0;
+        if (g.presetId === "custom") customPrompt = String(g.prompt || "");
+      }
+      return { repeats, customPrompt };
+    }
+    // 旧格式回填。
+    const presetId = o.promptPresetId || "basic";
+    return { repeats: { [presetId]: Number(o.rounds) || 10 }, customPrompt: presetId === "custom" ? String(o.prompt || "") : "" };
+  }
 
   // 小时下拉（0-23）填充：起/止/每天几点 三处共用。
   for (const sel of [cronStartHour, cronEndHour, cronOnceHour]) {
@@ -194,11 +215,9 @@ export function createAutoTestConfig({ state, confirm }) {
     for (const c of cronDowChecks) c.checked = false;
     syncScheduleMode();
     enabledInput.checked = true;
-    roundsSelect.value = "10";
     concurrencySelect.value = "1";
     packageLevelSelect.value = "standard";
-    promptPresetSelect.value = "basic";
-    applyPromptPreset();
+    renderStabilityPicker();
     cascade.setValue("", { silent: true });
     populateScenarioOptions([]);
     syncKindOptions();
@@ -211,7 +230,7 @@ export function createAutoTestConfig({ state, confirm }) {
   // 对照 developer.js:488 的同款按钮——那个刷新的是整页，故绑 load。
   reloadBtn.addEventListener("click", loadJobs);
 
-  // 表单 → 作业载荷。稳定性额外带测试文案（prompt）与预设 id；场景不再带重复次数（默认 1）。
+  // 表单 → 作业载荷。稳定性带多组文案分组（groups）；场景不再带重复次数（默认 1）。
   function collect() {
     const isCron = scheduleModeSelect.value === "cron";
     return {
@@ -224,11 +243,9 @@ export function createAutoTestConfig({ state, confirm }) {
       periodHours: Math.max(0.1, Number(periodInput.value) || 0.1),
       scenarioIds: kindSelect.value === "scenario" ? selectedScenarioIds() : [],
       options: {
-        rounds: Number(roundsSelect.value) || 10,
         concurrency: Number(concurrencySelect.value) || 1,
         packageLevel: packageLevelSelect.value,
-        prompt: promptInput.value,
-        promptPresetId: promptPresetSelect.value,
+        groups: readStabilityGroups(form),
       },
       enabled: enabledInput.checked,
     };
@@ -247,6 +264,10 @@ export function createAutoTestConfig({ state, confirm }) {
     }
     if (scheduleModeSelect.value === "cron" && !body.cron) {
       toast("定时设置不完整，请检查星期/时段/频率选择。", true);
+      return;
+    }
+    if (body.kind === "stability" && !body.options.groups.length) {
+      toast("请至少选择一个测试文案分组（数量框大于 0）。", true);
       return;
     }
     try {
@@ -271,13 +292,10 @@ export function createAutoTestConfig({ state, confirm }) {
     syncScheduleMode();
     enabledInput.checked = job.enabled !== false;
     const o = job.options || {};
-    roundsSelect.value = String(o.rounds || 10);
     concurrencySelect.value = String(o.concurrency || 1);
     packageLevelSelect.value = o.packageLevel || "standard";
-    promptPresetSelect.value = o.promptPresetId || "custom";
-    applyPromptPreset();
-    // 自定义（或历史无预设 id）时以存下的文案为准，覆盖 applyPromptPreset 对 custom 的“不填”。
-    if (promptPresetSelect.value === "custom" && typeof o.prompt === "string") promptInput.value = o.prompt;
+    const { repeats, customPrompt } = stabilityPickerStateFromOptions(o);
+    renderStabilityPicker(repeats, customPrompt);
     syncKindOptions();
     populateScenarioOptions(job.scenarioIds || []);
     cascade.setValue(job.targetId, { silent: true });
