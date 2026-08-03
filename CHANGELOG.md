@@ -22,9 +22,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （照常执行与展示，不进综合分和硬门槛）；指纹与档位探针同样按 `admission.probe` 排除，避免与
     `purityAssessment` 重复扣分。
   - **多模型只看第一个模型**：新增 `aggregateSuite`（`rejected > indeterminate > accepted_with_conditions
-    > accepted`），纯函数已就绪，前端接线在后续阶段。
+    > accepted`），已由下方 `admission-suite` 复合任务接线到前端。
 
 ### Changed
+- **标准评测改回后台异步任务（新增 `server/admission-suite.mjs` + `admission-suite` 任务类型）** —
+  v0.7.3 曾把「快速测试 → 稳定性 → 标准准入」改成前端顺序 `await` 三个同步接口，带来三个问题：
+  - **关页面 / 刷新 / 断线 = 结果全丢**，但请求已经发出、额度已经扣了；
+  - **绕过全局并发闸**——`EVALUATOR_MAX_CONCURRENT_TASKS` 只管 `/api/tasks` 那条路，同步端点不占槽、
+    不排队，多人同时点会直接压满宿主与目标渠道；
+  - **9 轮稳定性 + 11~12 次准入塞在一个 HTTP 请求里**，中间任何代理超时都会让前端报失败而后端仍在跑、
+    仍在计费，诱发用户重跑 = 双花（异步路径的 5 次轮询容错正是为此写的，同步路径享受不到）。
+
+  现在前端只提交"测哪些模型"，执行顺序、跳过策略与达标判定全部由服务端决定：
+  - 步骤计划归服务端所有（`server/admission-suite-plan.mjs`），前端按轮询到的 `task.steps` 重绘
+    「模型 × 步骤」网格；刷新页面、换台机器打开，看到的进度一致。
+  - **`executionStatus`（跑没跑完）与 `verdict`（达没达标）拆成两个正交字段**：前者
+    `pending/running/completed/failed/skipped/cancelled`，后者复用 `admission-policy` 的四态裁决。
+    "跑完了但没通过"不再画成绿勾；"平台自己出错"（`failed + indeterminate`）也不再和"渠道不达标"
+    （`completed + not_passed`）混成同一种失败，避免误导用户去改一个本来没问题的配置。
+  - **硬门槛未通过即停止后续请求**，剩余步骤标 `skipped` 并写明跳过原因（PRD 12.1）；单个模型失败
+    不阻断其它模型继续测；Claude 新档位探测为非阻断观察项，失败不改主结论。
+  - **整体结论接上 `aggregateSuite`**：不再用"第一个模型的结论"冒充整体结论——2 个模型只要第一个过
+    就整体显示通过的问题（ADM-006）到此闭环。
+
 - **稳定性新增首次成功率双口径** — `buildStabilitySummary` 从 `record.attempts` 派生
   `firstAttemptSuccessRate` / `recoveredCount`：`successRate` 是重试后的最终成功率，新字段描述"没有
   重试兜底时"的表现。记录缺 `attempts` 时返回 `null` 而非按首次成功计，报告中如实标注未能统计。

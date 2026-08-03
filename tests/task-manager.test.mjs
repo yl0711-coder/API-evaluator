@@ -338,6 +338,68 @@ test("recent task recovery marks previous running tasks as interrupted", async (
   assert.match(recentTasks[0].message, /任务已中断/);
 });
 
+// admission-suite 是唯一一个「一个任务里跑多步、每步都有独立裁决」的类型，接线点比别的类型多：
+// 类型白名单、进度单元估算、runTask 分发、publicTask 的 steps[] 快照。任何一处漏接的表现都是
+// 前端轮询到一个没有 steps 的任务、把网格画成空白，所以在这里一起锁住。
+test("admission-suite：任务分发、进度单元估算与 steps[] 快照都接到了 task-manager 上", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-suite-task-"));
+  try {
+    const { createAdmissionSuiteRunner } = await import("../server/admission-suite.mjs");
+    const runAdmissionSuite = createAdmissionSuiteRunner({
+      runQuickVerify: async () => ({ cases: [{ id: "connectivity", passed: true }], successRate: 1 }),
+      runStabilityTest: async () => ({
+        successCount: 9,
+        failureCount: 0,
+        successRate: 1,
+        p95TotalMs: 5000,
+        errorCounts: {},
+        firstAttemptSuccessRate: 1,
+      }),
+      runAdmissionTest: async () => ({
+        score: 90,
+        grade: "A",
+        verdict: { verdict: "passed", blocking: true, summary: "硬门槛全部通过。" },
+      }),
+    });
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runAdmissionSuite,
+    });
+
+    const task = await manager.createTask("admission-suite", {
+      profileIds: ["p1", "p2"],
+      modelNames: ["m1", "m2"],
+    });
+    // 进度单元 = 步骤数（2 模型 × 3 步），不是请求数——否则进度条会和步骤网格互相矛盾。
+    assert.equal(task.totalUnits, 6);
+
+    await waitFor(() => task.status === "completed");
+    assert.equal(task.progress, 100);
+    assert.equal(task.result.conclusion, "accepted");
+
+    const view = manager.publicTask(task);
+    assert.equal(view.steps.length, 6);
+    assert.deepEqual(
+      view.steps.map((step) => step.executionStatus),
+      Array(6).fill("completed"),
+    );
+    // 快照只带轻量摘要字段：它每 900ms 被轮询一次，塞原始响应体会把内存和带宽吃光。
+    assert.deepEqual(Object.keys(view.steps[0]).sort(), [
+      "executionStatus",
+      "groupKey",
+      "groupLabel",
+      "isTierProbe",
+      "stepLabel",
+      "stepName",
+      "summary",
+      "verdict",
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor(predicate) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 1500) {

@@ -597,6 +597,13 @@ code {
   border-color: rgba(var(--bad-rgb), 0.52);
 }
 
+/* 「跑完了但没达到标准」介于通过与失败之间（verdict=warning/indeterminate）。
+   复用 accent——工具里 watch 级提示一直用它（.watch-card），不新增第 4 个语义色：
+   styles.css 曾因两套调色板混用返工过三轮。 */
+.flow-step.warn {
+  border-color: rgba(var(--accent-rgb), 0.5);
+}
+
 .flow-step.skipped {
   opacity: 0.72;
 }
@@ -607,6 +614,10 @@ code {
 
 .flow-step.done span {
   background: var(--good);
+}
+
+.flow-step.warn span {
+  background: var(--accent);
 }
 
 .flow-step.failed span {

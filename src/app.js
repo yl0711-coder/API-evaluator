@@ -139,6 +139,7 @@ const standardPlainResult = requireElement("#standard-plain-result");
 const standardEvalResult = requireElement("#standard-eval-result");
 const standardNextActions = requireElement("#standard-next-actions");
 const standardEvalProgress = requireElement("#standard-eval-progress");
+const standardEvalTaskProgress = requireElement("#standard-eval-task-progress");
 const admissionTestForm = requireElement("#admission-test-form");
 const admissionProfileSelect = requireElement("#admission-profile-select");
 const admissionSubmit = requireElement("#admission-submit");
@@ -488,6 +489,7 @@ requireElement("#cancel-load-test-task").addEventListener("click", () => cancelR
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
+requireElement("#cancel-standard-eval-task").addEventListener("click", () => cancelRemoteTask(state, "standardEval"));
 requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => modelCompare.cancelGapFill());
 stabilityGroupPicker.addEventListener("input", () => updateStabilityRequestTotal());
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
@@ -634,6 +636,7 @@ createStandardEvalController({
   resultElement: standardEvalResult,
   nextActionsElement: standardNextActions,
   progressElement: standardEvalProgress,
+  taskProgressElement: standardEvalTaskProgress,
   state,
   estimateCost: estimateStandardCost,
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),

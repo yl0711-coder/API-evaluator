@@ -4,6 +4,7 @@
 import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath } from "./report-files.mjs";
+import { countSuiteUnits } from "./admission-suite-plan.mjs";
 
 // Owns remote task lifecycle only. It does not know how a stability or scenario
 // test works; callers inject runners so task state can be tested independently.
@@ -15,6 +16,7 @@ export function createTaskManager({
   runBatchStabilityTest,
   runScenarioTest,
   runLoadTest, // 压力测试 runner（server/load-test.mjs）
+  runAdmissionSuite, // 一键准入复合任务编排器（server/admission-suite.mjs）
   normalizeProfileIds,
   normalizeScenarioIds,
   logTechnicalError,
@@ -176,6 +178,8 @@ export function createTaskManager({
         result = await runScenarioTest(payload, context);
       } else if (task.type === "load-test") {
         result = await runLoadTest(payload, context);
+      } else if (task.type === "admission-suite") {
+        result = await runAdmissionSuite(payload, context);
       } else {
         throw new Error("不支持的任务类型。");
       }
@@ -273,7 +277,14 @@ export function createTaskManager({
 }
 
 export function normalizeTaskType(type) {
-  if (type === "stability" || type === "batch-admission" || type === "batch-stability" || type === "scenario" || type === "load-test") {
+  if (
+    type === "stability" ||
+    type === "batch-admission" ||
+    type === "batch-stability" ||
+    type === "scenario" ||
+    type === "load-test" ||
+    type === "admission-suite"
+  ) {
     return type;
   }
   throw new Error("不支持的任务类型。");
@@ -303,6 +314,12 @@ export function estimateTaskUnits(type, payload, { normalizeProfileIds, normaliz
     const scenarioCount = Math.max(1, normalizeScenarioIds(payload.scenarioIds).length);
     return profileCount * scenarioCount * clampNumber(payload.repeats, 1, 5, 1);
   }
+  if (type === "admission-suite") {
+    // 进度单元 = 步骤数：每个必选模型 3 步（快速/稳定性/准入）+ 每个档位探针 1 步。
+    // 用步骤数而非请求数，是因为前端进度网格就是按步骤画的，两者对齐才不会出现
+    // 「进度条 60% 但网格只亮了 1 格」这种自相矛盾的显示。
+    return countSuiteUnits(payload);
+  }
   return 1;
 }
 
@@ -321,9 +338,28 @@ export function publicTask(task) {
     etaSeconds: task.etaSeconds || 0,
     message: task.message,
     cancelRequested: task.cancelRequested,
+    // 复合任务的逐步骤快照：前端每次轮询按它重绘「模型 × 步骤」进度网格。
+    // 只给轻量摘要字段——这个对象每 900ms 被拉一次，绝不能带原始响应体。
+    steps: Array.isArray(task.steps) ? task.steps.map(publicTaskStep) : undefined,
     result: task.result,
     error: task.error,
     errorId: task.errorId || "",
+  };
+}
+
+// executionStatus（跑完没有）与 verdict（达没达标）是两个正交字段，一起给前端。
+// 前端据此区分「执行失败」（红叉·平台问题）与「未通过」（红叉·渠道问题）——
+// 这两者混为一谈正是 v0.7.3 假通过的表现形式之一。
+function publicTaskStep(step) {
+  return {
+    groupKey: step.groupKey,
+    groupLabel: step.groupLabel,
+    stepName: step.stepName,
+    stepLabel: step.stepLabel,
+    isTierProbe: Boolean(step.isTierProbe),
+    executionStatus: step.executionStatus,
+    verdict: step.verdict ?? null,
+    summary: step.summary ?? "",
   };
 }
 
@@ -423,12 +459,30 @@ export function summarizeTaskPayload(type, payload, { normalizeProfileIds, norma
       requestConcurrency: clampNumber(payload.requestConcurrency || payload.concurrency, 1, 3, 1),
     };
   }
+  if (type === "admission-suite") {
+    // 事件日志是运维记录，绝不落 key/base URL。只记形状：测了几个模型、跑不跑档位探测。
+    return {
+      profileCount: normalizeProfileIds(payload.profileIds).length,
+      tierProbeCount: Array.isArray(payload.tierProbeModels) ? payload.tierProbeModels.length : 0,
+      groupCount: Array.isArray(payload.groups) ? payload.groups.length : 0,
+    };
+  }
   return {};
 }
 
 export function summarizeTaskResult(result) {
   if (!result || typeof result !== "object") {
     return {};
+  }
+  if (result.type === "admission-suite") {
+    // 事件日志只记结论与报告清单，不记逐步骤明细（明细在任务对象里，前端轮询可取）。
+    return {
+      type: result.type,
+      policyVersion: result.policyVersion,
+      conclusion: result.conclusion,
+      modelCount: Array.isArray(result.models) ? result.models.length : 0,
+      reports: result.reports, // 每模型一篇（供桌面逐篇打开）
+    };
   }
   if (result.type === "scenario" || result.runId?.startsWith?.("scenario-")) {
     return {
