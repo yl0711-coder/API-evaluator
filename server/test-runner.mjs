@@ -10,7 +10,19 @@ import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
 import { loadRunnableProfiles, resolveAdhocTarget } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
 import { computeEarnedTags, applyEarnedTags } from "./scenario-tag-award.mjs";
-import { P95_LATENCY_OK_MS, P95_LATENCY_SLOW_MS } from "./constants.mjs";
+import { P95_LATENCY_SLOW_MS } from "./constants.mjs";
+import {
+  ADMISSION_POLICY_VERSION,
+  ITEM_STATUS,
+  OBSERVATION_ONLY_CASE_IDS,
+  computeAdmissionScore,
+  evaluateAdmission,
+  pickSevereError,
+  resolveGroupStatus,
+  resolveItemStatus,
+  validateStructuredJsonCase,
+  validateWeatherToolCall,
+} from "./admission-policy.mjs";
 import { evaluateScenarioOutput } from "./scenario-evaluator.mjs";
 // readProfileApiKey / assertPublicTarget 已随 runUpstreamProbe 迁至 upstream-transport.mjs
 import {
@@ -658,11 +670,13 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
 
 function evaluateAdmissionCase(testCase, record) {
   if (testCase.kind === "tool") {
-    const passed = record.success && record.toolCall?.name === "get_weather";
-    return {
-      passed,
-      issue: passed ? "工具调用结构正常。" : record.rawError || "没有返回期望的工具调用结构。",
-    };
+    if (!record.success || !record.toolCall) {
+      return { passed: false, issue: record.rawError || "没有返回期望的工具调用结构。" };
+    }
+    // 修 ADM-013：原实现只比对函数名，arguments 为 {}、损坏 JSON 或城市填错都算通过——
+    // 而"能报出工具名但传不对参数"的渠道在真实业务里同样不可用。
+    const check = validateWeatherToolCall(record.toolCall);
+    return { passed: check.passed, issue: check.issue };
   }
 
   if (testCase.kind === "stream") {
@@ -683,12 +697,11 @@ function evaluateAdmissionCase(testCase, record) {
 
   const text = String(record.responseSummary || "");
   if (testCase.id === "json_structure") {
-    const parsed = parseLooseJson(record.responseText || record.responseSummary);
-    const passed = Boolean(parsed && Object.hasOwn(parsed, "channelReady") && parsed.modelType && parsed.risk);
-    return {
-      passed,
-      issue: passed ? "结构化 JSON 字段完整。" : "没有返回可解析且字段完整的 JSON。",
-    };
+    // 修 ADM-012：原实现只查字段【存在】（Object.hasOwn + 真值），于是
+    // {"channelReady":"false","modelType":123,"risk":"critical"} 会通过——字符串 "false"
+    // 是真值、数字 123 是真值、"critical" 也是真值。硬门槛必须校验类型和取值。
+    const check = validateStructuredJsonCase(record.responseText || record.responseSummary);
+    return { passed: check.passed, issue: check.issue };
   }
   if (testCase.id === "model_identity") {
     const parsed = parseLooseJson(record.responseText || record.responseSummary);
@@ -699,25 +712,38 @@ function evaluateAdmissionCase(testCase, record) {
       identityCheck,
     };
   }
+  // 以下三项降为观察项（修 ADM-014）。判据仍是"命中关键词 + 长度阈值"——它既放过"逻辑错但
+  // 词凑够"的回答，也误杀"正确但简洁"的回答，不足以支撑准入结论。observation:true 让
+  // buildAdmissionSummary 把它们排除在计分通过率和硬门槛之外，但结果照样执行、照样展示为证据。
+  // 要让它们重新参与判定，需要先有隔离执行器（编程题）或人工标定的评分器（解释题）。
   if (testCase.id === "coding_small") {
     const passed = /function|const|let|return|Number|parseInt|parseFloat|修复|代码/i.test(text) && text.length >= 50;
     return {
       passed,
-      issue: passed ? "编程小任务有有效回答。" : "编程回答过短或缺少修复代码。",
+      observation: true,
+      issue: passed
+        ? "观察项：编程小任务有有效回答（关键词与长度启发式，不作准入依据）。"
+        : "观察项：编程回答过短或缺少修复代码（启发式判断，不阻断准入）。",
     };
   }
   if (testCase.id === "behavior_reasoning") {
     const passed = /(渠道|模型|协议|延迟|稳定|路由|缓存|限流)/.test(text) && text.length >= 80;
     return {
       passed,
-      issue: passed ? "行为解释具备基本专业性。" : "解释过短或缺少渠道评测关键点。",
+      observation: true,
+      issue: passed
+        ? "观察项：行为解释具备基本专业性（关键词与长度启发式，不作准入依据）。"
+        : "观察项：解释过短或缺少渠道评测关键点（启发式判断，不阻断准入）。",
     };
   }
   if (testCase.id === "long_context_light") {
     const passed = /(检查项|通过标准|失败处理|协议|模型|token|超时)/i.test(text) && text.length >= 120;
     return {
       passed,
-      issue: passed ? "轻量长上下文任务完成。" : "长上下文检查项不完整。",
+      observation: true,
+      issue: passed
+        ? "观察项：规则理解与结构化整理完成（关键词与长度启发式，不作准入依据）。"
+        : "观察项：检查项不完整（启发式判断，不阻断准入）。",
     };
   }
   if (testCase.id.startsWith("fingerprint_")) {
@@ -811,12 +837,27 @@ function buildUpstreamUsage(records, probeRecords = []) {
   };
 }
 
+// 观察证据不参与计分（修 ADM-014，与 ADM-007 同源）：
+//   - coding_small / behavior_reasoning / long_context_light：靠"关键词 + 长度"判分；
+//   - fingerprint_* / tier_*（admission.probe）：按 PRD 7.6 只用于横向差异与历史漂移，
+//     且指纹失败已在 purityAssessment 里单独扣分，再进 passRate 就是同一件事扣两次。
+// 把它们算进 passRate，等于让启发式决定综合分 25 分的权重。它们仍然执行、仍然出现在
+// cases[] 中（observation:true），只是不进计分、不进硬门槛。
+function isObservationRecord(record) {
+  return record?.admission?.observation === true || record?.admission?.probe === true || OBSERVATION_ONLY_CASE_IDS.includes(record?.caseId);
+}
+
 function buildAdmissionSummary({ runId, profile, records, packageLevel, startedAt, endedAt, tierContext = null }) {
   const requestCount = records.length;
   const successCount = records.filter((record) => record.success).length;
-  const passedCount = records.filter((record) => record.admission?.passed).length;
   const successRate = requestCount ? successCount / requestCount : 0;
-  const passRate = requestCount ? passedCount / requestCount : 0;
+
+  const gradedRecords = records.filter((record) => !isObservationRecord(record));
+  const observationRecords = records.filter((record) => isObservationRecord(record));
+  const gradedCaseCount = gradedRecords.length;
+  const passedCount = gradedRecords.filter((record) => record.admission?.passed).length;
+  const passRate = gradedCaseCount ? passedCount / gradedCaseCount : 0;
+
   const errorCounts = countErrors(records.filter((record) => !record.success));
   const avgTotalMs = mean(records.map((record) => record.totalMs)) ?? null;
   const p95TotalMs = percentile(
@@ -827,20 +868,41 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
   const outputTokens = sumNullable(records.map((record) => record.outputTokens));
   const tokenCoverage =
     records.filter((record) => record.inputTokens !== null || record.outputTokens !== null).length / Math.max(1, requestCount);
-  const jsonPassed = Boolean(records.find((record) => record.caseId === "json_structure")?.admission?.passed);
-  const toolCallPassed = Boolean(records.find((record) => record.caseId === "tool_call")?.admission?.passed);
-  const streamPassed = Boolean(records.find((record) => record.caseId === "stream_structure")?.admission?.passed);
+
+  const caseSummaries = records.map((record) => ({
+    id: record.caseId,
+    name: record.caseName,
+    passed: Boolean(record.admission?.passed),
+    observation: isObservationRecord(record),
+    statusCode: record.statusCode,
+    totalMs: record.totalMs,
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    summary: record.responseSummary,
+    issue: record.admission?.issue,
+    identityCheck: record.admission?.identityCheck || null,
+    streamValidation: record.streamValidation || null,
+    probe: record.admission?.probe || false,
+    signals: record.admission?.signals || [],
+  }));
+
+  // 三态而非布尔：用例没跑（如 quick 包不含编程题）必须是 not_applicable，不能靠 [].every()
+  // 变成 true 白送分，也不能算成失败（修 ADM-007）。
+  const jsonStatus = resolveItemStatus(caseSummaries, "json_structure");
+  const toolCallStatus = resolveItemStatus(caseSummaries, "tool_call");
+  const streamStatus = resolveItemStatus(caseSummaries, "stream_structure");
+  const identityStatus = resolveItemStatus(caseSummaries, "model_identity");
+  const observationStatus = resolveGroupStatus(caseSummaries, OBSERVATION_ONLY_CASE_IDS);
+  const jsonPassed = jsonStatus === ITEM_STATUS.PASSED;
+  const toolCallPassed = toolCallStatus === ITEM_STATUS.PASSED;
+  const streamPassed = streamStatus === ITEM_STATUS.PASSED;
+  const identityPassed = identityStatus === ITEM_STATUS.PASSED;
   const identityRecord = records.find((record) => record.caseId === "model_identity");
   const identityCheck = identityRecord?.admission?.identityCheck || null;
-  const identityPassed = Boolean(identityRecord?.admission?.passed);
-  const codingPassed = records
-    .filter((record) => ["coding_small", "behavior_reasoning", "long_context_light"].includes(record.caseId))
-    .every((record) => record.admission?.passed);
-  const severeError = Object.keys(errorCounts).find((code) =>
-    ["auth_failed", "model_not_found", "content_block_not_found", "upstream_5xx"].includes(code),
-  );
-  const identityPenalty = identityCheck?.status === "conflict" ? 15 : identityCheck?.status === "unknown" ? 3 : 0;
-  const latencyPenalty = p95TotalMs && p95TotalMs > P95_LATENCY_SLOW_MS ? 10 : p95TotalMs && p95TotalMs > P95_LATENCY_OK_MS ? 5 : 0;
+
+  // 修 ADM-018：显式优先级，不再取决于 errorCounts 的键插入顺序（即用例执行顺序）。
+  const severeError = pickSevereError(errorCounts);
+
   const tokenAudit = buildTokenAudit(records);
   const billingAudit = auditBillingDimensions(records, { model: profile.defaultModel });
   const fingerprintSummary = buildFingerprintProbeSummary(records);
@@ -860,30 +922,26 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     fingerprintSummary,
     tierDiscrimination,
   });
-  const score = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        successRate * 35 +
-          passRate * 25 +
-          (jsonPassed ? 10 : 0) +
-          (toolCallPassed ? 10 : 0) +
-          (streamPassed ? 10 : 0) +
-          (identityPassed ? 5 : 0) +
-          (codingPassed ? 10 : 0) +
-          tokenCoverage * 5 -
-          latencyPenalty -
-          identityPenalty,
-      ),
-    ),
-  );
+  // 综合分改由 policy 按"实际适用权重"归一化计算，不再把不存在的维度写死进分母。
+  // 它只用于排序与历史对比，能否交付看下面的 verdict（PRD 7.6.1）。
+  const score = computeAdmissionScore({
+    successRate,
+    passRate,
+    jsonStatus,
+    toolCallStatus,
+    streamStatus,
+    identityStatus,
+    tokenCoverage,
+    p95TotalMs,
+    identityConflict: identityCheck?.status === "conflict",
+  });
   const grade = gradeAdmission(score, { successRate, severeError, toolCallPassed, jsonPassed, streamPassed, identityCheck });
   const recommendation = buildAdmissionRecommendation(grade, { severeError, successRate, p95TotalMs });
 
-  return {
+  const summary = {
     runId,
     type: "admission",
+    policyVersion: ADMISSION_POLICY_VERSION,
     profileId: profile.id,
     profileName: profile.name,
     profileRole: profile.role || "target",
@@ -899,8 +957,14 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     successCount,
     successRate,
     successRateText: `${Math.round(successRate * 100)}%`,
+    gradedCaseCount,
     passedCount,
     passRate,
+    observation: {
+      total: observationRecords.length,
+      passed: observationRecords.filter((record) => record.admission?.passed).length,
+      status: observationStatus,
+    },
     score,
     grade,
     avgTotalMs,
@@ -922,22 +986,14 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     errorCounts,
     recommendation,
     nextAction: nextActionForAdmission(grade),
-    cases: records.map((record) => ({
-      id: record.caseId,
-      name: record.caseName,
-      passed: Boolean(record.admission?.passed),
-      statusCode: record.statusCode,
-      totalMs: record.totalMs,
-      inputTokens: record.inputTokens,
-      outputTokens: record.outputTokens,
-      summary: record.responseSummary,
-      issue: record.admission?.issue,
-      identityCheck: record.admission?.identityCheck || null,
-      streamValidation: record.streamValidation || null,
-      probe: record.admission?.probe || false,
-      signals: record.admission?.signals || [],
-    })),
+    cases: caseSummaries,
   };
+
+  // 修 ADM-008：硬门槛失败时综合分再高也不能翻案。verdict 与 grade 并存——grade 有 8 处
+  // 下游消费方（等级跌落告警、高风险库、报告对比等），改它的语义会连带影响告警口径和
+  // 历史可比性，所以这里只做纯增量字段。
+  summary.verdict = evaluateAdmission(summary);
+  return summary;
 }
 
 function gradeAdmission(score, { successRate, severeError, toolCallPassed, jsonPassed, streamPassed, identityCheck }) {

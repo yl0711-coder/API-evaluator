@@ -6,6 +6,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **准入判定假通过（新增 `server/admission-policy.mjs`，口径版本 `admission-policy-v1`）** — 判定逻辑从
+  `test-runner.mjs` 抽出为纯函数模块（无 fetch / fs / Date.now），可离线对固定反例做确定性断言：
+  - **空数组赠分**：quick 包不含编程题时，`[].every()` 返回 `true`，白送 10 分。现改为三态
+    `passed / failed / not_applicable`，不适用维度直接退出权重池。
+  - **综合分覆盖硬门槛**：工具调用完全不可用但综合分 ≥80 的渠道曾被判为可交付。新增 `verdict`
+    字段（`grade` 语义不变，历史可比性不受影响）：`json_structure` / `tool_call` / `stream_structure`
+    任一失败即 `not_passed`，综合分不得翻案。
+  - **严重错误取值受用例顺序影响**：`Object.keys(errorCounts).find(...)` 的键序等于错误首次出现顺序，
+    同时出现 `auth_failed` 和 `upstream_5xx` 时定级会随执行顺序漂移。改为显式优先级表。
+  - **验证器只查字段存在**：`{"channelReady":"false","modelType":123,"risk":"critical"}` 曾能通过结构化
+    输出硬门槛；工具名正确但 `arguments` 为 `{}` 曾算通过。现按题面校验类型与取值，并拒绝 Markdown 包裹。
+  - **启发式判分参与准入**：编程 / 行为解释 / 长上下文三题靠"关键词 + 长度"判分，现降为观察项
+    （照常执行与展示，不进综合分和硬门槛）；指纹与档位探针同样按 `admission.probe` 排除，避免与
+    `purityAssessment` 重复扣分。
+  - **多模型只看第一个模型**：新增 `aggregateSuite`（`rejected > indeterminate > accepted_with_conditions
+    > accepted`），纯函数已就绪，前端接线在后续阶段。
+
+### Changed
+- **稳定性新增首次成功率双口径** — `buildStabilitySummary` 从 `record.attempts` 派生
+  `firstAttemptSuccessRate` / `recoveredCount`：`successRate` 是重试后的最终成功率，新字段描述"没有
+  重试兜底时"的表现。记录缺 `attempts` 时返回 `null` 而非按首次成功计，报告中如实标注未能统计。
+
+### 注意
+- 上述计分修正会让 **quick 测试包的综合分较旧版本下降约 10 分**（此前的分数含空数组赠分）。历史报告
+  按原口径解释、不重算（PRD §7.1），因此**新旧分数不可直接比较**；跨版本对比请以 `policyVersion` 区分。
+
 ## [0.7.1] - 2026-07-30
 
 ### Security
