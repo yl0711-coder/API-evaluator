@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1~2 秒的记录会被写成 `total_ms = 300000` 落进 `test_requests`，而趋势图与回归判定的延迟序列正是按
   `total_ms IS NOT NULL` 取点（`server/db.mjs`），一条假的 5 分钟足以把 P95 拉飞。改为记真实耗时
   （计时起点提到 try 外）；真超时的取值不受影响。
+- **准入报告只有一个成功率口径（真实渠道验收发现）** — 稳定性/压测路径一直是双口径
+  （`server/summaries.mjs` 的 `firstAttemptSuccessRate` / `recoveredCount`），但单 API 准入的
+  `buildAdmissionSummary` 只把 `attempts` 用于计费求和，从不算首次成功率。结果是**一个靠重试才
+  成功的渠道，在准入报告里和一次就成的长得一模一样**——而准入决策关心的恰恰是这个差。现补齐
+  `firstAttemptSuccessCount` / `firstAttemptSuccessRate` / `recoveredCount`，报告新增
+  「首次成功率（不含重试救回）」一行。记录缺 `attempts` 时给 `null` 并标注「未能统计」，
+  **不默认按首次即成功计**——那会把不稳定渠道洗成干净的。
 - **准入判定假通过（新增 `server/admission-policy.mjs`，口径版本 `admission-policy-v1`）** — 判定逻辑从
   `test-runner.mjs` 抽出为纯函数模块（无 fetch / fs / Date.now），可离线对固定反例做确定性断言：
   - **空数组赠分**：quick 包不含编程题时，`[].every()` 返回 `true`，白送 10 分。现改为三态

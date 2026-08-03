@@ -862,6 +862,16 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
   const successCount = records.filter((record) => record.success).length;
   const successRate = requestCount ? successCount / requestCount : 0;
 
+  // 首次成功率：与 successRate（重试后最终成功）并列的第二口径。准入决策关心的恰恰是这个差——
+  // 一个靠重试才成功的渠道，报告里不该和一次就成的长得一模一样。此前准入侧只把 attempts 用于
+  // 计费求和（见 upstreamUsage），双口径只有稳定性/压测路径有（server/summaries.mjs），
+  // 准入报告因此只有一个数。记录缺 attempts 时给 null 并在报告里标注「未能统计」，
+  // **不得**默认按「首次即成功」算——那会把不稳定渠道洗成干净的。
+  const hasAttempts = records.some((record) => Number(record.attempts) > 0);
+  const firstAttemptSuccessCount = hasAttempts ? records.filter((record) => record.success && Number(record.attempts) === 1).length : null;
+  const firstAttemptSuccessRate = hasAttempts && requestCount ? firstAttemptSuccessCount / requestCount : null;
+  const recoveredCount = hasAttempts ? successCount - firstAttemptSuccessCount : null;
+
   const gradedRecords = records.filter((record) => !isObservationRecord(record));
   const observationRecords = records.filter((record) => isObservationRecord(record));
   const gradedCaseCount = gradedRecords.length;
@@ -967,6 +977,10 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     successCount,
     successRate,
     successRateText: `${Math.round(successRate * 100)}%`,
+    firstAttemptSuccessCount,
+    firstAttemptSuccessRate,
+    firstAttemptSuccessRateText: firstAttemptSuccessRate === null ? null : `${Math.round(firstAttemptSuccessRate * 100)}%`,
+    recoveredCount,
     gradedCaseCount,
     passedCount,
     passRate,

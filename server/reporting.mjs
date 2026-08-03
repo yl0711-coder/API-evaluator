@@ -800,6 +800,7 @@ export function formatAdmissionReport(summary, records, options = {}) {
     `- 请求数：${summary.requestCount}（逻辑测试用例数）`,
     `- 实际上游请求数（计费口径）：${formatBilledRequests(summary.upstreamUsage)}`,
     `- 成功率：${summary.successRateText} (${summary.successCount}/${summary.requestCount})`,
+    `- 首次成功率（不含重试救回）：${summary.firstAttemptSuccessRateText ?? "未能统计（记录缺重试次数）"}${summary.recoveredCount ? `，另有 ${summary.recoveredCount} 次靠重试才成功` : ""}`,
     `- 平均耗时：${summary.avgTotalMs ?? "-"} ms`,
     `- 慢请求参考 P95：${summary.p95TotalMs ?? "-"} ms`,
     `- 输入 tokens 合计：${summary.inputTokens ?? "-"}（仅逻辑用例）`,
