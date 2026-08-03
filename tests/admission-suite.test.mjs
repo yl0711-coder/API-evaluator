@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CONCLUSION, STABILITY_SMOKE_TOTAL_ROUNDS, VERDICT } from "../server/admission-policy.mjs";
 import { EXECUTION_STATUS, buildSuitePlan, countSuiteUnits, createAdmissionSuiteRunner } from "../server/admission-suite.mjs";
+import { updateTaskProgress } from "../server/task-manager.mjs";
 
 // ── 假 runner 的返回样板 ──────────────────────────────────────────────────────
 const okQuick = { cases: [{ id: "connectivity", passed: true }], successRate: 1 };
@@ -224,6 +225,44 @@ test("步骤快照挂到 task 上，且不携带原始响应体（每 900ms 被�
       "verdict",
     ]);
   }
+});
+
+// 回归：被嵌套调用的 runner 会按【自己的】单元空间上报进度（稳定性说"3/9 轮"、准入说"5/7 用例"），
+// 而 updateTaskProgress 对 completedUnits/totalUnits 都取 Math.max。若把外层 taskContext 原样递给
+// 它们，6 步的套件跑完会显示 9/9——进度条与「模型 × 步骤」网格互相矛盾。实测复现过，此处锁死。
+test("嵌套 runner 用自己的单元数上报进度，不得污染套件的 completedUnits/totalUnits", async () => {
+  const context = taskContextFor({ totalUnits: 6 });
+  const runners = makeRunners();
+  const stabilityInner = runners.runStabilityTest;
+  runners.runStabilityTest = async (args, ctx) => {
+    // 真实 runStabilityTest 就是这么上报的（test-runner.mjs:549）。
+    for (let round = 1; round <= 9; round += 1) {
+      updateTaskProgress(ctx, round, 9, `稳定性测试进行中：${round}/9 轮`);
+    }
+    return stabilityInner(args, ctx);
+  };
+  const run = createAdmissionSuiteRunner(runners);
+  await run({ profileIds: ["p1", "p2"] }, context);
+
+  assert.equal(context.task.totalUnits, 6, "总单元数仍是步骤数，不能被 9 轮顶上去");
+  assert.equal(context.task.completedUnits, 6, "完成数按步骤计，不能被轮次数抢跑");
+  // 内层的进度文案仍要透出来：用户需要知道某一步内部跑到第几轮。
+  assert.match(context.task.message, /稳定性测试进行中|已完成|完成。/);
+});
+
+// 回归：进度隔离只隔离【计数器】，取消信号必须照常穿透到嵌套 runner——两者共享同一个 task 对象。
+test("嵌套上下文仍看得见取消标志（隔离的是进度，不是取消）", async () => {
+  const context = taskContextFor();
+  const runners = makeRunners();
+  let sawCancel = false;
+  runners.runQuickVerify = async (_args, ctx) => {
+    ctx.task.cancelRequested = true;
+    sawCancel = ctx.task.cancelRequested === context.task.cancelRequested;
+    return okQuick;
+  };
+  const run = createAdmissionSuiteRunner(runners);
+  await assert.rejects(() => run({ profileIds: ["p1"] }, context), /任务已取消/);
+  assert.equal(sawCancel, true, "嵌套上下文与外层必须是同一个 task 对象引用");
 });
 
 test("没有选择模型 → 直接报错，不建空任务", async () => {

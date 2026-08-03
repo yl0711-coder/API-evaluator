@@ -149,6 +149,7 @@ const taskManager = createTaskManager({
   runBatchStabilityTest,
   runScenarioTest,
   runLoadTest,
+  runAdmissionTest,
   runAdmissionSuite,
   normalizeProfileIds,
   normalizeScenarioIds,

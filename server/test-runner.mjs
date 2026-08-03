@@ -329,6 +329,11 @@ export async function runAdmissionTest(body, taskContext = {}) {
       caseName: testCase.name,
       admission,
     });
+    // 单 API 准入作为独立异步任务跑时，进度条靠这里推进（standard 档 11 条用例，每条最长
+    // 300s——不上报的话用户会看着 0% 干等十几分钟，然后倾向于重新点一次 = 双花）。
+    // 作为 admission-suite 的一个步骤被嵌套调用时，taskContext 是隔离过的子上下文，
+    // 这里的计数写不进去、只透出 message，不会污染外层的步骤进度。
+    updateTaskProgress(taskContext, records.length, cases.length, `准入评测进行中：${records.length}/${cases.length} 项用例`);
   }
 
   const endedAt = new Date();

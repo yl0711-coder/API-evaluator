@@ -18,7 +18,7 @@
 // 【判定与执行分离】本模块只负责"按顺序跑、把结果存下来、该停就停"，达没达标一律问
 // admission-policy.mjs。执行状态（executionStatus）与业务裁决（verdict）是两个正交字段，
 // 任何异常都不得把 failed 写成 passed。
-import { assertTaskNotCancelled, updateTaskProgress } from "./task-manager.mjs";
+import { assertTaskNotCancelled, nestedTaskContext, updateTaskProgress } from "./task-manager.mjs";
 import { buildSuitePlan, countSuiteUnits } from "./admission-suite-plan.mjs";
 import {
   ADMISSION_POLICY_VERSION,
@@ -84,6 +84,10 @@ export function createAdmissionSuiteRunner({ runQuickVerify, runStabilityTest, r
       }
     }
     if (taskContext.task) taskContext.task.steps = steps;
+    // 被嵌套调用的 runner（稳定性 9 轮、准入 7~12 个用例）都会按自己的单元空间上报进度。
+    // 交给它们的是【只借取消信号、不许写计数器】的子上下文，否则外层这 6 个步骤的进度会被
+    // 内层轮次数覆盖。取消与 abort 不受影响：task 是同一个对象引用。
+    const stepContext = nestedTaskContext(taskContext);
 
     let completed = 0;
     const find = (groupKey, stepName) => steps.find((item) => item.groupKey === groupKey && item.stepName === stepName);
@@ -158,7 +162,7 @@ export function createAdmissionSuiteRunner({ runQuickVerify, runStabilityTest, r
       mark(key, "quick", { executionStatus: EXECUTION_STATUS.RUNNING, summary: "正在确认 API 是否能正常请求。" });
       let quick;
       try {
-        quick = await runQuickVerify({ profileId }, taskContext);
+        quick = await runQuickVerify({ profileId }, stepContext);
       } catch (error) {
         // 平台/网络异常 → failed + indeterminate，绝不写成 not_passed：我们没测成，
         // 不等于渠道不行。后续步骤跳过，避免在配置明显有问题时继续烧额度。
@@ -201,7 +205,7 @@ export function createAdmissionSuiteRunner({ runQuickVerify, runStabilityTest, r
             groups: normalizeStabilityGroups(payload.groups),
             useAiReportAnalysis: payload.useAiReportAnalysis || "",
           },
-          taskContext,
+          stepContext,
         );
       } catch (error) {
         mark(key, "stability", {
@@ -240,7 +244,7 @@ export function createAdmissionSuiteRunner({ runQuickVerify, runStabilityTest, r
       try {
         admission = await runAdmissionTest(
           { profileId, packageLevel: "standard", useAiReportAnalysis: payload.useAiReportAnalysis || "" },
-          taskContext,
+          stepContext,
         );
       } catch (error) {
         mark(key, "admission", {
@@ -279,7 +283,7 @@ export function createAdmissionSuiteRunner({ runQuickVerify, runStabilityTest, r
     async function runTierProbe(group) {
       mark(group.key, "admission-quick", { executionStatus: EXECUTION_STATUS.RUNNING, summary: "正在执行快速准入探测。" });
       try {
-        const admission = await runAdmissionTest({ channelId: group.channelId, model: group.model, packageLevel: "quick" }, taskContext);
+        const admission = await runAdmissionTest({ channelId: group.channelId, model: group.model, packageLevel: "quick" }, stepContext);
         mark(group.key, "admission-quick", {
           executionStatus: EXECUTION_STATUS.COMPLETED,
           verdict: admission?.verdict?.verdict || null,

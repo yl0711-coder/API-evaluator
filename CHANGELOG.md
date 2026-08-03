@@ -25,6 +25,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     > accepted`），已由下方 `admission-suite` 复合任务接线到前端。
 
 ### Changed
+- **单 API 准入评测改为后台异步任务（新增 `admission` 任务类型）** — 高级测试栏的「准入测试」是最后一条
+  还走同步 `/api/tests/admission` 的长任务：standard 档 11~12 条用例串行、每条最长 300s，一个 HTTP 请求
+  能挂十几分钟。线上反代（nginx 默认 `proxy_read_timeout` 60s）会先掐断连接，前端只看到"准入评测失败：
+  工具暂时连接不上本地服务。请关闭本工具后重新打开一次。"，而后端仍在跑、额度照扣——用户照提示重开
+  再点一次就是双花。改造后与其它测试同构：
+  - 前端换用 `createTaskFormController` 创建任务并轮询（900ms 一次、容忍 5 次连续轮询错误），表单下方
+    新增进度面板与「取消当前任务」按钮；**刷新或关掉页面再回来仍能取到结果**。
+  - 纳入全局并发闸 `EVALUATOR_MAX_CONCURRENT_TASKS`，满槽时排队而不是直接压满宿主与目标渠道。
+  - `runAdmissionTest` 在用例循环里上报进度（`准入评测进行中：N/M 项用例`）。建任务时的单元数只是
+    **下限估算**——真实条数还取决于模型家族指纹探针与 Claude 档位探针，那些在建任务时尚未解析出来，
+    由 runner 跑起来后上报修正（刻意估低不估高：估高了进度条会卡在中途永远走不满）。
+  - 桌面端自动打开报告的行为不变：`summarizeTaskResult` 的 `admission` 分支同时返回
+    `reportHtmlPath` 与 `aiAnalysisHtmlPath`，与原同步端点的两次 `openReportInBrowser` 一一对应。
+  - 同步端点 `/api/tests/admission` 暂予保留（已无前端调用方），避免影响可能直接调用 HTTP 接口的脚本。
+
+- **修复：复合任务的进度被内层 runner 覆盖（新增 `nestedTaskContext`）** — `admission-suite` 把外层
+  `taskContext` 原样递给被嵌套调用的 runner，而它们按**自己的**单元空间上报（稳定性说"3/9 轮"、准入说
+  "5/12 用例"）；`updateTaskProgress` 对 `completedUnits` 与 `totalUnits` 都取 `Math.max`，于是 6 个步骤的
+  套件跑完显示 9/9、99%，进度条与「模型 × 步骤」网格当场互相矛盾（已复现）。现在嵌套步骤拿到的是
+  只借用取消信号、不许写计数器的子上下文：计数器由外层编排器独占，`message` 照常透出（长步骤里
+  "稳定性测试进行中：3/9 轮"对用户有用），取消与 abort 不受影响（`task` 仍是同一个对象引用）。
+
 - **标准评测改回后台异步任务（新增 `server/admission-suite.mjs` + `admission-suite` 任务类型）** —
   v0.7.3 曾把「快速测试 → 稳定性 → 标准准入」改成前端顺序 `await` 三个同步接口，带来三个问题：
   - **关页面 / 刷新 / 断线 = 结果全丢**，但请求已经发出、额度已经扣了；

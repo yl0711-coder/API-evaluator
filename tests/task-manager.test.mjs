@@ -11,7 +11,7 @@ import test, { after } from "node:test";
 const MODULE_DATA_DIR = mkdtempSync(join(tmpdir(), "evaluator-tm-datadir-"));
 const PREV_DATA_DIR = process.env.EVALUATOR_DATA_DIR;
 process.env.EVALUATOR_DATA_DIR = MODULE_DATA_DIR;
-const { assertTaskNotCancelled, createTaskManager } = await import("../server/task-manager.mjs");
+const { assertTaskNotCancelled, createTaskManager, estimateTaskUnits, updateTaskProgress } = await import("../server/task-manager.mjs");
 after(async () => {
   if (PREV_DATA_DIR === undefined) delete process.env.EVALUATOR_DATA_DIR;
   else process.env.EVALUATOR_DATA_DIR = PREV_DATA_DIR;
@@ -398,6 +398,70 @@ test("admission-suite：任务分发、进度单元估算与 steps[] 快照都�
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// 单 API 准入从同步端点改为异步任务（线上 standard 档 11-12 条用例串行、每条最长 300s，
+// 反代 60s 就掐断 → 前端报「连接不上本地服务」而后端仍在跑仍在计费 → 用户重跑 = 双花）。
+// 这里锁住四个接线点：类型白名单、进度单元估算、runTask 分发、事件日志只记形状不落 key。
+test("admission：单 API 准入作为异步任务分发，进度按用例数推进，事件日志不落敏感字段", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-admission-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({
+      taskEventsFile,
+      ...normalizers,
+      runAdmissionTest: async (payload, context) => {
+        // 建任务时的 11 只是下限估算；真实条数由 runner 上报修正（这里模拟 12 条）。
+        for (let i = 1; i <= 12; i += 1) {
+          updateTaskProgress(context, i, 12, `准入评测进行中：${i}/12 项用例`);
+        }
+        return {
+          type: "admission",
+          runId: "admission-ok",
+          grade: "A",
+          score: 92,
+          successRateText: "100%",
+          verdict: { verdict: "passed", summary: "硬门槛全部通过。" },
+          reportHtmlPath: join(dir, "report.html"),
+          cases: [{ id: "connectivity", name: "连通与模型响应", passed: true }],
+          packageLevel: payload.packageLevel,
+        };
+      },
+    });
+
+    const task = await manager.createTask("admission", {
+      profileId: "demo",
+      packageLevel: "standard",
+      // 表单里的自由文本字段：绝不能出现在事件日志里。
+      prompt: "hello sk-should-not-be-written-in-full",
+    });
+
+    await waitFor(() => task.status === "completed");
+    assert.equal(task.totalUnits, 12, "runner 上报的真实用例数应把建任务时的下限估算修正上去");
+    assert.equal(task.progress, 100);
+    assert.equal(task.result.grade, "A");
+    // 前端 renderAdmissionResult 靠 result.cases 画逐用例表格，不能被公开结果裁掉。
+    assert.equal(task.result.cases.length, 1);
+
+    const raw = await readFile(taskEventsFile, "utf8");
+    assert.match(raw, /"type":"admission"/);
+    assert.match(raw, /"packageLevel":"standard"/);
+    assert.match(raw, /"grade":"A"/);
+    assert.doesNotMatch(raw, /sk-should-not-be-written-in-full/);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// 建任务时的单元数只是【下限】：真实条数还取决于模型家族指纹探针与 Claude 档位探针，
+// 那些在建任务时还没解析出来，由 runner 跑起来后上报修正（见上一个用例）。刻意留低不留高——
+// 估高了进度条会卡在中途永远走不满。
+test("admission：进度单元按测试包档位给下限估算", () => {
+  const opts = normalizers;
+  assert.equal(estimateTaskUnits("admission", { packageLevel: "quick" }, opts), 5);
+  assert.equal(estimateTaskUnits("admission", { packageLevel: "standard" }, opts), 11);
+  assert.equal(estimateTaskUnits("admission", { packageLevel: "deep" }, opts), 12);
+  assert.equal(estimateTaskUnits("admission", {}, opts), 11, "没传档位按 standard 兜底（与后端同口径）");
 });
 
 async function waitFor(predicate) {

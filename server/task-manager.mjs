@@ -16,6 +16,7 @@ export function createTaskManager({
   runBatchStabilityTest,
   runScenarioTest,
   runLoadTest, // 压力测试 runner（server/load-test.mjs）
+  runAdmissionTest, // 单 API 准入 runner（server/test-runner.mjs）
   runAdmissionSuite, // 一键准入复合任务编排器（server/admission-suite.mjs）
   normalizeProfileIds,
   normalizeScenarioIds,
@@ -178,6 +179,8 @@ export function createTaskManager({
         result = await runScenarioTest(payload, context);
       } else if (task.type === "load-test") {
         result = await runLoadTest(payload, context);
+      } else if (task.type === "admission") {
+        result = await runAdmissionTest(payload, context);
       } else if (task.type === "admission-suite") {
         result = await runAdmissionSuite(payload, context);
       } else {
@@ -283,6 +286,7 @@ export function normalizeTaskType(type) {
     type === "batch-stability" ||
     type === "scenario" ||
     type === "load-test" ||
+    type === "admission" ||
     type === "admission-suite"
   ) {
     return type;
@@ -313,6 +317,14 @@ export function estimateTaskUnits(type, payload, { normalizeProfileIds, normaliz
     const profileCount = Math.max(1, normalizeProfileIds(payload.profileIds).length);
     const scenarioCount = Math.max(1, normalizeScenarioIds(payload.scenarioIds).length);
     return profileCount * scenarioCount * clampNumber(payload.repeats, 1, 5, 1);
+  }
+  if (type === "admission") {
+    // 只是【下限估算】，用于第一次进度刻度出现之前的百分比：真实用例数由 runAdmissionTest 跑起来
+    // 之后用 updateTaskProgress 上报（updateTaskProgress 的 Math.max 会把 totalUnits 修正上去）。
+    // 之所以不在这里复刻一份精确公式：真实条数还取决于模型家族指纹探针（4~5 条）与档位探针
+    // （仅 Claude + 本地有基线时才追加），这些在建任务时都还没解析出来。单一权威是 runner。
+    if (payload.packageLevel === "quick") return 5;
+    return payload.packageLevel === "deep" ? 12 : 11;
   }
   if (type === "admission-suite") {
     // 进度单元 = 步骤数：每个必选模型 3 步（快速/稳定性/准入）+ 每个档位探针 1 步。
@@ -459,6 +471,13 @@ export function summarizeTaskPayload(type, payload, { normalizeProfileIds, norma
       requestConcurrency: clampNumber(payload.requestConcurrency || payload.concurrency, 1, 3, 1),
     };
   }
+  if (type === "admission") {
+    // 事件日志是运维记录，绝不落 key/base URL。只记形状：测的是哪档、要不要 AI 辅助分析。
+    return {
+      packageLevel: payload.packageLevel || "standard",
+      useAiReportAnalysis: Boolean(payload.useAiReportAnalysis),
+    };
+  }
   if (type === "admission-suite") {
     // 事件日志是运维记录，绝不落 key/base URL。只记形状：测了几个模型、跑不跑档位探测。
     return {
@@ -482,6 +501,20 @@ export function summarizeTaskResult(result) {
       conclusion: result.conclusion,
       modelCount: Array.isArray(result.models) ? result.models.length : 0,
       reports: result.reports, // 每模型一篇（供桌面逐篇打开）
+    };
+  }
+  if (result.type === "admission") {
+    // 事件日志只记结论级字段，不记逐用例明细（明细在报告文件里）。
+    return {
+      type: result.type,
+      runId: result.runId,
+      grade: result.grade,
+      score: result.score,
+      verdict: result.verdict?.verdict,
+      successRateText: result.successRateText,
+      reportPath: result.reportPath,
+      reportHtmlPath: result.reportHtmlPath,
+      aiAnalysisHtmlPath: result.aiAnalysisHtmlPath,
     };
   }
   if (result.type === "scenario" || result.runId?.startsWith?.("scenario-")) {
@@ -517,9 +550,26 @@ export function summarizeTaskResult(result) {
   };
 }
 
+/**
+ * 派生一个「只借用取消信号、不许写进度计数器」的子上下文，给复合任务里被嵌套调用的 runner 用。
+ * 共享同一个 task 对象引用，所以 assertTaskNotCancelled 与 abortController.signal 照常生效。
+ */
+export function nestedTaskContext(taskContext) {
+  return { ...(taskContext || {}), nestedProgress: true };
+}
+
 export function updateTaskProgress(taskContext, completedUnits, totalUnits, message) {
   const task = taskContext?.task;
   if (!task || task.status !== "running") {
+    return;
+  }
+  // 嵌套 runner 按【自己的】单元空间上报：稳定性说"3/9 轮"，而外层 admission-suite 的总单元是
+  // "6 个步骤"。若放它写计数器，下面的 Math.max 会把 totalUnits 从 6 抬到 9、completedUnits 也被
+  // 它的轮次数顶上去，进度条与「模型 × 步骤」网格当场互相矛盾（实测：6 步的套件跑完显示 9/9、99%）。
+  // 所以嵌套上下文只借用 message——"稳定性测试进行中：3/9 轮"对用户有用，让它照常显示；
+  // 计数器由外层编排器独占。
+  if (taskContext.nestedProgress) {
+    task.message = message || task.message;
     return;
   }
   task.completedUnits = Math.max(task.completedUnits || 0, Number(completedUnits) || 0);
