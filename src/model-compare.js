@@ -162,6 +162,8 @@ export function createModelCompare({ state, confirm }) {
     if (!comparison || !Array.isArray(comparison.summary)) return "";
     const subjectA = comparison.subjects?.a?.label || "对象 A";
     const subjectB = comparison.subjects?.b?.label || "对象 B";
+    const overallWinner = comparison.summary.find((row) => row.id === "overall-score")?.winner;
+    const summaryWinnerClass = overallWinner === "a" || overallWinner === "b" ? ` mc-overall-winner-${overallWinner}` : "";
     const summaryRows = comparison.summary
       .map(
         (row) => `<tr class="${row.status === "insufficient" ? "is-insufficient" : ""}">
@@ -188,7 +190,7 @@ export function createModelCompare({ state, confirm }) {
           <span>${scenarios.length} 个共有场景</span>
         </div>
         <div class="mc-compare-scroll">
-          <table>
+          <table class="mc-compare-summary${summaryWinnerClass}">
             <thead><tr><th scope="col">指标</th><th scope="col">${escapeHtml(subjectA)}</th><th scope="col">${escapeHtml(subjectB)}</th></tr></thead>
             <tbody>${summaryRows}</tbody>
           </table>

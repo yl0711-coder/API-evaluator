@@ -4491,6 +4491,30 @@ body.better-lighting::after {
   border-bottom: 0;
 }
 
+/* 综合相对分胜方沿用基准图的列级强调：整列被低饱和底色和圆角描边包住。 */
+.mc-compare-summary.mc-overall-winner-a thead th:nth-child(2),
+.mc-compare-summary.mc-overall-winner-a tbody td:nth-child(2),
+.mc-compare-summary.mc-overall-winner-b thead th:nth-child(3),
+.mc-compare-summary.mc-overall-winner-b tbody td:nth-child(3) {
+  background: rgba(98, 219, 167, 0.09);
+  border-left: 2px solid rgba(98, 219, 167, 0.72);
+  border-right: 2px solid rgba(98, 219, 167, 0.72);
+}
+
+.mc-compare-summary.mc-overall-winner-a thead th:nth-child(2),
+.mc-compare-summary.mc-overall-winner-b thead th:nth-child(3) {
+  border-top: 2px solid rgba(98, 219, 167, 0.72);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
+.mc-compare-summary.mc-overall-winner-a tbody tr:last-child td:nth-child(2),
+.mc-compare-summary.mc-overall-winner-b tbody tr:last-child td:nth-child(3) {
+  border-bottom: 2px solid rgba(98, 219, 167, 0.72);
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
 .mc-compare-scroll thead th:first-child,
 .mc-compare-scroll tbody th {
   position: sticky;
