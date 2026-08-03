@@ -321,6 +321,11 @@ export async function runAdmissionTest(body, taskContext = {}) {
   const records = [];
 
   for (const testCase of cases) {
+    // 取消必须在每轮开头检查，否则「取消」只 abort 掉在飞的那一个请求，循环照样往下走：
+    // 剩余用例的 fetch 因 signal 已 abort 而瞬间 reject，几秒内刷完全部用例、写一堆
+    // status=0 的垃圾请求记录，任务最后还显示 27/27 99%。实测复现过（standard 档 Claude
+    // 模型共 27 条用例，取消后 2 秒内多写了 24 行）。runQuickVerify 的循环一直是这么做的。
+    assertTaskNotCancelled(taskContext);
     const record = await executeAdmissionTestCase(profile, testCase, runId, taskContext);
     const admission = evaluateAdmissionCase(testCase, record);
     delete record.responseText;

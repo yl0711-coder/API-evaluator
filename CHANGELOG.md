@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **取消准入任务不中断用例循环（真实渠道验收发现）** — `runAdmissionTest` 的用例循环是唯一没在每轮开头
+  `assertTaskNotCancelled` 的 runner（此前它是同步端点、根本没有取消按钮，异步化才让这个潜伏问题可达）。
+  点「取消」只 abort 掉在飞的那一个请求，循环照样往下走：剩余用例的 `fetch` 因 signal 已 abort 而瞬间
+  reject，几秒内刷完全部用例。实测 standard 档 Claude 模型（27 条用例）取消后 **2 秒内多写了 24 行**
+  `status=0` 的垃圾请求记录，任务最终还显示"27/27 99%"却标着"已取消"。修复后同样操作只多 1 行，进度
+  正确冻结在 4/27。**未产生额外计费**（这些记录 status=0、0 token，请求并未真正发出），影响是数据污染
+  与进度误导。已加计数式 mock 上游的回归测试锁死"取消后不再发请求"。
+- **被取消的请求把耗时记成超时配置值** — `upstream-transport.mjs` 的 catch 分支用
+  `r.totalMs ?? timeoutMs` 兜底。真超时场景两者本来就≈相等，但**用户取消是提前中断的**，一条实际
+  1~2 秒的记录会被写成 `total_ms = 300000` 落进 `test_requests`，而趋势图与回归判定的延迟序列正是按
+  `total_ms IS NOT NULL` 取点（`server/db.mjs`），一条假的 5 分钟足以把 P95 拉飞。改为记真实耗时
+  （计时起点提到 try 外）；真超时的取值不受影响。
 - **准入判定假通过（新增 `server/admission-policy.mjs`，口径版本 `admission-policy-v1`）** — 判定逻辑从
   `test-runner.mjs` 抽出为纯函数模块（无 fetch / fs / Date.now），可离线对固定反例做确定性断言：
   - **空数组赠分**：quick 包不含编程题时，`[].every()` 返回 `true`，白送 10 分。现改为三态
