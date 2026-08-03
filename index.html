@@ -1267,15 +1267,6 @@
 
             <div id="atc-opt-stability" class="atc-opt wide" hidden>
               <label>
-                测试轮数
-                <select id="atc-rounds">
-                  <option value="1">1 轮：快速功能测试</option>
-                  <option value="3">3 轮：冒烟验证</option>
-                  <option value="10" selected>10 轮：基础稳定性</option>
-                  <option value="30">30 轮：较完整稳定性</option>
-                </select>
-              </label>
-              <label>
                 并发数
                 <select id="atc-concurrency">
                   <option value="1" selected>1：顺序测试，最稳妥</option>
@@ -1283,14 +1274,11 @@
                   <option value="3">3：观察网关波动</option>
                 </select>
               </label>
+              <p id="atc-stability-request-total" class="field-hint">共 0 次请求（0 组）</p>
               <label class="wide">
-                测试文案场景
-                <select id="atc-prompt-preset"></select>
-                <small class="field-hint">选择一个代表性场景，工具会自动填入测试 Prompt。也可以选择自定义后自己写。</small>
-              </label>
-              <label class="wide">
-                当前测试文案（选择“自定义”后可编辑）
-                <textarea id="atc-prompt" rows="4"></textarea>
+                测试文案分组（每个场景一个数量框，0 表示不选该组；每组默认测 3 遍，自定义默认 1 遍）
+                <div id="atc-stability-group-picker" class="stability-group-picker"></div>
+                <small class="field-hint">选中多个场景会在同一份报告里分组统计；也可以只加大同一个场景的数量做重复测试。</small>
               </label>
             </div>
             <div id="atc-opt-admission" class="atc-opt wide" hidden>

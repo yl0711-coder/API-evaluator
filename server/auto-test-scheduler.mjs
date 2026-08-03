@@ -67,9 +67,9 @@ export function createAutoTestScheduler({
       case "admission":
         return () => runners.runAdmissionTest({ profileId: id, packageLevel: o.packageLevel || "standard" });
       case "stability":
-        // prompt 为空时 runStabilityForProfile 会回退内置默认文案，故直接透传（含空串）安全。
-        return () =>
-          runners.runStabilityTest({ profileId: id, rounds: o.rounds || 10, concurrency: o.concurrency || 1, prompt: o.prompt || "" });
+        // groups 为空/缺失（迁移前旧作业）时 runStabilityForProfile 会退回内置默认文案单组跑 10 轮，
+        // 故直接透传安全；新作业一律带 groups（多组文案+各自数量），见 auto-test-config.js collect()。
+        return () => runners.runStabilityTest({ profileId: id, concurrency: o.concurrency || 1, groups: o.groups || [] });
       case "scenario":
         return () =>
           runners.runScenarioTest({

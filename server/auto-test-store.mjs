@@ -135,20 +135,49 @@ function clampFailures(v) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// 稳定性「测试文案分组」：{presetId, prompt, repeats}[]，与 test-runner.mjs 的 normalizeStabilityGroups
+// 同一套校验口径（repeats 夹 [1,20]，非法/数量<=0 项丢弃）。预设 id 允许任意字符串（前端自定义预设时也能存），
+// 只做类型强制与截断，不校验是否在已知预设表里——已知预设表随时可能改，作业存储不该耦合它。
+function normalizeStabilityGroupsOption(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((group) => {
+      if (!group || typeof group !== "object") return null;
+      const repeats = Math.floor(Number(group.repeats));
+      if (!Number.isFinite(repeats) || repeats <= 0) return null;
+      return {
+        presetId: typeof group.presetId === "string" && group.presetId ? group.presetId.slice(0, 64) : null,
+        prompt: typeof group.prompt === "string" ? group.prompt.slice(0, 4000) : "",
+        repeats: Math.min(20, Math.max(1, repeats)),
+      };
+    })
+    .filter(Boolean);
+}
+
+// 迁移改造前保存的扁平字段（rounds/promptPresetId/prompt）到单组 groups，供 normalizeOptions 在
+// 没有 groups 时兜底。normalizeJob 每次 load 都会重新 normalize 一遍旧作业，若不迁移，旧作业的
+// 轮数与自定义文案会在这里被悄悄丢弃、退化成运行期默认的 10 轮基础文案——这是数据丢失，不是兼容。
+function migrateLegacyStabilityOptions(raw) {
+  if (!("rounds" in raw) && !("prompt" in raw) && !("promptPresetId" in raw)) return [];
+  const repeats = Math.floor(Number(raw.rounds));
+  const presetId = typeof raw.promptPresetId === "string" && raw.promptPresetId ? raw.promptPresetId.slice(0, 64) : "basic";
+  const prompt = typeof raw.prompt === "string" ? raw.prompt.slice(0, 4000) : "";
+  return [{ presetId, prompt, repeats: Number.isFinite(repeats) && repeats > 0 ? Math.min(20, repeats) : 10 }];
+}
+
 function normalizeOptions(raw) {
   const clampInt = (v, min, max, dflt) => {
     const n = Math.floor(Number(v));
     if (!Number.isFinite(n)) return dflt;
     return Math.min(max, Math.max(min, n));
   };
+  const groups = Array.isArray(raw.groups) ? normalizeStabilityGroupsOption(raw.groups) : migrateLegacyStabilityOptions(raw);
   return {
-    rounds: clampInt(raw.rounds, 1, 100, 10),
     concurrency: clampInt(raw.concurrency, 1, 5, 1),
     repeats: clampInt(raw.repeats, 1, 5, 1),
     packageLevel: ["quick", "standard", "deep"].includes(raw.packageLevel) ? raw.packageLevel : "standard",
-    // 稳定性「测试文案场景」：预设 id + 解析后的文案（空 → runner 用内置默认）。文案截断防超长。
-    promptPresetId: typeof raw.promptPresetId === "string" && raw.promptPresetId ? raw.promptPresetId.slice(0, 64) : "basic",
-    prompt: typeof raw.prompt === "string" ? raw.prompt.slice(0, 4000) : "",
+    // 稳定性「测试文案分组」：多组预设+数量，取代原来的单预设+单轮数（rounds/promptPresetId/prompt）。
+    groups,
   };
 }
 
@@ -157,6 +186,8 @@ export function validateJob(job) {
   if (!job || typeof job !== "object") return "作业必须是对象。";
   if (!job.targetId) return "请选择被测渠道与模型。";
   if (!AUTO_TEST_KINDS.includes(job.kind)) return "测试种类不合法。";
+  // 稳定性作业至少要有一个数量>0 的文案分组，否则调度器触发时无题可测。
+  if (job.kind === "stability" && !(job.options?.groups?.length > 0)) return "请至少选择一个测试文案分组（数量框大于 0）。";
   // cron 模式：校验表达式合法即可，periodHours 只作后备不强校验。
   if (job.cron) {
     try {

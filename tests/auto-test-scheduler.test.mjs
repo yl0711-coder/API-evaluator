@@ -96,7 +96,7 @@ test("kind→runner 映射与 payload 正确", async () => {
       periodHours: 1,
       enabled: true,
       nextRunAt: null,
-      options: { rounds: 20, concurrency: 3, prompt: "自定义文案" },
+      options: { concurrency: 3, groups: [{ presetId: "custom", prompt: "自定义文案", repeats: 20 }] },
     },
     {
       id: "d",
@@ -114,7 +114,11 @@ test("kind→runner 映射与 payload 正确", async () => {
   const byName = Object.fromEntries(calls.map((c) => [c.name, c.payload]));
   assert.deepEqual(byName.runQuickVerify, { profileId: "tq" });
   assert.deepEqual(byName.runAdmissionTest, { profileId: "ta", packageLevel: "deep" });
-  assert.deepEqual(byName.runStabilityTest, { profileId: "ts", rounds: 20, concurrency: 3, prompt: "自定义文案" });
+  assert.deepEqual(byName.runStabilityTest, {
+    profileId: "ts",
+    concurrency: 3,
+    groups: [{ presetId: "custom", prompt: "自定义文案", repeats: 20 }],
+  });
   assert.deepEqual(byName.runScenarioTest, { profileIds: ["tc"], scenarioIds: ["s1", "s2"], repeats: 2 });
 });
 

@@ -271,13 +271,15 @@ function clampGroupRepeats(value) {
 
 // 为每个稳定性预设渲染一行「文案名 + 数量框」，custom 行额外含 textarea。
 // selectedRepeats: { presetId: number } 用于恢复已选数量（如重置为默认态时传入）。
-export function renderStabilityGroupPicker(selectedRepeats = {}) {
+// idPrefix：本页面内 custom 文案 textarea 的 DOM id 前缀，避免同一页面多处使用本选择器时 id 冲突
+// （如稳定性测试页与自动测试配置页都用它）；readStabilityGroups 靠 name="prompt" 定位，不受影响。
+export function renderStabilityGroupPicker(selectedRepeats = {}, idPrefix = "stability") {
   return STABILITY_PROMPT_PRESETS.map((preset) => {
     const defaultRepeats = preset.id === "custom" ? 1 : 3;
     const repeats = selectedRepeats[preset.id] ?? defaultRepeats;
     const customTextarea =
       preset.id === "custom"
-        ? `<textarea id="stability-prompt" name="prompt" rows="4" placeholder="在此输入自定义测试文案…" class="stability-custom-prompt"></textarea>`
+        ? `<textarea id="${escapeHtml(idPrefix)}-prompt" name="prompt" rows="4" placeholder="在此输入自定义测试文案…" class="stability-custom-prompt"></textarea>`
         : "";
     return [
       `<div class="stability-group-row" data-preset-id="${escapeHtml(preset.id)}">`,
