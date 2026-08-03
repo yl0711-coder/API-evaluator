@@ -30,6 +30,10 @@ test("buildCron：每天一次 → 单个钟点", () => {
   assert.equal(buildCron({ days: "everyday", period: "allday", freq: "once", onceHour: 3 }), "0 3 * * *");
 });
 
+test("buildCron：工作日多个固定时刻 → 小时列表", () => {
+  assert.equal(buildCron({ days: "weekday", freq: "fixed", fixedHours: [5, 1] }), "0 1,5 * * 1-5");
+});
+
 test("buildCron：自定义星期（周一三五）", () => {
   assert.equal(buildCron({ days: "custom", daysCustom: [1, 3, 5], period: "allday", freq: "hourly" }), "0 0-23 * * 1,3,5");
 });
@@ -41,6 +45,7 @@ test("buildCron：自定义时段（22-次日6，每小时）→ 跨午夜两段
 test("describeSchedule：人话预览", () => {
   assert.equal(describeSchedule({ days: "weekday", period: "day", freq: "h2" }), "工作日 9-18 点，每 2 小时一次");
   assert.equal(describeSchedule({ days: "everyday", period: "allday", freq: "once", onceHour: 3 }), "每天，每天 3:00 跑一次");
+  assert.equal(describeSchedule({ days: "weekday", freq: "fixed", fixedHours: [1, 5] }), "工作日，固定在 01:00、05:00 运行");
   assert.equal(describeSchedule({ days: "weekend", period: "night", freq: "h6" }), "周末 19 点至次日 8 点，每 6 小时一次");
 });
 
@@ -53,6 +58,7 @@ const ROUND_TRIP_CASES = [
   { days: "weekend", period: "allday", freq: "h12" },
   { days: "everyday", period: "night", freq: "h6" },
   { days: "everyday", period: "allday", freq: "once", onceHour: 3 },
+  { days: "weekday", freq: "fixed", fixedHours: [1, 5] },
   { days: "custom", daysCustom: [1, 3, 5], period: "allday", freq: "hourly" },
 ];
 

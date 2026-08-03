@@ -48,6 +48,7 @@ export function createAutoTestConfig({ state, confirm }) {
   const cronFreqSelect = requireElement("#atc-cron-freq");
   const cronOnceLabel = requireElement("#atc-cron-once");
   const cronOnceHour = requireElement("#atc-cron-once-hour");
+  const cronFixedHours = requireElement("#atc-cron-fixed-hours");
   const cronPreview = requireElement("#atc-cron-preview");
   const cronDowChecks = [0, 1, 2, 3, 4, 5, 6].map((d) => requireElement(`#atc-dow-${d}`));
   const enabledInput = requireElement("#atc-enabled");
@@ -90,6 +91,18 @@ export function createAutoTestConfig({ state, confirm }) {
   for (const sel of [cronStartHour, cronEndHour, cronOnceHour]) {
     sel.innerHTML = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, "0")}:00</option>`).join("");
   }
+  const cronFixedHourChecks = Array.from({ length: 24 }, (_, h) => {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = String(h);
+    input.id = `atc-fixed-hour-${h}`;
+    const label = document.createElement("label");
+    label.className = "checkbox-option";
+    label.htmlFor = input.id;
+    label.append(input, ` ${String(h).padStart(2, "0")}:00`);
+    cronFixedHours.append(label);
+    return input;
+  });
 
   // 调度方式切换：间隔 / cron 二选一，显隐对应输入。
   // 用 .hidden class（styles.css 里 display:none !important）而非 hidden 属性：
@@ -114,23 +127,35 @@ export function createAutoTestConfig({ state, confirm }) {
       endHour: Number(cronEndHour.value),
       freq: cronFreqSelect.value,
       onceHour: Number(cronOnceHour.value),
+      fixedHours: cronFixedHourChecks.filter((c) => c.checked).map((c) => Number(c.value)),
     };
   }
 
   // 下拉 → 隐藏 cron input + 预览；并按选项显隐自定义展开 / 每天一次钟点。
   function syncCronBuilder() {
     const isOnce = cronFreqSelect.value === "once";
+    const isFixed = cronFreqSelect.value === "fixed";
     // 同上：.atc-weekday-picker / .atc-hours-picker 带 CSS display:flex，须用 .hidden class 才压得住。
     cronDaysCustom.classList.toggle("hidden", cronDaysSelect.value !== "custom");
     // 每天一次时时段无意义（只需钟点）：隐藏时段，显示「每天几点」。
-    cronPeriodLabel.classList.toggle("hidden", isOnce);
-    cronHoursCustom.classList.toggle("hidden", isOnce || cronPeriodSelect.value !== "custom");
+    cronPeriodLabel.classList.toggle("hidden", isOnce || isFixed);
+    cronHoursCustom.classList.toggle("hidden", isOnce || isFixed || cronPeriodSelect.value !== "custom");
     cronOnceLabel.classList.toggle("hidden", !isOnce);
+    cronFixedHours.classList.toggle("hidden", !isFixed);
     const sel = readCronSelection();
     cronInput.value = buildCron(sel);
     cronPreview.textContent = `${describeSchedule(sel)}（${cronInput.value}）`;
   }
-  for (const el of [cronDaysSelect, cronPeriodSelect, cronFreqSelect, cronStartHour, cronEndHour, cronOnceHour, ...cronDowChecks]) {
+  for (const el of [
+    cronDaysSelect,
+    cronPeriodSelect,
+    cronFreqSelect,
+    cronStartHour,
+    cronEndHour,
+    cronOnceHour,
+    ...cronDowChecks,
+    ...cronFixedHourChecks,
+  ]) {
     el.addEventListener("change", syncCronBuilder);
   }
 
@@ -144,6 +169,8 @@ export function createAutoTestConfig({ state, confirm }) {
     cronEndHour.value = String(s.endHour);
     cronFreqSelect.value = s.freq;
     cronOnceHour.value = String(s.onceHour);
+    const fixedHours = s.fixedHours || [];
+    for (const c of cronFixedHourChecks) c.checked = fixedHours.includes(Number(c.value));
     if (!s.matched) toast(`原定时「${cron}」较特殊，已按最接近的选项回填，请核对。`, true);
   }
 
@@ -192,6 +219,7 @@ export function createAutoTestConfig({ state, confirm }) {
     cronEndHour.value = "23";
     cronOnceHour.value = "9";
     for (const c of cronDowChecks) c.checked = false;
+    for (const c of cronFixedHourChecks) c.checked = false;
     syncScheduleMode();
     enabledInput.checked = true;
     roundsSelect.value = "10";
@@ -247,6 +275,10 @@ export function createAutoTestConfig({ state, confirm }) {
     }
     if (scheduleModeSelect.value === "cron" && !body.cron) {
       toast("定时设置不完整，请检查星期/时段/频率选择。", true);
+      return;
+    }
+    if (scheduleModeSelect.value === "cron" && cronFreqSelect.value === "fixed" && !body.fixedHours?.length) {
+      toast("请至少选择一个固定运行时刻。", true);
       return;
     }
     try {
