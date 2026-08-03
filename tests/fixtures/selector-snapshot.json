@@ -41,6 +41,7 @@
   "#atc-cron-days",
   "#atc-cron-days-custom",
   "#atc-cron-end-hour",
+  "#atc-cron-fixed-hours",
   "#atc-cron-freq",
   "#atc-cron-hours-custom",
   "#atc-cron-once",
