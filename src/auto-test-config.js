@@ -339,12 +339,16 @@ export function createAutoTestConfig({ state, confirm }) {
       toast("请选择被测渠道与模型。", true);
       return;
     }
-    if (scheduleModeSelect.value === "cron" && !body.cron) {
-      toast("定时设置不完整，请检查星期/时段/频率选择。", true);
+    // 固定时刻先于「cron 为空」判：一个时刻都没加时 buildCron 返回空串，
+    // 若顺序反了会被上面那条截走，弹出「请检查星期/时段/频率选择」这种指错方向的提示。
+    // 读闭包里的 fixedTimes 而非 body：collect() 不带这个字段（它不属于作业载荷），
+    // 早先误写成 body.fixedHours?.length 时恒为真，固定时刻作业根本存不下来。
+    if (scheduleModeSelect.value === "cron" && cronFreqSelect.value === "fixed" && !fixedTimes.length) {
+      toast("请至少添加一个固定运行时刻。", true);
       return;
     }
-    if (scheduleModeSelect.value === "cron" && cronFreqSelect.value === "fixed" && !body.fixedTimes.length) {
-      toast("请至少添加一个固定运行时刻。", true);
+    if (scheduleModeSelect.value === "cron" && !body.cron) {
+      toast("定时设置不完整，请检查星期/时段/频率选择。", true);
       return;
     }
     if (body.kind === "stability" && !body.options.groups.length) {
