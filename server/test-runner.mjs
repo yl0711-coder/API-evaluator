@@ -63,7 +63,7 @@ import {
   saveAiAnalysisReport,
   saveReportFiles,
 } from "./reporting.mjs";
-import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary } from "./summaries.mjs";
+import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary, countTemperatureStripped } from "./summaries.mjs";
 import { buildFingerprintSnapshot, trackModelFingerprint } from "./fingerprint-tracking.mjs";
 import { buildTierProbeCases, classifyTierFromRecords, evaluateTierCase, loadTierContext } from "./tier-admission.mjs";
 import { buildTrendSeries, detectRegression, toTrendPoint } from "./regression.mjs";
@@ -1000,6 +1000,9 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     firstAttemptSuccessRate,
     firstAttemptSuccessRateText: firstAttemptSuccessRate === null ? null : `${Math.round(firstAttemptSuccessRate * 100)}%`,
     recoveredCount,
+    // 手填温度被上游拒收、传输层就地摘掉的请求数。准入页也有温度入口（高级设置），
+    // 不留痕的话用户会把这份报告的分数读成「我设的那个温度下的表现」，实际跑的是模型默认温度。
+    temperatureStrippedCount: countTemperatureStripped(records),
     gradedCaseCount,
     passedCount,
     passRate,

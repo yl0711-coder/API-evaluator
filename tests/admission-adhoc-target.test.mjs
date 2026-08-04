@@ -202,6 +202,65 @@ test("runAdmissionTest：首次成功率与重试后成功率分开统计", asyn
   );
 });
 
+// 回归：手填的温度被上游拒收、传输层就地摘掉之后，准入报告必须留痕。
+// 稳定性/场景两条路径都会把它聚合成 temperatureStrippedCount 并渲染提示卡（server/summaries.mjs +
+// src/{stability,scenario}-view.js），准入侧同样有温度入口（高级设置）却漏了这一层：记录层
+// requests.jsonl 每行都带 temperatureStripped=true，汇总里却没有这个数、页面上也没有提示。
+// 后果正是加这个温度开关时要避免的那件事——用户把报告分数读成「我设的那个温度下的表现」，
+// 实际全程跑的是模型默认温度，且毫无痕迹。
+test("runAdmissionTest：手填温度被上游拒收摘掉时，准入汇总与页面都要留痕", async () => {
+  let rejected = 0;
+  const result = await withMockUpstream(
+    (req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        const body = JSON.parse(raw || "{}");
+        if (body.temperature !== undefined) {
+          // 模拟「只接受默认温度」的模型（月之暗面 10132 / o 系那一类）的 400 文案。
+          rejected += 1;
+          sendJson(res, 400, { error: { message: "Unsupported value: 'temperature' does not support 1 with this model." } });
+          return;
+        }
+        sendJson(res, 200, { choices: [{ message: { content: "admission ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } });
+      });
+    },
+    async (baseUrl) => {
+      const channel = await channelStore.attachChannelKey(
+        { id: "ch-temp-stripped", name: "拒收温度渠道", provider: "Moonshot", baseUrl, protocol: "openai_chat", status: "enabled" },
+        "sk-mock",
+      );
+      await channelStore.saveChannels([channel]);
+      // 模型名带唯一后缀：摘参记忆是进程级的（TEMPERATURE_UNSUPPORTED_MODELS 按 baseUrl|model 记），
+      // 复用别的用例的模型名会让首发请求就不带温度，rejected 归零、本用例测不到东西。
+      return runAdmissionTest({
+        channelId: "ch-temp-stripped",
+        model: "probe-temp-reject-model",
+        packageLevel: "quick",
+        temperature: "1",
+      });
+    },
+  );
+
+  assert.ok(rejected > 0, "上游应至少拒收过一次温度参数，否则本用例没测到摘参路径");
+  assert.ok(
+    Number(result.temperatureStrippedCount) > 0,
+    `准入汇总应带 temperatureStrippedCount（实际 ${JSON.stringify(result.temperatureStrippedCount)}）——` +
+      `否则报告分数来自模型默认温度而非用户所填的值，且无任何痕迹`,
+  );
+
+  // 汇总里有数 ≠ 用户看得到。准入页此前根本没 import 这张提示卡，光断言字段会漏掉渲染那一层。
+  const { renderAdmissionResult } = await import("../src/admission-view.js");
+  const html = renderAdmissionResult(result);
+  assert.match(
+    html,
+    /温度/,
+    `准入结果页应出现「温度被摘掉」提示，实际未渲染（temperatureStrippedCount=${result.temperatureStrippedCount}）`,
+  );
+});
+
 // 回归：取消必须在【每轮用例开头】检查。此前只有在飞的那个请求被 abort，循环照样往下走——
 // 剩余用例的 fetch 因 signal 已 abort 而瞬间 reject，几秒内刷完全部用例、写一堆 status=0 的
 // 垃圾请求记录，任务最后还显示 27/27 99%。真实渠道上复现过：standard 档 Claude 模型共 27 条

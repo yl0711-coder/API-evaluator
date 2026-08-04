@@ -43,7 +43,8 @@ function buildStabilityGroupBreakdown(records) {
 // 手填温度被传输层摘掉的请求数。该模型拒收自定义 temperature（进程级记忆，见 upstream-transport.mjs
 // 的 TEMPERATURE_UNSUPPORTED_MODELS），这些请求实际跑的是模型默认温度、而非用户所填的值。
 // 必须在汇总里留痕：否则用户会把报告数字读成「我设的那个温度下的表现」。
-function countTemperatureStripped(records) {
+// 准入路径（server/test-runner.mjs 的 buildAdmissionSummary）也有温度入口，同样要留痕，故导出。
+export function countTemperatureStripped(records) {
   return records.filter((item) => item.temperatureStripped).length;
 }
 
