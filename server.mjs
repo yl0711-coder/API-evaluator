@@ -73,6 +73,7 @@ import {
   reportTargetSlug,
 } from "./server/test-runner.mjs";
 import { runLoadTest } from "./server/load-test.mjs";
+import { createAdmissionSuiteRunner } from "./server/admission-suite.mjs";
 import { buildAiAnalysisResult } from "./server/ai-report-analysis.mjs";
 import {
   aggregateSubject,
@@ -138,6 +139,9 @@ import { APP_VERSION } from "./server/version.mjs";
 const PORT = Number(process.env.API_PORT || process.env.PORT || 5180);
 // 部署适配：绑定地址可配（容器内需 0.0.0.0；默认仍 127.0.0.1，本地行为不变）
 const HOST = process.env.HOST || process.env.API_HOST || "127.0.0.1";
+// 一键准入复合任务：编排器只负责按顺序调下面三个 runner，判定全部交给 admission-policy.mjs。
+// runner 在这里注入，编排逻辑因此可以用假 runner 单测（tests/admission-suite.test.mjs）。
+const runAdmissionSuite = createAdmissionSuiteRunner({ runQuickVerify, runStabilityTest, runAdmissionTest });
 const taskManager = createTaskManager({
   taskEventsFile: TASK_EVENTS_FILE,
   runStabilityTest,
@@ -145,6 +149,8 @@ const taskManager = createTaskManager({
   runBatchStabilityTest,
   runScenarioTest,
   runLoadTest,
+  runAdmissionTest,
+  runAdmissionSuite,
   normalizeProfileIds,
   normalizeScenarioIds,
   errorLogFile: ERROR_LOG_FILE,

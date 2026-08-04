@@ -31,6 +31,8 @@ export function formatTaskType(type) {
   return (
     {
       stability: "稳定性测试",
+      admission: "准入评测",
+      "admission-suite": "标准准入评测",
       "batch-admission": "批量准入评测",
       "batch-stability": "批量稳定性测试",
       scenario: "场景测试",

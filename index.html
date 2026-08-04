@@ -180,6 +180,12 @@
             <button id="admission-submit" class="primary wide" type="submit">开始准入评测</button>
           </form>
 
+          <div id="admission-progress" class="progress-panel hidden">
+            <div class="progress-bar"><span></span></div>
+            <p class="muted">等待任务开始。</p>
+            <button id="cancel-admission-task" class="secondary" type="button">取消当前任务</button>
+          </div>
+
           <div class="panel">
             <h3>执行前预估</h3>
             <div id="admission-estimate" class="estimate-box">选择参数后会显示大概会消耗多少额度。</div>
@@ -294,6 +300,11 @@
 
           <div class="panel">
             <h3>标准评测进度</h3>
+            <div id="standard-eval-task-progress" class="progress-panel hidden">
+              <div class="progress-bar"><span></span></div>
+              <p class="muted">等待任务开始。</p>
+              <button id="cancel-standard-eval-task" class="secondary" type="button">取消当前任务</button>
+            </div>
             <div id="standard-eval-progress" class="standard-flow"></div>
           </div>
 

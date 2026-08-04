@@ -214,8 +214,9 @@ export async function executeUpstreamRequest(
     // 确定性重配：上游拒收某个我方可选参数（temperature / stream_options），已就地删掉并原样重试。
     // 这不是负载信号、也不退避，故 noRetry（压测）也应放行——否则压测首批请求会白白判失败。
     let reconfigured = false;
+    // 计时起点提到 try 外：catch 分支也要拿它算真实耗时（见下方 r.totalMs）。
+    const started = performance.now();
     try {
-      const started = performance.now();
       const response = await fetch(request.url, {
         method: "POST",
         headers: request.headers,
@@ -282,7 +283,10 @@ export async function executeUpstreamRequest(
       // 不进 requests.jsonl（同 responseText，见 finalizeRecord）。
       if (options.keepRawResponse && !r.responseText) r.rawResponse = raw;
     } catch (error) {
-      r.totalMs = r.totalMs ?? timeoutMs;
+      // 记真实耗时，不再拿 timeoutMs 顶替：真超时两者本来就≈相等，但「用户取消」是提前中断的，
+      // 一条实际 1-2 秒的记录会被写成 total_ms=300000，污染所有基于 test_requests.total_ms 的
+      // 延迟统计（P50/P95、趋势、回归对比）。实测取消准入任务时复现过。
+      r.totalMs = r.totalMs ?? Math.round(performance.now() - started);
       // undici 的 fetch reject 常是 "fetch failed"，真正的 errno 在 error.cause.code（如 ECONNRESET）。
       // 附到 rawError，供压测区分网络错误是本机侧还是上游侧。
       const errno = error?.cause?.code || error?.code || "";

@@ -139,11 +139,13 @@ const standardPlainResult = requireElement("#standard-plain-result");
 const standardEvalResult = requireElement("#standard-eval-result");
 const standardNextActions = requireElement("#standard-next-actions");
 const standardEvalProgress = requireElement("#standard-eval-progress");
+const standardEvalTaskProgress = requireElement("#standard-eval-task-progress");
 const admissionTestForm = requireElement("#admission-test-form");
 const admissionProfileSelect = requireElement("#admission-profile-select");
 const admissionSubmit = requireElement("#admission-submit");
 const admissionEstimate = requireElement("#admission-estimate");
 const admissionResult = requireElement("#admission-result");
+const admissionProgress = requireElement("#admission-progress");
 const admissionBatchForm = requireElement("#admission-batch-form");
 const admissionBatchProfileSelect = requireElement("#admission-batch-profile-select");
 const admissionBatchSubmit = requireElement("#admission-batch-submit");
@@ -487,7 +489,9 @@ requireElement("#cancel-stability-task").addEventListener("click", () => cancelR
 requireElement("#cancel-load-test-task").addEventListener("click", () => cancelRemoteTask(state, "loadTest"));
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
+requireElement("#cancel-admission-task").addEventListener("click", () => cancelRemoteTask(state, "admission"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
+requireElement("#cancel-standard-eval-task").addEventListener("click", () => cancelRemoteTask(state, "standardEval"));
 requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => modelCompare.cancelGapFill());
 stabilityGroupPicker.addEventListener("input", () => updateStabilityRequestTotal());
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
@@ -509,6 +513,7 @@ const testForms = createTestForms({
     admissionSubmit: admissionSubmit,
     admissionEstimate: admissionEstimate,
     admissionResult: admissionResult,
+    admissionProgress: admissionProgress,
     admissionBatchForm: admissionBatchForm,
     admissionBatchProfileSelect: admissionBatchProfileSelect,
     admissionBatchSubmit: admissionBatchSubmit,
@@ -536,9 +541,7 @@ const testForms = createTestForms({
     scenarioProgress: scenarioProgress,
   },
   deps: {
-    api,
     toast,
-    escapeHtml,
     createTaskFormController,
     requireSelectedValues,
     confirmAction,
@@ -634,6 +637,7 @@ createStandardEvalController({
   resultElement: standardEvalResult,
   nextActionsElement: standardNextActions,
   progressElement: standardEvalProgress,
+  taskProgressElement: standardEvalTaskProgress,
   state,
   estimateCost: estimateStandardCost,
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),

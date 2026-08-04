@@ -45,13 +45,16 @@ export async function api(path, options = {}) {
   return data;
 }
 
-export async function runRemoteTask(state, slot, type, payload, progressElement, { onCreated } = {}) {
+// onProgress：每次轮询拿到任务快照就回调一次，供调用方重绘自己的进度视图
+// （如标准评测的「模型 × 步骤」网格按 task.steps 重画）。它只是观察者，抛错不影响轮询。
+export async function runRemoteTask(state, slot, type, payload, progressElement, { onCreated, onProgress } = {}) {
   const task = await api("/api/tasks", {
     method: "POST",
     body: JSON.stringify({ type, payload }),
   });
   state.activeTasks[slot] = task.id;
   renderTaskProgress(progressElement, task);
+  notifyProgress(onProgress, task);
   onCreated?.(task);
 
   const MAX_POLL_MS = 45 * 60 * 1000; // 兜底：后端任务僵死(仍 running)时，前端不至于无限轮询
@@ -77,6 +80,7 @@ export async function runRemoteTask(state, slot, type, payload, progressElement,
         continue; // 瞬时抖动：继续轮询
       }
       renderTaskProgress(progressElement, current);
+      notifyProgress(onProgress, current);
       if (current.status === "completed") {
         // 任务完成自动弹报告（Web/Docker 无桌面也能看；受客户端开关控制）。
         maybeAutoOpenReport(current.result);
@@ -114,6 +118,17 @@ export async function cancelRemoteTask(state, slot) {
     toast("已请求取消任务。");
   } catch (error) {
     toast(`取消失败：${error.message}`, true);
+  }
+}
+
+// 进度回调是纯观察者：调用方的渲染逻辑出错绝不能中断轮询——一旦中断，后端任务
+// 仍在跑仍在计费，而前端会报失败诱导用户重跑（双花）。故在此吞掉异常。
+function notifyProgress(onProgress, task) {
+  if (!onProgress) return;
+  try {
+    onProgress(task);
+  } catch {
+    // 渲染失败不影响任务本身的等待与结果获取。
   }
 }
 

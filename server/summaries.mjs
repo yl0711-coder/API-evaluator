@@ -55,6 +55,15 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
   const outputChars = successRecords.map((item) => item.outputChars).filter(isFiniteNumber);
   const errorCounts = countErrors(failedRecords);
   const successRate = records.length > 0 ? successRecords.length / records.length : 0;
+  // 首次成功率（ADM-009 的成功率部分）：重试会把"首次 503、第二次成功"记成一次成功，
+  // 只看 successRate 会比真实用户的首次请求体验乐观。record.attempts 是实际发出的请求次数，
+  // attempts===1 且成功 = 首次就成功。
+  // 只要有一条记录缺 attempts 就返回 null——把缺失当成 1 会把未知说成"首次成功"，
+  // 那正是本项要修的假通过。延迟的双口径（首次 / 端到端）仍待 upstream-transport 改造。
+  const hasAttempts = records.length > 0 && records.every((item) => Number(item.attempts) >= 1);
+  const firstAttemptSuccessCount = hasAttempts ? successRecords.filter((item) => Number(item.attempts) === 1).length : null;
+  const firstAttemptSuccessRate = hasAttempts ? firstAttemptSuccessCount / records.length : null;
+  const recoveredCount = hasAttempts ? successRecords.length - firstAttemptSuccessCount : null;
   const p95TotalMs = percentile(totalTimes, 0.95);
   const recommendation = buildRecommendation(successRate, p95TotalMs, errorCounts);
   const usageTotals = aggregateUsage(records);
@@ -91,6 +100,12 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
     successRate,
     successRateText: formatPercent(successRate),
     successRateCi: proportionReport(successRecords.length, records.length),
+    // 双口径：successRate 是重试后的最终成功率，下面两个描述"没有重试兜底时"的表现。
+    // null 表示这批记录没有 attempts 信息，无法判断，不能当作首次全成功。
+    firstAttemptSuccessCount,
+    firstAttemptSuccessRate,
+    firstAttemptSuccessRateText: firstAttemptSuccessRate === null ? null : formatPercent(firstAttemptSuccessRate),
+    recoveredCount,
     avgFirstByteMs: Math.round(mean(firstByteTimes) || 0),
     avgTotalMs: Math.round(mean(totalTimes) || 0),
     p50TotalMs: percentile(totalTimes, 0.5),
