@@ -4,6 +4,7 @@
 import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath } from "./report-files.mjs";
+import { countSuiteUnits } from "./admission-suite-plan.mjs";
 
 // Owns remote task lifecycle only. It does not know how a stability or scenario
 // test works; callers inject runners so task state can be tested independently.
@@ -15,6 +16,8 @@ export function createTaskManager({
   runBatchStabilityTest,
   runScenarioTest,
   runLoadTest, // 压力测试 runner（server/load-test.mjs）
+  runAdmissionTest, // 单 API 准入 runner（server/test-runner.mjs）
+  runAdmissionSuite, // 一键准入复合任务编排器（server/admission-suite.mjs）
   normalizeProfileIds,
   normalizeScenarioIds,
   logTechnicalError,
@@ -22,19 +25,27 @@ export function createTaskManager({
   onRunComplete, // (result) => void：任务完成回调（用于高危报告提示等），best-effort
 }) {
   const tasks = new Map();
-  // scenario 任务去重键 → taskId（供「模型比对·补齐单方场景」防双花）：该功能逐个真实调用付费
-  // API，若某次轮询因网络抖动被前端误判失败，用户很容易对同一 {模型, 场景} 再点一次补齐。
-  // 必须由调用方在 payload.idempotencyKey 显式带上非空字符串才生效——绝不能按 profileIds/
-  // scenarioIds 的形状去猜「是不是补齐场景」：普通的「复杂场景测试」表单完全可以只选 1 个模型 +
-  // 1 个场景（并不罕见），而 tasks 这个 Map 是整个进程共享的内存态、不区分发起者/会话，
+  // 任务去重键 `${type}::${key}` → taskId，防重复发起造成的双花（这些任务每一次都真实调用
+  // 付费 API）。必须由调用方在 payload.idempotencyKey 显式带上非空字符串才生效——绝不能按
+  // profileIds/scenarioIds 的形状去猜「是不是补齐场景」：普通的「复杂场景测试」表单完全可以只选
+  // 1 个模型 + 1 个场景（并不罕见），而 tasks 这个 Map 是整个进程共享的内存态、不区分发起者/会话，
   // 按形状推断会把两个语义完全不同的请求（比如同一对模型+场景，但 repeats 不同）错误合并成一个，
   // 调用方会拿到别人那次任务的结果而不是自己发起的。显式 opt-in 才能保证只去重真正想去重的调用。
-  // 只做进程内最佳努力：不是跨进程/跨副本的强一致锁，多开一个后端实例仍可能重复创建。
-  const activeScenarioKeys = new Map();
-  function scenarioIdempotencyKey(type, payload) {
-    if (type !== "scenario") return null;
+  // 键按 type 分桶，不同类型的任务即便键字面相同也互不干扰。
+  //
+  // 【覆盖范围】刻意只保「同一次提交因创建请求失败而被重试」这一种，其余场景一律不管：
+  //   ✓ POST /api/tasks 已到达后端、任务已建好并开始计费，但响应在回程丢了（网络抖动 / 代理 502 /
+  //     后端重启瞬间）→ 前端报错、用户再点一次 → 带同一个 key 重试，拿回原任务，不会再跑一遍。
+  //   ✗ 刷新页面后重新提交：前端的 nonce 随页面状态一起没了，会建新任务（= 双花）。
+  //   ✗ 多标签页各自提交：两边 nonce 互相独立，会建新任务。
+  //   ✗ 任务跑完后再点一次：键在任务结束时即释放（见 createTask 末尾），视为用户主动重跑，理应放行。
+  //   ✗ 多后端副本 / 多进程：这是进程内内存态，不是跨副本的强一致锁。
+  // 后四种要真正堵住，得把幂等键落库并加 UNIQUE(owner_user_id, idempotency_key)（见
+  // 03-v0.7.3-准入测试修复实施方案.md），属于另一档改动，当前刻意不做。
+  const activeIdempotencyKeys = new Map();
+  function taskDedupKey(type, payload) {
     const key = String(payload?.idempotencyKey ?? "").trim();
-    return key || null;
+    return key ? `${normalizeTaskType(type)}::${key}` : null;
   }
   // 全局重测试并发上限，超出排队。避免多任务并发拖垮宿主或同机其它服务的资源。
   let runningSlots = 0;
@@ -112,9 +123,9 @@ export function createTaskManager({
   }
 
   async function createTask(type, payload) {
-    const scenarioKey = scenarioIdempotencyKey(type, payload);
-    if (scenarioKey) {
-      const existingId = activeScenarioKeys.get(scenarioKey);
+    const dedupKey = taskDedupKey(type, payload);
+    if (dedupKey) {
+      const existingId = activeIdempotencyKeys.get(dedupKey);
       const existing = existingId ? tasks.get(existingId) : null;
       // 命中且仍在跑/排队 → 直接把已有任务原样交回，绝不再起一个真实调用（防双花）。
       // 命中但已结束（completed/failed/cancelled）→ 视为过期键，走下面正常建新任务。
@@ -149,15 +160,15 @@ export function createTaskManager({
       errorId: "",
     };
     tasks.set(task.id, task);
-    if (scenarioKey) activeScenarioKeys.set(scenarioKey, task.id);
+    if (dedupKey) activeIdempotencyKeys.set(dedupKey, task.id);
     await appendTaskEvent(taskEventsFile, task, queued ? "queued" : "started", {
       payload: summarizeTaskPayload(task.type, payload, { normalizeProfileIds, normalizeScenarioIds }),
     });
     // Run in the background so HTTP handlers can return 202 immediately.
     // 经全局并发槽位调度：超出上限的任务会排队，等空闲槽位再执行。
     void runWithSlot(task, payload).finally(() => {
-      // 任务结束（无论成功/失败/取消）即释放去重键，让后续对同一 {模型,场景} 的补齐可以重新发起。
-      if (scenarioKey && activeScenarioKeys.get(scenarioKey) === task.id) activeScenarioKeys.delete(scenarioKey);
+      // 任务结束（无论成功/失败/取消）即释放去重键，让后续对同一目标的重跑可以重新发起。
+      if (dedupKey && activeIdempotencyKeys.get(dedupKey) === task.id) activeIdempotencyKeys.delete(dedupKey);
     });
     return task;
   }
@@ -176,6 +187,10 @@ export function createTaskManager({
         result = await runScenarioTest(payload, context);
       } else if (task.type === "load-test") {
         result = await runLoadTest(payload, context);
+      } else if (task.type === "admission") {
+        result = await runAdmissionTest(payload, context);
+      } else if (task.type === "admission-suite") {
+        result = await runAdmissionSuite(payload, context);
       } else {
         throw new Error("不支持的任务类型。");
       }
@@ -273,7 +288,15 @@ export function createTaskManager({
 }
 
 export function normalizeTaskType(type) {
-  if (type === "stability" || type === "batch-admission" || type === "batch-stability" || type === "scenario" || type === "load-test") {
+  if (
+    type === "stability" ||
+    type === "batch-admission" ||
+    type === "batch-stability" ||
+    type === "scenario" ||
+    type === "load-test" ||
+    type === "admission" ||
+    type === "admission-suite"
+  ) {
     return type;
   }
   throw new Error("不支持的任务类型。");
@@ -303,6 +326,20 @@ export function estimateTaskUnits(type, payload, { normalizeProfileIds, normaliz
     const scenarioCount = Math.max(1, normalizeScenarioIds(payload.scenarioIds).length);
     return profileCount * scenarioCount * clampNumber(payload.repeats, 1, 5, 1);
   }
+  if (type === "admission") {
+    // 只是【下限估算】，用于第一次进度刻度出现之前的百分比：真实用例数由 runAdmissionTest 跑起来
+    // 之后用 updateTaskProgress 上报（updateTaskProgress 的 Math.max 会把 totalUnits 修正上去）。
+    // 之所以不在这里复刻一份精确公式：真实条数还取决于模型家族指纹探针（4~5 条）与档位探针
+    // （仅 Claude + 本地有基线时才追加），这些在建任务时都还没解析出来。单一权威是 runner。
+    if (payload.packageLevel === "quick") return 5;
+    return payload.packageLevel === "deep" ? 12 : 11;
+  }
+  if (type === "admission-suite") {
+    // 进度单元 = 步骤数：每个必选模型 3 步（快速/稳定性/准入）+ 每个档位探针 1 步。
+    // 用步骤数而非请求数，是因为前端进度网格就是按步骤画的，两者对齐才不会出现
+    // 「进度条 60% 但网格只亮了 1 格」这种自相矛盾的显示。
+    return countSuiteUnits(payload);
+  }
   return 1;
 }
 
@@ -321,9 +358,28 @@ export function publicTask(task) {
     etaSeconds: task.etaSeconds || 0,
     message: task.message,
     cancelRequested: task.cancelRequested,
+    // 复合任务的逐步骤快照：前端每次轮询按它重绘「模型 × 步骤」进度网格。
+    // 只给轻量摘要字段——这个对象每 900ms 被拉一次，绝不能带原始响应体。
+    steps: Array.isArray(task.steps) ? task.steps.map(publicTaskStep) : undefined,
     result: task.result,
     error: task.error,
     errorId: task.errorId || "",
+  };
+}
+
+// executionStatus（跑完没有）与 verdict（达没达标）是两个正交字段，一起给前端。
+// 前端据此区分「执行失败」（红叉·平台问题）与「未通过」（红叉·渠道问题）——
+// 这两者混为一谈正是 v0.7.3 假通过的表现形式之一。
+function publicTaskStep(step) {
+  return {
+    groupKey: step.groupKey,
+    groupLabel: step.groupLabel,
+    stepName: step.stepName,
+    stepLabel: step.stepLabel,
+    isTierProbe: Boolean(step.isTierProbe),
+    executionStatus: step.executionStatus,
+    verdict: step.verdict ?? null,
+    summary: step.summary ?? "",
   };
 }
 
@@ -423,12 +479,51 @@ export function summarizeTaskPayload(type, payload, { normalizeProfileIds, norma
       requestConcurrency: clampNumber(payload.requestConcurrency || payload.concurrency, 1, 3, 1),
     };
   }
+  if (type === "admission") {
+    // 事件日志是运维记录，绝不落 key/base URL。只记形状：测的是哪档、要不要 AI 辅助分析。
+    return {
+      packageLevel: payload.packageLevel || "standard",
+      useAiReportAnalysis: Boolean(payload.useAiReportAnalysis),
+    };
+  }
+  if (type === "admission-suite") {
+    // 事件日志是运维记录，绝不落 key/base URL。只记形状：测了几个模型、跑不跑档位探测。
+    return {
+      profileCount: normalizeProfileIds(payload.profileIds).length,
+      tierProbeCount: Array.isArray(payload.tierProbeModels) ? payload.tierProbeModels.length : 0,
+      groupCount: Array.isArray(payload.groups) ? payload.groups.length : 0,
+    };
+  }
   return {};
 }
 
 export function summarizeTaskResult(result) {
   if (!result || typeof result !== "object") {
     return {};
+  }
+  if (result.type === "admission-suite") {
+    // 事件日志只记结论与报告清单，不记逐步骤明细（明细在任务对象里，前端轮询可取）。
+    return {
+      type: result.type,
+      policyVersion: result.policyVersion,
+      conclusion: result.conclusion,
+      modelCount: Array.isArray(result.models) ? result.models.length : 0,
+      reports: result.reports, // 每模型一篇（供桌面逐篇打开）
+    };
+  }
+  if (result.type === "admission") {
+    // 事件日志只记结论级字段，不记逐用例明细（明细在报告文件里）。
+    return {
+      type: result.type,
+      runId: result.runId,
+      grade: result.grade,
+      score: result.score,
+      verdict: result.verdict?.verdict,
+      successRateText: result.successRateText,
+      reportPath: result.reportPath,
+      reportHtmlPath: result.reportHtmlPath,
+      aiAnalysisHtmlPath: result.aiAnalysisHtmlPath,
+    };
   }
   if (result.type === "scenario" || result.runId?.startsWith?.("scenario-")) {
     return {
@@ -463,9 +558,26 @@ export function summarizeTaskResult(result) {
   };
 }
 
+/**
+ * 派生一个「只借用取消信号、不许写进度计数器」的子上下文，给复合任务里被嵌套调用的 runner 用。
+ * 共享同一个 task 对象引用，所以 assertTaskNotCancelled 与 abortController.signal 照常生效。
+ */
+export function nestedTaskContext(taskContext) {
+  return { ...(taskContext || {}), nestedProgress: true };
+}
+
 export function updateTaskProgress(taskContext, completedUnits, totalUnits, message) {
   const task = taskContext?.task;
   if (!task || task.status !== "running") {
+    return;
+  }
+  // 嵌套 runner 按【自己的】单元空间上报：稳定性说"3/9 轮"，而外层 admission-suite 的总单元是
+  // "6 个步骤"。若放它写计数器，下面的 Math.max 会把 totalUnits 从 6 抬到 9、completedUnits 也被
+  // 它的轮次数顶上去，进度条与「模型 × 步骤」网格当场互相矛盾（实测：6 步的套件跑完显示 9/9、99%）。
+  // 所以嵌套上下文只借用 message——"稳定性测试进行中：3/9 轮"对用户有用，让它照常显示；
+  // 计数器由外层编排器独占。
+  if (taskContext.nestedProgress) {
+    task.message = message || task.message;
     return;
   }
   task.completedUnits = Math.max(task.completedUnits || 0, Number(completedUnits) || 0);

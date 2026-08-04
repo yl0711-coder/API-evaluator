@@ -55,9 +55,9 @@ export function estimateLoadTestCost(payload) {
 
 // 标准评测新流程（每个选中模型顺序执行、不并发）：
 //   快速测试(=/api/tests/quick-verify，连通+标称一致性+4个指纹探针=6次，输出封顶96 token)
-//   + 稳定性(固定10轮) + 标准准入(取代场景测试)。
+//   + 稳定性(3 组预设文案各 3 遍，共 9 轮：基础稳定性 + 结构化输出 + 编程场景) + 标准准入(取代场景测试)。
 // 勾选“这是 Claude 渠道”时，额外对 4 个固定新档位模型各跑一次快速准入（临时探测，不计入 modelNames）。
-const STANDARD_STABILITY_ROUNDS = 10;
+const STANDARD_STABILITY_ROUNDS = 9;
 const QUICK_VERIFY_REQUESTS = 6; // 见 server/test-runner.mjs runQuickVerify：1 连通 + 1 标称一致性 + 4 基础指纹探针
 const CLAUDE_TIER_PROBE_MODELS = ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6"];
 
@@ -101,7 +101,7 @@ export function estimateStandardCost(payload) {
     lowTokens,
     highTokens,
     risk: requests >= 60 ? "中高" : requests >= 24 ? "中" : "低",
-    note: `标准评测会对选中的 ${modelCount} 个模型逐个（不并发）依次执行快速测试、10 轮稳定性测试和标准准入评测${isClaudeChannel ? "，并额外对 4 个 Claude 新档位模型做快速准入" : ""}。`,
+    note: `标准评测会对选中的 ${modelCount} 个模型逐个（不并发）依次执行快速测试、稳定性测试（3 组预设文案各 3 遍，共 ${STANDARD_STABILITY_ROUNDS} 轮）和标准准入评测${isClaudeChannel ? "，并额外对 4 个 Claude 新档位模型做快速准入" : ""}。`,
   };
   // 每个模型实际会各触发 2 次 AI 分析（稳定性一次 + 标准准入一次）；Claude 档位快速准入探测
   // 不支持 AI 分析（调用时未传 useAiReportAnalysis），不计入此项。

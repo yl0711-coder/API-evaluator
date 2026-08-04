@@ -18,6 +18,7 @@ import {
   collectHighSensitivityFindings,
   buildReviewSection,
   buildReportAppendix,
+  buildTemperatureStrippedLines,
 } from "./report-authority.mjs";
 import {
   compressAgedReportFiles,
@@ -37,6 +38,7 @@ export {
   collectHighSensitivityFindings,
   buildReviewSection,
   buildReportAppendix,
+  buildTemperatureStrippedLines,
   compressAgedReportFiles,
   readReportFileText,
   saveAiAnalysisReport,
@@ -797,9 +799,14 @@ export function formatAdmissionReport(summary, records, options = {}) {
     "",
     "## 3. 关键指标",
     "",
+    // 放在本节最前：手填温度被摘掉时，下面每一个数字都产自模型默认温度而非用户所填的值，
+    // 得先说清这个前提，读者才不会把整节读成「我设的那个温度下的表现」。准入报告没有溯源头
+    // （另三类报告有，那一份写在 buildReportAuthorityHeader 里），故在此单独展开同一份措辞。
+    ...buildTemperatureStrippedLines(summary),
     `- 请求数：${summary.requestCount}（逻辑测试用例数）`,
     `- 实际上游请求数（计费口径）：${formatBilledRequests(summary.upstreamUsage)}`,
     `- 成功率：${summary.successRateText} (${summary.successCount}/${summary.requestCount})`,
+    `- 首次成功率（不含重试救回）：${summary.firstAttemptSuccessRateText ?? "未能统计（记录缺重试次数）"}${summary.recoveredCount ? `，另有 ${summary.recoveredCount} 次靠重试才成功` : ""}`,
     `- 平均耗时：${summary.avgTotalMs ?? "-"} ms`,
     `- 慢请求参考 P95：${summary.p95TotalMs ?? "-"} ms`,
     `- 输入 tokens 合计：${summary.inputTokens ?? "-"}（仅逻辑用例）`,

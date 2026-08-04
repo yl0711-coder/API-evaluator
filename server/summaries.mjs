@@ -40,6 +40,14 @@ function buildStabilityGroupBreakdown(records) {
   });
 }
 
+// 手填温度被传输层摘掉的请求数。该模型拒收自定义 temperature（进程级记忆，见 upstream-transport.mjs
+// 的 TEMPERATURE_UNSUPPORTED_MODELS），这些请求实际跑的是模型默认温度、而非用户所填的值。
+// 必须在汇总里留痕：否则用户会把报告数字读成「我设的那个温度下的表现」。
+// 准入路径（server/test-runner.mjs 的 buildAdmissionSummary）也有温度入口，同样要留痕，故导出。
+export function countTemperatureStripped(records) {
+  return records.filter((item) => item.temperatureStripped).length;
+}
+
 export function buildStabilitySummary({ runId, profile, records, rounds, concurrency, prompt, startedAt, endedAt }) {
   const successRecords = records.filter((item) => item.success);
   const failedRecords = records.filter((item) => !item.success);
@@ -48,6 +56,15 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
   const outputChars = successRecords.map((item) => item.outputChars).filter(isFiniteNumber);
   const errorCounts = countErrors(failedRecords);
   const successRate = records.length > 0 ? successRecords.length / records.length : 0;
+  // 首次成功率（ADM-009 的成功率部分）：重试会把"首次 503、第二次成功"记成一次成功，
+  // 只看 successRate 会比真实用户的首次请求体验乐观。record.attempts 是实际发出的请求次数，
+  // attempts===1 且成功 = 首次就成功。
+  // 只要有一条记录缺 attempts 就返回 null——把缺失当成 1 会把未知说成"首次成功"，
+  // 那正是本项要修的假通过。延迟的双口径（首次 / 端到端）仍待 upstream-transport 改造。
+  const hasAttempts = records.length > 0 && records.every((item) => Number(item.attempts) >= 1);
+  const firstAttemptSuccessCount = hasAttempts ? successRecords.filter((item) => Number(item.attempts) === 1).length : null;
+  const firstAttemptSuccessRate = hasAttempts ? firstAttemptSuccessCount / records.length : null;
+  const recoveredCount = hasAttempts ? successRecords.length - firstAttemptSuccessCount : null;
   const p95TotalMs = percentile(totalTimes, 0.95);
   const recommendation = buildRecommendation(successRate, p95TotalMs, errorCounts);
   const usageTotals = aggregateUsage(records);
@@ -84,6 +101,12 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
     successRate,
     successRateText: formatPercent(successRate),
     successRateCi: proportionReport(successRecords.length, records.length),
+    // 双口径：successRate 是重试后的最终成功率，下面两个描述"没有重试兜底时"的表现。
+    // null 表示这批记录没有 attempts 信息，无法判断，不能当作首次全成功。
+    firstAttemptSuccessCount,
+    firstAttemptSuccessRate,
+    firstAttemptSuccessRateText: firstAttemptSuccessRate === null ? null : formatPercent(firstAttemptSuccessRate),
+    recoveredCount,
     avgFirstByteMs: Math.round(mean(firstByteTimes) || 0),
     avgTotalMs: Math.round(mean(totalTimes) || 0),
     p50TotalMs: percentile(totalTimes, 0.5),
@@ -102,6 +125,7 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
     groups,
     tokenAudit,
     tokenAuditFindings: tokenAudit.flags || [],
+    temperatureStrippedCount: countTemperatureStripped(records),
     ...economics,
     actualConsumption: buildRunConsumption(profile, records),
     errorCounts,
@@ -186,6 +210,7 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
     reasoningTokens: usageTotals.reasoningTokens,
     tokenAudit,
     tokenAuditFindings: tokenAudit.flags || [],
+    temperatureStrippedCount: countTemperatureStripped(records),
     ...economics,
     errorCounts,
     diagnostics: buildErrorDiagnostics(errorCounts),
@@ -247,6 +272,10 @@ export function buildScenarioSummary({
       avgQualityScore: p.avgQualityScore,
       p95TotalMs: p.p95TotalMs,
       recommendation: p.recommendation,
+      // 手填温度被摘的请求数：digest 是前端唯一可靠来源（results/records 会被任务通道剥掉），
+      // 提示要显示就必须在这里带上。
+      temperatureStrippedCount: p.temperatureStrippedCount || 0,
+      caseCount: p.caseCount, // 上面那条提示的分母（「N/总数 次请求」）
     })),
     results: profileResults,
   };

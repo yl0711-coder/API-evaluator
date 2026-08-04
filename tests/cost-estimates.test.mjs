@@ -133,11 +133,11 @@ test("estimateAdmissionBatchCost：多渠道逐个累加请求数（单渠道内
 });
 
 // ---- 标准评测 ----
-test("estimateStandardCost：单模型 = 6(快速测试/quick-verify) + 10(固定稳定性轮数) + 标准准入(11)", () => {
+test("estimateStandardCost：单模型 = 6(快速测试/quick-verify) + 9(3组预设文案×3轮稳定性) + 标准准入(11)", () => {
   const e = estimateStandardCost({ modelNames: ["demo-model"] });
   const admission = estimateAdmissionCost({ packageLevel: "standard", modelName: "demo-model" });
-  assert.equal(e.requests, 6 + 10 + admission.requests);
-  assert.equal(e.risk, "中"); // 27 次请求 ≥ 24 门槛
+  assert.equal(e.requests, 6 + 9 + admission.requests);
+  assert.equal(e.risk, "中"); // 26 次请求 ≥ 24 门槛
 });
 
 test("estimateStandardCost：多模型请求数按模型数线性叠加（顺序执行、不并发不影响预估）", () => {

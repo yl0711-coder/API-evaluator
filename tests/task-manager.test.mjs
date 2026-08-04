@@ -11,7 +11,7 @@ import test, { after } from "node:test";
 const MODULE_DATA_DIR = mkdtempSync(join(tmpdir(), "evaluator-tm-datadir-"));
 const PREV_DATA_DIR = process.env.EVALUATOR_DATA_DIR;
 process.env.EVALUATOR_DATA_DIR = MODULE_DATA_DIR;
-const { assertTaskNotCancelled, createTaskManager } = await import("../server/task-manager.mjs");
+const { assertTaskNotCancelled, createTaskManager, estimateTaskUnits, updateTaskProgress } = await import("../server/task-manager.mjs");
 after(async () => {
   if (PREV_DATA_DIR === undefined) delete process.env.EVALUATOR_DATA_DIR;
   else process.env.EVALUATOR_DATA_DIR = PREV_DATA_DIR;
@@ -207,6 +207,99 @@ test("scenario 任务去重：带相同 idempotencyKey 的任务仍在跑时，�
   }
 });
 
+// 回归：一键标准准入是最贵的流程（每个模型 3 步、几十次真实上游调用）。若 POST /api/tasks 已到达
+// 后端、任务建好并开始计费，但响应在回程丢了，前端会报失败诱使用户再点一次 → 双花。带同一个
+// idempotencyKey 的重试必须拿回原任务。此前该去重被 `type !== "scenario"` 挡在门外，只有场景补齐能用。
+test("admission-suite 任务去重：带相同 idempotencyKey 的任务仍在跑时，重复创建返回同一个任务", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-suite-dedup-test-"));
+  let releaseRunner;
+  let suiteRuns = 0;
+  const gate = new Promise((resolve) => {
+    releaseRunner = resolve;
+  });
+  try {
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runStabilityTest: async () => ({}),
+      runBatchAdmissionTest: async () => ({}),
+      runBatchStabilityTest: async () => ({}),
+      runScenarioTest: async () => ({}),
+      runAdmissionSuite: async () => {
+        suiteRuns += 1;
+        await gate;
+        return { type: "admission-suite", conclusion: "accepted", steps: [], models: [] };
+      },
+    });
+
+    const payload = {
+      profileIds: ["p1"],
+      modelNames: ["claude-sonnet-5"],
+      tierProbeModels: [],
+      idempotencyKey: "standard-eval:nonce-abc",
+    };
+    const first = await manager.createTask("admission-suite", payload);
+    const second = await manager.createTask("admission-suite", payload);
+    assert.equal(second.id, first.id, "重试应拿回同一个 in-flight 任务，不新建");
+    assert.equal(manager.tasks.size, 1, "只应存在一个任务");
+
+    releaseRunner();
+    await waitFor(() => first.status === "completed");
+    // 真正要防的是钱：编排器只能被跑起来一次。
+    assert.equal(suiteRuns, 1, `准入编排器只应执行 1 次，实际 ${suiteRuns} 次`);
+
+    // 任务已结束 → 键释放，再点视为用户主动重跑，应当放行。
+    const third = await manager.createTask("admission-suite", payload);
+    assert.notEqual(third.id, first.id, "上一轮已结束，应能正常发起新一轮");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// 回归：去重键按 type 分桶。两个类型不同的任务即便幂等键字面相同，也绝不能互相合并——
+// 合并会让调用方拿到一个类型完全不同的 result，前端按自己的形状去读必然崩或显示错数据。
+test("任务去重按类型分桶：键相同但 type 不同的任务各自新建", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-dedup-bucket-test-"));
+  let releaseRunner;
+  const gate = new Promise((resolve) => {
+    releaseRunner = resolve;
+  });
+  try {
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runStabilityTest: async () => {
+        await gate;
+        return {};
+      },
+      runBatchAdmissionTest: async () => ({}),
+      runBatchStabilityTest: async () => ({}),
+      runScenarioTest: async () => {
+        await gate;
+        return { type: "scenario", results: [] };
+      },
+    });
+
+    const sharedKey = "collision-test-key";
+    const scenarioTask = await manager.createTask("scenario", {
+      profileIds: ["p1"],
+      scenarioIds: ["s1"],
+      idempotencyKey: sharedKey,
+    });
+    const stabilityTask = await manager.createTask("stability", {
+      profileIds: ["p1"],
+      rounds: 1,
+      idempotencyKey: sharedKey,
+    });
+    assert.notEqual(stabilityTask.id, scenarioTask.id, "类型不同就不该合并，哪怕幂等键一模一样");
+
+    releaseRunner();
+    await waitFor(() => scenarioTask.status === "completed" && stabilityTask.status === "completed");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
 // 回归：去重键必须由调用方显式声明（payload.idempotencyKey），绝不能按 profileIds/scenarioIds
 // 的形状去猜「是不是补齐场景」——否则会把「普通复杂场景测试表单只选了 1 模型 1 场景」这种
 // 完全正常、语义不同的请求，跟同时发生的补齐流程错误合并成一个任务。
@@ -336,6 +429,132 @@ test("recent task recovery marks previous running tasks as interrupted", async (
   assert.equal(recentTasks[0].status, "interrupted");
   assert.equal(recentTasks[0].recoverable, false);
   assert.match(recentTasks[0].message, /任务已中断/);
+});
+
+// admission-suite 是唯一一个「一个任务里跑多步、每步都有独立裁决」的类型，接线点比别的类型多：
+// 类型白名单、进度单元估算、runTask 分发、publicTask 的 steps[] 快照。任何一处漏接的表现都是
+// 前端轮询到一个没有 steps 的任务、把网格画成空白，所以在这里一起锁住。
+test("admission-suite：任务分发、进度单元估算与 steps[] 快照都接到了 task-manager 上", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-suite-task-"));
+  try {
+    const { createAdmissionSuiteRunner } = await import("../server/admission-suite.mjs");
+    const runAdmissionSuite = createAdmissionSuiteRunner({
+      runQuickVerify: async () => ({ cases: [{ id: "connectivity", passed: true }], successRate: 1 }),
+      runStabilityTest: async () => ({
+        successCount: 9,
+        failureCount: 0,
+        successRate: 1,
+        p95TotalMs: 5000,
+        errorCounts: {},
+        firstAttemptSuccessRate: 1,
+      }),
+      runAdmissionTest: async () => ({
+        score: 90,
+        grade: "A",
+        verdict: { verdict: "passed", blocking: true, summary: "硬门槛全部通过。" },
+      }),
+    });
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runAdmissionSuite,
+    });
+
+    const task = await manager.createTask("admission-suite", {
+      profileIds: ["p1", "p2"],
+      modelNames: ["m1", "m2"],
+    });
+    // 进度单元 = 步骤数（2 模型 × 3 步），不是请求数——否则进度条会和步骤网格互相矛盾。
+    assert.equal(task.totalUnits, 6);
+
+    await waitFor(() => task.status === "completed");
+    assert.equal(task.progress, 100);
+    assert.equal(task.result.conclusion, "accepted");
+
+    const view = manager.publicTask(task);
+    assert.equal(view.steps.length, 6);
+    assert.deepEqual(
+      view.steps.map((step) => step.executionStatus),
+      Array(6).fill("completed"),
+    );
+    // 快照只带轻量摘要字段：它每 900ms 被轮询一次，塞原始响应体会把内存和带宽吃光。
+    assert.deepEqual(Object.keys(view.steps[0]).sort(), [
+      "executionStatus",
+      "groupKey",
+      "groupLabel",
+      "isTierProbe",
+      "stepLabel",
+      "stepName",
+      "summary",
+      "verdict",
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// 单 API 准入从同步端点改为异步任务（线上 standard 档 11-12 条用例串行、每条最长 300s，
+// 反代 60s 就掐断 → 前端报「连接不上本地服务」而后端仍在跑仍在计费 → 用户重跑 = 双花）。
+// 这里锁住四个接线点：类型白名单、进度单元估算、runTask 分发、事件日志只记形状不落 key。
+test("admission：单 API 准入作为异步任务分发，进度按用例数推进，事件日志不落敏感字段", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-admission-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({
+      taskEventsFile,
+      ...normalizers,
+      runAdmissionTest: async (payload, context) => {
+        // 建任务时的 11 只是下限估算；真实条数由 runner 上报修正（这里模拟 12 条）。
+        for (let i = 1; i <= 12; i += 1) {
+          updateTaskProgress(context, i, 12, `准入评测进行中：${i}/12 项用例`);
+        }
+        return {
+          type: "admission",
+          runId: "admission-ok",
+          grade: "A",
+          score: 92,
+          successRateText: "100%",
+          verdict: { verdict: "passed", summary: "硬门槛全部通过。" },
+          reportHtmlPath: join(dir, "report.html"),
+          cases: [{ id: "connectivity", name: "连通与模型响应", passed: true }],
+          packageLevel: payload.packageLevel,
+        };
+      },
+    });
+
+    const task = await manager.createTask("admission", {
+      profileId: "demo",
+      packageLevel: "standard",
+      // 表单里的自由文本字段：绝不能出现在事件日志里。
+      prompt: "hello sk-should-not-be-written-in-full",
+    });
+
+    await waitFor(() => task.status === "completed");
+    assert.equal(task.totalUnits, 12, "runner 上报的真实用例数应把建任务时的下限估算修正上去");
+    assert.equal(task.progress, 100);
+    assert.equal(task.result.grade, "A");
+    // 前端 renderAdmissionResult 靠 result.cases 画逐用例表格，不能被公开结果裁掉。
+    assert.equal(task.result.cases.length, 1);
+
+    const raw = await readFile(taskEventsFile, "utf8");
+    assert.match(raw, /"type":"admission"/);
+    assert.match(raw, /"packageLevel":"standard"/);
+    assert.match(raw, /"grade":"A"/);
+    assert.doesNotMatch(raw, /sk-should-not-be-written-in-full/);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// 建任务时的单元数只是【下限】：真实条数还取决于模型家族指纹探针与 Claude 档位探针，
+// 那些在建任务时还没解析出来，由 runner 跑起来后上报修正（见上一个用例）。刻意留低不留高——
+// 估高了进度条会卡在中途永远走不满。
+test("admission：进度单元按测试包档位给下限估算", () => {
+  const opts = normalizers;
+  assert.equal(estimateTaskUnits("admission", { packageLevel: "quick" }, opts), 5);
+  assert.equal(estimateTaskUnits("admission", { packageLevel: "standard" }, opts), 11);
+  assert.equal(estimateTaskUnits("admission", { packageLevel: "deep" }, opts), 12);
+  assert.equal(estimateTaskUnits("admission", {}, opts), 11, "没传档位按 standard 兜底（与后端同口径）");
 });
 
 async function waitFor(predicate) {

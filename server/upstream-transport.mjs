@@ -123,6 +123,10 @@ export async function executeUpstreamRequest(
     normalizedError: "",
     toolCall: null,
     streamValidation: null,
+    // 「用户手填的 temperature 被本层摘掉了」。只在 profile.temperatureOverride 非空时才置位——
+    // 摘掉工具自己的默认 0.2 属于内部自愈、无需惊动用户；摘掉用户明确填的值必须如实上报，
+    // 否则报告里的数字来自一个和用户所填不同的温度，却毫无痕迹。
+    temperatureStripped: false,
   };
   let attempts = 0; // 实际发出的请求次数（含重试），写进记录便于诊断
   // 是否流式：取自【真正发出去的请求体】，不取调用方声明，两者不会脱节。
@@ -150,6 +154,7 @@ export async function executeUpstreamRequest(
       normalizedError: r.normalizedError,
       toolCall: r.toolCall,
       streamValidation: r.streamValidation,
+      temperatureStripped: r.temperatureStripped,
       attempts,
       successOverride: computeSuccess(r),
     });
@@ -176,6 +181,8 @@ export async function executeUpstreamRequest(
   const tempKey = `${profile.baseUrl}|${profile.defaultModel}`;
   if (request.body?.temperature !== undefined && TEMPERATURE_UNSUPPORTED_MODELS.has(tempKey)) {
     delete request.body.temperature;
+    // 这条记忆是进程级的，无法区分「上次是谁填的温度」；此处按本次调用是否带了用户覆盖来判定。
+    if (profile.temperatureOverride != null) r.temperatureStripped = true;
   }
   // 同上：已知不认 stream_options 的模型，流式请求首发就不带（拿不到上游 usage，调用方回退字符估算）。
   if (request.body?.stream_options !== undefined && STREAM_OPTIONS_UNSUPPORTED_MODELS.has(tempKey)) {
@@ -189,6 +196,9 @@ export async function executeUpstreamRequest(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
     // 重置本次尝试的瞬时字段，避免上次失败残留泄漏到下一次。
+    // totalMs 也必须清：catch 分支写的是 `r.totalMs ?? 实测值`，不清就会被上一次尝试的旧值
+    // 拦住（第 1 次慢 429 → 第 2 次被取消，记的却是第 1 次的耗时），把假延迟喂进 P50/P95。
+    r.totalMs = null;
     r.firstByteMs = null;
     r.firstTokenMs = null;
     r.statusCode = null;
@@ -207,8 +217,9 @@ export async function executeUpstreamRequest(
     // 确定性重配：上游拒收某个我方可选参数（temperature / stream_options），已就地删掉并原样重试。
     // 这不是负载信号、也不退避，故 noRetry（压测）也应放行——否则压测首批请求会白白判失败。
     let reconfigured = false;
+    // 计时起点提到 try 外：catch 分支也要拿它算真实耗时（见下方 r.totalMs）。
+    const started = performance.now();
     try {
-      const started = performance.now();
       const response = await fetch(request.url, {
         method: "POST",
         headers: request.headers,
@@ -251,6 +262,8 @@ export async function executeUpstreamRequest(
           // 并记住该模型，让后续请求首发就不带。
           TEMPERATURE_UNSUPPORTED_MODELS.add(tempKey);
           delete request.body.temperature;
+          // 同上：只有用户明确填过温度才算「被摘」，摘默认值是内部自愈、不必上报。
+          if (profile.temperatureOverride != null) r.temperatureStripped = true;
           retryable = true;
           reconfigured = true;
           retryAfterMs = 0; // 确定性重配，不退避
@@ -273,7 +286,10 @@ export async function executeUpstreamRequest(
       // 不进 requests.jsonl（同 responseText，见 finalizeRecord）。
       if (options.keepRawResponse && !r.responseText) r.rawResponse = raw;
     } catch (error) {
-      r.totalMs = r.totalMs ?? timeoutMs;
+      // 记真实耗时，不再拿 timeoutMs 顶替：真超时两者本来就≈相等，但「用户取消」是提前中断的，
+      // 一条实际 1-2 秒的记录会被写成 total_ms=300000，污染所有基于 test_requests.total_ms 的
+      // 延迟统计（P50/P95、趋势、回归对比）。实测取消准入任务时复现过。
+      r.totalMs = r.totalMs ?? Math.round(performance.now() - started);
       // undici 的 fetch reject 常是 "fetch failed"，真正的 errno 在 error.cause.code（如 ECONNRESET）。
       // 附到 rawError，供压测区分网络错误是本机侧还是上游侧。
       const errno = error?.cause?.code || error?.code || "";

@@ -597,6 +597,13 @@ code {
   border-color: rgba(var(--bad-rgb), 0.52);
 }
 
+/* 「跑完了但没达到标准」介于通过与失败之间（verdict=warning/indeterminate）。
+   复用 accent——工具里 watch 级提示一直用它（.watch-card），不新增第 4 个语义色：
+   styles.css 曾因两套调色板混用返工过三轮。 */
+.flow-step.warn {
+  border-color: rgba(var(--accent-rgb), 0.5);
+}
+
 .flow-step.skipped {
   opacity: 0.72;
 }
@@ -607,6 +614,10 @@ code {
 
 .flow-step.done span {
   background: var(--good);
+}
+
+.flow-step.warn span {
+  background: var(--accent);
 }
 
 .flow-step.failed span {
@@ -698,6 +709,16 @@ code {
 /* 稳定性测试表单：「测试轮数」改为输入框后带 field-hint 更高，默认 align-items: stretch
    会把同行「并发数」一列连同其下拉一起拉高、下拉随之下移错位。改顶端对齐（同上两处）。 */
 #stability-test-form {
+  align-items: start;
+}
+
+/* 高级设置内的两列网格：「温度」列带较长 field-hint 更高，默认 align-items: stretch 会把同行
+   另一列连同其下拉一起拉高、下拉随之错位。改顶端对齐（同上三处）。
+   刻意逐个点名而不写通配的 .advanced-settings-body：模型目标表单的高级设置里没有温度框、
+   各列高度本来就相近，把它一起改了属于顺带动无关区域。 */
+#stability-test-form .advanced-settings-body,
+#scenario-test-form .advanced-settings-body,
+[data-mc-gap-options] .advanced-settings-body {
   align-items: start;
 }
 
@@ -4230,6 +4251,33 @@ textarea:focus {
   gap: 16px;
   align-items: end;
 }
+#auto-test-config .atc-fixed-times {
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+#auto-test-config .atc-fixed-time-controls,
+#auto-test-config .atc-fixed-time-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+#auto-test-config .atc-fixed-time-controls label {
+  min-width: 110px;
+}
+#auto-test-config .atc-fixed-time-list {
+  display: grid;
+  gap: 8px;
+}
+#auto-test-config .atc-fixed-time-row {
+  align-items: center;
+  justify-content: space-between;
+  max-width: 320px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
 #auto-test-config .atc-cron-preview-line {
   grid-column: 1 / -1;
 }
@@ -4474,6 +4522,30 @@ body.better-lighting::after {
 .mc-compare-scroll tbody tr:last-child th,
 .mc-compare-scroll tbody tr:last-child td {
   border-bottom: 0;
+}
+
+/* 综合相对分胜方沿用基准图的列级强调：整列被低饱和底色和圆角描边包住。 */
+.mc-compare-summary.mc-overall-winner-a thead th:nth-child(2),
+.mc-compare-summary.mc-overall-winner-a tbody td:nth-child(2),
+.mc-compare-summary.mc-overall-winner-b thead th:nth-child(3),
+.mc-compare-summary.mc-overall-winner-b tbody td:nth-child(3) {
+  background: rgba(98, 219, 167, 0.09);
+  border-left: 2px solid rgba(98, 219, 167, 0.72);
+  border-right: 2px solid rgba(98, 219, 167, 0.72);
+}
+
+.mc-compare-summary.mc-overall-winner-a thead th:nth-child(2),
+.mc-compare-summary.mc-overall-winner-b thead th:nth-child(3) {
+  border-top: 2px solid rgba(98, 219, 167, 0.72);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
+.mc-compare-summary.mc-overall-winner-a tbody tr:last-child td:nth-child(2),
+.mc-compare-summary.mc-overall-winner-b tbody tr:last-child td:nth-child(3) {
+  border-bottom: 2px solid rgba(98, 219, 167, 0.72);
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
 }
 
 .mc-compare-scroll thead th:first-child,

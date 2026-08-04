@@ -9,7 +9,31 @@ export const SUSPECTED_WORDING_DISCLAIMER =
   "本报告涉及身份/纯度/计费的判断均为基于软件黑盒的概率性结论，仅表述为“疑似/证据支持/需上游解释”，" +
   "不构成“确定造假”的事实认定；量化降级（如 8-bit）等情形存在检测盲区。";
 
+// 手填温度被摘掉的请求总数。准入/稳定性把它放在汇总顶层；场景是多 API 汇总，顶层没有这个数，
+// 得把各 API 的加起来（profileDigest 是前端/报告都能拿到的那份，results 会被任务通道剥掉）。
+function countStrippedTemperature(summary = {}) {
+  const top = Number(summary.temperatureStrippedCount) || 0;
+  if (top > 0) return top;
+  const perProfile = Array.isArray(summary.profileDigest) ? summary.profileDigest : summary.results;
+  if (!Array.isArray(perProfile)) return 0;
+  return perProfile.reduce((sum, item) => sum + (Number(item?.temperatureStrippedCount) || 0), 0);
+}
+
+// 温度失效说明行；没发生就返回空数组，可直接展开进任意报告的行数组。
+// 准入报告结构与其它三类不同（没有溯源头），故单独展开进它的「关键指标」节，共用这一份措辞。
+export function buildTemperatureStrippedLines(summary = {}) {
+  const count = countStrippedTemperature(summary);
+  if (count <= 0) return [];
+  return [
+    `- 采样温度：**手填温度未生效**（${count} 次请求的 temperature 被上游拒收并自动去掉，` +
+      `这部分实际使用模型默认温度）。本报告数字请按“模型默认温度下的表现”解读。`,
+  ];
+}
+
 // 报告头 7 项版本/溯源信息。缺失项以占位符渲染，绝不留空。
+// 另有一项条件行：手填温度被上游拒收摘掉时追加「采样温度」说明——那种情况下报告里所有数字
+// 都产自模型默认温度而非用户所填的值，不写进报告等于让读者按错误的前提解读全篇。
+// 放在溯源头而非各 formatter：三类报告（准入/稳定性/场景）共用这个头，一处覆盖全部。
 export function buildReportAuthorityHeader(summary = {}, options = {}) {
   const meta = options.meta || summary.meta || {};
   return [
@@ -22,6 +46,7 @@ export function buildReportAuthorityHeader(summary = {}, options = {}) {
     `- 评测人：${meta.evaluator || "-"}`,
     `- 复核人：${meta.reviewer || "待复核"}`,
     `- 复核状态：${meta.reviewStatus || "待复核"}`,
+    ...buildTemperatureStrippedLines(summary),
     "",
   ];
 }

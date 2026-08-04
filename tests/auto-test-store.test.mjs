@@ -31,18 +31,27 @@ test("normalizeJob：白名单 + 类型强制；周期允许小数；kind 限四
     kind: "stability",
     periodHours: "6.9",
     enabled: true,
-    options: { rounds: "999", concurrency: 0, packageLevel: "bad", repeats: 3, prompt: "x".repeat(5000), promptPresetId: "custom" },
+    options: {
+      concurrency: 0,
+      packageLevel: "bad",
+      repeats: 3,
+      groups: [
+        { presetId: "custom", prompt: "x".repeat(5000), repeats: "999" },
+        { presetId: "basic", prompt: "", repeats: 0 },
+      ],
+    },
     junk: "dropped",
   });
   assert.equal(job.targetId, "mt_abc");
   assert.equal(job.kind, "stability");
   assert.equal(job.periodHours, 6.9, "保留小数");
-  assert.equal(job.options.rounds, 100, "clamp 上限");
   assert.equal(job.options.concurrency, 1, "clamp 下限");
   assert.equal(job.options.packageLevel, "standard", "非法档位回退");
   assert.equal(job.options.repeats, 3);
-  assert.equal(job.options.promptPresetId, "custom", "保留预设 id");
-  assert.equal(job.options.prompt.length, 4000, "文案截断到 4000");
+  assert.equal(job.options.groups.length, 1, "repeats=0 的分组被丢弃");
+  assert.equal(job.options.groups[0].presetId, "custom", "保留预设 id");
+  assert.equal(job.options.groups[0].repeats, 20, "clamp 上限");
+  assert.equal(job.options.groups[0].prompt.length, 4000, "文案截断到 4000");
   assert.equal("junk" in job, false, "未知字段被丢弃");
   assert.ok(job.id.startsWith("atj_"), "自动生成 id");
   assert.equal(AUTO_TEST_KINDS.includes(job.kind), true);
@@ -56,10 +65,31 @@ test("normalizeJob：非法 kind 回退（新建默认 quick）；enabled 缺省
   assert.equal(disabled.enabled, false);
 });
 
-test("normalizeOptions：promptPresetId 缺省为 basic，prompt 缺省为空串", () => {
+test("normalizeOptions：groups 缺省为空数组", () => {
   const job = normalizeJob({ targetId: "t", kind: "stability", periodHours: 1 });
-  assert.equal(job.options.promptPresetId, "basic");
-  assert.equal(job.options.prompt, "");
+  assert.deepEqual(job.options.groups, []);
+});
+
+test("normalizeOptions：旧扁平字段（rounds/promptPresetId/prompt）在无 groups 时迁移为单组", () => {
+  const job = normalizeJob({
+    targetId: "t",
+    kind: "stability",
+    periodHours: 1,
+    options: { rounds: 20, promptPresetId: "coding", prompt: "老文案" },
+  });
+  assert.deepEqual(job.options.groups, [{ presetId: "coding", prompt: "老文案", repeats: 20 }]);
+});
+
+test("validateJob：stability 作业 groups 为空 → 报错", () => {
+  const job = normalizeJob({ targetId: "t", kind: "stability", periodHours: 1 });
+  assert.match(validateJob(job), /测试文案分组/);
+  const ok = normalizeJob({
+    targetId: "t",
+    kind: "stability",
+    periodHours: 1,
+    options: { groups: [{ presetId: "basic", prompt: "", repeats: 3 }] },
+  });
+  assert.equal(validateJob(ok), null);
 });
 
 test("normalizeJob：existing 保留 id/createdAt/运行态字段", () => {
@@ -179,10 +209,18 @@ test("normalizeJob：cron 字段规范化（trim + 截断），缺省空串", ()
   assert.equal(kept.cron, "0 0 * * *");
 });
 
+test("normalizeJob：固定时刻模式标记保留，避免 HH:00 与每天一次编辑回填歧义", () => {
+  const fixed = normalizeJob({ targetId: "t", kind: "quick", cron: "0 1 * * 1-5", cronMode: "fixed" });
+  assert.equal(fixed.cronMode, "fixed");
+  const changedToOnce = normalizeJob({ targetId: "t", kind: "quick", cron: "0 1 * * 1-5", cronMode: "" }, fixed);
+  assert.equal(changedToOnce.cronMode, "");
+});
+
 test("validateJob：cron 合法 → null；非法 → 可读错误；有 cron 时不强校验 periodHours", () => {
   assert.equal(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "0 9-18 * * 1-5" })), null, "合法 cron");
   // 有 cron 时即使 periodHours 缺省也 OK（cron 优先）
   assert.equal(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "0 */12 * * 6,0" })), null);
+  assert.equal(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "30 1 * * 1-5;45 5 * * 1-5" })), null);
   assert.match(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "60 * * * *" })), /定时表达式不合法/, "分钟越界");
   assert.match(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "0 9 * *" })), /定时表达式不合法/, "字段不足");
 });
@@ -192,6 +230,12 @@ test("computeNextRunAt：对象入参 + cron → 按 cron 算下次（北京时�
   const from = Date.UTC(2026, 0, 5, 1, 30); // 北京 2026-01-05(周一) 09:30
   const job = { cron: "0 9-18 * * 1-5", periodHours: 24 };
   assert.equal(computeNextRunAt(job, from), "2026-01-05T02:00:00.000Z", "北京 10:00");
+});
+
+test("computeNextRunAt：多个固定时刻取最早的下一次", () => {
+  const from = Date.UTC(2026, 0, 5, 17, 31); // 北京时间周二 01:31
+  const job = { cron: "30 1 * * 1-5;45 5 * * 1-5", periodHours: 24 };
+  assert.equal(computeNextRunAt(job, from), "2026-01-05T21:45:00.000Z"); // 北京时间周二 05:45
 });
 
 test("computeNextRunAt：对象入参无 cron → 退回 periodHours 间隔", () => {

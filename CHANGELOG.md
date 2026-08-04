@@ -6,6 +6,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-08-04
+
+### Fixed
+- **发布版本信息统一** — 应用版本、Docker Compose 默认镜像与 README 构建示例统一为 `0.7.5`，
+  避免健康检查和测试报告显示旧版本，或按 Compose 部署时误用旧镜像。
+
+## [0.7.4] - 2026-08-04
+
+### Fixed
+- **一键标准准入没有服务端幂等，创建请求丢响应时重试会双花（ADM-015 的一部分）** — `POST /api/tasks`
+  可能已经到达后端、任务建好并开始**真实计费**，而响应在回程丢了（网络抖动 / 代理 502 / 后端重启瞬间）。
+  前端只能报「失败」，用户再点一次 → 第二个任务照跑一遍，钱花两遍。轮询路径早有抗抖动
+  （`MAX_CONSECUTIVE_POLL_ERRORS`），**创建路径一直是裸的**。现在前端对「同一次提交」沿用同一个
+  `idempotencyKey`（`src/standard-eval-controller.js` 的 `nextSubmitNonce`，创建成功即作废、表单一改
+  就换新），服务端据此返回原任务。顺带修掉去重闸门里的 `type !== "scenario"`：该机制此前只有
+  「模型比对·补齐单方场景」能用，准入任务哪怕显式带了键也被原样忽略；键改为按 type 分桶，
+  跨类型不会误合并。
+  **刻意不覆盖**（已在两处代码注释写明取舍）：刷新页面后重新提交、多标签页各自提交、任务跑完后再点、
+  多后端副本——这几种仍会建新任务。要全堵上得把幂等键落库并加 `UNIQUE(owner_user_id, idempotency_key)`，
+  属于另一档改动。
+- **取消准入任务不中断用例循环（真实渠道验收发现）** — `runAdmissionTest` 的用例循环是唯一没在每轮开头
+  `assertTaskNotCancelled` 的 runner（此前它是同步端点、根本没有取消按钮，异步化才让这个潜伏问题可达）。
+  点「取消」只 abort 掉在飞的那一个请求，循环照样往下走：剩余用例的 `fetch` 因 signal 已 abort 而瞬间
+  reject，几秒内刷完全部用例。实测 standard 档 Claude 模型（27 条用例）取消后 **2 秒内多写了 24 行**
+  `status=0` 的垃圾请求记录，任务最终还显示"27/27 99%"却标着"已取消"。修复后同样操作只多 1 行，进度
+  正确冻结在 4/27。**未产生额外计费**（这些记录 status=0、0 token，请求并未真正发出），影响是数据污染
+  与进度误导。已加计数式 mock 上游的回归测试锁死"取消后不再发请求"。
+- **被取消的请求把耗时记成超时配置值** — `upstream-transport.mjs` 的 catch 分支用
+  `r.totalMs ?? timeoutMs` 兜底。真超时场景两者本来就≈相等，但**用户取消是提前中断的**，一条实际
+  1~2 秒的记录会被写成 `total_ms = 300000` 落进 `test_requests`，而趋势图与回归判定的延迟序列正是按
+  `total_ms IS NOT NULL` 取点（`server/db.mjs`），一条假的 5 分钟足以把 P95 拉飞。改为记真实耗时
+  （计时起点提到 try 外）；真超时的取值不受影响。
+- **准入报告只有一个成功率口径（真实渠道验收发现）** — 稳定性/压测路径一直是双口径
+  （`server/summaries.mjs` 的 `firstAttemptSuccessRate` / `recoveredCount`），但单 API 准入的
+  `buildAdmissionSummary` 只把 `attempts` 用于计费求和，从不算首次成功率。结果是**一个靠重试才
+  成功的渠道，在准入报告里和一次就成的长得一模一样**——而准入决策关心的恰恰是这个差。现补齐
+  `firstAttemptSuccessCount` / `firstAttemptSuccessRate` / `recoveredCount`，报告新增
+  「首次成功率（不含重试救回）」一行。记录缺 `attempts` 时给 `null` 并标注「未能统计」，
+  **不默认按首次即成功计**——那会把不稳定渠道洗成干净的。
+- **准入判定假通过（新增 `server/admission-policy.mjs`，口径版本 `admission-policy-v1`）** — 判定逻辑从
+  `test-runner.mjs` 抽出为纯函数模块（无 fetch / fs / Date.now），可离线对固定反例做确定性断言：
+  - **空数组赠分**：quick 包不含编程题时，`[].every()` 返回 `true`，白送 10 分。现改为三态
+    `passed / failed / not_applicable`，不适用维度直接退出权重池。
+  - **综合分覆盖硬门槛**：工具调用完全不可用但综合分 ≥80 的渠道曾被判为可交付。新增 `verdict`
+    字段（`grade` 语义不变，历史可比性不受影响）：`json_structure` / `tool_call` / `stream_structure`
+    任一失败即 `not_passed`，综合分不得翻案。
+  - **严重错误取值受用例顺序影响**：`Object.keys(errorCounts).find(...)` 的键序等于错误首次出现顺序，
+    同时出现 `auth_failed` 和 `upstream_5xx` 时定级会随执行顺序漂移。改为显式优先级表。
+  - **验证器只查字段存在**：`{"channelReady":"false","modelType":123,"risk":"critical"}` 曾能通过结构化
+    输出硬门槛；工具名正确但 `arguments` 为 `{}` 曾算通过。现按题面校验类型与取值，并拒绝 Markdown 包裹。
+  - **启发式判分参与准入**：编程 / 行为解释 / 长上下文三题靠"关键词 + 长度"判分，现降为观察项
+    （照常执行与展示，不进综合分和硬门槛）；指纹与档位探针同样按 `admission.probe` 排除，避免与
+    `purityAssessment` 重复扣分。
+  - **多模型只看第一个模型**：新增 `aggregateSuite`（`rejected > indeterminate > accepted_with_conditions
+    > accepted`），已由下方 `admission-suite` 复合任务接线到前端。
+
+### Changed
+- **单 API 准入评测改为后台异步任务（新增 `admission` 任务类型）** — 高级测试栏的「准入测试」是最后一条
+  还走同步 `/api/tests/admission` 的长任务：standard 档 11~12 条用例串行、每条最长 300s，一个 HTTP 请求
+  能挂十几分钟。线上反代（nginx 默认 `proxy_read_timeout` 60s）会先掐断连接，前端只看到"准入评测失败：
+  工具暂时连接不上本地服务。请关闭本工具后重新打开一次。"，而后端仍在跑、额度照扣——用户照提示重开
+  再点一次就是双花。改造后与其它测试同构：
+  - 前端换用 `createTaskFormController` 创建任务并轮询（900ms 一次、容忍 5 次连续轮询错误），表单下方
+    新增进度面板与「取消当前任务」按钮；**刷新或关掉页面再回来仍能取到结果**。
+  - 纳入全局并发闸 `EVALUATOR_MAX_CONCURRENT_TASKS`，满槽时排队而不是直接压满宿主与目标渠道。
+  - `runAdmissionTest` 在用例循环里上报进度（`准入评测进行中：N/M 项用例`）。建任务时的单元数只是
+    **下限估算**——真实条数还取决于模型家族指纹探针与 Claude 档位探针，那些在建任务时尚未解析出来，
+    由 runner 跑起来后上报修正（刻意估低不估高：估高了进度条会卡在中途永远走不满）。
+  - 桌面端自动打开报告的行为不变：`summarizeTaskResult` 的 `admission` 分支同时返回
+    `reportHtmlPath` 与 `aiAnalysisHtmlPath`，与原同步端点的两次 `openReportInBrowser` 一一对应。
+  - 同步端点 `/api/tests/admission` 暂予保留（已无前端调用方），避免影响可能直接调用 HTTP 接口的脚本。
+
+- **修复：复合任务的进度被内层 runner 覆盖（新增 `nestedTaskContext`）** — `admission-suite` 把外层
+  `taskContext` 原样递给被嵌套调用的 runner，而它们按**自己的**单元空间上报（稳定性说"3/9 轮"、准入说
+  "5/12 用例"）；`updateTaskProgress` 对 `completedUnits` 与 `totalUnits` 都取 `Math.max`，于是 6 个步骤的
+  套件跑完显示 9/9、99%，进度条与「模型 × 步骤」网格当场互相矛盾（已复现）。现在嵌套步骤拿到的是
+  只借用取消信号、不许写计数器的子上下文：计数器由外层编排器独占，`message` 照常透出（长步骤里
+  "稳定性测试进行中：3/9 轮"对用户有用），取消与 abort 不受影响（`task` 仍是同一个对象引用）。
+
+- **标准评测改回后台异步任务（新增 `server/admission-suite.mjs` + `admission-suite` 任务类型）** —
+  v0.7.3 曾把「快速测试 → 稳定性 → 标准准入」改成前端顺序 `await` 三个同步接口，带来三个问题：
+  - **关页面 / 刷新 / 断线 = 结果全丢**，但请求已经发出、额度已经扣了；
+  - **绕过全局并发闸**——`EVALUATOR_MAX_CONCURRENT_TASKS` 只管 `/api/tasks` 那条路，同步端点不占槽、
+    不排队，多人同时点会直接压满宿主与目标渠道；
+  - **9 轮稳定性 + 11~12 次准入塞在一个 HTTP 请求里**，中间任何代理超时都会让前端报失败而后端仍在跑、
+    仍在计费，诱发用户重跑 = 双花（异步路径的 5 次轮询容错正是为此写的，同步路径享受不到）。
+
+  现在前端只提交"测哪些模型"，执行顺序、跳过策略与达标判定全部由服务端决定：
+  - 步骤计划归服务端所有（`server/admission-suite-plan.mjs`），前端按轮询到的 `task.steps` 重绘
+    「模型 × 步骤」网格；刷新页面、换台机器打开，看到的进度一致。
+  - **`executionStatus`（跑没跑完）与 `verdict`（达没达标）拆成两个正交字段**：前者
+    `pending/running/completed/failed/skipped/cancelled`，后者复用 `admission-policy` 的四态裁决。
+    "跑完了但没通过"不再画成绿勾；"平台自己出错"（`failed + indeterminate`）也不再和"渠道不达标"
+    （`completed + not_passed`）混成同一种失败，避免误导用户去改一个本来没问题的配置。
+  - **硬门槛未通过即停止后续请求**，剩余步骤标 `skipped` 并写明跳过原因（PRD 12.1）；单个模型失败
+    不阻断其它模型继续测；Claude 新档位探测为非阻断观察项，失败不改主结论。
+  - **整体结论接上 `aggregateSuite`**：不再用"第一个模型的结论"冒充整体结论——2 个模型只要第一个过
+    就整体显示通过的问题（ADM-006）到此闭环。
+
+- **稳定性新增首次成功率双口径** — `buildStabilitySummary` 从 `record.attempts` 派生
+  `firstAttemptSuccessRate` / `recoveredCount`：`successRate` 是重试后的最终成功率，新字段描述"没有
+  重试兜底时"的表现。记录缺 `attempts` 时返回 `null` 而非按首次成功计，报告中如实标注未能统计。
+
+### 注意
+- 上述计分修正会让 **quick 测试包的综合分较旧版本下降约 10 分**（此前的分数含空数组赠分）。历史报告
+  按原口径解释、不重算（PRD §7.1），因此**新旧分数不可直接比较**；跨版本对比请以 `policyVersion` 区分。
+
 ## [0.7.3] - 2026-07-31
 
 ### Fixed
@@ -332,7 +439,8 @@ Initial open-source release.
 ### Fixed
 - Concurrency-queue slot leak on the task-manager cancel path.
 
-[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.4.6...dev
+[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.5...dev
+[0.7.5]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.4...v0.7.5
 [0.4.6]: https://github.com/yl0711-coder/API-evaluator/compare/v0.4.3...v0.4.6
 [0.3.1]: https://github.com/yl0711-coder/API-evaluator/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yl0711-coder/API-evaluator/compare/v0.2.0...v0.3.0

@@ -7,6 +7,18 @@ export function buildProtocolRequest(profile, prompt) {
   const baseUrl = profile.baseUrl.replace(/\/+$/, "");
 
   if (profile.protocol === "claude_messages") {
+    const body = {
+      model,
+      max_tokens: Number(profile.maxTokens || 512),
+      // 显式非流式：规范里 stream 默认 false，但部分中转（尤其把 OpenAI 后端包成 Claude 格式的）
+      // 不带该字段时会默认回 SSE，导致按 JSON 解析读不出文本、被误判成 empty_response。
+      stream: false,
+      messages: [{ role: "user", content: text }],
+    };
+    // Claude Messages API 一般不带 temperature（模型自决策），除非用户明确覆盖
+    if (profile.temperatureOverride != null) {
+      body.temperature = profile.temperatureOverride;
+    }
     return {
       url: `${baseUrl}/v1/messages`,
       headers: {
@@ -14,30 +26,24 @@ export function buildProtocolRequest(profile, prompt) {
         "x-api-key": profile.apiKey,
         "anthropic-version": profile.anthropicVersion || "2023-06-01",
       },
-      body: {
-        model,
-        max_tokens: Number(profile.maxTokens || 512),
-        // 显式非流式：规范里 stream 默认 false，但部分中转（尤其把 OpenAI 后端包成 Claude 格式的）
-        // 不带该字段时会默认回 SSE，导致按 JSON 解析读不出文本、被误判成 empty_response。
-        stream: false,
-        messages: [{ role: "user", content: text }],
-      },
+      body,
     };
   }
 
+  const body = {
+    model,
+    messages: [{ role: "user", content: text }],
+    temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
+    max_tokens: Number(profile.maxTokens || 512),
+    stream: false,
+  };
   return {
     url: `${baseUrl}/v1/chat/completions`,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${profile.apiKey}`,
     },
-    body: {
-      model,
-      messages: [{ role: "user", content: text }],
-      temperature: 0.2,
-      max_tokens: Number(profile.maxTokens || 512),
-      stream: false,
-    },
+    body,
   };
 }
 
@@ -48,6 +54,37 @@ export function buildProtocolToolRequest(profile) {
   const prompt = "请调用 get_weather 查询北京天气，只返回工具调用，不要输出自然语言解释。";
 
   if (profile.protocol === "claude_messages") {
+    const body = {
+      model,
+      max_tokens: Number(profile.maxTokens || 512),
+      stream: false, // 同 buildProtocolRequest：不带该字段时部分中转会默认回 SSE。
+      tools: [
+        {
+          name: toolName,
+          description: "Get weather for a city",
+          input_schema: {
+            type: "object",
+            properties: {
+              city: {
+                type: "string",
+                description: "City name",
+              },
+            },
+            required: ["city"],
+          },
+        },
+      ],
+      tool_choice: {
+        type: "tool",
+        name: toolName,
+      },
+      messages: [{ role: "user", content: prompt }],
+    };
+    // 同 buildProtocolRequest：Claude 侧默认不带 temperature（Opus 4.7+ 拒收采样参数），
+    // 只在用户手填时才发。
+    if (profile.temperatureOverride != null) {
+      body.temperature = profile.temperatureOverride;
+    }
     return {
       url: `${baseUrl}/v1/messages`,
       headers: {
@@ -55,32 +92,7 @@ export function buildProtocolToolRequest(profile) {
         "x-api-key": profile.apiKey,
         "anthropic-version": profile.anthropicVersion || "2023-06-01",
       },
-      body: {
-        model,
-        max_tokens: Number(profile.maxTokens || 512),
-        stream: false, // 同 buildProtocolRequest：不带该字段时部分中转会默认回 SSE。
-        tools: [
-          {
-            name: toolName,
-            description: "Get weather for a city",
-            input_schema: {
-              type: "object",
-              properties: {
-                city: {
-                  type: "string",
-                  description: "City name",
-                },
-              },
-              required: ["city"],
-            },
-          },
-        ],
-        tool_choice: {
-          type: "tool",
-          name: toolName,
-        },
-        messages: [{ role: "user", content: prompt }],
-      },
+      body,
     };
   }
 
@@ -93,7 +105,10 @@ export function buildProtocolToolRequest(profile) {
     body: {
       model,
       messages: [{ role: "user", content: prompt }],
-      temperature: 0,
+      // 工具调用题默认用 0 求确定性（结构对不对不该受采样影响）。用户手填温度时以手填为准——
+      // 有些模型只接受特定温度（如月之暗面只认 1），硬发 0 会让这一题必然 400，
+      // 报告上就成了一条并不存在的「工具调用不可用」。
+      temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0,
       max_tokens: Number(profile.maxTokens || 512),
       stream: false,
       tools: [
@@ -135,6 +150,16 @@ export function buildProtocolStreamRequest(profile, prompt, { includeUsage = fal
   const baseUrl = profile.baseUrl.replace(/\/+$/, "");
 
   if (profile.protocol === "claude_messages") {
+    const body = {
+      model,
+      max_tokens: Number(profile.maxTokens || 512),
+      stream: true,
+      messages: [{ role: "user", content: text }],
+    };
+    // Claude Messages API 一般不带 temperature（模型自决策），除非用户明确覆盖
+    if (profile.temperatureOverride != null) {
+      body.temperature = profile.temperatureOverride;
+    }
     return {
       url: `${baseUrl}/v1/messages`,
       headers: {
@@ -142,31 +167,27 @@ export function buildProtocolStreamRequest(profile, prompt, { includeUsage = fal
         "x-api-key": profile.apiKey,
         "anthropic-version": profile.anthropicVersion || "2023-06-01",
       },
-      body: {
-        model,
-        max_tokens: Number(profile.maxTokens || 512),
-        stream: true,
-        messages: [{ role: "user", content: text }],
-      },
+      body,
     };
   }
 
+  const body = {
+    model,
+    messages: [{ role: "user", content: text }],
+    temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
+    max_tokens: Number(profile.maxTokens || 512),
+    stream: true,
+    // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
+    // coalesceClaudeSse 已做合并。
+    ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
+  };
   return {
     url: `${baseUrl}/v1/chat/completions`,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${profile.apiKey}`,
     },
-    body: {
-      model,
-      messages: [{ role: "user", content: text }],
-      temperature: 0.2,
-      max_tokens: Number(profile.maxTokens || 512),
-      stream: true,
-      // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
-      // coalesceClaudeSse 已做合并。
-      ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
-    },
+    body,
   };
 }
 

@@ -96,7 +96,7 @@ test("kind→runner 映射与 payload 正确", async () => {
       periodHours: 1,
       enabled: true,
       nextRunAt: null,
-      options: { rounds: 20, concurrency: 3, prompt: "自定义文案" },
+      options: { concurrency: 3, groups: [{ presetId: "custom", prompt: "自定义文案", repeats: 20 }] },
     },
     {
       id: "d",
@@ -114,7 +114,11 @@ test("kind→runner 映射与 payload 正确", async () => {
   const byName = Object.fromEntries(calls.map((c) => [c.name, c.payload]));
   assert.deepEqual(byName.runQuickVerify, { profileId: "tq" });
   assert.deepEqual(byName.runAdmissionTest, { profileId: "ta", packageLevel: "deep" });
-  assert.deepEqual(byName.runStabilityTest, { profileId: "ts", rounds: 20, concurrency: 3, prompt: "自定义文案" });
+  assert.deepEqual(byName.runStabilityTest, {
+    profileId: "ts",
+    concurrency: 3,
+    groups: [{ presetId: "custom", prompt: "自定义文案", repeats: 20 }],
+  });
   assert.deepEqual(byName.runScenarioTest, { profileIds: ["tc"], scenarioIds: ["s1", "s2"], repeats: 2 });
 });
 
@@ -530,4 +534,43 @@ test("getStatus：未启动不判僵死；心跳新鲜=not stale；超阈值=sta
     scheduler.stop();
   }
   assert.equal(scheduler.getStatus().stale, false, "停机后不再判僵死，避免关停期误重启");
+});
+
+// 密集固定时刻（多表达式 cron）+ 单轮耗时跨过下一个时刻：一天的总运行次数不该被放大。
+// nextRunAt 是在 run 之前按开跑时刻算的、run 结束才写回；若单轮耗时跨过了下一个固定时刻，
+// 写回的 nextRunAt 已成过去时，下一 tick 立刻又判到期。要守住的安全属性是「错过的槽位会塌缩，
+// 不会累加」——每一轮都要真花钱，放大就是多扣费。这是固定时刻功能带来的新组合，此前无用例覆盖。
+test("固定时刻：24 个密集时刻且每轮耗时超过间隔时，全天运行次数不超过配置的时刻数", async () => {
+  const TIMES = Array.from({ length: 24 }, (_, i) => {
+    const total = 9 * 60 + i * 5; // 北京 09:00 起，每 5 分钟一个
+    return { hour: Math.floor(total / 60), minute: total % 60 };
+  });
+  const cron = TIMES.map(({ hour, minute }) => `${minute} ${hour} * * *`).join(";");
+  const store = makeStore([{ id: "j-dense", targetId: "t", kind: "quick", cron, cronMode: "fixed", enabled: true, nextRunAt: null }]);
+  let clock = Date.parse("2026-07-02T00:55:00.000Z"); // 北京 08:55，首个槽位前 5 分钟
+  const DAY_END = Date.parse("2026-07-03T00:00:00.000Z"); // 次日北京 08:00，当天槽位已全部走完
+  const runs = [];
+  const runner = async () => {
+    runs.push(clock);
+    clock += 10 * 60 * 1000; // 每轮 10 分钟，必然跨过下一个（相隔 5 分钟的）时刻
+    return { success: true, reportHtmlPath: "/reports/quick_20260702_000000_abcd.html" };
+  };
+  const scheduler = createAutoTestScheduler({
+    loadJobs: store.loadJobs,
+    updateJobs: store.updateJobs,
+    runners: { runQuickVerify: runner, runAdmissionTest: runner, runStabilityTest: runner, runScenarioTest: runner },
+    reportIdFromHtmlPath,
+    now: () => clock,
+  });
+
+  let ticks = 0;
+  while (clock < DAY_END && ticks < 5000) {
+    const before = clock;
+    await scheduler.tick();
+    if (clock === before) clock += 60 * 1000; // 空 tick：时钟前进 1 分钟，保证循环收敛
+    ticks += 1;
+  }
+
+  assert.ok(runs.length <= TIMES.length, `全天运行次数不该超过配置的时刻数（配置 ${TIMES.length}，实际 ${runs.length}）——超出即为重复扣费`);
+  assert.ok(runs.length > 0, "前提校验：这批固定时刻当天应当真的跑过，否则本用例是空转的假绿");
 });

@@ -49,6 +49,33 @@ test("builds Claude Messages requests", () => {
   assert.equal(request.body.messages[0].content, "hello claude");
 });
 
+test("temperatureOverride：填写时覆盖协议默认温度，0 不被当作留空", () => {
+  const openaiBase = {
+    baseUrl: "https://api.example.com",
+    apiKey: "sk-test",
+    protocol: "openai_compatible",
+    defaultModel: "gpt-test",
+    maxTokens: 256,
+  };
+
+  // 留空 → OpenAI 协议保持既有默认 0.2
+  assert.equal(buildProtocolRequest(openaiBase, "hi").body.temperature, 0.2);
+  // 填 1（月之暗面这类只接受 temperature=1 的模型）
+  assert.equal(buildProtocolRequest({ ...openaiBase, temperatureOverride: 1 }, "hi").body.temperature, 1);
+  // 填 0 是合法值，不能被 falsy 判断吞掉回落成 0.2
+  assert.equal(buildProtocolRequest({ ...openaiBase, temperatureOverride: 0 }, "hi").body.temperature, 0);
+  // 流式分支同样生效
+  assert.equal(buildProtocolStreamRequest({ ...openaiBase, temperatureOverride: 1 }, "hi").body.temperature, 1);
+
+  const claudeBase = { ...openaiBase, protocol: "claude_messages", defaultModel: "claude-test" };
+  // Claude 留空时不带该字段（保持模型自决策，Opus 4.7+ 会拒绝部分采样参数）
+  assert.equal("temperature" in buildProtocolRequest(claudeBase, "hi").body, false);
+  assert.equal("temperature" in buildProtocolStreamRequest(claudeBase, "hi").body, false);
+  // 明确填写时才带上
+  assert.equal(buildProtocolRequest({ ...claudeBase, temperatureOverride: 1 }, "hi").body.temperature, 1);
+  assert.equal(buildProtocolStreamRequest({ ...claudeBase, temperatureOverride: 0 }, "hi").body.temperature, 0);
+});
+
 test("builds tool call requests for OpenAI-compatible and Claude Messages protocols", () => {
   const openaiRequest = buildProtocolToolRequest({
     baseUrl: "https://api.example.com/",
