@@ -208,6 +208,25 @@ export function parseScheduleFromCron(cron) {
   };
 }
 
+// 单个整点的固定时刻（如 09:00）生成的 cron 与「每天一次 9 点」字面完全相同（`0 9 * * *`），
+// 从 cron 本身分辨不了，故作业另存 cronMode。反解析后按 cronMode 校正回 fixed——
+// 编辑器和作业卡片都要用它，否则卡片会把用户配置的「固定在 09:00 运行」显示成「每天 9:00 跑一次」。
+// 多个固定时刻带 `;`、走 parseFixedCronList，不存在这个歧义，这里原样返回。
+export function parseScheduleFromJob(cron, cronMode = "") {
+  const parsed = parseScheduleFromCron(cron);
+  if (cronMode !== "fixed" || !parsed.matched || parsed.freq !== "once") return parsed;
+  return {
+    ...parsed,
+    period: "allday",
+    startHour: 0,
+    endHour: 23,
+    freq: "fixed",
+    fixedHours: [parsed.onceHour],
+    fixedMinute: 0,
+    fixedTimes: [{ hour: parsed.onceHour, minute: 0 }],
+  };
+}
+
 function parseFixedCronList(source) {
   const expressions = source.split(";").map((item) => item.trim());
   if (expressions.length < 2 || expressions.some((item) => !item)) return null;

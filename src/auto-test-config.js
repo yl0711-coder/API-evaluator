@@ -9,7 +9,7 @@ import { createCascadeTargetPicker } from "./target-picker.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
 import { renderStabilityGroupPicker, readStabilityGroups } from "./prompt-presets.js";
 import { openReportOverlay } from "./report-overlay.js";
-import { buildCron, describeSchedule, parseScheduleFromCron } from "./cron-ui.js";
+import { buildCron, describeSchedule, parseScheduleFromJob } from "./cron-ui.js";
 
 const KIND_LABEL = {
   quick: "快速测试",
@@ -225,22 +225,7 @@ export function createAutoTestConfig({ state, confirm }) {
 
   // 反解析既有作业的 cron → 回填下拉。认不得的（旧手写/外部）→ 尽量回填 + 提示核对，绝不丢数据。
   function applyCronToBuilder(cron, cronMode = "") {
-    const parsed = parseScheduleFromCron(cron);
-    // A single HH:00 cron is textually identical to "once daily". New fixed jobs store
-    // cronMode=fixed so the editor can recover the user's mode without guessing from cron.
-    const s =
-      cronMode === "fixed" && parsed.matched && parsed.freq === "once"
-        ? {
-            ...parsed,
-            period: "allday",
-            startHour: 0,
-            endHour: 23,
-            freq: "fixed",
-            fixedHours: [parsed.onceHour],
-            fixedMinute: 0,
-            fixedTimes: [{ hour: parsed.onceHour, minute: 0 }],
-          }
-        : parsed;
+    const s = parseScheduleFromJob(cron, cronMode);
     cronDaysSelect.value = s.days;
     for (const c of cronDowChecks) c.checked = s.daysCustom.includes(Number(c.value));
     cronPeriodSelect.value = s.period;
@@ -251,8 +236,8 @@ export function createAutoTestConfig({ state, confirm }) {
     fixedTimes = normalizeFixedTimes(s.fixedTimes || (s.fixedHours || []).map((hour) => ({ hour, minute: s.fixedMinute || 0 })));
     renderFixedTimes();
     if (!s.matched) toast(`原定时「${cron}」较特殊，已按最接近的选项回填，请核对。`, true);
-    else if (!cronMode && parsed.freq === "once")
-      toast("历史整点单次定时无法区分“每天一次”和“固定时刻”，已按“每天一次”回填，请核对。", true);
+    // 无 cronMode 的老作业：parseScheduleFromJob 原样返回，故 s.freq 就是反解析结果。
+    else if (!cronMode && s.freq === "once") toast("历史整点单次定时无法区分“每天一次”和“固定时刻”，已按“每天一次”回填，请核对。", true);
   }
 
   // 按测试种类显隐对应选项区（种类为空 → 全部隐藏，满足“选定后再显示”）。
@@ -490,7 +475,7 @@ export function createAutoTestConfig({ state, confirm }) {
     const card = document.createElement("div");
     card.className = "atc-job-card";
     const statusText = job.lastStatus ? STATUS_LABEL[job.lastStatus] || job.lastStatus : "尚未运行";
-    const parsedSchedule = job.cron ? parseScheduleFromCron(job.cron) : null;
+    const parsedSchedule = job.cron ? parseScheduleFromJob(job.cron, job.cronMode) : null;
     const scheduleText = job.cron
       ? parsedSchedule?.matched
         ? describeSchedule(parsedSchedule)
