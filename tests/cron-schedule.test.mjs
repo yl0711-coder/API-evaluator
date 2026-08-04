@@ -94,9 +94,9 @@ test("cronNextAfter: 工作日白天，从周一 09:30 → 下一个整点 10:00
   assert.equal(next, bjMs(2026, 1, 5, 10, 0));
 });
 
-test("cronNextAfter: 工作日多个固定时刻，01:00 后应在 05:00 运行并跳过周末", () => {
-  assert.equal(cronNextAfter("0 1,5 * * 1-5", bjMs(2026, 1, 5, 1, 30)), bjMs(2026, 1, 5, 5, 0));
-  assert.equal(cronNextAfter("0 1,5 * * 1-5", bjMs(2026, 1, 9, 5, 0)), bjMs(2026, 1, 12, 1, 0));
+test("cronNextAfter: 工作日多个固定时刻，01:30 后应在 05:30 运行并跳过周末", () => {
+  assert.equal(cronNextAfter("30 1,5 * * 1-5", bjMs(2026, 1, 5, 1, 31)), bjMs(2026, 1, 5, 5, 30));
+  assert.equal(cronNextAfter("30 1,5 * * 1-5", bjMs(2026, 1, 9, 5, 30)), bjMs(2026, 1, 12, 1, 30));
 });
 
 test("cronNextAfter: 周五 18:00 之后跳到下周一 09:00（跳过周末）", () => {

@@ -41,8 +41,7 @@ export function buildCron(sel) {
   const freq = sel.freq || "hourly";
 
   if (freq === "fixed") {
-    const hours = normalizeFixedHours(sel.fixedHours);
-    return `0 ${hours.join(",")} * * ${dow}`;
+    return normalizeFixedTimes(sel).map(({ hour, minute }) => `${minute} ${hour} * * ${dow}`).join(";");
   }
 
   if (freq === "once") {
@@ -82,11 +81,20 @@ function clampHour(v, dflt) {
   return Number.isFinite(n) && n >= 0 && n <= 23 ? n : dflt;
 }
 
-function normalizeFixedHours(hours) {
-  const result = [...new Set((hours || []).map(Number).filter((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23))].sort(
-    (a, b) => a - b,
-  );
-  return result.length ? result : [9];
+function clampMinute(v, dflt) {
+  const n = Math.trunc(Number(v));
+  return Number.isFinite(n) && n >= 0 && n <= 59 ? n : dflt;
+}
+
+function normalizeFixedTimes(sel) {
+  const raw = Array.isArray(sel.fixedTimes)
+    ? sel.fixedTimes
+    : (sel.fixedHours || []).map((hour) => ({ hour, minute: sel.fixedMinute }));
+  const times = raw
+    .map(({ hour, minute }) => ({ hour: clampHour(hour, -1), minute: clampMinute(minute, -1) }))
+    .filter(({ hour, minute }) => hour >= 0 && minute >= 0)
+    .sort((a, b) => a.hour - b.hour || a.minute - b.minute);
+  return times.filter((time, index) => index === 0 || time.hour !== times[index - 1].hour || time.minute !== times[index - 1].minute);
 }
 
 // 一句人话预览。
@@ -94,8 +102,8 @@ export function describeSchedule(sel) {
   const daysText = describeDays(sel);
   const freq = sel.freq || "hourly";
   if (freq === "fixed") {
-    const hours = normalizeFixedHours(sel.fixedHours).map((hour) => `${String(hour).padStart(2, "0")}:00`);
-    return `${daysText}，固定在 ${hours.join("、")} 运行`;
+    const times = normalizeFixedTimes(sel).map(({ hour, minute }) => `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`);
+    return times.length ? `${daysText}，固定在 ${times.join("、")} 运行` : `${daysText}，尚未选择固定时刻`;
   }
   if (freq === "once") {
     const h = clampHour(sel.onceHour, 9);
@@ -131,11 +139,13 @@ export function parseScheduleFromCron(cron) {
     freq: "hourly",
     onceHour: 9,
     fixedHours: [],
+    fixedMinute: 0,
+    fixedTimes: [],
     matched: false,
   };
-  const parts = String(cron || "")
-    .trim()
-    .split(/\s+/);
+  const source = String(cron || "").trim();
+  if (source.includes(";")) return parseFixedCronList(source) || fallback;
+  const parts = source.split(/\s+/);
   if (parts.length !== 5) return fallback;
   const [minute, hour, dom, month, dowRaw] = parts;
   // 日/月必须是 *（我们从不生成别的）；否则认不得。
@@ -151,8 +161,10 @@ export function parseScheduleFromCron(cron) {
   }
 
   const fixedHours = parseFixedHours(hour);
-  if (minute === "0" && fixedHours) {
-    return { ...days, period: "allday", startHour: 0, endHour: 23, freq: "fixed", onceHour: 9, fixedHours, matched: true };
+  const fixedMinute = /^\d+$/.test(minute) ? Number(minute) : null;
+  if (fixedHours && fixedMinute !== null && fixedMinute >= 0 && fixedMinute <= 59) {
+    const fixedTimes = fixedHours.map((hour) => ({ hour, minute: fixedMinute }));
+    return { ...days, period: "allday", startHour: 0, endHour: 23, freq: "fixed", onceHour: 9, fixedHours, fixedMinute, fixedTimes, matched: true };
   }
 
   // 窗口内频率。minute：*/M（分钟级）或 0（小时级）；hour：受控格式。
@@ -185,8 +197,42 @@ export function parseScheduleFromCron(cron) {
   };
 }
 
+function parseFixedCronList(source) {
+  const expressions = source.split(";").map((item) => item.trim());
+  if (expressions.length < 2 || expressions.some((item) => !item)) return null;
+  let days = null;
+  let dayKey = "";
+  const fixedTimes = [];
+  for (const expression of expressions) {
+    const [minuteRaw, hourRaw, dom, month, dowRaw, extra] = expression.split(/\s+/);
+    const minute = Number(minuteRaw);
+    const hour = Number(hourRaw);
+    const nextDays = dom === "*" && month === "*" && extra === undefined && Number.isInteger(minute) && Number.isInteger(hour) && minute >= 0 && minute <= 59 && hour >= 0 && hour <= 23 ? parseDow(dowRaw) : null;
+    if (!nextDays) return null;
+    const nextKey = `${nextDays.days}:${nextDays.daysCustom.join(",")}`;
+    if (days && nextKey !== dayKey) return null;
+    days = nextDays;
+    dayKey = nextKey;
+    fixedTimes.push({ hour, minute });
+  }
+  const normalized = normalizeFixedTimes({ fixedTimes });
+  if (normalized.length !== fixedTimes.length) return null;
+  return {
+    ...days,
+    period: "allday",
+    startHour: 0,
+    endHour: 23,
+    freq: "fixed",
+    onceHour: 9,
+    fixedHours: normalized.map(({ hour }) => hour),
+    fixedMinute: normalized[0]?.minute || 0,
+    fixedTimes: normalized,
+    matched: true,
+  };
+}
+
 function parseFixedHours(field) {
-  if (!/^\d+(,\d+)+$/.test(field)) return null;
+  if (!/^\d+(,\d+)*$/.test(field)) return null;
   const hours = field.split(",").map(Number);
   if (hours.some((hour) => hour < 0 || hour > 23) || new Set(hours).size !== hours.length) return null;
   return hours;
