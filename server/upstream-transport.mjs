@@ -196,6 +196,9 @@ export async function executeUpstreamRequest(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
     // 重置本次尝试的瞬时字段，避免上次失败残留泄漏到下一次。
+    // totalMs 也必须清：catch 分支写的是 `r.totalMs ?? 实测值`，不清就会被上一次尝试的旧值
+    // 拦住（第 1 次慢 429 → 第 2 次被取消，记的却是第 1 次的耗时），把假延迟喂进 P50/P95。
+    r.totalMs = null;
     r.firstByteMs = null;
     r.firstTokenMs = null;
     r.statusCode = null;
