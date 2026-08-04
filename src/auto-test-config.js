@@ -116,15 +116,27 @@ export function createAutoTestConfig({ state, confirm }) {
   for (const sel of [cronStartHour, cronEndHour, cronOnceHour, cronFixedHour]) {
     sel.innerHTML = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, "0")}:00</option>`).join("");
   }
-  cronFixedMinute.innerHTML = Array.from({ length: 60 }, (_, m) => `<option value="${m}">${String(m).padStart(2, "0")} 分</option>`).join("");
+  cronFixedMinute.innerHTML = Array.from({ length: 60 }, (_, m) => `<option value="${m}">${String(m).padStart(2, "0")} 分</option>`).join(
+    "",
+  );
   let fixedTimes = [];
   function normalizeFixedTimes(times) {
-    return [...new Map(
-      (Array.isArray(times) ? times : [])
-        .map((time) => ({ hour: Number(time.hour), minute: Number(time.minute) }))
-        .filter((time) => Number.isInteger(time.hour) && time.hour >= 0 && time.hour <= 23 && Number.isInteger(time.minute) && time.minute >= 0 && time.minute <= 59)
-        .map((time) => [`${time.hour}:${time.minute}`, time]),
-    ).values()].sort((a, b) => a.hour - b.hour || a.minute - b.minute);
+    return [
+      ...new Map(
+        (Array.isArray(times) ? times : [])
+          .map((time) => ({ hour: Number(time.hour), minute: Number(time.minute) }))
+          .filter(
+            (time) =>
+              Number.isInteger(time.hour) &&
+              time.hour >= 0 &&
+              time.hour <= 23 &&
+              Number.isInteger(time.minute) &&
+              time.minute >= 0 &&
+              time.minute <= 59,
+          )
+          .map((time) => [`${time.hour}:${time.minute}`, time]),
+      ).values(),
+    ].sort((a, b) => a.hour - b.hour || a.minute - b.minute);
   }
   function renderFixedTimes() {
     cronFixedTimeList.innerHTML = "";
@@ -239,7 +251,8 @@ export function createAutoTestConfig({ state, confirm }) {
     fixedTimes = normalizeFixedTimes(s.fixedTimes || (s.fixedHours || []).map((hour) => ({ hour, minute: s.fixedMinute || 0 })));
     renderFixedTimes();
     if (!s.matched) toast(`原定时「${cron}」较特殊，已按最接近的选项回填，请核对。`, true);
-    else if (!cronMode && parsed.freq === "once") toast("历史整点单次定时无法区分“每天一次”和“固定时刻”，已按“每天一次”回填，请核对。", true);
+    else if (!cronMode && parsed.freq === "once")
+      toast("历史整点单次定时无法区分“每天一次”和“固定时刻”，已按“每天一次”回填，请核对。", true);
   }
 
   // 按测试种类显隐对应选项区（种类为空 → 全部隐藏，满足“选定后再显示”）。
@@ -478,7 +491,11 @@ export function createAutoTestConfig({ state, confirm }) {
     card.className = "atc-job-card";
     const statusText = job.lastStatus ? STATUS_LABEL[job.lastStatus] || job.lastStatus : "尚未运行";
     const parsedSchedule = job.cron ? parseScheduleFromCron(job.cron) : null;
-    const scheduleText = job.cron ? (parsedSchedule?.matched ? describeSchedule(parsedSchedule) : job.cron) : `每 ${Number(job.periodHours)} 小时`;
+    const scheduleText = job.cron
+      ? parsedSchedule?.matched
+        ? describeSchedule(parsedSchedule)
+        : job.cron
+      : `每 ${Number(job.periodHours)} 小时`;
     // reportLink 和 targetWarn 是硬编码 HTML，不是用户数据——刻意不转义
     const reportLink =
       job.lastReportId && job.lastStatus === "success"

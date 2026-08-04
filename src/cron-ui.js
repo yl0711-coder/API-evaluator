@@ -41,7 +41,9 @@ export function buildCron(sel) {
   const freq = sel.freq || "hourly";
 
   if (freq === "fixed") {
-    return normalizeFixedTimes(sel).map(({ hour, minute }) => `${minute} ${hour} * * ${dow}`).join(";");
+    return normalizeFixedTimes(sel)
+      .map(({ hour, minute }) => `${minute} ${hour} * * ${dow}`)
+      .join(";");
   }
 
   if (freq === "once") {
@@ -87,9 +89,7 @@ function clampMinute(v, dflt) {
 }
 
 function normalizeFixedTimes(sel) {
-  const raw = Array.isArray(sel.fixedTimes)
-    ? sel.fixedTimes
-    : (sel.fixedHours || []).map((hour) => ({ hour, minute: sel.fixedMinute }));
+  const raw = Array.isArray(sel.fixedTimes) ? sel.fixedTimes : (sel.fixedHours || []).map((hour) => ({ hour, minute: sel.fixedMinute }));
   const times = raw
     .map(({ hour, minute }) => ({ hour: clampHour(hour, -1), minute: clampMinute(minute, -1) }))
     .filter(({ hour, minute }) => hour >= 0 && minute >= 0)
@@ -164,7 +164,18 @@ export function parseScheduleFromCron(cron) {
   const fixedMinute = /^\d+$/.test(minute) ? Number(minute) : null;
   if (fixedHours && fixedMinute !== null && fixedMinute >= 0 && fixedMinute <= 59) {
     const fixedTimes = fixedHours.map((hour) => ({ hour, minute: fixedMinute }));
-    return { ...days, period: "allday", startHour: 0, endHour: 23, freq: "fixed", onceHour: 9, fixedHours, fixedMinute, fixedTimes, matched: true };
+    return {
+      ...days,
+      period: "allday",
+      startHour: 0,
+      endHour: 23,
+      freq: "fixed",
+      onceHour: 9,
+      fixedHours,
+      fixedMinute,
+      fixedTimes,
+      matched: true,
+    };
   }
 
   // 窗口内频率。minute：*/M（分钟级）或 0（小时级）；hour：受控格式。
@@ -207,7 +218,18 @@ function parseFixedCronList(source) {
     const [minuteRaw, hourRaw, dom, month, dowRaw, extra] = expression.split(/\s+/);
     const minute = Number(minuteRaw);
     const hour = Number(hourRaw);
-    const nextDays = dom === "*" && month === "*" && extra === undefined && Number.isInteger(minute) && Number.isInteger(hour) && minute >= 0 && minute <= 59 && hour >= 0 && hour <= 23 ? parseDow(dowRaw) : null;
+    const nextDays =
+      dom === "*" &&
+      month === "*" &&
+      extra === undefined &&
+      Number.isInteger(minute) &&
+      Number.isInteger(hour) &&
+      minute >= 0 &&
+      minute <= 59 &&
+      hour >= 0 &&
+      hour <= 23
+        ? parseDow(dowRaw)
+        : null;
     if (!nextDays) return null;
     const nextKey = `${nextDays.days}:${nextDays.daysCustom.join(",")}`;
     if (days && nextKey !== dayKey) return null;

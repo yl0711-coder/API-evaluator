@@ -82,7 +82,9 @@ export function computeNextRunAt(jobOrPeriod, fromMs = Date.now()) {
 }
 
 function nextCronAt(cron, fromMs) {
-  const expressions = String(cron || "").split(";").map((item) => item.trim());
+  const expressions = String(cron || "")
+    .split(";")
+    .map((item) => item.trim());
   if (!expressions.length || expressions.some((item) => !item)) return null;
   return expressions.reduce((earliest, expression) => {
     const next = cronNextAfter(expression, fromMs);

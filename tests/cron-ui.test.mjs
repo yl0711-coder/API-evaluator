@@ -32,7 +32,14 @@ test("buildCron：每天一次 → 单个钟点", () => {
 
 test("buildCron：工作日多个固定时刻 → 小时列表", () => {
   assert.equal(
-    buildCron({ days: "weekday", freq: "fixed", fixedTimes: [{ hour: 5, minute: 45 }, { hour: 1, minute: 30 }] }),
+    buildCron({
+      days: "weekday",
+      freq: "fixed",
+      fixedTimes: [
+        { hour: 5, minute: 45 },
+        { hour: 1, minute: 30 },
+      ],
+    }),
     "30 1 * * 1-5;45 5 * * 1-5",
   );
 });
@@ -48,7 +55,17 @@ test("buildCron：自定义时段（22-次日6，每小时）→ 跨午夜两段
 test("describeSchedule：人话预览", () => {
   assert.equal(describeSchedule({ days: "weekday", period: "day", freq: "h2" }), "工作日 9-18 点，每 2 小时一次");
   assert.equal(describeSchedule({ days: "everyday", period: "allday", freq: "once", onceHour: 3 }), "每天，每天 3:00 跑一次");
-  assert.equal(describeSchedule({ days: "weekday", freq: "fixed", fixedTimes: [{ hour: 1, minute: 30 }, { hour: 5, minute: 45 }] }), "工作日，固定在 01:30、05:45 运行");
+  assert.equal(
+    describeSchedule({
+      days: "weekday",
+      freq: "fixed",
+      fixedTimes: [
+        { hour: 1, minute: 30 },
+        { hour: 5, minute: 45 },
+      ],
+    }),
+    "工作日，固定在 01:30、05:45 运行",
+  );
   assert.equal(describeSchedule({ days: "weekend", period: "night", freq: "h6" }), "周末 19 点至次日 8 点，每 6 小时一次");
 });
 
@@ -61,7 +78,14 @@ const ROUND_TRIP_CASES = [
   { days: "weekend", period: "allday", freq: "h12" },
   { days: "everyday", period: "night", freq: "h6" },
   { days: "everyday", period: "allday", freq: "once", onceHour: 3 },
-  { days: "weekday", freq: "fixed", fixedTimes: [{ hour: 1, minute: 30 }, { hour: 5, minute: 45 }] },
+  {
+    days: "weekday",
+    freq: "fixed",
+    fixedTimes: [
+      { hour: 1, minute: 30 },
+      { hour: 5, minute: 45 },
+    ],
+  },
   { days: "custom", daysCustom: [1, 3, 5], period: "allday", freq: "hourly" },
 ];
 
@@ -99,7 +123,10 @@ test("parseScheduleFromCron：识别不同分钟的多个固定时刻", () => {
   const back = parseScheduleFromCron("30 1 * * 1-5;45 5 * * 1-5");
   assert.equal(back.matched, true);
   assert.equal(back.days, "weekday");
-  assert.deepEqual(back.fixedTimes, [{ hour: 1, minute: 30 }, { hour: 5, minute: 45 }]);
+  assert.deepEqual(back.fixedTimes, [
+    { hour: 1, minute: 30 },
+    { hour: 5, minute: 45 },
+  ]);
 });
 
 test("parseScheduleFromCron：认不得的 cron → matched:false，不抛，附默认回落", () => {
