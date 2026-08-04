@@ -29,21 +29,22 @@ app-data/
 .idea/
 .vscode/
 
-# Claude Code local config (keep shareable skills under .claude/skills/)
-.claude/settings.local.json
 .claude/
+.agents/
 
 # Local-only reference material & personal notes (not project source)
 *.pdf
 *.docx
 注意事项.txt
-
---env-file
-
 *笔记.md
-*清单.md
-*说明.md
+01-一键准入任务中心-产品需求文档-PRD.md
+02-v0.7.3-准入测试问题检查说明.md
+03-v0.7.3-准入测试修复实施方案.md
+04-阶段5-真实验收方案.md
+05-feat-auto-test-交接.md
+
+来自人类的说明.md
 .postman
 postman
-16-代码规范与可维护性检查-v0.6.2.md
 .audit/
+
