@@ -55,6 +55,7 @@ test("补齐高级设置：非法输入回落默认值，数值覆盖与场景�
   assert.deepEqual(fallback, {
     maxTokens: undefined,
     timeoutMs: undefined,
+    temperature: undefined,
     repeats: 1,
     requestConcurrency: 1,
     fullResponseInReport: false,
@@ -63,6 +64,7 @@ test("补齐高级设置：非法输入回落默认值，数值覆盖与场景�
   assert.deepEqual(normalizeGapFillOptions({ maxTokens: "1e3", timeoutMs: "600000.9" }), {
     maxTokens: 1000,
     timeoutMs: 600000,
+    temperature: undefined,
     repeats: 1,
     requestConcurrency: 1,
     fullResponseInReport: false,
@@ -70,11 +72,42 @@ test("补齐高级设置：非法输入回落默认值，数值覆盖与场景�
   });
 });
 
+test("补齐高级设置：温度接受 0 与小数，超范围/非法值回落默认（由后端做权威校验）", () => {
+  // 0 是合法温度（完全确定性输出），不能被当成留空
+  assert.equal(normalizeGapFillOptions({ temperature: "0" }).temperature, 0);
+  assert.equal(normalizeGapFillOptions({ temperature: "0.7" }).temperature, 0.7);
+  assert.equal(normalizeGapFillOptions({ temperature: "1" }).temperature, 1);
+  assert.equal(normalizeGapFillOptions({ temperature: "2" }).temperature, 2);
+  // 留空 / 超范围 / 非数字 → undefined，不写入 payload，走协议默认
+  for (const bad of ["", "  ", "2.5", "-1", "abc", null, undefined]) {
+    assert.equal(normalizeGapFillOptions({ temperature: bad }).temperature, undefined, `温度 ${JSON.stringify(bad)} 应回落`);
+  }
+  // 只有填写时才进 payload
+  const withTemp = buildGapFillTaskPayload({
+    targetId: "target-a",
+    scenarioId: "code",
+    rawOptions: { temperature: "1" },
+    scenarios,
+  });
+  assert.equal(withTemp.temperature, 1);
+  const zeroTemp = buildGapFillTaskPayload({
+    targetId: "target-a",
+    scenarioId: "code",
+    rawOptions: { temperature: "0" },
+    scenarios,
+  });
+  assert.equal(zeroTemp.temperature, 0, "temperature=0 必须进 payload，不能被 falsy 判断吞掉");
+  const noTemp = buildGapFillTaskPayload({ targetId: "target-a", scenarioId: "code", rawOptions: {}, scenarios });
+  assert.equal("temperature" in noTemp, false);
+});
+
 test("补齐高级设置：任一生效设置变化都会生成新幂等键，等价的夹限值复用同一键", () => {
   const defaultPayload = buildGapFillTaskPayload({ targetId: "target-a", scenarioId: "code", rawOptions: {}, scenarios });
   const variations = [
     { maxTokens: 2048 },
     { timeoutMs: 60000 },
+    { temperature: 1 },
+    { temperature: 0 },
     { repeats: 2 },
     { requestConcurrency: 2 },
     { fullResponseInReport: true },
@@ -84,6 +117,10 @@ test("补齐高级设置：任一生效设置变化都会生成新幂等键，�
     const payload = buildGapFillTaskPayload({ targetId: "target-a", scenarioId: "code", rawOptions, scenarios });
     assert.notEqual(payload.idempotencyKey, defaultPayload.idempotencyKey);
   }
+  // 换温度重跑必须是新任务：否则会被幂等键判成同一次而直接复用旧温度的结果
+  const tempOne = buildGapFillTaskPayload({ targetId: "target-a", scenarioId: "code", rawOptions: { temperature: 1 }, scenarios });
+  const tempZero = buildGapFillTaskPayload({ targetId: "target-a", scenarioId: "code", rawOptions: { temperature: 0 }, scenarios });
+  assert.notEqual(tempOne.idempotencyKey, tempZero.idempotencyKey);
   const clamped = buildGapFillTaskPayload({ targetId: "target-a", scenarioId: "code", rawOptions: { maxTokens: 999999 }, scenarios });
   const maximum = buildGapFillTaskPayload({ targetId: "target-a", scenarioId: "code", rawOptions: { maxTokens: 32768 }, scenarios });
   assert.equal(clamped.idempotencyKey, maximum.idempotencyKey);

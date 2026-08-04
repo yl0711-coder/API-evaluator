@@ -8,6 +8,16 @@ function optionalInt(value, min, max) {
   return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
+// 温度：0-2 的小数，留空 undefined（走协议默认）。不能复用 optionalInt——它会取整并把 0 判为无效，
+// 而 0（完全确定性输出）和 0.7 都是合法温度。非法值同样返回 undefined，交由后端做权威校验并报 400。
+function optionalTemperature(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return undefined;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 2) return undefined;
+  return parsed;
+}
+
 function selectedNumber(value, allowed, fallback) {
   const parsed = Number(value);
   return allowed.includes(parsed) ? parsed : fallback;
@@ -29,6 +39,7 @@ export function normalizeGapFillOptions(raw = {}) {
   return {
     maxTokens: optionalInt(raw.maxTokens, 1, 32768),
     timeoutMs: optionalInt(raw.timeoutMs, 1000, 600000),
+    temperature: optionalTemperature(raw.temperature),
     repeats: selectedNumber(raw.repeats, [1, 2, 3], 1),
     requestConcurrency: selectedNumber(raw.requestConcurrency, [1, 2], 1),
     fullResponseInReport: isEnabled(raw.fullResponseInReport),
@@ -40,6 +51,8 @@ export function gapFillOptionSignature(options) {
   return [
     options.maxTokens ?? "default",
     options.timeoutMs ?? "default",
+    // 必须参与签名：温度会实质改变输出，否则换温度重跑会被幂等键判成同一次任务而直接复用旧结果。
+    options.temperature ?? "default",
     options.repeats,
     options.requestConcurrency,
     options.fullResponseInReport ? 1 : 0,
@@ -60,6 +73,7 @@ export function buildGapFillTaskPayload({ targetId, scenarioId, rawOptions, scen
   };
   if (options.maxTokens !== undefined) payload.maxTokens = options.maxTokens;
   if (options.timeoutMs !== undefined) payload.timeoutMs = options.timeoutMs;
+  if (options.temperature !== undefined) payload.temperature = options.temperature;
   payload.predicted = estimateScenarioCost(payload, scenarios || []);
   return payload;
 }

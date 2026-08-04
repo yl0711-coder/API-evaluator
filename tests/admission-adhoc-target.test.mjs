@@ -62,3 +62,97 @@ test("runAdmissionTest：渠道不存在时报错，而不是静默通过", asyn
   await channelStore.saveChannels([]);
   await assert.rejects(() => runAdmissionTest({ channelId: "missing-channel", model: "m" }), /没有找到被测 API 配置/);
 });
+
+// 高级设置里的温度：必须真的发到上游每一道准入用例上（工具题、流式题也不例外）。
+// 存在这个开关的理由是有些模型只接受特定温度（如月之暗面只认 1），不给对值整轮准入都会 400。
+async function collectAdmissionBodies(over) {
+  const bodies = [];
+  return withMockUpstream(
+    (req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        // 流式用例要 SSE 才判通过，但这里只关心「发出去的请求体带没带温度」，
+        // 200 + 非流式响应足够：用例判失败不影响本断言。
+        sendJson(res, 200, { choices: [{ message: { content: "admission ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } });
+      });
+    },
+    async (baseUrl) => {
+      const channel = await channelStore.attachChannelKey(
+        { id: "ch-temp-1", name: "温度渠道", provider: "Anthropic", baseUrl, protocol: "openai_chat", status: "enabled" },
+        "sk-mock",
+      );
+      await channelStore.saveChannels([channel]);
+      await runAdmissionTest({ channelId: "ch-temp-1", packageLevel: "quick", ...over });
+      return bodies;
+    },
+  );
+}
+
+test("runAdmissionTest：高级设置的温度会带到每一道准入用例", async () => {
+  const bodies = await collectAdmissionBodies({ model: "gpt-4o-mini", temperature: "1" });
+  assert.ok(bodies.length >= 5, `快速准入应至少发 5 次请求，实际 ${bodies.length}`);
+  for (const [i, body] of bodies.entries()) {
+    assert.equal(body.temperature, 1, `第 ${i + 1} 次请求应带温度 1`);
+  }
+});
+
+test("runAdmissionTest：温度留空则不覆盖，各用例走各自的默认（普通 0.2、工具题 0）", async () => {
+  const bodies = await collectAdmissionBodies({ model: "gpt-4o-mini", temperature: "" });
+  for (const body of bodies) {
+    // 工具调用题默认用 0 求确定性，其余用例走 OpenAI 协议默认 0.2。
+    assert.equal(body.temperature, body.tools ? 0 : 0.2);
+  }
+});
+
+test("runAdmissionTest：温度非法时直接报错，不烧额度跑完再说", async () => {
+  const channel = await channelStore.attachChannelKey(
+    {
+      id: "ch-temp-bad",
+      name: "校验渠道",
+      provider: "Anthropic",
+      baseUrl: "http://127.0.0.1:1",
+      protocol: "openai_chat",
+      status: "enabled",
+    },
+    "sk-mock",
+  );
+  await channelStore.saveChannels([channel]);
+  await assert.rejects(
+    () => runAdmissionTest({ channelId: "ch-temp-bad", model: "gpt-4o-mini", temperature: "9" }),
+    /温度必须是 0-2 之间的数字/,
+  );
+});
+
+// 档位判别题刻意不吃用户手填的温度：它的结论来自「在线通过率 vs 离线参考分布」的似然比比较，
+// 而离线校准默认不发 temperature。换了采样温度就不是同条件对比，会得出一个基于错基线的
+// 「疑似降级」结论——那是对上游的误控告，比少覆盖一处严重得多。
+test("runAdmissionTest：档位判别题不带手填温度，其余用例照带（对齐离线校准条件）", async () => {
+  const { loadTierContext, buildTierProbeCases } = await import("../server/tier-admission.mjs");
+  const model = "claude-sonnet-4-5";
+  const tierContext = loadTierContext(model);
+  assert.ok(tierContext, "仓库内置的档位参考应覆盖 sonnet 档，否则本用例测不到东西");
+  const tierPrompts = new Set(buildTierProbeCases(tierContext.reference).map((c) => c.prompt));
+  assert.ok(tierPrompts.size > 0);
+
+  const bodies = await collectAdmissionBodies({ model, packageLevel: "standard", temperature: "1" });
+  const promptOf = (body) => {
+    const last = body.messages?.[body.messages.length - 1];
+    return typeof last?.content === "string" ? last.content : "";
+  };
+  const tierBodies = bodies.filter((b) => tierPrompts.has(promptOf(b)));
+  const otherBodies = bodies.filter((b) => !tierPrompts.has(promptOf(b)));
+
+  assert.ok(tierBodies.length > 0, "standard 包 + Claude 应追加档位判别题");
+  for (const body of tierBodies) {
+    // 回到工具默认采样（本渠道走 openai_chat → 0.2），即本功能上线前档位题一直在用的条件。
+    assert.equal(body.temperature, 0.2, "档位判别题不该吃用户手填的温度");
+  }
+  assert.ok(
+    otherBodies.some((b) => b.temperature === 1),
+    "其余用例仍应带上用户手填的温度",
+  );
+});

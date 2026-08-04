@@ -302,6 +302,7 @@ export function createModelCompare({ state, confirm }) {
     options.open = false;
     options.querySelector("[data-mc-gap-max-tokens]").value = "";
     options.querySelector("[data-mc-gap-timeout-ms]").value = "";
+    options.querySelector("[data-mc-gap-temperature]").value = "";
     options.querySelector("[data-mc-gap-repeats]").value = "1";
     options.querySelector("[data-mc-gap-request-concurrency]").value = "1";
     options.querySelector("[data-mc-gap-full-response]").checked = false;
@@ -312,6 +313,7 @@ export function createModelCompare({ state, confirm }) {
     return {
       maxTokens: gapFillBox.querySelector("[data-mc-gap-max-tokens]").value,
       timeoutMs: gapFillBox.querySelector("[data-mc-gap-timeout-ms]").value,
+      temperature: gapFillBox.querySelector("[data-mc-gap-temperature]").value,
       repeats: gapFillBox.querySelector("[data-mc-gap-repeats]").value,
       requestConcurrency: gapFillBox.querySelector("[data-mc-gap-request-concurrency]").value,
       fullResponseInReport: gapFillBox.querySelector("[data-mc-gap-full-response]").checked,

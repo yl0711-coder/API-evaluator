@@ -40,6 +40,13 @@ function buildStabilityGroupBreakdown(records) {
   });
 }
 
+// 手填温度被传输层摘掉的请求数。该模型拒收自定义 temperature（进程级记忆，见 upstream-transport.mjs
+// 的 TEMPERATURE_UNSUPPORTED_MODELS），这些请求实际跑的是模型默认温度、而非用户所填的值。
+// 必须在汇总里留痕：否则用户会把报告数字读成「我设的那个温度下的表现」。
+function countTemperatureStripped(records) {
+  return records.filter((item) => item.temperatureStripped).length;
+}
+
 export function buildStabilitySummary({ runId, profile, records, rounds, concurrency, prompt, startedAt, endedAt }) {
   const successRecords = records.filter((item) => item.success);
   const failedRecords = records.filter((item) => !item.success);
@@ -102,6 +109,7 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
     groups,
     tokenAudit,
     tokenAuditFindings: tokenAudit.flags || [],
+    temperatureStrippedCount: countTemperatureStripped(records),
     ...economics,
     actualConsumption: buildRunConsumption(profile, records),
     errorCounts,
@@ -186,6 +194,7 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
     reasoningTokens: usageTotals.reasoningTokens,
     tokenAudit,
     tokenAuditFindings: tokenAudit.flags || [],
+    temperatureStrippedCount: countTemperatureStripped(records),
     ...economics,
     errorCounts,
     diagnostics: buildErrorDiagnostics(errorCounts),
@@ -247,6 +256,10 @@ export function buildScenarioSummary({
       avgQualityScore: p.avgQualityScore,
       p95TotalMs: p.p95TotalMs,
       recommendation: p.recommendation,
+      // 手填温度被摘的请求数：digest 是前端唯一可靠来源（results/records 会被任务通道剥掉），
+      // 提示要显示就必须在这里带上。
+      temperatureStrippedCount: p.temperatureStrippedCount || 0,
+      caseCount: p.caseCount, // 上面那条提示的分母（「N/总数 次请求」）
     })),
     results: profileResults,
   };

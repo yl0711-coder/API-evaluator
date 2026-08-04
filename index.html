@@ -160,6 +160,16 @@
               </select>
               <small class="field-hint">新渠道首次建议选标准准入。快速准入用于低成本复核，深度准入会多做轻量长上下文。</small>
             </label>
+            <details class="wide advanced-settings">
+              <summary>高级设置</summary>
+              <div class="form-grid advanced-settings-body">
+                <label>
+                  温度
+                  <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                  <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。准入评测含标称一致性与指纹类判别，改温度会让这些结论与历史记录不同条件、可比性下降，建议只在上游强制要求时才填。其中「档位降级判别」题为保持与离线基线同条件，不使用此处填的温度。</small>
+                </label>
+              </div>
+            </details>
             <label class="wide checkbox-option">
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
@@ -193,6 +203,11 @@
                 同时测试 API 数
                 <input type="number" name="maxParallelProfiles" value="1" min="1" max="3" />
                 <small class="field-hint">准入评测会真实消耗额度。默认 1 个一个跑，避免并发过高影响判断。</small>
+              </label>
+              <label>
+                温度
+                <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                <small class="field-hint">对本批所有 API 生效。部分模型只接受特定值（如月之暗面只认 1）。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数；Claude Opus 4.7 及更新的模型拒收该参数，填值可能整批报 400。</small>
               </label>
               <label class="wide checkbox-option">
                 <input name="useAiReportAnalysis" type="checkbox" value="1" />
@@ -484,20 +499,30 @@
               被测模型
               <select name="profileId" id="stability-profile-select" disabled></select>
             </label>
-            <label>
-              并发数
-              <select name="concurrency">
-                <option value="1" selected>1：顺序测试，最稳妥</option>
-                <option value="2">2：轻并发</option>
-                <option value="3">3：观察网关波动</option>
-              </select>
-            </label>
             <p id="stability-request-total" class="field-hint">共 0 次请求（0 组）</p>
             <label class="wide">
               测试文案分组（每个场景一个数量框，0 表示不选该组；每组默认测 3 遍，自定义默认 1 遍）
               <div id="stability-group-picker" class="stability-group-picker"></div>
               <small class="field-hint">选中多个场景会在同一份报告里分组统计；也可以只加大同一个场景的数量做重复测试。</small>
             </label>
+            <details class="wide advanced-settings">
+              <summary>高级设置</summary>
+              <div class="form-grid advanced-settings-body">
+                <label>
+                  并发数
+                  <select name="concurrency">
+                    <option value="1" selected>1：顺序测试，最稳妥</option>
+                    <option value="2">2：轻并发</option>
+                    <option value="3">3：观察网关波动</option>
+                  </select>
+                </label>
+                <label>
+                  温度
+                  <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                  <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。</small>
+                </label>
+              </div>
+            </details>
             <label class="wide checkbox-option">
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
@@ -633,6 +658,11 @@
                   超时毫秒
                   <input name="timeoutMs" type="number" min="1000" max="600000" placeholder="留空 = 按模型配置" />
                   <small class="field-hint">仅本次运行生效；留空按模型配置里的超时。</small>
+                </label>
+                <label>
+                  温度
+                  <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                  <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。</small>
                 </label>
                 <label>
                   每个场景重复次数
@@ -1607,6 +1637,11 @@
                       超时毫秒
                       <input data-mc-gap-timeout-ms type="number" min="1000" max="600000" placeholder="留空 = 按模型配置" />
                       <small class="field-hint">留空则按目标模型的超时配置。</small>
+                    </label>
+                    <label>
+                      温度
+                      <input data-mc-gap-temperature type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                      <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。</small>
                     </label>
                     <label>
                       每个场景重复次数

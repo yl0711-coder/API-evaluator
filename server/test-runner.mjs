@@ -6,6 +6,7 @@ import { executeUpstreamRequest, streamCompletenessError } from "./upstream-tran
 import { buildAiAnalysisResult, buildAiReportAnalysisPrompt, isAiReportAnalysisEnabled } from "./ai-report-analysis.mjs";
 import { getSettings } from "./settings-store.mjs";
 import { getTestScenarios } from "./scenarios/index.mjs";
+import { HttpRequestError } from "./http-request.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
 import { loadRunnableProfiles, resolveAdhocTarget } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
@@ -294,10 +295,15 @@ function normalizePredicted(predicted) {
 }
 
 export async function runAdmissionTest(body, taskContext = {}) {
-  const profile = await resolveAdmissionProfile(body);
-  if (!profile) {
+  const baseProfile = await resolveAdmissionProfile(body);
+  if (!baseProfile) {
     throw new Error("没有找到被测 API 配置。");
   }
+
+  // 高级设置里手填的温度。与稳定性/场景测试同一套口径：留空 = 不覆盖、走协议层默认。
+  // 存在的理由是有些模型只接受特定温度（如月之暗面只认 1），不给对的值整轮准入都会 400。
+  const temperatureOverride = optionalTemperature(body.temperature);
+  const profile = temperatureOverride != null ? { ...baseProfile, temperatureOverride } : baseProfile;
 
   const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel) ? body.packageLevel : "standard";
   const runId = buildReportId("admission", reportTargetSlug(profile));
@@ -643,9 +649,22 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
 
   // 用例可声明自身输出上限（如档位判别题校准时限 256 token）。只下调、不上调：
   //   取 min(渠道配置, 用例上限)，既复现校准运行参数，又不会把硬推理题放成超时重请求。
-  const effectiveProfile = testCase.maxTokens
+  let effectiveProfile = testCase.maxTokens
     ? { ...profile, maxTokens: Math.min(Number(profile.maxTokens) || 512, testCase.maxTokens) }
     : profile;
+
+  // 档位判别题上，用户手填的温度刻意不生效——这些题回到工具默认采样（OpenAI 协议 0.2、
+  // Claude 协议不发 temperature），即本功能上线前它们一直在用的条件。
+  // 理由：档位结论来自「在线通过率 vs 离线参考分布」的似然比比较，采样温度一换就不是同条件对比，
+  // 分类器会给出一个基于错基线的「疑似降级」——那是对上游的误控告，比少覆盖一处严重得多。
+  // 同理于上面的 maxTokens 封顶：两者都是为对齐参考分布。
+  // 也不担心因此触发 400：档位题只对 Claude 家族跑（见 tier-admission.mjs 的 loadTierContext），
+  // 而 Claude 恰恰是拒收自定义 temperature 的那一族，不带反而更安全。
+  // 诚实边界：离线校准脚本本身一个 temperature 都不发，OpenAI 协议下的 0.2 与它仍有细微差异——
+  // 那是本功能之前就存在的偏差，不在这次改动范围内。
+  if (testCase.tier && effectiveProfile.temperatureOverride != null) {
+    effectiveProfile = { ...effectiveProfile, temperatureOverride: null };
+  }
 
   if (testCase.kind === "tool") {
     return executeToolCallTestRequest(effectiveProfile, baseOptions);
@@ -1023,6 +1042,8 @@ function normalizeStabilityGroups(body) {
 
 async function runStabilityForProfile({ profile, body, taskContext = {}, onProgress = null }) {
   const concurrency = clampNumber(body.concurrency, 1, 5, 1);
+  const temperatureOverride = optionalTemperature(body.temperature);
+  const runProfile = temperatureOverride != null ? { ...profile, temperatureOverride } : profile;
   const groups = normalizeStabilityGroups(body);
   const jobs = [];
   for (const group of groups) {
@@ -1040,7 +1061,7 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
     const batch = jobs.slice(index, index + concurrency).map((job, offset) => {
       const globalRound = index + offset + 1;
       const casePrompt = buildRoundPrompt(job.group.prompt, job.repeat, job.group.repeats);
-      return executeTestRequest(profile, casePrompt, {
+      return executeTestRequest(runProfile, casePrompt, {
         runId,
         caseId: `round-${globalRound}`,
         writeLog: true,
@@ -1241,6 +1262,18 @@ function optionalOverrideInt(value, min, max) {
   return Math.min(max, Math.max(min, Math.floor(n)));
 }
 
+// 温度一次性覆盖：留空 → null（走协议默认：OpenAI 0.2，Claude 不带该字段）。
+// 与 optionalOverrideInt 不同，这里不夹取而是超范围直接报错：温度填错（比如把 20 当成 2.0）
+// 静默夹到 2 会让用户以为跑的是自己填的值，而这个参数会实质改变模型输出。
+function optionalTemperature(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 2) {
+    throw new HttpRequestError(400, "invalid_temperature", "温度必须是 0-2 之间的数字，留空则用默认值。");
+  }
+  return n;
+}
+
 // 表单复选框未勾选时字段直接缺席，勾选时为 "1"；JSON 调用方可传 true/"true"/"on"/"yes"。
 function isScenarioFlagOn(value) {
   return (
@@ -1271,9 +1304,11 @@ export async function runScenarioTest(body, taskContext = {}) {
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const requestConcurrency = clampNumber(body.requestConcurrency || body.concurrency, 1, 3, 1);
   const repeats = clampNumber(body.repeats, 1, 5, 1);
-  // 一次性覆盖：仅本次运行生效，不持久化。留空则回落（maxTokens→场景默认 4096，timeoutMs→渠道配置）。
+  // 一次性覆盖：仅本次运行生效，不持久化。留空则回落（maxTokens→场景默认 4096，timeoutMs→渠道配置，temperature→协议默认）。
   const maxTokensOverride = optionalOverrideInt(body.maxTokens, 1, 32768);
   const timeoutMsOverride = optionalOverrideInt(body.timeoutMs, 1000, 600000);
+  // temperature 覆盖：0-2 范围，支持小数。留空则走协议默认（OpenAI 0.2，Claude 不带）。
+  const temperatureOverride = optionalTemperature(body.temperature);
   // 「在报告中完整显示返回」：表单复选框传 "1"；同时容忍 JSON 调用方传 true/"true"/"on"/"yes"。
   const fullResponseInReport = isScenarioFlagOn(body.fullResponseInReport);
   // 「发送流式请求（SSE）」：开启则整轮场景都走流式，并采集真 TTFT。
@@ -1297,6 +1332,7 @@ export async function runScenarioTest(body, taskContext = {}) {
           requestConcurrency,
           maxTokensOverride,
           timeoutMsOverride,
+          temperatureOverride,
           keepFullResponse: fullResponseInReport,
           streamRequest,
           taskContext,
@@ -1440,6 +1476,7 @@ async function runScenarioProfile({
   requestConcurrency,
   maxTokensOverride = null,
   timeoutMsOverride = null,
+  temperatureOverride = null,
   keepFullResponse = false,
   streamRequest = false,
   taskContext,
@@ -1466,6 +1503,7 @@ async function runScenarioProfile({
           ...profile,
           maxTokens: maxTokensOverride ?? SCENARIO_MAX_OUTPUT_TOKENS,
           timeoutMs: timeoutMsOverride ?? profile.timeoutMs,
+          temperatureOverride: temperatureOverride, // 传递到协议层，让它覆盖默认温度值
         };
         const record = await executeTestRequest(caseProfile, buildScenarioPrompt(scenario, repeat, repeats), {
           runId,
@@ -1737,6 +1775,7 @@ async function finalizeTestRecord({
   normalizedError,
   toolCall = null,
   streamValidation = null,
+  temperatureStripped = false,
   attempts = 1,
   successOverride = undefined,
 }) {
@@ -1753,6 +1792,9 @@ async function finalizeTestRecord({
     // 实际发出的输出窗口（场景题会把它抬到 scenario.maxTokens）。落进 requests.jsonl 便于
     // 直接核对"发的是不是 8192"，不必靠输出长度反推。
     requestMaxTokens: Number(profile.maxTokens) || null,
+    // 高级设置里手填的温度被传输层摘掉了（该模型拒收自定义 temperature）。落进记录，
+    // 汇总时聚合成一条界面提示——否则用户以为跑的是自己填的温度，实际跑的是模型默认值。
+    temperatureStripped,
     // 实际发出的是不是 SSE 流式请求。诊断时不必再靠 firstTokenMs 反推（那会把「流式但没吐内容」
     // 的失败误判成非流式）。
     stream,

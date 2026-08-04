@@ -123,6 +123,10 @@ export async function executeUpstreamRequest(
     normalizedError: "",
     toolCall: null,
     streamValidation: null,
+    // 「用户手填的 temperature 被本层摘掉了」。只在 profile.temperatureOverride 非空时才置位——
+    // 摘掉工具自己的默认 0.2 属于内部自愈、无需惊动用户；摘掉用户明确填的值必须如实上报，
+    // 否则报告里的数字来自一个和用户所填不同的温度，却毫无痕迹。
+    temperatureStripped: false,
   };
   let attempts = 0; // 实际发出的请求次数（含重试），写进记录便于诊断
   // 是否流式：取自【真正发出去的请求体】，不取调用方声明，两者不会脱节。
@@ -150,6 +154,7 @@ export async function executeUpstreamRequest(
       normalizedError: r.normalizedError,
       toolCall: r.toolCall,
       streamValidation: r.streamValidation,
+      temperatureStripped: r.temperatureStripped,
       attempts,
       successOverride: computeSuccess(r),
     });
@@ -176,6 +181,8 @@ export async function executeUpstreamRequest(
   const tempKey = `${profile.baseUrl}|${profile.defaultModel}`;
   if (request.body?.temperature !== undefined && TEMPERATURE_UNSUPPORTED_MODELS.has(tempKey)) {
     delete request.body.temperature;
+    // 这条记忆是进程级的，无法区分「上次是谁填的温度」；此处按本次调用是否带了用户覆盖来判定。
+    if (profile.temperatureOverride != null) r.temperatureStripped = true;
   }
   // 同上：已知不认 stream_options 的模型，流式请求首发就不带（拿不到上游 usage，调用方回退字符估算）。
   if (request.body?.stream_options !== undefined && STREAM_OPTIONS_UNSUPPORTED_MODELS.has(tempKey)) {
@@ -251,6 +258,8 @@ export async function executeUpstreamRequest(
           // 并记住该模型，让后续请求首发就不带。
           TEMPERATURE_UNSUPPORTED_MODELS.add(tempKey);
           delete request.body.temperature;
+          // 同上：只有用户明确填过温度才算「被摘」，摘默认值是内部自愈、不必上报。
+          if (profile.temperatureOverride != null) r.temperatureStripped = true;
           retryable = true;
           reconfigured = true;
           retryAfterMs = 0; // 确定性重配，不退避

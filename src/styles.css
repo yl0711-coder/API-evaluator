@@ -701,6 +701,16 @@ code {
   align-items: start;
 }
 
+/* 高级设置内的两列网格：「温度」列带较长 field-hint 更高，默认 align-items: stretch 会把同行
+   另一列连同其下拉一起拉高、下拉随之错位。改顶端对齐（同上三处）。
+   刻意逐个点名而不写通配的 .advanced-settings-body：模型目标表单的高级设置里没有温度框、
+   各列高度本来就相近，把它一起改了属于顺带动无关区域。 */
+#stability-test-form .advanced-settings-body,
+#scenario-test-form .advanced-settings-body,
+[data-mc-gap-options] .advanced-settings-body {
+  align-items: start;
+}
+
 /* 分区标题块（h3 + 说明）在两列网格里跨整行，否则说明只占左半列、观感割裂。 */
 .form-grid > .form-section-title {
   grid-column: 1 / -1;

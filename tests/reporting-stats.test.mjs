@@ -50,6 +50,26 @@ function makeStabilitySummary(id, name, successCount, total) {
   });
 }
 
+// 回归：高级设置里手填的温度被传输层摘掉时，汇总必须留痕（界面据此出提示卡）。
+// 摘掉工具自己的默认温度不该置位——那是内部自愈，提示会变成噪音。
+test("buildStabilitySummary 统计「手填温度被摘掉」的请求数", () => {
+  const records = makeRecords(10, 10);
+  records[0].temperatureStripped = true;
+  records[3].temperatureStripped = true;
+  const summary = buildStabilitySummary({
+    runId: "run-temp",
+    profile: profile("t", "温度"),
+    records,
+    rounds: 10,
+    concurrency: 1,
+    prompt: "ping",
+    startedAt: new Date("2026-06-02T00:00:00Z"),
+    endedAt: new Date("2026-06-02T00:01:00Z"),
+  });
+  assert.equal(summary.temperatureStrippedCount, 2);
+  assert.equal(makeStabilitySummary("a", "甲", 10, 10).temperatureStrippedCount, 0);
+});
+
 test("buildStabilitySummary attaches Wilson CI and P99", () => {
   const summary = makeStabilitySummary("a", "甲", 8, 10);
   assert.equal(summary.successRateCi.n, 10);
