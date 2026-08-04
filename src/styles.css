@@ -4230,14 +4230,32 @@ textarea:focus {
   gap: 16px;
   align-items: end;
 }
-#auto-test-config .atc-fixed-hour-picker {
+#auto-test-config .atc-fixed-times {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
-  gap: 8px;
+  gap: 10px;
   grid-column: 1 / -1;
 }
-#auto-test-config .atc-fixed-hour-picker .checkbox-option {
-  margin: 0;
+#auto-test-config .atc-fixed-time-controls,
+#auto-test-config .atc-fixed-time-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+#auto-test-config .atc-fixed-time-controls label {
+  min-width: 110px;
+}
+#auto-test-config .atc-fixed-time-list {
+  display: grid;
+  gap: 8px;
+}
+#auto-test-config .atc-fixed-time-row {
+  align-items: center;
+  justify-content: space-between;
+  max-width: 320px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 #auto-test-config .atc-cron-preview-line {
   grid-column: 1 / -1;

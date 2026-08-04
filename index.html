@@ -1248,7 +1248,14 @@
                 每天几点
                 <select id="atc-cron-once-hour"></select>
               </label>
-              <div id="atc-cron-fixed-hours" class="atc-fixed-hour-picker hidden" aria-label="固定运行时刻"></div>
+              <div id="atc-cron-fixed-times" class="atc-fixed-times hidden">
+                <div class="atc-fixed-time-controls">
+                  <label>小时<select id="atc-cron-fixed-hour"></select></label>
+                  <label>分钟<select id="atc-cron-fixed-minute"></select></label>
+                  <button type="button" id="atc-cron-fixed-add" class="secondary">添加时刻</button>
+                </div>
+                <div id="atc-cron-fixed-time-list" class="atc-fixed-time-list"></div>
+              </div>
               <small class="field-hint atc-cron-preview-line">
                 <span id="atc-cron-preview">每天全天，每小时一次</span>
               </small>

@@ -67,7 +67,7 @@ export function computeNextRunAt(jobOrPeriod, fromMs = Date.now()) {
   if (jobOrPeriod && typeof jobOrPeriod === "object") {
     const job = jobOrPeriod;
     if (job.cron) {
-      const next = cronNextAfter(job.cron, fromMs);
+      const next = nextCronAt(job.cron, fromMs);
       if (next != null) return new Date(next).toISOString();
       // cron 解析【语法】合法但 366 天内无匹配日期时才会落到这里——不是"不该发生"的兜底，
       // 而是真实可构造的输入（如 `0 0 30 2 *`：2 月没有 30 号，永远不会命中）。validateJob 只查
@@ -79,6 +79,15 @@ export function computeNextRunAt(jobOrPeriod, fromMs = Date.now()) {
     return intervalNextRunAt(job.periodHours, fromMs);
   }
   return intervalNextRunAt(jobOrPeriod, fromMs);
+}
+
+function nextCronAt(cron, fromMs) {
+  const expressions = String(cron || "").split(";").map((item) => item.trim());
+  if (!expressions.length || expressions.some((item) => !item)) return null;
+  return expressions.reduce((earliest, expression) => {
+    const next = cronNextAfter(expression, fromMs);
+    return next != null && (earliest == null || next < earliest) ? next : earliest;
+  }, null);
 }
 
 function intervalNextRunAt(periodHours, fromMs) {
@@ -104,7 +113,10 @@ export function normalizeJob(raw, existing = null) {
   // cron 表达式（可选）：非空即启用 cron 调度、periodHours 作后备保留。空串=用间隔模式。
   const cron = String(raw.cron ?? existing?.cron ?? "")
     .trim()
-    .slice(0, 120);
+    .slice(0, 1200);
+  // `0 HH * * ...` can mean either legacy "once daily" or a fixed HH:00 time.
+  // Keep this UI-only marker so edits retain the chosen mode; scheduling still uses cron only.
+  const cronMode = cron && (raw.cronMode ?? existing?.cronMode) === "fixed" ? "fixed" : "";
   return {
     id,
     name: String(raw.name ?? existing?.name ?? "")
@@ -114,6 +126,7 @@ export function normalizeJob(raw, existing = null) {
     kind,
     periodHours,
     cron,
+    cronMode,
     scenarioIds,
     options,
     enabled: raw.enabled === undefined ? existing?.enabled !== false : Boolean(raw.enabled),
@@ -191,7 +204,9 @@ export function validateJob(job) {
   // cron 模式：校验表达式合法即可，periodHours 只作后备不强校验。
   if (job.cron) {
     try {
-      parseCron(job.cron);
+      const expressions = job.cron.split(";").map((item) => item.trim());
+      if (expressions.length > 24 || expressions.some((item) => !item)) throw new Error("固定时刻不能为空，且最多支持 24 个。");
+      for (const expression of expressions) parseCron(expression);
     } catch (error) {
       return `定时表达式不合法：${error.message}`;
     }
