@@ -39,6 +39,24 @@ function buildStandardStabilityGroups() {
   });
 }
 
+function newSubmitNonce() {
+  // crypto.randomUUID 在非安全上下文（例如通过 http 访问局域网/Docker 部署）可能不存在。
+  // 这个键只需在单个页面会话内唯一，退化到 getRandomValues / Math.random 完全够用。
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// 导出仅为可测（本文件无 DOM 测试底座）：「何时复用 nonce、何时换新」这层判定就是防双花的全部，
+// 值得单独锁住。签名相同 → 视为同一次提交的重试，沿用旧 key；签名变了 → 用户改了要测什么，必须换新
+// key，否则会被服务端当成重试而拿回上一次的旧任务。
+export function nextSubmitNonce(pending, signature) {
+  if (pending && pending.signature === signature) return pending;
+  return { signature, key: `standard-eval:${newSubmitNonce()}` };
+}
+
 export function createStandardEvalController({
   form,
   submitButton,
@@ -62,6 +80,14 @@ export function createStandardEvalController({
   standardPicker,
 }) {
   let running = false;
+  // 「同一次提交」的幂等 nonce，只堵一种双花：POST /api/tasks 已经到达后端、任务建好并开始真实
+  // 计费，但响应在回程丢了（网络抖动 / 代理 502 / 后端重启瞬间），前端报「失败」，用户再点一次。
+  // 带同一个 key 重试会拿回原任务，而不是再跑一遍（服务端见 server/task-manager.mjs 的 taskDedupKey）。
+  // 生命周期刻意做得很窄：
+  //   · 创建成功即作废（onCreated）——此后再点，是用户明知任务已存在还要重跑，理应放行；
+  //   · 表单选择变了就换新 nonce——否则改完模型再提交会被当成重试，拿回上一次的旧任务；
+  //   · 刷新页面 / 另开标签页都不共享它，那两类双花本次不覆盖（取舍见服务端注释）。
+  let pendingSubmit = null; // { signature, key }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (running) return; // 防双击/确认框 await 期间重复提交（最贵流程，重复=重复扣额度）
@@ -74,6 +100,9 @@ export function createStandardEvalController({
       return;
     }
     const modelNames = profileIds.map((id) => findModelNameByTargetId(state, id));
+    // groups 不入签名：buildStandardStabilityGroups() 由模块常量算出，与表单无关。
+    const submitSignature = JSON.stringify([profileIds, modelNames, isClaudeChannel, useAiReportAnalysis]);
+    pendingSubmit = nextSubmitNonce(pendingSubmit, submitSignature);
     running = true;
     const estimate = estimateCost({ modelNames, isClaudeChannel: isClaudeChannel ? "1" : "", useAiReportAnalysis });
     if (!(await confirmRun("标准评测", estimate))) {
@@ -108,9 +137,16 @@ export function createStandardEvalController({
           claudeChannelId: isClaudeChannel ? channelId : "",
           tierProbeModels: isClaudeChannel ? CLAUDE_TIER_PROBE_MODELS : [],
           useAiReportAnalysis,
+          idempotencyKey: pendingSubmit.key,
         },
         taskProgressElement,
-        { onProgress: (task) => renderStandardStepsFromTask(progressElement, task) },
+        {
+          // 任务已确认建好，重试窗口就此关闭：再点一次是主动重跑，应当拿到新任务。
+          onCreated: () => {
+            pendingSubmit = null;
+          },
+          onProgress: (task) => renderStandardStepsFromTask(progressElement, task),
+        },
       );
 
       const perModelResults = result?.models || [];

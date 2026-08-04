@@ -207,6 +207,99 @@ test("scenario 任务去重：带相同 idempotencyKey 的任务仍在跑时，�
   }
 });
 
+// 回归：一键标准准入是最贵的流程（每个模型 3 步、几十次真实上游调用）。若 POST /api/tasks 已到达
+// 后端、任务建好并开始计费，但响应在回程丢了，前端会报失败诱使用户再点一次 → 双花。带同一个
+// idempotencyKey 的重试必须拿回原任务。此前该去重被 `type !== "scenario"` 挡在门外，只有场景补齐能用。
+test("admission-suite 任务去重：带相同 idempotencyKey 的任务仍在跑时，重复创建返回同一个任务", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-suite-dedup-test-"));
+  let releaseRunner;
+  let suiteRuns = 0;
+  const gate = new Promise((resolve) => {
+    releaseRunner = resolve;
+  });
+  try {
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runStabilityTest: async () => ({}),
+      runBatchAdmissionTest: async () => ({}),
+      runBatchStabilityTest: async () => ({}),
+      runScenarioTest: async () => ({}),
+      runAdmissionSuite: async () => {
+        suiteRuns += 1;
+        await gate;
+        return { type: "admission-suite", conclusion: "accepted", steps: [], models: [] };
+      },
+    });
+
+    const payload = {
+      profileIds: ["p1"],
+      modelNames: ["claude-sonnet-5"],
+      tierProbeModels: [],
+      idempotencyKey: "standard-eval:nonce-abc",
+    };
+    const first = await manager.createTask("admission-suite", payload);
+    const second = await manager.createTask("admission-suite", payload);
+    assert.equal(second.id, first.id, "重试应拿回同一个 in-flight 任务，不新建");
+    assert.equal(manager.tasks.size, 1, "只应存在一个任务");
+
+    releaseRunner();
+    await waitFor(() => first.status === "completed");
+    // 真正要防的是钱：编排器只能被跑起来一次。
+    assert.equal(suiteRuns, 1, `准入编排器只应执行 1 次，实际 ${suiteRuns} 次`);
+
+    // 任务已结束 → 键释放，再点视为用户主动重跑，应当放行。
+    const third = await manager.createTask("admission-suite", payload);
+    assert.notEqual(third.id, first.id, "上一轮已结束，应能正常发起新一轮");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// 回归：去重键按 type 分桶。两个类型不同的任务即便幂等键字面相同，也绝不能互相合并——
+// 合并会让调用方拿到一个类型完全不同的 result，前端按自己的形状去读必然崩或显示错数据。
+test("任务去重按类型分桶：键相同但 type 不同的任务各自新建", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-dedup-bucket-test-"));
+  let releaseRunner;
+  const gate = new Promise((resolve) => {
+    releaseRunner = resolve;
+  });
+  try {
+    const manager = createTaskManager({
+      taskEventsFile: join(dir, "task-events.jsonl"),
+      ...normalizers,
+      runStabilityTest: async () => {
+        await gate;
+        return {};
+      },
+      runBatchAdmissionTest: async () => ({}),
+      runBatchStabilityTest: async () => ({}),
+      runScenarioTest: async () => {
+        await gate;
+        return { type: "scenario", results: [] };
+      },
+    });
+
+    const sharedKey = "collision-test-key";
+    const scenarioTask = await manager.createTask("scenario", {
+      profileIds: ["p1"],
+      scenarioIds: ["s1"],
+      idempotencyKey: sharedKey,
+    });
+    const stabilityTask = await manager.createTask("stability", {
+      profileIds: ["p1"],
+      rounds: 1,
+      idempotencyKey: sharedKey,
+    });
+    assert.notEqual(stabilityTask.id, scenarioTask.id, "类型不同就不该合并，哪怕幂等键一模一样");
+
+    releaseRunner();
+    await waitFor(() => scenarioTask.status === "completed" && stabilityTask.status === "completed");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
 // 回归：去重键必须由调用方显式声明（payload.idempotencyKey），绝不能按 profileIds/scenarioIds
 // 的形状去猜「是不是补齐场景」——否则会把「普通复杂场景测试表单只选了 1 模型 1 场景」这种
 // 完全正常、语义不同的请求，跟同时发生的补齐流程错误合并成一个任务。

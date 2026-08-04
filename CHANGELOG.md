@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **一键标准准入没有服务端幂等，创建请求丢响应时重试会双花（ADM-015 的一部分）** — `POST /api/tasks`
+  可能已经到达后端、任务建好并开始**真实计费**，而响应在回程丢了（网络抖动 / 代理 502 / 后端重启瞬间）。
+  前端只能报「失败」，用户再点一次 → 第二个任务照跑一遍，钱花两遍。轮询路径早有抗抖动
+  （`MAX_CONSECUTIVE_POLL_ERRORS`），**创建路径一直是裸的**。现在前端对「同一次提交」沿用同一个
+  `idempotencyKey`（`src/standard-eval-controller.js` 的 `nextSubmitNonce`，创建成功即作废、表单一改
+  就换新），服务端据此返回原任务。顺带修掉去重闸门里的 `type !== "scenario"`：该机制此前只有
+  「模型比对·补齐单方场景」能用，准入任务哪怕显式带了键也被原样忽略；键改为按 type 分桶，
+  跨类型不会误合并。
+  **刻意不覆盖**（已在两处代码注释写明取舍）：刷新页面后重新提交、多标签页各自提交、任务跑完后再点、
+  多后端副本——这几种仍会建新任务。要全堵上得把幂等键落库并加 `UNIQUE(owner_user_id, idempotency_key)`，
+  属于另一档改动。
 - **取消准入任务不中断用例循环（真实渠道验收发现）** — `runAdmissionTest` 的用例循环是唯一没在每轮开头
   `assertTaskNotCancelled` 的 runner（此前它是同步端点、根本没有取消按钮，异步化才让这个潜伏问题可达）。
   点「取消」只 abort 掉在飞的那一个请求，循环照样往下走：剩余用例的 `fetch` 因 signal 已 abort 而瞬间
