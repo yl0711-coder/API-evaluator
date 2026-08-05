@@ -4,7 +4,9 @@
 // saveReportFiles，绝不真打网络、不写盘。
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
+  LOAD_PROFILES,
   aggregate,
   classifyNetwork,
   classifyPointStatus,
@@ -14,6 +16,7 @@ import {
   formatSweepReport,
   runLoadTest,
 } from "../server/load-test.mjs";
+import { LOAD_PROFILE_MAX_TOKENS } from "../src/cost-estimates.js";
 
 const fakeSave = async (runId) => ({ markdownPath: `/x/${runId}.md`, htmlPath: `/x/${runId}.html` });
 const target = { baseUrl: "http://x", model: "m1" };
@@ -161,6 +164,65 @@ test("闭环：持续并发（在飞可达 N，非串行）、writeLog:false + n
     seenOptions.every((o) => o.writeLog === false),
     "writeLog:false 透传",
   );
+});
+
+// ===================== max_tokens 由用户决定，不再被负载档锁死 =====================
+// 前端成本预估要按「用户填的 max_tokens / 该档默认值」放大花费估算，为此在 src/cost-estimates.js
+// 复制了一份档位默认值。两边各改一处就会静默漂移：预估仍按旧默认算倍数，用户看到的花费是错的，
+// 而任何功能测试都不会红。这里把两份常量钉在一起（含档位集合本身，防新增档位只加一边）。
+test("常量同步：src/cost-estimates.js 的档位默认 max_tokens 必须与 LOAD_PROFILES 一致", () => {
+  const fromServer = Object.fromEntries(Object.entries(LOAD_PROFILES).map(([key, profile]) => [key, profile.maxTokens]));
+  assert.deepEqual(
+    LOAD_PROFILE_MAX_TOKENS,
+    fromServer,
+    "改了 LOAD_PROFILES 的 maxTokens（或增删档位）就要同步 src/cost-estimates.js 的 LOAD_PROFILE_MAX_TOKENS，否则成本预估按旧默认值算倍数",
+  );
+});
+
+// 第三份拷贝：压测表单里 max_tokens 那条提示写着「留空则按负载档默认（简单 64 / 轻思考 256 / 编程 800）」。
+// 它是用户决定填不填的唯一依据，改了服务端默认值却没改它，页面就在明确地说错话。
+test("常量同步：index.html 的 max_tokens 提示文案里的默认值必须与 LOAD_PROFILES 一致", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const hint = html.split("\n").find((line) => line.includes("留空则按负载档默认"));
+  assert.ok(hint, "没找到压测 max_tokens 的提示文案——若改了措辞，请同步本测试的匹配串");
+  for (const [key, profile] of Object.entries(LOAD_PROFILES)) {
+    assert.match(
+      hint,
+      new RegExp(`${profile.label}\\s*${profile.maxTokens}`),
+      `提示文案应写明「${profile.label} ${profile.maxTokens}」（档位 ${key}），否则页面告诉用户的默认值是错的`,
+    );
+  }
+});
+
+test("max_tokens：用户手填时以填的值为准，不受负载档默认值限制（含超出旧档位上限的情形）", async () => {
+  let seenTarget = null;
+  const fakeExecute = async (probeTarget) => {
+    seenTarget = probeTarget;
+    return { success: true, statusCode: 200, totalMs: 1, normalizedError: "" };
+  };
+  const result = await runLoadTest(
+    { target, mode: "closed", loads: [2], durationSec: 5, warmupSec: 0, promptProfile: "simple", maxTokens: 2000 },
+    { task: { abortController: new AbortController() } },
+    { executeTestRequest: fakeExecute, saveReportFiles: fakeSave },
+  );
+  // "simple" 档默认只有 64，手填 2000 应原样生效——证明不再被档位锁死。
+  assert.equal(seenTarget.maxTokens, 2000, "探针目标应带用户手填的 max_tokens");
+  assert.equal(result.maxTokens, 2000, "报告 meta 里的 max_tokens 也应是用户填的值");
+});
+
+test("max_tokens：留空时按负载档默认值兜底（防回归旧行为）", async () => {
+  let seenTarget = null;
+  const fakeExecute = async (probeTarget) => {
+    seenTarget = probeTarget;
+    return { success: true, statusCode: 200, totalMs: 1, normalizedError: "" };
+  };
+  const result = await runLoadTest(
+    { target, mode: "closed", loads: [2], durationSec: 5, warmupSec: 0, promptProfile: "coding" },
+    { task: { abortController: new AbortController() } },
+    { executeTestRequest: fakeExecute, saveReportFiles: fakeSave },
+  );
+  assert.equal(seenTarget.maxTokens, 800, "未填时仍用 coding 档默认值 800");
+  assert.equal(result.maxTokens, 800);
 });
 
 // ===================== 闭环思考时间(think time) =====================

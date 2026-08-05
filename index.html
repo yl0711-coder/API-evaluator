@@ -1494,10 +1494,15 @@
             <label>
               负载档
               <select name="promptProfile">
-                <option value="simple" selected>简单：一句话连通（max_tokens 64）</option>
-                <option value="think">轻思考：小推理题（max_tokens 256）</option>
-                <option value="coding">编程：代码排错（max_tokens 800）</option>
+                <option value="simple" selected>简单：一句话连通</option>
+                <option value="think">轻思考：小推理题</option>
+                <option value="coding">编程：代码排错</option>
               </select>
+            </label>
+            <label>
+              max_tokens
+              <input name="maxTokens" type="number" min="1" max="4096" placeholder="留空 = 按负载档默认" />
+              <small class="field-hint">单次响应最大 token 数，同时控制内存与成本。留空则按负载档默认（简单 64 / 轻思考 256 / 编程 800）；填了则不论选哪个负载档都按此值。</small>
             </label>
             <label>
               请求方式
