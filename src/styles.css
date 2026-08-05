@@ -1151,8 +1151,29 @@ button.quiet-action {
 }
 /* 「查看报告」文件列表行：类型/文件名 + 时间 + 大小 + 操作（查看/删除） */
 .report-file-row {
-  grid-template-columns: 1fr auto auto auto;
+  grid-template-columns: auto 1fr auto auto auto;
   min-width: 0;
+}
+.report-file-row > input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.report-files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 12px;
+}
+.report-files-toolbar-spacer {
+  flex: 1 1 auto;
+}
+.report-files-selection-count {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 /* 行内操作按钮容器（查看 + 仅超管可见的删除），占第 4 列不随角色改变列数 */
 .report-file-actions {

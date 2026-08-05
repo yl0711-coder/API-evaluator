@@ -88,6 +88,7 @@ import {
   pickRecentReports,
 } from "./server/report-compare.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath, sanitizeReportBaseName } from "./server/report-files.mjs";
+import { createZipArchive } from "./server/report-archive.mjs";
 import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobValidationError } from "./server/auto-test-store.mjs";
 import { loadRules, updateRules, normalizeRule, validateRule, RuleValidationError } from "./server/alert-rules-store.mjs";
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
@@ -526,6 +527,8 @@ const API_ROUTES = [
   ["GET", "/api/reports", handleReportsList],
   ["GET", "/api/reports/files", handleReportFilesList],
   ["GET", "/api/reports/disk", handleReportsDiskUsage],
+  ["POST", "/api/reports/files/download", handleReportFilesDownload],
+  ["DELETE", "/api/reports/files", handleReportFilesBulkDelete],
   ["DELETE", "/api/reports/files/:id", handleReportFileDelete],
   ["POST", "/api/reports/compare/scenarios", handleReportsCompareScenarios],
   ["POST", "/api/reports/compare", handleReportsCompare],
@@ -1655,6 +1658,94 @@ async function handleReportFilesList(req, res) {
   }
   sendJson(res, 200, files);
   return;
+}
+
+const MAX_BULK_REPORTS = 200;
+const MAX_BULK_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+
+function selectedReportIds(body) {
+  if (!Array.isArray(body?.ids) || body.ids.length === 0) {
+    throw new HttpRequestError(400, "invalid_report_selection", "请至少选择一份报告。");
+  }
+  const ids = [];
+  const seen = new Set();
+  for (const value of body.ids) {
+    if (typeof value !== "string" || !value || sanitizeReportBaseName(value) !== value) {
+      throw new HttpRequestError(400, "invalid_report_id", "报告标识无效，请刷新列表后重试。");
+    }
+    if (!seen.has(value)) {
+      seen.add(value);
+      ids.push(value);
+    }
+  }
+  if (ids.length > MAX_BULK_REPORTS) {
+    throw new HttpRequestError(413, "too_many_reports", `单次最多处理 ${MAX_BULK_REPORTS} 份报告。`);
+  }
+  return ids;
+}
+
+function downloadFileName() {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+  return `api-evaluator-reports-${stamp}.zip`;
+}
+
+async function handleReportFilesDownload(req, res) {
+  const ids = selectedReportIds(await readJson(req));
+  const entries = [];
+  let totalBytes = 0;
+  for (const id of ids) {
+    let html;
+    try {
+      html = await readReportFileText(join(REPORTS_DIR, `${id}.html`));
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        throw new HttpRequestError(404, "report_not_found", `报告「${id}」不存在或已删除。`);
+      }
+      throw error;
+    }
+    totalBytes += Buffer.byteLength(html, "utf8");
+    if (totalBytes > MAX_BULK_DOWNLOAD_BYTES) {
+      throw new HttpRequestError(413, "reports_too_large", "所选报告解压后的总大小超过 256 MiB，请减少选择后重试。");
+    }
+    entries.push({ name: `${id}.html`, content: html });
+  }
+  const archive = createZipArchive(entries);
+  const filename = downloadFileName();
+  res.writeHead(200, {
+    "Content-Type": "application/zip",
+    "Content-Disposition": `attachment; filename=\"${filename}\"`,
+    "Content-Length": archive.length,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(archive);
+}
+
+async function handleReportFilesBulkDelete(req, res) {
+  const ids = selectedReportIds(await readJson(req));
+  const deleted = [];
+  const failed = [];
+  for (const id of ids) {
+    const htmlPath = join(REPORTS_DIR, `${id}.html`);
+    try {
+      await stat(htmlPath);
+    } catch (error) {
+      failed.push({ id, code: error?.code === "ENOENT" ? "not_found" : "stat_failed" });
+      continue;
+    }
+    try {
+      await rm(htmlPath);
+      await rm(join(REPORTS_DIR, `${id}.md`), { force: true });
+      await deleteReport(id);
+      deleted.push(id);
+    } catch {
+      failed.push({ id, code: "delete_failed" });
+    }
+  }
+  sendJson(res, 200, { requested: ids.length, deleted, failed });
 }
 
 // 磁盘剩余空间（评测数据所在分区，非目录用量——够判断"要不要清理"这一件事，不需要递归扫目录）。
