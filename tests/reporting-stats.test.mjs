@@ -212,3 +212,61 @@ test("buildStabilitySummary 有缓存信号时计算命中率", () => {
   assert.ok(summary.cacheHitRate > 0.59 && summary.cacheHitRate < 0.61);
   assert.equal(summary.cacheHitRateText, "60%");
 });
+
+// —— ADM-010：延迟双口径 ——
+// makeRecords 刻意不带 endToEndMs，模拟升级前落库的历史记录。
+
+test("ADM-010: 记录缺 endToEndMs 时端到端指标为 null，不按 0 参与计算", () => {
+  const summary = makeStabilitySummary("e2e-legacy", "历史", 10, 10);
+  // 关键：不能是 0。0 会被报告当成"端到端 0 毫秒"，比不给数字更糟——
+  // 它会让一条其实有重试等待的渠道看起来毫无延迟。
+  assert.equal(summary.p95EndToEndMs, null);
+  assert.equal(summary.avgEndToEndMs, null);
+  assert.equal(summary.retryOverheadP95Ms, null);
+  // 单次口径必须照旧可用：新字段缺失不得影响既有统计。
+  assert.ok(summary.p95TotalMs > 0);
+});
+
+test("ADM-010: 有 endToEndMs 时给出端到端分位数与重试等待开销", () => {
+  const records = makeRecords(10, 10);
+  // 每条都在单次耗时之外多等了 1500ms 退避。
+  for (const record of records) {
+    if (record.success) record.endToEndMs = record.totalMs + 1500;
+  }
+  const summary = buildStabilitySummary({
+    runId: "run-e2e",
+    profile: profile("e", "端到端"),
+    records,
+    rounds: records.length,
+    concurrency: 1,
+    prompt: "ping",
+    startedAt: new Date("2026-06-02T00:00:00Z"),
+    endedAt: new Date("2026-06-02T00:01:00Z"),
+  });
+  assert.equal(summary.p95EndToEndMs, summary.p95TotalMs + 1500);
+  // 这个数就是 ADM-010 要让用户看见的东西：重试掩盖掉的那段等待。
+  assert.equal(summary.retryOverheadP95Ms, 1500);
+  // 报告必须真的把它印出来，否则改了内核也等于没修。
+  const report = formatStabilityReport(summary, records);
+  assert.match(report, /端到端 P95（含重试与退避等待）：/);
+  assert.match(report, /其中重试等待约 1500 ms/);
+});
+
+test("ADM-010: 端到端字段只有部分记录有时整体判未能统计", () => {
+  const records = makeRecords(10, 10);
+  // 只给一半记录补字段：算出来的分位数无法与 totalMs 口径对比，宁可不给。
+  records[0].endToEndMs = records[0].totalMs + 500;
+  const summary = buildStabilitySummary({
+    runId: "run-e2e-partial",
+    profile: profile("p", "部分"),
+    records,
+    rounds: records.length,
+    concurrency: 1,
+    prompt: "ping",
+    startedAt: new Date("2026-06-02T00:00:00Z"),
+    endedAt: new Date("2026-06-02T00:01:00Z"),
+  });
+  assert.equal(summary.p95EndToEndMs, null, "覆盖率不足应整体给 null，不能拿 1 条记录代表 10 条");
+  const report = formatStabilityReport(summary, records);
+  assert.match(report, /未能统计/);
+});

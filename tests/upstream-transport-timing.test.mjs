@@ -127,3 +127,150 @@ test("executeUpstreamRequest：重试后被取消，totalMs 记最后一次尝�
     server.closeAllConnections?.();
   }
 });
+
+// —— 以下为 ADM-010（端到端延迟）—— //
+
+const TRANSPORT_HOOKS = {
+  buildRequest: (p) => ({
+    url: `${p.baseUrl}/v1/chat/completions`,
+    headers: { "content-type": "application/json" },
+    body: {
+      model: p.defaultModel,
+      messages: [{ role: "user", content: "hi" }],
+      ...(p.temperatureOverride != null ? { temperature: p.temperatureOverride } : {}),
+    },
+  }),
+  interpret: (r, raw) => {
+    r.responseText = raw;
+  },
+  computeSuccess: (r) => Boolean(r.statusCode === 200),
+  finalizeRecord: (x) => x,
+};
+
+async function withUpstream(responder, run) {
+  const server = createServer(responder);
+  const sockets = new Set();
+  server.on("connection", (s) => {
+    sockets.add(s);
+    s.on("close", () => sockets.delete(s));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    return await run(`http://127.0.0.1:${server.address().port}`);
+  } finally {
+    for (const s of sockets) s.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+// ADM-010 的核心：一个"首次 429、退避、二次成功"的请求，totalMs 只记最后那次（快），
+// 于是报告里的 P95 系统性优于用户真实体感——而准入决策看的正是这个数。endToEndMs 补上这个差。
+test("ADM-010: 429 重试后成功，endToEndMs 含失败尝试与退避，totalMs 仍只记最后一次", async () => {
+  const RETRY_AFTER_MS = 700;
+  let hits = 0;
+  const record = await withUpstream(
+    (_req, res) => {
+      hits += 1;
+      if (hits === 1) {
+        // retry-after 用秒；给 0.7s 让退避真实可测又不拖慢测试。
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "0.7" });
+        res.end(JSON.stringify({ error: { message: "rate limited" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+    },
+    (baseUrl) =>
+      executeUpstreamRequest(
+        { id: "p-e2e-1", baseUrl, apiKey: "sk-mock", protocol: "openai_chat", defaultModel: "m", timeoutMs: 30000 },
+        {},
+        TRANSPORT_HOOKS,
+      ),
+  );
+
+  assert.equal(hits, 2, "应真的重试了一次，否则本用例没测到重试路径");
+  assert.equal(record.attempts, 2);
+  // 最后一次尝试是本地 mock 的即时 200，必然远快于退避时长。
+  assert.ok(record.totalMs < RETRY_AFTER_MS, `totalMs 应只含最后一次尝试，实际 ${record.totalMs}ms`);
+  // 端到端必须把那 700ms 退避 + 第一次失败请求算进去。这是修复前根本不存在的字段。
+  assert.ok(record.endToEndMs >= RETRY_AFTER_MS, `endToEndMs 应含退避等待(≥${RETRY_AFTER_MS}ms)，实际 ${record.endToEndMs}ms`);
+  // 两个口径的差就是"重试掩盖掉的那部分等待"，必须真的存在差值，否则等于没修。
+  assert.ok(record.endToEndMs > record.totalMs, "端到端必须严格大于单次耗时，否则退避没被计入");
+});
+
+// 温度被拒是【确定性重配】：零退避、修我方请求体、同模型只发生一次（后续首发就不带）。
+// 把它计进端到端只会让每个模型的第一条记录凭空变慢，制造 ADM-010 本想消除的那类失真。
+// 这条用例锁死这个刻意的例外——否则后人"顺手统一"就会把它算进去。
+test("ADM-010: temperature 被拒的确定性重配不计入 endToEndMs", async () => {
+  const SLOW_REJECT_MS = 600;
+  let hits = 0;
+  const record = await withUpstream(
+    (_req, res) => {
+      hits += 1;
+      if (hits === 1) {
+        // 慢慢地拒：若这次耗时被计入端到端，断言会立刻抓到。
+        setTimeout(() => {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "Unsupported value: 'temperature' does not support 0.7 with this model" } }));
+        }, SLOW_REJECT_MS);
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+    },
+    (baseUrl) =>
+      executeUpstreamRequest(
+        {
+          id: "p-e2e-2",
+          baseUrl,
+          apiKey: "sk-mock",
+          protocol: "openai_chat",
+          defaultModel: `m-${Date.now()}`, // 唯一模型名：避开进程级 TEMPERATURE_UNSUPPORTED_MODELS 记忆
+          timeoutMs: 30000,
+          temperatureOverride: 0.7,
+        },
+        {},
+        TRANSPORT_HOOKS,
+      ),
+  );
+
+  assert.equal(hits, 2, "应发生一次重配重试");
+  assert.equal(record.temperatureStripped, true, "用户手填的温度被摘掉，须如实上报");
+  // 端到端起点被重置到重配之后，故不含那 600ms 的被拒往返。
+  assert.ok(
+    record.endToEndMs < SLOW_REJECT_MS,
+    `确定性重配不应计入端到端，实际 ${record.endToEndMs}ms（被拒那次耗时 ${SLOW_REJECT_MS}ms）`,
+  );
+});
+
+test("ADM-010: 一次就成时两个口径一致，且端到端从不小于单次", async () => {
+  const record = await withUpstream(
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+    },
+    (baseUrl) =>
+      executeUpstreamRequest(
+        { id: "p-e2e-3", baseUrl, apiKey: "sk-mock", protocol: "openai_chat", defaultModel: "m", timeoutMs: 30000 },
+        {},
+        TRANSPORT_HOOKS,
+      ),
+  );
+
+  assert.equal(record.attempts, 1);
+  assert.ok(record.endToEndMs >= record.totalMs, "端到端不得小于单次耗时（舍入也不行）");
+  // 无重试时两者应当贴得很近；给 80ms 容差吸收调度抖动。
+  assert.ok(record.endToEndMs - record.totalMs < 80, `无重试时两口径应基本一致，实际差 ${record.endToEndMs - record.totalMs}ms`);
+});
+
+test("ADM-010: 一次请求都没发出时 endToEndMs 为 null，不是 0", async () => {
+  // Key 读不到 → 在进入重试循环之前就返回，端到端无意义。
+  // 记 0 会让"从未测到"和"零耗时"在统计里无法区分。
+  const record = await executeUpstreamRequest(
+    { id: "p-e2e-4", baseUrl: "http://127.0.0.1:1", apiKey: "", protocol: "openai_chat", defaultModel: "m", timeoutMs: 1000 },
+    {},
+    TRANSPORT_HOOKS,
+  );
+  assert.equal(record.normalizedError, "auth_failed");
+  assert.equal(record.endToEndMs, null, "没发出过请求时端到端应为 null");
+});

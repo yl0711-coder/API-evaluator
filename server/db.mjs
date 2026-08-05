@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS test_requests (
   first_byte_ms INTEGER,
   first_token_ms INTEGER,
   total_ms INTEGER,
+  -- 端到端耗时（ADM-010）：含被重试掉的失败尝试与退避等待。total_ms 只是最后一次尝试。
+  -- 旧库经 migrateSchema 补列，历史行为 NULL——统计侧必须把 NULL 当「未记录」而非 0。
+  end_to_end_ms INTEGER,
   status_code INTEGER,
   success INTEGER,
   normalized_error TEXT,
@@ -230,7 +233,7 @@ export async function getDatabase(path = defaultDbPath()) {
   return db;
 }
 
-// 旧库补列（新库 CREATE 已含 run_by；ALTER 对已存在列会抛错，幂等吞掉）。
+// 旧库补列（新库 CREATE 已含这些列；ALTER 对已存在列会抛错，幂等吞掉）。
 function migrateSchema(db) {
   for (const table of ["test_requests", "test_runs"]) {
     try {
@@ -238,6 +241,12 @@ function migrateSchema(db) {
     } catch {
       // 列已存在
     }
+  }
+  // ADM-010：端到端耗时。只在 test_requests 上（test_runs 存的是汇总，没有逐请求耗时）。
+  try {
+    db.exec("ALTER TABLE test_requests ADD COLUMN end_to_end_ms INTEGER");
+  } catch {
+    // 列已存在
   }
 }
 
@@ -257,6 +266,15 @@ const toInt = (value) => {
   const n = Number(value);
   return Number.isFinite(n) ? Math.round(n) : null;
 };
+// toInt 把 null 变成 0（`Number(null) === 0`），对"未测到"的字段是错的：
+// 落 0 之后统计无法区分「从未测到」与「真的零耗时」。既有列沿用 toInt 不动
+// （改它会连带影响 token 各列，那里 null/0 的差别另有含义，属另一档改动），
+// 新增的可空数值列一律走这个。
+const toIntOrNull = (value) => {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : null;
+};
 const toReal = (value) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -273,10 +291,10 @@ export async function recordRequest(record, { path } = {}) {
       INSERT INTO test_requests (
         request_id, run_id, case_id, profile_id, profile_name, profile_role,
         provider, model, protocol, started_at, first_byte_ms, first_token_ms,
-        total_ms, status_code, success, normalized_error, input_tokens, output_tokens,
+        total_ms, end_to_end_ms, status_code, success, normalized_error, input_tokens, output_tokens,
         cache_creation_tokens, cache_read_tokens, reasoning_tokens, token_source,
         output_chars, estimated_tokens, token_audit_flag, raw_json, logged_at, run_by
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     stmt.run(
       record.requestId ?? null,
@@ -292,6 +310,7 @@ export async function recordRequest(record, { path } = {}) {
       toInt(record.firstByteMs),
       toInt(record.firstTokenMs),
       toInt(record.totalMs),
+      toIntOrNull(record.endToEndMs),
       toInt(record.statusCode),
       record.success ? 1 : 0,
       record.normalizedError ?? null,

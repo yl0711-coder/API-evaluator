@@ -60,12 +60,21 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
   // 只看 successRate 会比真实用户的首次请求体验乐观。record.attempts 是实际发出的请求次数，
   // attempts===1 且成功 = 首次就成功。
   // 只要有一条记录缺 attempts 就返回 null——把缺失当成 1 会把未知说成"首次成功"，
-  // 那正是本项要修的假通过。延迟的双口径（首次 / 端到端）仍待 upstream-transport 改造。
+  // 那正是本项要修的假通过。
   const hasAttempts = records.length > 0 && records.every((item) => Number(item.attempts) >= 1);
   const firstAttemptSuccessCount = hasAttempts ? successRecords.filter((item) => Number(item.attempts) === 1).length : null;
   const firstAttemptSuccessRate = hasAttempts ? firstAttemptSuccessCount / records.length : null;
   const recoveredCount = hasAttempts ? successRecords.length - firstAttemptSuccessCount : null;
   const p95TotalMs = percentile(totalTimes, 0.95);
+  // 延迟双口径（ADM-010）：totalMs 只是最后一次尝试，endToEndMs 含被重试掉的失败尝试与退避等待。
+  // 一个"首次 503、退避 2s、二次 800ms 成功"的请求在 totalMs 口径下和一次就成的长得一样，
+  // 而用户实际等了 2.8 秒。这里如实给出两套分位数，报告并列展示。
+  // 用 isFiniteNumber 过滤：历史记录（本次改动之前落库的）没有这个字段，必须体现为"未能统计"
+  // 而不是按 0 参与计算——那会把 P95 洗低，比不给数字更糟。
+  const endToEndTimes = successRecords.map((item) => item.endToEndMs).filter(isFiniteNumber);
+  // 覆盖率不足就整体给 null：半数记录缺字段时算出来的分位数没有意义，也无法与 totalMs 口径对比。
+  const hasEndToEnd = endToEndTimes.length === totalTimes.length && endToEndTimes.length > 0;
+  const p95EndToEndMs = hasEndToEnd ? percentile(endToEndTimes, 0.95) : null;
   const recommendation = buildRecommendation(successRate, p95TotalMs, errorCounts);
   const usageTotals = aggregateUsage(records);
   const { inputTokens, outputTokens } = usageTotals;
@@ -114,6 +123,13 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
     p99TotalMs: percentile(totalTimes, 0.99),
     minTotalMs: totalTimes.length ? Math.min(...totalTimes) : null,
     maxTotalMs: totalTimes.length ? Math.max(...totalTimes) : null,
+    // 端到端口径（ADM-010）。null = 这批记录没有 endToEndMs（改动前落库的历史数据），
+    // 报告须显示「未能统计」而不是 0。判定门槛【仍走 p95TotalMs】，不因新字段改变准入结论。
+    avgEndToEndMs: hasEndToEnd ? Math.round(mean(endToEndTimes) || 0) : null,
+    p50EndToEndMs: hasEndToEnd ? percentile(endToEndTimes, 0.5) : null,
+    p95EndToEndMs,
+    // 重试等待带来的额外延迟（端到端 P95 − 单次 P95）。这一个数就是 ADM-010 想让用户看见的东西。
+    retryOverheadP95Ms: hasEndToEnd && p95TotalMs != null && p95EndToEndMs != null ? Math.max(0, p95EndToEndMs - p95TotalMs) : null,
     avgOutputChars: Math.round(mean(outputChars) || 0),
     inputTokens,
     outputTokens,

@@ -1847,6 +1847,7 @@ async function finalizeTestRecord({
   firstTokenMs = null,
   stream = false,
   totalMs,
+  endToEndMs = null,
   statusCode,
   statusText = "",
   responseText,
@@ -1885,6 +1886,11 @@ async function finalizeTestRecord({
     firstByteMs,
     firstTokenMs,
     totalMs,
+    // 端到端耗时（ADM-010）：含被重试掉的失败尝试与退避等待，故 endToEndMs >= totalMs。
+    // totalMs 的语义【刻意保持不变】——趋势图与回归判定的延迟序列按 total_ms 取点
+    // （server/db.mjs），改它的含义会让历史数据不可比。新口径一律走这个新字段。
+    // null 表示没测到（一次请求都没发出，如 Key 缺失 / egress 阻断）。
+    endToEndMs,
     statusCode,
     statusText, // 上游返回的原因短语（reason phrase），供压测报告逐码展示
     success: successOverride ?? Boolean(statusCode && statusCode >= 200 && statusCode < 300 && responseText),
