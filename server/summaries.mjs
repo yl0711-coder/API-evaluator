@@ -18,6 +18,17 @@ function computeCacheHitRate(records) {
   return totalInput > 0 ? totalCacheRead / totalInput : null;
 }
 
+function sumReportedTokenField(records, field) {
+  const values = records
+    .map((record) => record?.[field])
+    .filter((value) => value !== null && value !== undefined && Number.isFinite(Number(value)))
+    .map(Number);
+  return {
+    total: values.length ? values.reduce((sum, value) => sum + value, 0) : null,
+    reportedCount: values.length,
+  };
+}
+
 function buildStabilityGroupBreakdown(records) {
   const groups = groupBy(records, (record) => record.groupId ?? "default");
   return Object.entries(groups).map(([groupId, items]) => {
@@ -139,6 +150,15 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
     const scoredItems = items.filter((item) => !item.quality?.truncated);
     const scores = scoredItems.map((item) => item.quality?.score).filter(isFiniteNumber);
     const times = okItems.map((item) => item.totalMs).filter(isFiniteNumber);
+    // TTFT only exists for streamed requests that emitted visible content. Never substitute TTFB.
+    const firstTokenSamples = okItems
+      .filter((item) => item.stream === true)
+      .map((item) => item.firstTokenMs)
+      .filter(Number.isFinite);
+    // outputTokens already includes thinking tokens; reasoningTokens is only its provider-specific breakdown.
+    // Adding both would double-count the same billable output.
+    const outputTokenUsage = sumReportedTokenField(items, "outputTokens");
+    const cacheReadTokenUsage = sumReportedTokenField(items, "cacheReadTokens");
     const truncatedCount = items.length - scoredItems.length;
     // 报告「模型样例回答」列用：优先取一条未截断的成功回答；全截断/全失败时退回首条并标注。
     // responseSummary 在落库时已 summarizeText（截断+脱敏），此处只是挑一条代表样例。
@@ -156,6 +176,15 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
       successRateText: formatPercent(items.length ? okItems.length / items.length : 0),
       avgTotalMs: Math.round(mean(times) || 0),
       p95TotalMs: percentile(times, 0.95),
+      firstTokenSamples,
+      firstTokenSampleCount: firstTokenSamples.length,
+      p50FirstTokenMs: percentile(firstTokenSamples, 0.5),
+      outputTokens: outputTokenUsage.total,
+      outputTokenReportedCount: outputTokenUsage.reportedCount,
+      outputTokenTotalCount: items.length,
+      cacheReadTokens: cacheReadTokenUsage.total,
+      cacheReadTokenReportedCount: cacheReadTokenUsage.reportedCount,
+      cacheReadTokenTotalCount: items.length,
       avgQualityScore: Math.round(mean(scores) || 0),
       issues: [...new Set(items.flatMap((item) => item.quality?.issues || []))],
       sampleResponse: sampleItem?.quality?.truncated ? `（输出已截断）${sampleText}` : sampleText,

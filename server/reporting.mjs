@@ -379,6 +379,15 @@ export function formatScenarioReport(summary, options = {}) {
         scenario.successRateText,
         scenario.avgQualityScore,
         scenario.avgTotalMs || "-",
+        scenario.outputTokens ?? "-",
+        Number.isFinite(scenario.outputTokenReportedCount)
+          ? `${scenario.outputTokenReportedCount}/${scenario.outputTokenTotalCount ?? scenario.count}`
+          : "-",
+        scenario.cacheReadTokens ?? "-",
+        Number.isFinite(scenario.cacheReadTokenReportedCount)
+          ? `${scenario.cacheReadTokenReportedCount}/${scenario.cacheReadTokenTotalCount ?? scenario.count}`
+          : "-",
+        scenario.p50FirstTokenMs ?? "-",
         scenario.p95TotalMs ?? "-",
         escapeMarkdownTable(redactSensitiveText(scenario.sampleResponse || "-")),
         escapeMarkdownTable(scenario.issues.join("; ") || "-"),
@@ -477,8 +486,8 @@ export function formatScenarioReport(summary, options = {}) {
     "",
     safetySummary ? "## 7. 场景明细" : "## 6. 场景明细",
     "",
-    "| API | 场景 | 成功率 | 平均质量分 | 平均耗时 ms | 慢请求参考 P95 ms | 模型样例回答 | 问题摘要 | 场景结论 | 处理建议 |",
-    "|---|---|---:|---:|---:|---:|---|---|---|---|",
+    "| API | 场景 | 成功率 | 平均质量分 | 平均耗时 ms | 输出 Tokens（含思考） | 输出 Token 覆盖 | 缓存命中 Tokens | 缓存 Token 覆盖 | P50 首 Token ms | 慢请求参考 P95 ms | 模型样例回答 | 问题摘要 | 场景结论 | 处理建议 |",
+    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|",
     detailRows.join("\n"),
     "",
     safetySummary ? "## 8. 错误诊断与处理建议" : "## 7. 错误诊断与处理建议",
