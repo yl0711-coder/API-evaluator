@@ -6,7 +6,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **独立「任务中心」页（新增 `src/task-center.js`，PRD FR-004 / 修 ADM-002、ADM-024）** — 任务状态此前藏在
+  报告中心的「最近任务状态」折叠区里，每个任务只有一行聚合状态，**看不出「哪一步没通过」**——而排查时
+  用户想知道的恰恰只有这个。PRD 要求的独立任务中心页一直没落地，现补上：
+  - 列表可按状态 / 类型筛选，点开任意任务看「模型 × 步骤」网格（复用标准评测那套
+    `.flow-model-group` / `.flow-step` 类名，两处观感一致）。运行中的任务自己轮询刷新，切走页面即停。
+  - **前端不自算准入结论**：只如实展示 `executionStatus` × `verdict` 两个正交字段，聚合判定仍归服务端
+    `aggregateSuite` 独有。
+  - `api-client` 新增**只读**的 `observeRemoteTask`（不 POST、不写 `state.activeTasks`，不会新建任务或
+    误取消别人的任务）与 `cancelTaskById`；顺手修掉 `src/api-client.js` 里指向不存在页面「任务管理」的文案。
+  - 「再测一次」只回填表单并跳到标准评测页，**不直接开跑**——任务花钱，最后一下留给用户；模型目标也
+    可能已删除或改名，先核对再填。回填靠 `batch-target-picker` 新增的 `selectMany`，锚点是单值的、跨渠道
+    的一组填不全，故如实返回真正勾上的 id，提示里说清「另有 N 个未回填」。
+  - **能力边界**：任务只在事件流最后 300 行内查得到，更早的查不到。要彻底解决需 SQLite 落库
+    （`evaluation_tasks` 表，ADM-017），属刻意未做的取舍。
+
+### Removed
+- **报告中心的「最近任务状态」折叠区**（连同 `renderTaskEventList`）— 已被上面的任务中心取代，不再并存，
+  避免两处展示同一批数据而口径不一致。`loadTaskEvents` 保留：交付视图仍靠 `state.taskEvents` 识别
+  「因程序关闭而中断」的任务。
+
 ### Fixed
+- **任务详情落定满 1 小时即 404，不需要重启（任务中心的前置缺陷）** — 任务对象落定 1 小时后被逐出内存
+  `Map`（重启则立即消失），而事件日志**既不落 `steps`**，折叠时又只留最后一个事件、**把唯一带 `payload`
+  的首个事件丢掉**。于是「点开一个昨天的任务看明细」根本做不到——比原先记录的「重启后丢失」更糟。
+  - `task-manager`：终态事件（`completed` / `failed` / `cancelled`）额外落一份 `steps` 快照，仍走
+    `publicTaskStep` 轻量摘要（无原始响应体、无 key）。**只在终态落一次**：running 期间每次进度更新都写
+    会把事件日志撑爆。
+  - `task-manager`：`admission-suite` 的 payload 摘要补 `profileIds` / `modelNames`，供「再测一次」回填。
+    **仍不落 key / base URL**，泄漏锁定用例照旧通过。
+  - `data-store`：折叠事件时同时留住首尾两端（first 带 payload、latest 带状态），新增 `readTaskDetail`
+    单任务回退查询；列表**刻意剥掉 `steps`**（30 任务 × 20 步够把列表响应撑到几百 KB）；事件流停在
+    `running` 的僵尸任务显式改判 `interrupted`，否则前端会对着永不推进的「运行中」无限轮询。
+  - `server.mjs`：`handleTaskGet` 内存查不到时回退事件流，不再直接 404。
+- **两处端点测试端口撞车，`npm test` 间歇性失败** — `scenario-persistence-restart` 与 `auto-test-digest`
+  同占 5388、`settings-token-migration` 与 `dev-scenarios-endpoint` 同占 5393（两处注释还写着「避开」它
+  自己所在的区间）。`node --test` 并发跑多个文件时后起的 server 子进程 `EADDRINUSE` 起不来，撞车双方
+  一起失败；**单跑任一文件都是绿的**，所以一直没被发现。改到 5397 / 5398 并修正注释。
 - **一键标准准入没有服务端幂等，创建请求丢响应时重试会双花（ADM-015 的一部分）** — `POST /api/tasks`
   可能已经到达后端、任务建好并开始**真实计费**，而响应在回程丢了（网络抖动 / 代理 502 / 后端重启瞬间）。
   前端只能报「失败」，用户再点一次 → 第二个任务照跑一遍，钱花两遍。轮询路径早有抗抖动
