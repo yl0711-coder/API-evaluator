@@ -10,6 +10,10 @@ export function parseReportId(id) {
   const type = parts[dateIdx - 1];
   const date = parts[dateIdx]; // YYYYMMDD
   const head = parts.slice(0, dateIdx - 1);
+  // Model-comparison reports contain two targets joined by `_vs_`. They are
+  // aggregate reports, not reports belonging to a single channel/model.
+  const isComparison = type === "compare" && base.includes("_vs_");
+  if (isComparison) return { isNew: true, type, date, channel: null, model: null, isComparison: true };
   const channel = head.length >= 2 ? head.slice(0, -1).join("_") : null;
   const model = head.length >= 2 ? head[head.length - 1] : null; // head 仅「多目标」→ null
   return { isNew: true, type, date, channel, model };

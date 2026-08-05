@@ -8,6 +8,7 @@ import { parseReportId, matchesReportFilter, computeDateBounds, reportChannelMod
 const A = parseReportId("小侠_deepseek-v4-flash_quickverify_20260601_095752_3f2a");
 const B = parseReportId("Nexus-claude-6.3x_claude-opus-4-7_scenario_20260615_101010_ab12");
 const MULTI = parseReportId("多目标_scenario_20260620_120000_cd34");
+const COMPARISON = parseReportId("渠道A_模型A_vs_渠道B_模型B_compare_20260621_120000_cd34");
 const OLD = parseReportId("admission-20260615-183217-232baef6"); // { isNew:false }
 
 test("无任何条件 → 全部命中（含老报告）", () => {
@@ -34,6 +35,14 @@ test("测试种类筛选", () => {
   assert.equal(matchesReportFilter(A, { type: "quickverify" }), true);
   assert.equal(matchesReportFilter(B, { type: "quickverify" }), false);
   assert.equal(matchesReportFilter(B, { type: "scenario" }), true);
+});
+
+test("模型对比报告不污染渠道/模型下拉，但仍可按比较类型筛选", () => {
+  const { channels, models } = reportChannelModelOptions([A, COMPARISON], {});
+  assert.deepEqual(channels, ["小侠"]);
+  assert.deepEqual(models, ["deepseek-v4-flash"]);
+  assert.equal(matchesReportFilter(COMPARISON, { type: "compare" }), true);
+  assert.equal(matchesReportFilter(COMPARISON, { channel: "渠道A" }), false);
 });
 
 test("多目标报告：无渠道/模型 → 渠道筛选排除、种类筛选命中", () => {
