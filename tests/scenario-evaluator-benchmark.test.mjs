@@ -134,6 +134,60 @@ test("buildScenarioProfileSummary excludes truncated items from quality score", 
   assert.match(summary.scenarios[0].sampleResponse, /^ans$/); // 样例取未截断那条，无前缀
 });
 
+test("buildScenarioProfileSummary keeps only successful first-token samples for streamed scenario latency", () => {
+  const profile = { id: "p", name: "P", defaultModel: "m", protocol: "openai_compatible" };
+  const record = (firstTokenMs, success = true, stream = true) => ({
+    success,
+    scenarioId: "s1",
+    scenarioName: "S1",
+    totalMs: 100,
+    responseSummary: "ans",
+    stream,
+    firstTokenMs,
+    quality: { score: 100, passed: true },
+  });
+  const summary = buildScenarioProfileSummary(profile, [
+    record(100),
+    record(200),
+    record(300),
+    record(null),
+    record(999, true, false),
+    record(1, false),
+  ]);
+  const scenario = summary.scenarios[0];
+  assert.deepEqual(scenario.firstTokenSamples, [100, 200, 300]);
+  assert.equal(scenario.firstTokenSampleCount, 3);
+  assert.equal(scenario.p50FirstTokenMs, 200);
+});
+
+test("buildScenarioProfileSummary records output and cache-hit tokens for each scenario", () => {
+  const profile = { id: "p", name: "P", defaultModel: "m", protocol: "openai_compatible" };
+  const record = (scenarioId, outputTokens, cacheReadTokens) => ({
+    success: true,
+    scenarioId,
+    scenarioName: scenarioId,
+    totalMs: 100,
+    responseSummary: "ans",
+    outputTokens,
+    cacheReadTokens,
+    quality: { score: 100, passed: true },
+  });
+  const summary = buildScenarioProfileSummary(profile, [
+    record("with-usage", 40, 100),
+    record("with-usage", null, 50),
+    record("without-usage", null, null),
+  ]);
+  const byName = new Map(summary.scenarios.map((scenario) => [scenario.scenarioName, scenario]));
+  assert.equal(byName.get("with-usage").outputTokens, 40);
+  assert.equal(byName.get("with-usage").outputTokenReportedCount, 1);
+  assert.equal(byName.get("with-usage").outputTokenTotalCount, 2);
+  assert.equal(byName.get("with-usage").cacheReadTokens, 150);
+  assert.equal(byName.get("with-usage").cacheReadTokenReportedCount, 2);
+  assert.equal(byName.get("with-usage").cacheReadTokenTotalCount, 2);
+  assert.equal(byName.get("without-usage").outputTokens, null, "缺失 usage 不得伪装为零 token");
+  assert.equal(byName.get("without-usage").cacheReadTokens, null, "缺失缓存 usage 不得伪装为零 token");
+});
+
 test("NIAH scenario is registered with a needle scorer", () => {
   const niah = ABILITY_SCENARIOS.find((s) => s.id === "long-context-needle");
   assert.ok(niah);
