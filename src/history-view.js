@@ -1,5 +1,5 @@
 import { average, escapeHtml, formatDateTime } from "./client-utils.js";
-import { formatTaskStatus, formatTaskType, recommendationClass, taskStatusClass } from "./formatters.js";
+import { recommendationClass } from "./formatters.js";
 
 export function renderRequestList({ requests, container }) {
   if (requests.length === 0) {
@@ -47,36 +47,8 @@ export function renderTestRunList({ runs, container }) {
   container.innerHTML = runs.map((run) => renderTestRunRow(run)).join("");
 }
 
-export function renderTaskEventList({ tasks, container }) {
-  if (tasks.length === 0) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <strong>还没有长任务记录</strong>
-        <p>标准评测、稳定性、批量或场景测试开始后，这里会记录任务进度、完成、取消或失败。</p>
-        <button class="secondary" type="button" data-go-page="standard-eval">去标准评测</button>
-      </div>
-    `;
-    return;
-  }
-
-  container.innerHTML = tasks
-    .map(
-      (task) => `
-        <div class="row task-row">
-          <div>
-            <strong>${escapeHtml(formatTaskType(task.type))}</strong><br />
-            <small>${escapeHtml(formatDateTime(task.startedAt || task.createdAt))}</small>
-          </div>
-          <span class="${taskStatusClass(task.status)}">${escapeHtml(formatTaskStatus(task.status))}</span>
-          <span>${task.progress ?? 0}%</span>
-          <span>${task.completedUnits ?? 0}/${task.totalUnits ?? "-"}</span>
-          <small>${escapeHtml(task.message || "-")}</small>
-          <small>${escapeHtml(task.error || task.result?.reportPath || task.result?.reportHtmlPath || "-")}</small>
-        </div>
-      `,
-    )
-    .join("");
-}
+// 「最近任务状态」表已移除：任务状态与逐步骤明细归「任务中心」页（src/task-center.js）。
+// 这里原先那张表只有一行聚合状态，看不出哪一步没通过。
 
 // renderTestRunRow 返回完整 HTML 行（含 <div><span><strong> 结构），调用方直接赋给 innerHTML。
 // 所有数据字段已通过 escapeHtml() 转义，HTML 标签是硬编码结构，不是用户数据。

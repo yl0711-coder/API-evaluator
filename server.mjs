@@ -1596,7 +1596,9 @@ async function handleTaskGet(req, res, { params }) {
     sendJson(res, 200, taskManager.publicTask(task));
     return;
   }
-  const fromLog = await readTaskDetail(taskId);
+  // 必须把内存 Map 与 publicTask 一起传进去：readTaskDetail 要靠它们区分「任务真的还在跑」
+  // 与「事件流停在 running 的僵尸任务」（后者改判 interrupted）。少传就会 TypeError → 500。
+  const fromLog = await readTaskDetail(taskId, taskManager.tasks, taskManager.publicTask);
   if (!fromLog) {
     sendJson(res, 404, { error: "task_not_found", message: "没有找到测试任务。" });
     return;

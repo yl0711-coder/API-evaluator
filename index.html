@@ -38,6 +38,7 @@
         <div class="nav-group">
           <span>总结与交付</span>
           <button class="nav-button" type="button" data-page="reports">报告中心</button>
+          <button class="nav-button" type="button" data-page="task-center">任务中心</button>
           <button class="nav-button" type="button" data-page="handoff">测试交付</button>
           <button class="nav-button" type="button" data-page="trend">稳定性趋势</button>
         </div>
@@ -912,11 +913,6 @@
             <pre id="client-replay-result" class="result-box report-box">回放会真实请求 API，请确认成本和内容后再执行。</pre>
           </details>
           <details class="panel collapsible-panel">
-            <summary>最近任务状态</summary>
-            <p class="muted">用于判断上次测试是否完成、失败、取消或因程序关闭而中断。</p>
-            <div id="task-event-list" class="table"></div>
-          </details>
-          <details class="panel collapsible-panel">
             <summary>最近请求记录</summary>
             <div id="request-list" class="table"></div>
           </details>
@@ -1609,6 +1605,44 @@
             </div>
           </div>
 
+        </section>
+
+        <section class="page" id="task-center" hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">交付 · 任务</span>任务中心</h2>
+              <p class="section-desc">查看所有长任务（准入、标准评测、稳定性、场景、压测）的状态与逐步骤明细：哪一步在跑、哪一步没通过、是失败还是因程序关闭而中断。点任意一行展开明细。</p>
+            </div>
+            <div class="action-row">
+              <button type="button" id="tc-refresh" class="secondary">刷新</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
+              <label class="inline-field">
+                只看
+                <select id="tc-filter-status">
+                  <option value="">全部状态</option>
+                  <option value="running">运行中</option>
+                  <option value="completed">已完成</option>
+                  <option value="failed">失败</option>
+                  <option value="cancelled">已取消</option>
+                  <option value="interrupted">已中断</option>
+                </select>
+              </label>
+              <label class="inline-field">
+                类型
+                <select id="tc-filter-type">
+                  <option value="">全部类型</option>
+                </select>
+              </label>
+              <span class="field-hint" id="tc-hint">任务记录来自事件日志，仅保留最近一批；更早的任务不再可查。</span>
+            </div>
+          </div>
+
+          <div id="tc-list" class="table"></div>
+          <div id="tc-detail" class="panel hidden"></div>
         </section>
 
         <section class="page" id="model-compare" hidden>

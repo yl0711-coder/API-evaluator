@@ -1257,6 +1257,41 @@ button.quiet-action {
   grid-template-columns: 1.1fr 0.7fr 0.5fr 0.6fr 1.5fr 1.2fr;
 }
 
+/* 任务中心行：末列是「查看明细」按钮而非文本，故比 .task-row 窄一点留给按钮。 */
+.task-center-row {
+  grid-template-columns: 1.1fr 0.7fr 0.5fr 0.6fr 1.6fr auto;
+  align-items: center;
+}
+
+/* 展开中的那一行加左侧色条，让上方列表和下方明细面板对得上。 */
+.task-center-row.open {
+  border-left: 3px solid var(--accent);
+}
+
+.task-center-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* 筛选下拉：标签与控件同行，避免 label 默认的块级换行把一排筛选器拉成三行。 */
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.inline-field select {
+  width: auto;
+  min-width: 120px;
+}
+
 /* ============================================================
    断点 lg · 1180px —— 内容区开始被压缩
    与内容限宽 max-width: 1180px 同值：窗口窄到这里时，居中内容恰好不再有余量。
@@ -1276,7 +1311,8 @@ button.quiet-action {
   .row,
   .request-row,
   .test-run-row,
-  .task-row {
+  .task-row,
+  .task-center-row {
     grid-template-columns: 1fr;
     align-items: start;
     min-width: 0;
