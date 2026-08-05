@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import test, { after } from "node:test";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const PORT = 5388; // 避开其它端点测试占用的 5391-5399
+const PORT = 5397; // 避开其它端点测试占用的 5386-5396（原为 5388，与 auto-test-digest 撞端口，并发跑时两边一起失败）
 const dataDir = mkdtempSync(join(tmpdir(), "scn-restart-"));
 const overlayFile = join(dataDir, "配置", "scenario-overrides.json");
 const MARK = "RESTART-PERSIST-标记-δ"; // 编辑后的提示词内容，重起后据此判定持久
