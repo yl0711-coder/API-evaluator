@@ -557,6 +557,91 @@ test("admission：进度单元按测试包档位给下限估算", () => {
   assert.equal(estimateTaskUnits("admission", {}, opts), 11, "没传档位按 standard 兜底（与后端同口径）");
 });
 
+// 任务对象在落定 1 小时后被逐出内存、重启即清空。若终态事件不落 steps，任务中心点开一个
+// 昨天的任务就只有聚合状态、没有「模型 × 步骤」明细——而那个明细正是准入结论的全部依据。
+test("admission-suite：终态事件把 steps 快照落进事件日志（详情不随内存一起消失）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-suite-steps-"));
+  try {
+    const { createAdmissionSuiteRunner } = await import("../server/admission-suite.mjs");
+    const runAdmissionSuite = createAdmissionSuiteRunner({
+      runQuickVerify: async () => ({ cases: [{ id: "connectivity", passed: true }], successRate: 1 }),
+      runStabilityTest: async () => ({
+        successCount: 9,
+        failureCount: 0,
+        successRate: 1,
+        p95TotalMs: 5000,
+        errorCounts: {},
+        firstAttemptSuccessRate: 1,
+      }),
+      runAdmissionTest: async () => ({
+        score: 90,
+        grade: "A",
+        verdict: { verdict: "passed", blocking: true, summary: "硬门槛全部通过。" },
+      }),
+    });
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({ taskEventsFile, ...normalizers, runAdmissionSuite });
+
+    const task = await manager.createTask("admission-suite", { profileIds: ["p1"], modelNames: ["m1"] });
+    await waitFor(() => task.status === "completed");
+    await waitForFileMatch(taskEventsFile, /"event":"completed"/);
+
+    const lines = (await readFile(taskEventsFile, "utf8")).trim().split("\n").map(JSON.parse);
+    const started = lines.find((line) => line.event === "started");
+    const completed = lines.find((line) => line.event === "completed");
+
+    assert.equal(completed.steps.length, 3, "终态事件必须带全部步骤");
+    assert.deepEqual(
+      completed.steps.map((step) => step.stepName),
+      ["quick", "stability", "admission"],
+    );
+    assert.equal(completed.steps[0].verdict, "passed", "verdict 与 executionStatus 都要落，前端靠两者区分红叉语义");
+    // 中间态不落 steps：running 期间每次进度更新都写一份会把事件日志撑爆，且无留存价值。
+    assert.equal(started.steps, undefined, "started 事件不应带 steps");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// 「再测一次」要靠事件日志里的 profileIds/modelNames 回填表单。只落计数的话，用户点了
+// 「再测一次」我们连测的是哪个模型都不知道。同时守住边界：prompt 之类的正文仍不得落盘。
+test("admission-suite：事件日志落 profileIds/modelNames 供「再测一次」，但不落正文", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-suite-payload-"));
+  try {
+    const { createAdmissionSuiteRunner } = await import("../server/admission-suite.mjs");
+    const runAdmissionSuite = createAdmissionSuiteRunner({
+      runQuickVerify: async () => ({ cases: [{ id: "connectivity", passed: false }], successRate: 0 }),
+      runStabilityTest: async () => ({}),
+      runAdmissionTest: async () => ({}),
+    });
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({ taskEventsFile, ...normalizers, runAdmissionSuite });
+
+    const task = await manager.createTask("admission-suite", {
+      profileIds: ["p1", "p2"],
+      modelNames: ["claude-sonnet-5", "gpt-example"],
+      groups: [{ presetId: "basic", prompt: "sk-prompt-must-not-be-persisted", repeats: 3 }],
+      useAiReportAnalysis: "1",
+    });
+    await waitFor(() => task.status === "completed" || task.status === "failed");
+    await waitForFileMatch(taskEventsFile, /"event":"started"/);
+
+    const raw = await readFile(taskEventsFile, "utf8");
+    const started = raw
+      .trim()
+      .split("\n")
+      .map(JSON.parse)
+      .find((line) => line.event === "started");
+    assert.deepEqual(started.payload.profileIds, ["p1", "p2"]);
+    assert.deepEqual(started.payload.modelNames, ["claude-sonnet-5", "gpt-example"]);
+    assert.equal(started.payload.useAiReportAnalysis, true);
+    assert.equal(started.payload.profileCount, 2, "原有计数字段保持兼容");
+    assert.doesNotMatch(raw, /sk-prompt-must-not-be-persisted/, "提示词正文仍然绝不落盘");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
 async function waitFor(predicate) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 1500) {

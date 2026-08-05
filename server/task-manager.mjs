@@ -414,7 +414,15 @@ function summarizePublicTaskResult(result) {
   };
 }
 
+// 落定事件（completed/failed/cancelled）之后，任务对象会在 1 小时后被从内存 Map 里删掉，
+// 重启则立刻消失。若此时不把逐步骤快照写进事件日志，「模型 × 步骤」明细就只在这 1 小时内可见——
+// 任务中心点开一个昨天的任务会是一片空白。故终态事件额外落 steps（仍是 publicTaskStep 的
+// 轻量摘要：无原始响应体、无 key）。
+// 只在终态落一次：running 期间每次进度更新都写一遍会把事件日志撑爆，而中间态没有留存价值。
+const TERMINAL_TASK_EVENTS = new Set(["completed", "failed", "cancelled"]);
+
 export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
+  const steps = TERMINAL_TASK_EVENTS.has(event) && Array.isArray(task.steps) ? task.steps.map(publicTaskStep) : undefined;
   await appendJsonLine(taskEventsFile, {
     taskId: task.id,
     type: task.type,
@@ -430,6 +438,7 @@ export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
     startedAt: task.startedAt,
     endedAt: task.endedAt,
     loggedAt: new Date().toISOString(),
+    ...(steps ? { steps } : {}),
     ...extra,
   });
 }
@@ -488,8 +497,16 @@ export function summarizeTaskPayload(type, payload, { normalizeProfileIds, norma
   }
   if (type === "admission-suite") {
     // 事件日志是运维记录，绝不落 key/base URL。只记形状：测了几个模型、跑不跑档位探测。
+    // profileIds/modelNames 例外，因为任务中心的「再测一次」要靠它们回填表单——只有计数的话，
+    // 用户点「再测一次」我们连测的是哪个模型都不知道。它们是内部 id 与模型名，不是凭据：
+    // 模型名早已遍布报告与结果摘要，profileId 任何登录用户都能从 /api/profiles 读到，
+    // 且 stability 分支一直就在落 profileId（见上文），这里不是新开的先例。
     return {
       profileCount: normalizeProfileIds(payload.profileIds).length,
+      profileIds: normalizeProfileIds(payload.profileIds),
+      modelNames: Array.isArray(payload.modelNames) ? payload.modelNames.map((name) => String(name || "")) : [],
+      isClaudeChannel: Boolean(String(payload.claudeChannelId || "").trim()),
+      useAiReportAnalysis: Boolean(payload.useAiReportAnalysis),
       tierProbeCount: Array.isArray(payload.tierProbeModels) ? payload.tierProbeModels.length : 0,
       groupCount: Array.isArray(payload.groups) ? payload.groups.length : 0,
     };

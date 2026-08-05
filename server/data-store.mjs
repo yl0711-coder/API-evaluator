@@ -73,42 +73,83 @@ export async function readRecentTestRuns() {
   return readJsonLines(TEST_RUNS_FILE, 20).then((items) => items.reverse());
 }
 
-export async function readRecentTasks(taskMap, publicTask) {
-  const events = await readJsonLines(TASK_EVENTS_FILE, 300);
-  const grouped = new Map();
+// 把事件流按 taskId 折叠成「每个任务一条」。同时留住两端：
+//   · latest —— 任务当前状态（status/progress/steps/result 都看它）
+//   · first  —— 只有它带 payload（summarizeTaskPayload 只在 queued/started 时写一次，
+//               后续 completed/failed 事件不再重复。见 task-manager.mjs createTask）
+// 不留住 first，任务一结束 payload 就查不到了，「复制参数 / 重新测试」也就无从谈起。
+function foldTaskEvents(events) {
+  const folded = new Map();
   for (const event of events) {
-    const current = grouped.get(event.taskId);
-    if (!current || new Date(event.loggedAt || 0) >= new Date(current.loggedAt || 0)) {
-      grouped.set(event.taskId, event);
+    const at = new Date(event.loggedAt || 0);
+    const current = folded.get(event.taskId);
+    if (!current) {
+      folded.set(event.taskId, { first: event, latest: event, firstAt: at, latestAt: at });
+      continue;
+    }
+    if (at >= current.latestAt) {
+      current.latest = event;
+      current.latestAt = at;
+    }
+    if (at < current.firstAt) {
+      current.first = event;
+      current.firstAt = at;
     }
   }
-  return [...grouped.values()]
-    .map((event) => {
-      const active = taskMap.get(event.taskId);
-      if (active) {
-        return {
-          ...event,
-          ...publicTask(active),
-          event: event.event,
-          recoverable: true,
-        };
-      }
-      if (event.status === "running") {
-        return {
-          ...event,
-          status: "interrupted",
-          event: "interrupted",
-          message: "程序曾在任务运行中退出，任务已中断，需要重新测试。",
-          recoverable: false,
-        };
-      }
-      return {
-        ...event,
-        recoverable: false,
-      };
+  return folded;
+}
+
+// 把折叠后的一条整成前端任务对象。内存里还在的任务以 publicTask 为准（它有最新的 steps 与
+// queuePosition），已被逐出内存的走事件流快照。
+function composeTaskFromEvents({ first, latest }, taskMap, publicTask) {
+  const payload = first?.payload ?? latest?.payload ?? null;
+  const active = taskMap.get(latest.taskId);
+  if (active) {
+    return { ...latest, ...publicTask(active), payload, event: latest.event, recoverable: true };
+  }
+  // 事件流最后停在 running = 进程在任务跑到一半时退出了。这类任务不可能自己再动，
+  // 必须显式改判为 interrupted，否则前端会对着一个永不推进的「运行中」一直轮询。
+  if (latest.status === "running") {
+    return {
+      ...latest,
+      payload,
+      status: "interrupted",
+      event: "interrupted",
+      message: "程序曾在任务运行中退出，任务已中断，需要重新测试。",
+      recoverable: false,
+    };
+  }
+  return { ...latest, payload, recoverable: false };
+}
+
+export async function readRecentTasks(taskMap, publicTask) {
+  const events = await readJsonLines(TASK_EVENTS_FILE, 300);
+  return [...foldTaskEvents(events).values()]
+    .map((entry) => {
+      // 列表【刻意不带 steps】：一屏 30 个任务 × 每个最多 20 步，够把列表响应撑到几百 KB，
+      // 而列表只画聚合状态。逐步骤明细走 readTaskDetail（一次只取一个任务）。
+      const { steps, ...task } = composeTaskFromEvents(entry, taskMap, publicTask);
+      return task;
     })
     .sort((a, b) => new Date(b.loggedAt || b.startedAt || 0) - new Date(a.loggedAt || a.startedAt || 0))
     .slice(0, 30);
+}
+
+// 单个任务详情。内存里没有就回事件流里找——任务结束满 1 小时会被逐出内存
+// （task-manager 的 cleanupTimer），重启则全部清空。少了这条回退，任务中心的详情页
+// 会对一个昨天刚跑完的任务报「没有找到测试任务」。
+// 能力边界：只在事件流最后 300 行内找得到；更早的任务要靠 SQLite 落库才能查（P2，未做）。
+export async function readTaskDetail(taskId, taskMap, publicTask) {
+  const wanted = String(taskId || "");
+  if (!wanted) return null;
+  const events = await readJsonLines(TASK_EVENTS_FILE, 300);
+  const entry = foldTaskEvents(events.filter((event) => event.taskId === wanted)).get(wanted);
+  if (!entry) {
+    // 事件流里没有，但内存里可能刚建好还没落盘（appendTaskEvent 是 await 的，窗口极窄但存在）。
+    const active = taskMap.get(wanted);
+    return active ? { ...publicTask(active), payload: null, recoverable: true } : null;
+  }
+  return composeTaskFromEvents(entry, taskMap, publicTask);
 }
 
 async function ensureFile(file, content) {

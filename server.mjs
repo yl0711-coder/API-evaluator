@@ -12,7 +12,14 @@ import {
   clearScenarioGroup,
 } from "./server/scenarios/index.mjs";
 import { DATA_DIR, ERROR_LOG_FILE, REPORTS_DIR, STATIC_ROOT, TASK_EVENTS_FILE, TEST_RUNS_FILE } from "./server/paths.mjs";
-import { ensureDataDir, readRecentErrors, readRecentRequests, readRecentTasks, readRecentTestRuns } from "./server/data-store.mjs";
+import {
+  ensureDataDir,
+  readRecentErrors,
+  readRecentRequests,
+  readRecentTasks,
+  readRecentTestRuns,
+  readTaskDetail,
+} from "./server/data-store.mjs";
 import {
   analyzeClientLogs,
   buildSupplierEvidence,
@@ -1579,14 +1586,22 @@ async function handleTasksRecent(req, res) {
   return;
 }
 
-function handleTaskGet(req, res, { params }) {
+// 内存里没有【不等于】任务不存在：task-manager 在任务落定 1 小时后就把它从 Map 里删掉，
+// 进程重启更是全丢。此时事件日志里仍有终态事件（含 steps 快照），任务中心据此还能还原详情。
+// 所以查不到时回落到事件日志，而不是直接 404——否则「任务中心」点开一条历史任务就是空白页。
+async function handleTaskGet(req, res, { params }) {
   const taskId = params.id;
   const task = taskManager.getTask(taskId);
-  if (!task) {
+  if (task) {
+    sendJson(res, 200, taskManager.publicTask(task));
+    return;
+  }
+  const fromLog = await readTaskDetail(taskId);
+  if (!fromLog) {
     sendJson(res, 404, { error: "task_not_found", message: "没有找到测试任务。" });
     return;
   }
-  sendJson(res, 200, taskManager.publicTask(task));
+  sendJson(res, 200, fromLog);
   return;
 }
 
