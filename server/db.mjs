@@ -64,6 +64,36 @@ CREATE TABLE IF NOT EXISTS test_requests (
 CREATE INDEX IF NOT EXISTS idx_requests_run ON test_requests(run_id);
 CREATE INDEX IF NOT EXISTS idx_requests_profile ON test_requests(profile_id);
 
+-- 任务状态落库（ADM-017）。此前任务只活在内存 Map 里，落定 1 小时被逐出、重启即清空，
+-- 唯一的持久痕迹是 task-events.jsonl，而那里只读最后 300 行——「上周那次准入到底跑没跑」查不到。
+-- 这张表是任务的持久事实来源；JSONL 事件流仍照写（它是逐事件的流水，这张是逐任务的当前态）。
+-- owner_user_id 现在只记录不做隔离（见 task-manager 的 createTask 注释与 ADM-016）；
+-- 列先建好，将来真要隔离时加 WHERE 即可，不必再迁一次表。
+CREATE TABLE IF NOT EXISTS evaluation_tasks (
+  task_id TEXT PRIMARY KEY,
+  type TEXT,
+  status TEXT,
+  owner_user_id TEXT,
+  cancelled_by TEXT,
+  created_at TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  progress INTEGER,
+  completed_units INTEGER,
+  total_units INTEGER,
+  message TEXT,
+  error TEXT,
+  error_id TEXT,
+  -- 形状摘要，绝不含 key / baseUrl / 提示词正文（同 summarizeTaskPayload 的口径）
+  payload_json TEXT,
+  result_json TEXT,
+  steps_json TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON evaluation_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_created ON evaluation_tasks(created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_owner ON evaluation_tasks(owner_user_id);
+
 CREATE TABLE IF NOT EXISTS test_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT,
@@ -371,6 +401,145 @@ export async function recordTestRun(summary, { type = "", path } = {}) {
     dbHealth.runWriteFailures += 1;
     noteDbError("recordTestRun", error);
     return false;
+  }
+}
+
+// —— 任务状态落库（ADM-017）——
+//
+// 任务在生命周期里会被写多次（queued → started → 若干次进度 → 终态），故按 task_id upsert
+// 而非 insert。全部 best-effort：任何异常都吞掉、返回 false，绝不影响正在跑的测试——
+// 落库是可观测性，不是主链路，SQLite 不可用时 JSONL 事件流仍然工作。
+//
+// 刻意【不】在每次进度更新时写：一个 27 用例的任务会推进几十次，每次都 upsert 是无谓的写放大。
+// 调用方只在状态跃迁（建/终态/取消请求）时落库，进度靠内存态 + 轮询即可（见 task-manager）。
+export async function recordEvaluationTask(task, { path } = {}) {
+  try {
+    if (!task?.id) return false;
+    const db = await getDatabase(path);
+    if (!db) return false;
+    const stmt = db.prepare(`
+      INSERT INTO evaluation_tasks (
+        task_id, type, status, owner_user_id, cancelled_by, created_at, started_at, ended_at,
+        progress, completed_units, total_units, message, error, error_id,
+        payload_json, result_json, steps_json, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(task_id) DO UPDATE SET
+        status = excluded.status,
+        cancelled_by = excluded.cancelled_by,
+        started_at = COALESCE(excluded.started_at, evaluation_tasks.started_at),
+        ended_at = COALESCE(excluded.ended_at, evaluation_tasks.ended_at),
+        progress = excluded.progress,
+        completed_units = excluded.completed_units,
+        total_units = excluded.total_units,
+        message = excluded.message,
+        error = excluded.error,
+        error_id = excluded.error_id,
+        -- payload 只在建任务时写一次，后续更新不带它（同事件流口径）；用 COALESCE 保住首次那份，
+        -- 否则终态 upsert 会把「再测一次」要用的参数摘要覆盖成 NULL。
+        payload_json = COALESCE(excluded.payload_json, evaluation_tasks.payload_json),
+        result_json = COALESCE(excluded.result_json, evaluation_tasks.result_json),
+        steps_json = COALESCE(excluded.steps_json, evaluation_tasks.steps_json),
+        updated_at = excluded.updated_at
+    `);
+    stmt.run(
+      task.id,
+      task.type ?? null,
+      task.status ?? null,
+      task.createdBy ?? null,
+      task.cancelledBy ?? null,
+      task.createdAt ?? null,
+      task.startedAt ?? null,
+      task.endedAt ?? null,
+      toInt(task.progress),
+      toInt(task.completedUnits),
+      toInt(task.totalUnits),
+      task.message ?? null,
+      task.error ?? null,
+      task.errorId || null,
+      task.payload ? JSON.stringify(task.payload) : null,
+      task.result ? JSON.stringify(task.result) : null,
+      Array.isArray(task.steps) && task.steps.length ? JSON.stringify(task.steps) : null,
+      new Date().toISOString(),
+    );
+    return true;
+  } catch (error) {
+    noteDbError("recordEvaluationTask", error);
+    return false;
+  }
+}
+
+// 最近任务列表。刻意【不返回 steps_json】：一屏 30 个任务 × 每个最多 20 步足以把响应撑到几百 KB，
+// 而列表只画聚合状态（同 readRecentTasks 的既有立场）。逐步骤明细走 queryEvaluationTask。
+export async function queryRecentEvaluationTasks(limit = 30, { path } = {}) {
+  const db = await getDatabase(path);
+  if (!db) return null;
+  const rows = db
+    .prepare(`
+      SELECT task_id, type, status, owner_user_id, cancelled_by, created_at, started_at, ended_at,
+             progress, completed_units, total_units, message, error, error_id, payload_json, result_json
+      FROM evaluation_tasks ORDER BY created_at DESC, rowid DESC LIMIT ?
+    `)
+    .all(Math.max(1, Math.floor(limit)));
+  return rows.map((row) => taskRowToPublic(row));
+}
+
+export async function queryEvaluationTask(taskId, { path } = {}) {
+  if (!taskId) return null;
+  const db = await getDatabase(path);
+  if (!db) return null;
+  const row = db.prepare("SELECT * FROM evaluation_tasks WHERE task_id = ?").get(String(taskId));
+  return row ? taskRowToPublic(row, { withSteps: true }) : null;
+}
+
+// 库里的列名是 snake_case，前端契约是 camelCase（且任务中心用 taskId 而非 id 作主键字段名，
+// 与事件流折叠出来的对象保持一致——两条数据源必须长得一样，否则前端得分两套渲染）。
+function taskRowToPublic(row, { withSteps = false } = {}) {
+  return {
+    taskId: row.task_id,
+    type: row.type,
+    status: row.status,
+    createdBy: row.owner_user_id ?? null,
+    cancelledBy: row.cancelled_by ?? null,
+    createdAt: row.created_at,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    progress: row.progress ?? 0,
+    completedUnits: row.completed_units ?? 0,
+    totalUnits: row.total_units ?? 0,
+    message: row.message ?? "",
+    error: row.error ?? null,
+    errorId: row.error_id ?? "",
+    payload: safeParse(row.payload_json),
+    result: safeParse(row.result_json),
+    ...(withSteps ? { steps: safeParse(row.steps_json) ?? undefined } : {}),
+    // 落库来源的任务一律不可恢复：进程重启后内存里没有它的 abortController，取消不了、也不会自己推进。
+    recoverable: false,
+    // 事件流那条路径会给 event 字段；这里补一个等价物，前端两条路径同构。
+    event: row.status,
+  };
+}
+
+// 进程启动时把上次残留的 running/queued 任务改判 interrupted。
+// 不做这件事，重启后列表里会永远挂着一批「运行中」——它们不可能再推进（进程都换了），
+// 而前端会对着它们无限轮询。返回被改判的条数，供启动日志与测试断言。
+export async function markInterruptedEvaluationTasks({ path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return 0;
+    const stmt = db.prepare(`
+      UPDATE evaluation_tasks
+      SET status = 'interrupted',
+          message = '程序曾在任务运行中退出，任务已中断，需要重新测试。',
+          ended_at = COALESCE(ended_at, ?),
+          updated_at = ?
+      WHERE status IN ('running', 'queued')
+    `);
+    const now = new Date().toISOString();
+    const info = stmt.run(now, now);
+    return Number(info?.changes ?? 0);
+  } catch (error) {
+    noteDbError("markInterruptedEvaluationTasks", error);
+    return 0;
   }
 }
 

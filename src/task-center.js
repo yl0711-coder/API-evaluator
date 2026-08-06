@@ -62,7 +62,7 @@ export function createTaskCenter({ state, confirm, onRetest }) {
 
   function render() {
     const rows = visibleTasks();
-    hint.textContent = `共 ${tasks.length} 条任务记录${rows.length === tasks.length ? "" : `，当前筛选出 ${rows.length} 条`}。任务记录来自事件日志，仅保留最近一批；更早的任务不再可查。`;
+    hint.textContent = `共 ${tasks.length} 条任务记录${rows.length === tasks.length ? "" : `，当前筛选出 ${rows.length} 条`}。任务记录已持久保存，重启程序也不会丢；列表只显示最近 30 条。`;
     if (!rows.length) {
       listElement.innerHTML = `
         <div class="empty-state">
@@ -109,7 +109,7 @@ export function createTaskCenter({ state, confirm, onRetest }) {
     } catch (error) {
       if (revision !== detailRevision) return;
       detailElement.innerHTML = `<p class="fail">读取明细失败：${escapeHtml(error.message)}</p>
-        <p class="muted">任务记录只在事件日志的最近一批里可查，更早的任务查不到明细。</p>`;
+        <p class="muted">任务记录已持久保存；若仍查不到，可能是该任务早于本功能上线，或本地数据库不可用。</p>`;
       return;
     }
     if (revision !== detailRevision) return; // 用户已经点开别的任务了

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -16,6 +16,7 @@ const PREV_DATA_DIR = process.env.EVALUATOR_DATA_DIR;
 process.env.EVALUATOR_DATA_DIR = MODULE_DATA_DIR;
 const { ensureDataDir, readRecentTasks, readTaskDetail } = await import("../server/data-store.mjs");
 const { TASK_EVENTS_FILE } = await import("../server/paths.mjs");
+const { recordEvaluationTask } = await import("../server/db.mjs");
 await ensureDataDir();
 
 after(async () => {
@@ -105,4 +106,110 @@ test("readTaskDetail 把停在 running 的僵尸任务改判为 interrupted", as
   const live = await readTaskDetail("t3", liveMap, identityPublicTask);
   assert.equal(live.status, "running");
   assert.equal(live.recoverable, true);
+});
+
+// —— ADM-017：SQLite 落库与事件流【合并】读取 ——
+
+// 这是本轮真正抓到的回归：最初实现写成"库里有数据就只读库"，
+// 而升级那一刻 evaluation_tasks 是空的、JSONL 却有历史。用户一跑第一个新任务，
+// 库里有了 1 行，于是全部历史任务从任务中心凭空消失。
+test("ADM-017: 落库与事件流两个来源合并，升级后历史任务不会因新任务落库而消失", async () => {
+  // JSONL 里的老任务（升级前跑的，库里没有）。
+  await writeTaskEvents([
+    startedEvent("legacy-task", { profileIds: ["p-old"] }, "2026-08-01T01:00:00.000Z"),
+    { taskId: "legacy-task", type: "admission-suite", event: "completed", status: "completed", loggedAt: "2026-08-01T01:05:00.000Z" },
+  ]);
+  // 库里的新任务（升级后跑的）。
+  await recordEvaluationTask({
+    id: "db-task",
+    type: "stability",
+    status: "completed",
+    createdBy: "zhangsan",
+    createdAt: "2026-08-06T01:00:00.000Z",
+    endedAt: "2026-08-06T01:03:00.000Z",
+    progress: 100,
+  });
+
+  const list = await readRecentTasks(new Map(), identityPublicTask);
+  const ids = list.map((task) => task.taskId);
+  assert.ok(ids.includes("db-task"), "库里的新任务要在");
+  assert.ok(ids.includes("legacy-task"), "事件流里的历史任务也必须在——只读库会让它消失");
+  // 新任务排在前面（按时间倒序）。合并两个来源后排序字段不同名，写错会把两批数据交错乱放。
+  assert.ok(ids.indexOf("db-task") < ids.indexOf("legacy-task"), "应按时间倒序，新任务在前");
+  // 列表口径一致：两条来源都不带 steps。
+  assert.ok(
+    list.every((task) => task.steps === undefined),
+    "列表刻意不带 steps",
+  );
+});
+
+test("ADM-017: 同一任务两边都有时以库为准，且内存态覆盖库里的过时进度", async () => {
+  const taskId = "both-sources";
+  // 事件流停在 running（老快照）。
+  await writeTaskEvents([startedEvent(taskId, { profileIds: ["p-x"] }, "2026-08-06T02:00:00.000Z")]);
+  // 库里已经是 completed（更新的状态跃迁）。
+  await recordEvaluationTask({
+    id: taskId,
+    type: "admission-suite",
+    status: "completed",
+    createdAt: "2026-08-06T02:00:00.000Z",
+    endedAt: "2026-08-06T02:06:00.000Z",
+    progress: 100,
+  });
+
+  const detail = await readTaskDetail(taskId, new Map(), identityPublicTask);
+  assert.equal(detail.status, "completed", "库是权威当前态；若走事件流会显示成 interrupted");
+
+  // 但内存里还在跑时，内存态优先：库只在状态跃迁时写，进度是内存最新。
+  const liveMap = new Map([[taskId, { id: taskId, status: "running", progress: 42, steps: [{ stepName: "quick" }] }]]);
+  const live = await readTaskDetail(taskId, liveMap, identityPublicTask);
+  assert.equal(live.status, "running", "正在跑的任务不能被库里的旧终态盖成已完成");
+  assert.equal(live.progress, 42);
+  assert.equal(live.recoverable, true, "内存里有 = 真能取消");
+  assert.equal(live.steps.length, 1, "明细路径要保留 steps");
+});
+
+// ADM-017 真正买到的能力：突破事件流「只读最后 300 行」的窗口。
+// 这条用例是本文件里唯一【只有 SQLite 能满足】的——关掉落库它必红，
+// 而前面那些用例走 JSONL 回退也能过。没有它，整个 ADM-017 就没有回归保护。
+test("ADM-017: 被 300 行事件窗口挤掉的老任务，仍能从库里查到（事件流已查不到）", async () => {
+  const buriedId = "buried-task";
+  // 先把这个任务落库（模拟它当初跑完时写的那行）。
+  await recordEvaluationTask({
+    id: buriedId,
+    type: "admission-suite",
+    status: "completed",
+    createdBy: "zhangsan",
+    createdAt: "2026-07-01T01:00:00.000Z",
+    endedAt: "2026-07-01T01:09:00.000Z",
+    progress: 100,
+    payload: { profileIds: ["p-buried"] },
+    steps: [{ groupKey: "p-buried", stepName: "quick", executionStatus: "completed", verdict: "passed" }],
+  });
+
+  // 然后用 400 行【别的任务】的事件把它挤出 300 行窗口。
+  const noise = [];
+  for (let i = 0; i < 400; i += 1) {
+    noise.push({
+      taskId: `noise-${i}`,
+      type: "stability",
+      event: "completed",
+      status: "completed",
+      loggedAt: `2026-07-02T${String(Math.floor(i / 60) % 24).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}:00.000Z`,
+    });
+  }
+  await writeTaskEvents(noise);
+
+  // 证明前提成立：事件文件里根本没有这个 taskId（400 行噪声已整体覆盖写过），
+  // 于是它绝不可能来自事件流那条路径。
+  const rawEvents = await readFile(TASK_EVENTS_FILE, "utf8");
+  assert.ok(!rawEvents.includes(buriedId), "前提：事件流里不得有这个任务，否则本用例没测到 SQLite 那条路");
+
+  // 而详情仍然查得到——只可能来自 SQLite。
+  const detail = await readTaskDetail(buriedId, new Map(), identityPublicTask);
+  assert.ok(detail, "落库之后，事件窗口之外的任务也必须查得到——这正是 ADM-017 的目的");
+  assert.equal(detail.status, "completed");
+  assert.equal(detail.createdBy, "zhangsan");
+  assert.deepEqual(detail.payload.profileIds, ["p-buried"], "「再测一次」的参数也要跨窗口保留");
+  assert.equal(detail.steps.length, 1, "逐步骤明细同样来自库");
 });

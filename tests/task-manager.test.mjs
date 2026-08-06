@@ -426,9 +426,13 @@ test("recent task recovery marks previous running tasks as interrupted", async (
 
   const recentTasks = await dataStore.readRecentTasks(new Map(), (task) => task);
 
-  assert.equal(recentTasks[0].status, "interrupted");
-  assert.equal(recentTasks[0].recoverable, false);
-  assert.match(recentTasks[0].message, /任务已中断/);
+  // 按 taskId 找，不假设它排在第 0 位：ADM-017 起 readRecentTasks 合并 SQLite 与事件流两个来源，
+  // 本文件前面那些用例真跑出来的任务（时间戳是"现在"）会排在这条 2026-05-20 的固件之前。
+  const zombie = recentTasks.find((task) => task.taskId === "task-running-before-crash");
+  assert.ok(zombie, "停在 running 的历史任务必须仍能从事件流读到（SQLite 里没有它）");
+  assert.equal(zombie.status, "interrupted");
+  assert.equal(zombie.recoverable, false);
+  assert.match(zombie.message, /任务已中断/);
 });
 
 // admission-suite 是唯一一个「一个任务里跑多步、每步都有独立裁决」的类型，接线点比别的类型多：

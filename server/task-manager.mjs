@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath } from "./report-files.mjs";
 import { countSuiteUnits } from "./admission-suite-plan.mjs";
+import { recordEvaluationTask } from "./db.mjs";
 
 // Owns remote task lifecycle only. It does not know how a stability or scenario
 // test works; callers inject runners so task state can be tested independently.
@@ -437,6 +438,19 @@ const TERMINAL_TASK_EVENTS = new Set(["completed", "failed", "cancelled"]);
 
 export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
   const steps = TERMINAL_TASK_EVENTS.has(event) && Array.isArray(task.steps) ? task.steps.map(publicTaskStep) : undefined;
+  // 同步落 SQLite（ADM-017）：JSONL 是逐事件流水、只读最后 300 行；这张表是逐任务当前态，
+  // 能答"上周那次准入跑没跑"。两者刻意并存——JSONL 不依赖 SQLite 可用，是最后的兜底。
+  // best-effort：recordEvaluationTask 自己吞掉所有异常，失败只是少一行落库，不影响事件写入。
+  // payload 只在建任务的那次事件带（extra.payload），后续 upsert 靠 COALESCE 保住首份。
+  // 必须 await：两次不等待的 upsert 可能乱序落地，把 completed 覆盖回 queued（status 字段是
+  // 直接赋值而非 COALESCE，先写的赢不了、后写的才赢——顺序错了就是错的状态）。
+  await recordEvaluationTask({
+    ...task,
+    payload: extra.payload ?? null,
+    result: extra.result ?? task.result ?? null,
+    steps: steps ?? task.steps,
+    errorId: task.errorId || extra.errorId || "",
+  });
   await appendJsonLine(taskEventsFile, {
     taskId: task.id,
     type: task.type,
