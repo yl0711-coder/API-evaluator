@@ -122,7 +122,14 @@ export function createTaskManager({
     }
   }
 
-  async function createTask(type, payload) {
+  // actor：发起人用户名（来自会话，由 server.mjs 传入）。刻意【不经 payload】——payload 要过
+  // summarizeTaskPayload 的形状摘要，把身份混进去早晚被当成敏感字段一起摘掉，或反过来被摘漏。
+  //
+  // 这是「记录 + 展示，不拦截」：五人团队里 A 下班后他卡住的任务应当能被 B 掐掉（取消是止损
+  // 操作，限权反而放大损失），所以取消【不校验身份】。记下来是为了能追溯"这轮谁跑的、谁停的"，
+  // 不是为了做权限边界。真要强制隔离得先有 SQLite 落库（ADM-017），届时加 WHERE owner = ? 即可，
+  // 数据这时已经在了——先加墙再拆墙要难得多。
+  async function createTask(type, payload, { actor = null } = {}) {
     const dedupKey = taskDedupKey(type, payload);
     if (dedupKey) {
       const existingId = activeIdempotencyKeys.get(dedupKey);
@@ -141,6 +148,9 @@ export function createTaskManager({
       id: crypto.randomUUID(),
       type: normalizeTaskType(type),
       status: queued ? "queued" : "running",
+      // 发起人 / 取消人。null = 未记录（无会话的内部调用，或本次改动之前建的历史任务）。
+      createdBy: actor || null,
+      cancelledBy: null,
       createdAt: new Date().toISOString(),
       startedAt: queued ? null : new Date().toISOString(),
       endedAt: null,
@@ -267,9 +277,11 @@ export function createTaskManager({
     }
   }
 
-  async function cancelTask(task) {
+  // actor：执行取消的人。刻意【不校验】他是否等于 createdBy——见 createTask 上方注释。
+  async function cancelTask(task, { actor = null } = {}) {
     task.cancelRequested = true;
-    task.message = "已请求取消，正在停止当前请求。";
+    task.cancelledBy = actor || null;
+    task.message = actor ? `已请求取消（由 ${actor} 操作），正在停止当前请求。` : "已请求取消，正在停止当前请求。";
     try {
       task.abortController?.abort();
     } catch {
@@ -348,6 +360,8 @@ export function publicTask(task) {
     id: task.id,
     type: task.type,
     status: task.status,
+    createdBy: task.createdBy ?? null,
+    cancelledBy: task.cancelledBy ?? null,
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     endedAt: task.endedAt,
@@ -428,6 +442,10 @@ export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
     type: task.type,
     event,
     status: task.status,
+    // 发起人 / 取消人。用户名不是敏感字段（不同于 key / baseUrl），落进事件流才能在重启后
+    // 仍答得出"这轮谁跑的、谁停的"——任务对象本身落定 1 小时就被逐出内存。
+    createdBy: task.createdBy ?? null,
+    cancelledBy: task.cancelledBy ?? null,
     progress: task.progress,
     completedUnits: task.completedUnits,
     totalUnits: task.totalUnits,

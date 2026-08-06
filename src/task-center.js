@@ -82,7 +82,7 @@ export function createTaskCenter({ state, confirm, onRetest }) {
       <div class="row task-center-row ${isOpen ? "open" : ""}" data-tc-row="${escapeHtml(task.taskId)}">
         <div>
           <strong>${escapeHtml(formatTaskType(task.type))}</strong><br />
-          <small>${escapeHtml(formatDateTime(task.startedAt || task.createdAt))}</small>
+          <small>${escapeHtml(formatDateTime(task.startedAt || task.createdAt))}${task.createdBy ? ` · ${escapeHtml(task.createdBy)}` : ""}</small>
         </div>
         <span class="${taskStatusClass(task.status)}">${escapeHtml(formatTaskStatus(task.status))}</span>
         <span>${Number(task.progress ?? 0)}%</span>
@@ -171,10 +171,21 @@ export function createTaskCenter({ state, confirm, onRetest }) {
         <span>开始：${escapeHtml(formatDateTime(task.startedAt || task.createdAt))}</span>
         <span>结束：${escapeHtml(task.endedAt ? formatDateTime(task.endedAt) : "—")}</span>
         <span>进度：${Number(task.progress ?? 0)}%（${Number(task.completedUnits ?? 0)}/${escapeHtml(String(task.totalUnits ?? "-"))} 步）</span>
+        ${renderActorMeta(task)}
       </div>
       ${task.status === "interrupted" ? '<p class="fail">程序曾在任务运行中退出，这个任务已中断，结果不完整，需要重新测试。</p>' : ""}
       ${renderStepGrid(steps)}
       ${renderReportLinks(task.result)}`;
+  }
+
+  // 发起人 / 取消人。多人共用一台工具时「这轮谁跑的、谁停的」是最常问的。
+  // 这里【只展示不判权】：取消按钮对所有登录者可见（取消是止损操作，见服务端注释）。
+  // 历史任务与无会话的内部调用没有这两个字段，不显示占位（写「发起人：—」是噪音）。
+  function renderActorMeta(task) {
+    const parts = [];
+    if (task.createdBy) parts.push(`<span>发起：${escapeHtml(task.createdBy)}</span>`);
+    if (task.cancelledBy) parts.push(`<span>取消：${escapeHtml(task.cancelledBy)}</span>`);
+    return parts.join("");
   }
 
   // 复用标准评测那套「模型 × 步骤」网格的类名（.flow-model-group / .standard-flow / .flow-step），

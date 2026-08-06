@@ -163,3 +163,20 @@ test("/api/tasks/recent 排在 /api/tasks/:id 之前，不会被当成 id=recent
     "列表刻意不带 steps（30 任务 × 20 步会把响应撑到几百 KB）",
   );
 });
+
+// 接线：会话里的用户名要真的到达 task-manager。单元测试里 createTask 的第三个参数怎么传都对，
+// 只有真发一次 HTTP 才能证明 server.mjs 确实从 req.session 取到了它——readTaskDetail 那次
+// 少传两个参数的 500 就是这么漏过去的。
+test("创建任务时把会话用户名记为发起人（不靠前端上报）", async () => {
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/tasks`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: `http://127.0.0.1:${PORT}`, cookie },
+    body: JSON.stringify({ type: "stability", payload: { profileId: "p-nonexistent", rounds: 1 } }),
+  });
+  assert.equal(r.status, 202, `期望 202，实为 ${r.status}`);
+  const body = await r.json();
+  // 登录用的就是 admin；发起人必须来自服务端会话，前端说自己是谁一概不算。
+  assert.equal(body.createdBy, "admin", "发起人应取自会话；为 null 说明 server.mjs 没把 actor 传下去");
+  assert.equal(body.cancelledBy, null);
+  // 任务本身会因为 profileId 不存在而失败，与本用例无关——这里只验身份接线。
+});

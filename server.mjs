@@ -1576,7 +1576,9 @@ async function handleTaskCreate(req, res) {
     sendJson(res, 403, { error: "forbidden_admin", userMessage: "仅超级管理员可发起压力测试。" });
     return;
   }
-  const task = await taskManager.createTask(body.type, body.payload || {});
+  // 记下发起人（五人共用一台工具时「这轮谁跑的、这笔钱谁花的」是最常问的）。
+  // 只记录与展示，不做权限边界——取消仍对所有登录者放行，见 task-manager 的 createTask 注释。
+  const task = await taskManager.createTask(body.type, body.payload || {}, { actor: req.session?.username || null });
   sendJson(res, 202, taskManager.publicTask(task));
   return;
 }
@@ -1614,7 +1616,9 @@ async function handleTaskCancel(req, res, { params }) {
     sendJson(res, 404, { error: "task_not_found", message: "没有找到测试任务。" });
     return;
   }
-  await taskManager.cancelTask(task);
+  // 刻意不校验 req.session.username === task.createdBy：取消是止损操作，五人协作里
+  // 「A 下班后他卡住的任务能被 B 掐掉」是好事，限权反而放大损失。只如实记下是谁停的。
+  await taskManager.cancelTask(task, { actor: req.session?.username || null });
   sendJson(res, 200, taskManager.publicTask(task));
   return;
 }

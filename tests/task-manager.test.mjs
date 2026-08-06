@@ -642,6 +642,87 @@ test("admission-suite：事件日志落 profileIds/modelNames 供「再测一次
   }
 });
 
+// —— 发起人 / 取消人（ADM-016 的「记录+展示」口径）——
+//
+// 刻意【不】做强制隔离：五人自用工具里，取消是止损操作，「A 下班后他卡住的任务能被 B 掐掉」
+// 是协作而非漏洞，限权反而放大损失。这里锁住三件事：身份被记下、能跨重启查到、取消不校验身份。
+// 如果哪天真要加隔离（接外部用户），数据已经在了，加 WHERE owner = ? 即可。
+
+test("任务记下发起人，落进事件流并出现在公开对象里", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-actor-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({
+      taskEventsFile,
+      ...normalizers,
+      runStabilityTest: async () => ({ runId: "r", successRateText: "100%" }),
+    });
+
+    const task = await manager.createTask("stability", { profileId: "p1", rounds: 1 }, { actor: "zhangsan" });
+    assert.equal(task.createdBy, "zhangsan");
+    assert.equal(manager.publicTask(task).createdBy, "zhangsan", "前端要靠公开对象显示发起人");
+    assert.equal(task.cancelledBy, null, "没取消过就不该有取消人");
+
+    await waitFor(() => task.status === "completed");
+    // 必须落进事件流：任务对象落定 1 小时就被逐出内存，只有事件流能跨重启答"这轮谁跑的"。
+    const raw = await readFile(taskEventsFile, "utf8");
+    assert.match(raw, /"createdBy":"zhangsan"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+test("取消任务记下取消人，且不校验他是否为发起人", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-cancel-actor-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    let release;
+    const manager = createTaskManager({
+      taskEventsFile,
+      ...normalizers,
+      // 挂住不返回，让任务停在 running 上好被取消。
+      runStabilityTest: () => new Promise((resolve) => (release = resolve)),
+    });
+
+    const task = await manager.createTask("stability", { profileId: "p1", rounds: 1 }, { actor: "zhangsan" });
+    await waitFor(() => task.status === "running");
+
+    // 关键：取消者【不是】发起人，且必须成功——这是刻意的设计取舍，不是遗漏的校验。
+    await manager.cancelTask(task, { actor: "lisi" });
+    assert.equal(task.cancelRequested, true, "别人的任务也应能取消（取消是止损操作）");
+    assert.equal(task.cancelledBy, "lisi");
+    assert.equal(task.createdBy, "zhangsan", "取消不应改写发起人");
+    // 提示语要说清是谁停的，否则发起人只看到任务莫名中止。
+    assert.match(task.message, /lisi/);
+
+    await waitForFileMatch(taskEventsFile, /"cancelledBy":"lisi"/);
+    release?.({ runId: "r" });
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+test("没有会话的内部调用不记身份，字段为 null 而非空串或 undefined", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-actor-null-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({
+      taskEventsFile,
+      ...normalizers,
+      runStabilityTest: async () => ({ runId: "r" }),
+    });
+    // 不传 actor（定时巡检等内部触发）。null 表示"未记录"，与"某个叫空字符串的用户"必须可区分。
+    const task = await manager.createTask("stability", { profileId: "p1", rounds: 1 });
+    assert.equal(task.createdBy, null);
+    assert.equal(manager.publicTask(task).createdBy, null);
+    // 传空串也要归一成 null，否则前端 `task.createdBy ?` 判断会把 "" 当成有值以外的坑。
+    const blank = await manager.createTask("stability", { profileId: "p2", rounds: 1 }, { actor: "" });
+    assert.equal(blank.createdBy, null);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
 async function waitFor(predicate) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 1500) {
