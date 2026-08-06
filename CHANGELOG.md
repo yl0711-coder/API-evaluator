@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   避免两处展示同一批数据而口径不一致。`loadTaskEvents` 保留：交付视图仍靠 `state.taskEvents` 识别
   「因程序关闭而中断」的任务。
 
+### Added
+- **任务记录发起人与取消人（ADM-016 的记录部分）** — 多人共用一台工具时最常问的是「这轮谁跑的、
+  这笔钱谁花的」，而任务对象此前不记创建者。请求级早有 `run_by`（`run-context.mjs` 的
+  `AsyncLocalStorage` → `recordRequest`），任务级一直是空白。现在 `createTask` / `cancelTask` 各接一个
+  可选 `actor`，任务带 `createdBy` / `cancelledBy`，落进事件流（任务落定 1 小时就被逐出内存，只有事件流
+  能跨重启回答）并进 `publicTask`；任务中心列表行显示发起人，明细显示发起 / 取消人。
+  - `actor` 刻意**不走 payload**：payload 要过 `summarizeTaskPayload` 的形状摘要，身份混进去早晚被当
+    敏感字段摘掉、或反过来摘漏。用户名不是敏感字段（不同于 key / baseUrl），泄漏锁定用例照旧通过。
+  - **刻意不做强制隔离**：取消仍对所有登录者放行，不校验 `actor === createdBy`。取消是**止损**操作，
+    五人协作里「A 下班后他卡住的任务能被 B 掐掉」是协作而非漏洞，限权反而放大损失——role 10 正是日常
+    跑测试的人，他连自己刚发起的任务都取消不了就只能看着额度烧完。取消提示语带上操作者，出问题靠
+    事件流追溯。真要加隔离得先有 SQLite 落库（ADM-017），届时数据已经在了，加 `WHERE owner = ?` 即可；
+    先加墙再拆墙要难得多。已加用例锁死「不校验身份」，防后人顺手补上校验。
+  - 空串归一成 `null`：「未记录」（无会话的内部调用、历史任务）与「某个空名用户」必须可区分。
+
 ### Fixed
 - **延迟统计不含重试与退避等待，报告比用户真实体感乐观（ADM-010，新增 `endToEndMs`）** — 一个「首次
   503、退避 2 秒、二次 800ms 成功」的请求，此前只落 `total_ms = 800`：`performance.now()` 在每次 attempt
