@@ -254,6 +254,7 @@ export function closeDatabase(path = defaultDbPath()) {
 }
 
 const toInt = (value) => {
+  if (value == null) return null; // null/undefined → null (not 0, since Number(null)=0)
   const n = Number(value);
   return Number.isFinite(n) ? Math.round(n) : null;
 };
