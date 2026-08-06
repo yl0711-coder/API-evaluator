@@ -28,6 +28,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   「因程序关闭而中断」的任务。
 
 ### Added
+- **任务状态落 SQLite，记录不再随进程消失（ADM-017，新增 `evaluation_tasks` 表）** — 任务此前只活在
+  内存 `Map` 里：落定 1 小时被逐出、重启即清空，唯一持久痕迹是 `task-events.jsonl` 且**只读最后 300 行**。
+  「上周那次准入到底跑没跑」查不到 —— 这正是上一轮做任务中心时留下的那条能力边界。
+  - 按 `task_id` **upsert** 而非 insert（任务一生要写多次：queued → 终态）。`payload_json` /
+    `result_json` / `steps_json` 用 `COALESCE` 保护：payload 只在建任务时写一次，终态 upsert 若直接
+    覆盖会把「再测一次」的参数摘要抹成 `null`。
+  - **两个来源合并读取**，刻意不写成「有库就只读库」：升级那一刻表是空的而 JSONL 有历史，一跑第一个
+    新任务库里有了 1 行，只读库就会让**全部历史任务凭空消失**。这个坑在实现中真的踩到了，由既有用例
+    抓出。同一 taskId 两边都有时以库为准。
+  - 启动时把残留的 `running` / `queued` 改判 `interrupted`。事件流路径早有等价的**读时**推断，但落库后
+    状态是持久的，必须真写回去，否则重启后列表永远挂着一批「运行中」、前端还会对它们无限轮询。
+  - **进度推进不落库**：一个 27 用例的任务会推进几十次，每次 upsert 是无谓写放大。只在状态跃迁时写，
+    进度靠内存态 + 轮询；读取时内存态覆盖库里的过时进度。
+  - `owner_user_id` 列先建好但仍不做隔离（见下条 ADM-016），将来真要隔离不必再迁一次表。
+  - 未做：列表仍只显示最近 30 条（分页 / 检索是另一档 UI 工作）；幂等键仍是进程内内存态，未落库加
+    `UNIQUE(owner_user_id, idempotency_key)`（ADM-015 的剩余敞口）。
 - **任务记录发起人与取消人（ADM-016 的记录部分）** — 多人共用一台工具时最常问的是「这轮谁跑的、
   这笔钱谁花的」，而任务对象此前不记创建者。请求级早有 `run_by`（`run-context.mjs` 的
   `AsyncLocalStorage` → `recordRequest`），任务级一直是空白。现在 `createTask` / `cancelTask` 各接一个
