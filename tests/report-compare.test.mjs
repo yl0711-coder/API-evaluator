@@ -1244,6 +1244,37 @@ test("computeOverallScore：首 Token 样本门槛不足时不参与综合相对
   assert.equal(os.dims.firstToken.weight, 0);
 });
 
+test("首 Token 回退到各场景 P50 时：仅展示估算值，不参与综合相对分", () => {
+  // 两侧都没有原始流式样本（报告只从 Markdown 表格解析出 P50），但共有场景数与
+  // 每侧计数都达标 —— 回退路径必须只展示、不进入 10% 权重的综合分。
+  const mkSide = (p50s) =>
+    mkFullAgg({
+      scenarios: p50s.map((p50, i) => ({
+        name: `流式场景 ${i + 1}`,
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [],
+        firstTokenSampleCount: 0,
+        p50FirstTokenMs: p50,
+      })),
+    });
+  const a = mkSide([100, 200, 300]);
+  const b = mkSide([400, 500, 600]);
+
+  const cmp = buildComparison(a, b);
+  const row = buildComparisonView(cmp).summary.find((item) => item.id === "p50-first-token");
+  assert.equal(row.valueA, 200, "展示各场景 P50 的中位数");
+  assert.equal(row.valueB, 500);
+  assert.match(row.detail, /估算/, "文案须说明这是估算值");
+  assert.match(row.detail, /不计入综合分/, "文案须说明不进入综合分");
+
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.firstToken.effect, null, "回退路径不产生效应量");
+  assert.equal(os.dims.firstToken.weight, 0, "回退路径权重归零，摊给其余维度");
+});
+
 test("computeOverallScore：压测一方 goodput=0（基准点即不健康）、另一方>0 → 效应量为满值±1，非 NaN/Infinity", () => {
   const a = mkFullAgg({
     label: "A",

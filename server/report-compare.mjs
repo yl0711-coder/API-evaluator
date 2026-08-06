@@ -954,7 +954,11 @@ export function aggregateSubject({ files = [], label, scenarioFilter } = {}) {
           : null,
         firstTokenSamples,
         firstTokenSampleCount: firstTokenSamples.length,
-        p50FirstTokenMs: nearestRankPct(firstTokenSamples, 0.5),
+        // When raw samples are unavailable (MD-parsed path, loadBalancedCompareFiles 未加载 summary),
+        // fall back to the per-report P50s already parsed from the table rather than returning null.
+        p50FirstTokenMs: firstTokenSamples.length > 0
+          ? nearestRankPct(firstTokenSamples, 0.5)
+          : nearestRankPct(rows.map((r) => r.p50FirstTokenMs).filter(Number.isFinite), 0.5),
         p95: avg(rows.map((r) => r.p95)),
         issue: rows.map((r) => r.issue).filter(Boolean)[0] || "",
         conclusion: rows.map((r) => r.conclusion).filter(Boolean)[0] || "",
@@ -1490,7 +1494,10 @@ export function buildComparisonView(cmp) {
     comparisonViewRow({
       id: "p50-first-token",
       label: "P50 首 Token 延迟",
-      detail: `仅计双方都有流式首 Token 样本的共有场景（${firstTokenLatency.pairedScenarioCount} 个）`,
+      detail:
+        firstTokenLatency.source === "p50"
+          ? `无原始样本，取各场景 P50 的中位数估算（共有场景 ${firstTokenLatency.pairedScenarioCount} 个，不计入综合分）`
+          : `仅计双方都有流式首 Token 样本的共有场景（${firstTokenLatency.pairedScenarioCount} 个）`,
       format: "milliseconds",
       unit: "ms",
       direction: "lower",
@@ -1603,23 +1610,46 @@ function loadGoodputEffect(aPoints, bPoints) {
 }
 
 function buildPairedFirstTokenLatency(matched) {
+  // Primary path: pool raw samples from DB summaries (exact percentile).
   const paired = (matched || []).filter((row) => row.a.firstTokenSampleCount > 0 && row.b.firstTokenSampleCount > 0);
   const samplesA = paired.flatMap((row) => row.a.firstTokenSamples || []).filter(Number.isFinite);
   const samplesB = paired.flatMap((row) => row.b.firstTokenSamples || []).filter(Number.isFinite);
-  const p50A = nearestRankPct(samplesA, 0.5);
-  const p50B = nearestRankPct(samplesB, 0.5);
+  // Fallback path: when reports were MD-parsed (loadBalancedCompareFiles 未载入 summary),
+  // raw samples are unavailable. Use per-scenario p50FirstTokenMs instead (median-of-P50s,
+  // not P50-of-all-samples, but sufficient for display). samplesA/B stay empty so callers
+  // can distinguish the two paths. We do NOT synthesise fake raw samples.
+  const fallback =
+    paired.length === 0
+      ? (matched || []).filter((row) => Number.isFinite(row.a.p50FirstTokenMs) && Number.isFinite(row.b.p50FirstTokenMs))
+      : [];
+  const effectivePaired = paired.length > 0 ? paired : fallback;
+  const p50A =
+    paired.length > 0
+      ? nearestRankPct(samplesA, 0.5)
+      : nearestRankPct(fallback.map((r) => r.a.p50FirstTokenMs), 0.5);
+  const p50B =
+    paired.length > 0
+      ? nearestRankPct(samplesB, 0.5)
+      : nearestRankPct(fallback.map((r) => r.b.p50FirstTokenMs), 0.5);
+  const aN = paired.length > 0 ? samplesA.length : fallback.length;
+  const bN = paired.length > 0 ? samplesB.length : fallback.length;
+  // "samples" = 原始样本池化的精确分位数；"p50" = 各场景 P50 的中位数（分位数不可分解，
+  // 只能当估算值展示，不得进入综合相对分）。
+  const source = paired.length > 0 ? "samples" : "p50";
   return {
-    pairedScenarioCount: paired.length,
+    pairedScenarioCount: effectivePaired.length,
+    source,
     samplesA,
     samplesB,
-    aN: samplesA.length,
-    bN: samplesB.length,
+    aN,
+    bN,
     p50A,
     p50B,
     eligibleForOverall:
-      paired.length >= FIRST_TOKEN_MIN_PAIRED_SCENARIOS &&
-      samplesA.length >= FIRST_TOKEN_MIN_SAMPLES_PER_SIDE &&
-      samplesB.length >= FIRST_TOKEN_MIN_SAMPLES_PER_SIDE &&
+      source === "samples" &&
+      effectivePaired.length >= FIRST_TOKEN_MIN_PAIRED_SCENARIOS &&
+      aN >= FIRST_TOKEN_MIN_SAMPLES_PER_SIDE &&
+      bN >= FIRST_TOKEN_MIN_SAMPLES_PER_SIDE &&
       Number.isFinite(p50A) &&
       Number.isFinite(p50B),
   };
@@ -1776,7 +1806,7 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
       availability: "稳定性成功率 / 场景通过率的比例效果量均值",
       quality: "同名场景配对质量分效果量",
       load: "拐点吞吐量（goodput）比值",
-      firstToken: "P50 首 Token 延迟；至少 2 个共同流式场景、每侧至少 3 个有效样本",
+      firstToken: "P50 首 Token 延迟；需原始流式样本，至少 2 个共同流式场景、每侧至少 3 个有效样本（仅从报告表格解析出 P50 时不参与本分数）",
     };
     L.push("| 维度 | 权重 | 效应量(对象A相对对象B) | 说明 |", "|---|---:|---:|---|");
     for (const key of ["availability", "quality", "load", "firstToken"]) {
@@ -2039,7 +2069,7 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
   );
   L.push("- 质量分为规则化评分，非人工质量评审；身份/纯度判断均为黑盒概率结论，仅「疑似 / 需上游解释」。");
   L.push(
-    `- 综合评分：可用性效果量用 **Cohen's h** 均值（除以 π 归一到 [-1,1]）；质量效果量用 **Cliff's δ**；压测效果量 = tanh(ln(A拐点吞吐量/B拐点吞吐量) / ln4)；首 Token 效果量 = tanh(ln(B P50/A P50) / ln4)（4 倍差距对应约 0.76，1 倍即打平）。四个维度按 ${Math.round(OVERALL_SCORE_WEIGHTS.availability * 100)}% / ${Math.round(OVERALL_SCORE_WEIGHTS.quality * 100)}% / ${Math.round(OVERALL_SCORE_WEIGHTS.load * 100)}% / ${Math.round(OVERALL_SCORE_WEIGHTS.firstToken * 100)}% 加权；首 Token 至少需要 2 个共同流式场景且每侧至少 3 个有效样本，缺失维度的权重按比例分给其余维度，不当 0 分处理；分数 = 50 ± 50×合成效应量，是相对分而非绝对量表。`,
+    `- 综合评分：可用性效果量用 **Cohen's h** 均值（除以 π 归一到 [-1,1]）；质量效果量用 **Cliff's δ**；压测效果量 = tanh(ln(A拐点吞吐量/B拐点吞吐量) / ln4)；首 Token 效果量 = tanh(ln(B P50/A P50) / ln4)（4 倍差距对应约 0.76，1 倍即打平）。四个维度按 ${Math.round(OVERALL_SCORE_WEIGHTS.availability * 100)}% / ${Math.round(OVERALL_SCORE_WEIGHTS.quality * 100)}% / ${Math.round(OVERALL_SCORE_WEIGHTS.load * 100)}% / ${Math.round(OVERALL_SCORE_WEIGHTS.firstToken * 100)}% 加权；首 Token 维度仅在能取到原始流式样本时参与，且至少需要 2 个共同流式场景、每侧至少 3 个有效样本（若只能从报告表格读到各场景 P50，则该值仅供展示、不计入综合分）；缺失维度的权重按比例分给其余维度，不当 0 分处理；分数 = 50 ± 50×合成效应量，是相对分而非绝对量表。`,
   );
   L.push("- 本报告依据既有评测报告聚合，未重新发起请求；标注 |Δ|≥40 的场景建议人工复核原始回答。");
   return L.join("\n");
