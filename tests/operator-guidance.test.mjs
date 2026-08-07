@@ -31,7 +31,7 @@ test("profile templates cover common model families with valid shape", () => {
   const required = ["label", "provider", "protocol", "baseUrlPlaceholder", "modelPlaceholder", "maxTokens", "timeoutMs", "notes"];
   for (const [key, template] of Object.entries(PROFILE_TEMPLATES)) {
     for (const field of required) assert.ok(template[field] !== undefined, `${key} 缺字段 ${field}`);
-    assert.ok(["openai_compatible", "openai_chat", "claude_messages"].includes(template.protocol), `${key} 协议非法`);
+    assert.ok(["openai_compatible", "openai_chat", "claude_messages", "openai_path_prefix"].includes(template.protocol), `${key} 协议非法`);
   }
   // 用户点名要能配的常见模型家族都有预设
   for (const key of [
@@ -48,8 +48,22 @@ test("profile templates cover common model families with valid shape", () => {
   const form = mockProfileForm();
   const applied = applyProfileTemplateToForm(form, "qwen_openai_compatible");
   assert.equal(applied.provider, "Alibaba");
-  assert.equal(form.elements.protocol.value, "openai_compatible");
+  // DashScope 兼容前缀是 /compatible-mode/v1，不是 /v1 → 该预设走自定义前缀协议
+  assert.equal(form.elements.protocol.value, "openai_path_prefix");
   assert.equal(form.elements.notes.value, applied.notes);
+
+  // 通用中转预设仍是标准 /v1，不受本次改动影响
+  const relayForm = mockProfileForm();
+  applyProfileTemplateToForm(relayForm, "relay_openai_compatible");
+  assert.equal(relayForm.elements.protocol.value, "openai_compatible");
+
+  // 前缀非 /v1 的厂商预设，Base URL 占位符必须给出带前缀的完整地址（否则用户照填域名就 404）
+  for (const key of ["glm_openai_compatible", "qwen_openai_compatible", "gemini_openai_compatible", "doubao_openai_compatible"]) {
+    const template = PROFILE_TEMPLATES[key];
+    assert.equal(template.protocol, "openai_path_prefix", `${key} 应走自定义前缀协议`);
+    const path = new URL(template.baseUrlPlaceholder).pathname;
+    assert.ok(path && path !== "/", `${key} 的 baseUrlPlaceholder 缺版本前缀：${template.baseUrlPlaceholder}`);
+  }
 });
 
 test("operator guidance maps common API errors to user-facing advice", () => {
@@ -107,6 +121,41 @@ test("operator guidance validates API profile configuration before save", () => 
   });
   assert.equal(warning.hasWarnings, true);
   assert.equal(warning.hasBlockers, false);
+});
+
+test("openai_path_prefix：带版本前缀是正确填法，不该被当成可疑路径", () => {
+  const base = {
+    protocol: "openai_path_prefix",
+    defaultModel: "glm-4.6",
+    apiKey: "sk-glm",
+    timeoutMs: "300000",
+    maxTokens: "1024",
+  };
+  // 正确填法：填到版本号那一层 → 零 issue（此前会报「Base URL 带了额外路径」）
+  const ok = validateProfileConfig({ ...base, baseUrl: "https://open.bigmodel.cn/api/paas/v4" });
+  assert.equal(ok.hasBlockers, false);
+  assert.equal(ok.hasWarnings, false, `不该有警告，实际：${JSON.stringify(ok.issues)}`);
+
+  // 填过头（带上 /chat/completions）→ blocker，工具会再补一次
+  const tooFull = validateProfileConfig({ ...base, baseUrl: "https://open.bigmodel.cn/api/paas/v4/chat/completions" });
+  assert.equal(tooFull.hasBlockers, true);
+  assert.ok(tooFull.issues.some((i) => /版本前缀那一层/.test(i.detail)));
+
+  // 选了该协议却只填域名 → 提醒缺前缀（否则会拼成 https://x.com/chat/completions）
+  const noPrefix = validateProfileConfig({ ...base, baseUrl: "https://open.bigmodel.cn" });
+  assert.equal(noPrefix.hasWarnings, true);
+  assert.ok(noPrefix.issues.some((i) => /缺少路径前缀/.test(i.title)));
+
+  // 老协议的两条判定一字不变
+  const legacyTooFull = validateProfileConfig({
+    ...base,
+    protocol: "openai_compatible",
+    baseUrl: "https://api.example.com/v1/chat/completions",
+  });
+  assert.equal(legacyTooFull.hasBlockers, true);
+  assert.ok(legacyTooFull.issues.some((i) => /不要带/.test(i.detail)));
+  const legacyExtraPath = validateProfileConfig({ ...base, protocol: "openai_compatible", baseUrl: "https://api.example.com/gw" });
+  assert.ok(legacyExtraPath.issues.some((i) => /带了额外路径/.test(i.title)));
 });
 
 test("profile config requires API key for new profiles but allows blank when editing", () => {

@@ -40,6 +40,23 @@ test("normalizeChannel：必填名称，默认值与价格/模型清单归一", 
   assert.throws(() => normalizeChannel({ baseUrl: "https://x" }), /渠道名称/);
 });
 
+// 新协议必须能穿过渠道规范化落库——normalizeProtocol 是白名单，漏加会被静默改写成
+// openai_compatible：用户在 UI 上选了「自定义路径前缀」，保存后却又变回 /v1，依然 404。
+test("normalizeChannel：openai_path_prefix 协议不被兜底改写", () => {
+  const ch = normalizeChannel({
+    name: "智谱直连",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    protocol: "openai_path_prefix",
+    models: "glm-4.6",
+  });
+  assert.equal(ch.protocol, "openai_path_prefix");
+  assert.equal(ch.baseUrl, "https://open.bigmodel.cn/api/paas/v4", "版本前缀必须原样保留，不能被当成多余路径剥掉");
+  // resolveTestTarget 要把协议透传给 test-runner，否则请求仍按 /v1 拼
+  const target = resolveTestTarget({ id: "mt-glm", channelId: ch.id, model: "glm-4.6", maxTokens: 1024, timeoutMs: 300000 }, ch);
+  assert.equal(target.protocol, "openai_path_prefix");
+  assert.equal(target.baseUrl, "https://open.bigmodel.cn/api/paas/v4");
+});
+
 test("normalizeChannel：编辑时沿用 existing 的创建时间与未传字段", () => {
   const existing = {
     id: "c1",

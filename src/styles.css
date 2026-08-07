@@ -712,6 +712,13 @@ code {
   align-items: start;
 }
 
+/* 渠道表单：「协议」列的 field-hint 列举了四个厂商的兼容端点前缀、占两三行，默认
+   align-items: stretch 会把同行「供应商」整格拉到同高，其输入框随之下移、与协议下拉错位。
+   改顶端对齐，两列的控件回到同一基线（同上三处）。 */
+#channel-form {
+  align-items: start;
+}
+
 /* 高级设置内的两列网格：「温度」列带较长 field-hint 更高，默认 align-items: stretch 会把同行
    另一列连同其下拉一起拉高、下拉随之错位。改顶端对齐（同上三处）。
    刻意逐个点名而不写通配的 .advanced-settings-body：模型目标表单的高级设置里没有温度框、

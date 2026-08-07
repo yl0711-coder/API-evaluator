@@ -350,7 +350,9 @@
                     <option value="openai_compatible">OpenAI Compatible</option>
                     <option value="openai_chat">OpenAI Chat Completions</option>
                     <option value="claude_messages">Claude Messages</option>
-                  </select></label>
+                    <option value="openai_path_prefix">OpenAI 兼容 · 自定义路径前缀</option>
+                  </select>
+                  <small class="field-hint">中转站一般选第一项。直连「兼容端点前缀不是 /v1」的厂商选最后一项，并把 Base URL 填到版本号那一层：智谱 <code>https://open.bigmodel.cn/api/paas/v4</code>、通义 <code>.../compatible-mode/v1</code>、Gemini <code>.../v1beta/openai</code>、火山方舟 <code>.../api/v3</code>。</small></label>
                 <label>供应商<input name="provider" autocomplete="off" placeholder="OpenAI / Anthropic / DeepSeek" /></label>
                 <label class="wide">模型清单<input name="models" autocomplete="off" placeholder="gpt-4o, gpt-4o-mini, o3（逗号分隔）" />
                   <small class="field-hint">该渠道支持的模型，逗号分隔；在“模型管理”里选其一建测试目标。</small></label>

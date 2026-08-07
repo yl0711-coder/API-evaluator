@@ -4,6 +4,7 @@ import {
   buildProtocolRequest,
   buildProtocolStreamRequest,
   buildProtocolToolRequest,
+  buildProtocolUrl,
   extractOutputText,
   extractToolCall,
   extractUsage,
@@ -47,6 +48,66 @@ test("builds Claude Messages requests", () => {
   assert.equal(request.headers["x-api-key"], "sk-claude");
   assert.equal(request.headers["anthropic-version"], "2023-06-01");
   assert.equal(request.body.messages[0].content, "hello claude");
+});
+
+// openai_path_prefix：baseUrl 已含厂商自己的版本前缀，只补最后一段 /chat/completions。
+// 回归的是「直连智谱必然 404」——此前固定拼 /v1，https://open.bigmodel.cn/api/paas/v4
+// 会变成 .../api/paas/v4/v1/chat/completions。
+test("buildProtocolUrl：自定义路径前缀协议不再补 /v1", () => {
+  assert.equal(
+    buildProtocolUrl("openai_path_prefix", "https://open.bigmodel.cn/api/paas/v4"),
+    "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+  );
+  // 尾随斜杠归一，不产生 //chat/completions
+  assert.equal(
+    buildProtocolUrl("openai_path_prefix", "https://open.bigmodel.cn/api/paas/v4/"),
+    "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+  );
+  // 其余厂商同一条协议即可覆盖，代码里不硬编码任何前缀
+  assert.equal(
+    buildProtocolUrl("openai_path_prefix", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  );
+  // 既有三协议的 URL 一字不变（本次改动是纯新增，不得动老行为）
+  assert.equal(buildProtocolUrl("openai_compatible", "https://api.example.com"), "https://api.example.com/v1/chat/completions");
+  assert.equal(buildProtocolUrl("openai_chat", "https://api.example.com"), "https://api.example.com/v1/chat/completions");
+  assert.equal(buildProtocolUrl("claude_messages", "https://api.example.com"), "https://api.example.com/v1/messages");
+  // 未知协议按 OpenAI 兼容兜底，与 normalizeProtocol 的兜底方向一致
+  assert.equal(buildProtocolUrl("something_else", "https://api.example.com"), "https://api.example.com/v1/chat/completions");
+});
+
+test("openai_path_prefix：四种请求构造都走自定义前缀，请求体与 openai_compatible 一致", () => {
+  const profile = {
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    apiKey: "sk-glm",
+    protocol: "openai_path_prefix",
+    defaultModel: "glm-4.6",
+    maxTokens: 1024,
+  };
+  const expected = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+
+  const plain = buildProtocolRequest(profile, "你好");
+  assert.equal(plain.url, expected);
+  assert.equal(plain.headers.authorization, "Bearer sk-glm");
+  assert.equal(plain.body.model, "glm-4.6");
+  assert.equal(plain.body.stream, false);
+  assert.equal(plain.body.temperature, 0.2, "沿用 OpenAI 系默认温度");
+
+  const streamed = buildProtocolStreamRequest(profile, "你好", { includeUsage: true });
+  assert.equal(streamed.url, expected);
+  assert.equal(streamed.body.stream, true);
+  assert.deepEqual(streamed.body.stream_options, { include_usage: true });
+
+  const tool = buildProtocolToolRequest(profile);
+  assert.equal(tool.url, expected);
+  assert.equal(tool.body.tools[0].type, "function", "工具形状必须是 OpenAI 的 function，不是 Claude 的 input_schema");
+  assert.equal(tool.body.temperature, 0);
+
+  // 不得误用 Claude 的鉴权头
+  for (const request of [plain, streamed, tool]) {
+    assert.equal("x-api-key" in request.headers, false);
+    assert.equal("anthropic-version" in request.headers, false);
+  }
 });
 
 test("temperatureOverride：填写时覆盖协议默认温度，0 不被当作留空", () => {

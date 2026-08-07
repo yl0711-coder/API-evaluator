@@ -50,14 +50,15 @@ export const PROFILE_TEMPLATES = {
     notes: "推理模型响应可能更慢，复杂测试建议把超时调到 120000ms。直连可用标准 /v1 路径。",
   },
   gemini_openai_compatible: {
-    label: "Gemini / OpenAI 兼容",
+    label: "Gemini / 直连",
     provider: "Google",
-    protocol: "openai_compatible",
-    baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
+    protocol: "openai_path_prefix",
+    baseUrlPlaceholder: "https://generativelanguage.googleapis.com/v1beta/openai",
     modelPlaceholder: "gemini-2.5-pro / gemini-2.5-flash",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "经中转站测最省心。直连 Google 需用其 OpenAI 兼容端点（/v1beta/openai），路径与标准 /v1 不同。",
+    notes:
+      "Google 的 OpenAI 兼容前缀是 /v1beta/openai（不是 /v1），故协议选「自定义路径前缀」。若你经中转站接入，改选「OpenAI Compatible」并只填网关根地址。",
   },
   kimi_openai_compatible: {
     label: "Kimi (Moonshot) / OpenAI 兼容",
@@ -70,34 +71,37 @@ export const PROFILE_TEMPLATES = {
     notes: "Moonshot 直连可用标准 /v1 路径；经中转站同样适用。",
   },
   doubao_openai_compatible: {
-    label: "豆包 (火山方舟) / OpenAI 兼容",
+    label: "豆包 (火山方舟) / 直连",
     provider: "ByteDance",
-    protocol: "openai_compatible",
-    baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
+    protocol: "openai_path_prefix",
+    baseUrlPlaceholder: "https://ark.cn-beijing.volces.com/api/v3",
     modelPlaceholder: "doubao-seed-1-6 / doubao-pro（或接入点 ep-...）",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "经中转站测最省心。火山方舟直连路径为 /api/v3，与标准 /v1 不同。",
+    notes:
+      "火山方舟直连前缀是 /api/v3（不是 /v1），故协议选「自定义路径前缀」。模型名可填接入点 ID（ep-...）。若你经中转站接入，改选「OpenAI Compatible」并只填网关根地址。",
   },
   glm_openai_compatible: {
-    label: "GLM (智谱) / OpenAI 兼容",
+    label: "GLM (智谱) / 直连",
     provider: "Zhipu",
-    protocol: "openai_compatible",
-    baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
+    protocol: "openai_path_prefix",
+    baseUrlPlaceholder: "https://open.bigmodel.cn/api/paas/v4",
     modelPlaceholder: "glm-4.6 / glm-4-plus",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "经中转站测最省心。智谱直连路径为 /api/paas/v4，与标准 /v1 不同。",
+    notes:
+      "智谱直连前缀是 /api/paas/v4（不是 /v1），故协议选「自定义路径前缀」，Base URL 要填到 v4 那一层。国际站用 https://api.z.ai/api/paas/v4。若你经中转站接入，改选「OpenAI Compatible」并只填网关根地址。",
   },
   qwen_openai_compatible: {
-    label: "通义千问 Qwen / OpenAI 兼容",
+    label: "通义千问 Qwen / 直连",
     provider: "Alibaba",
-    protocol: "openai_compatible",
-    baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
+    protocol: "openai_path_prefix",
+    baseUrlPlaceholder: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     modelPlaceholder: "qwen-max / qwen-plus / qwen3-...",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "经中转站测最省心。阿里 DashScope 直连用其 OpenAI 兼容端点（/compatible-mode/v1），路径与标准 /v1 不同。",
+    notes:
+      "阿里 DashScope 的兼容前缀是 /compatible-mode/v1（不是 /v1），故协议选「自定义路径前缀」。若你经中转站接入，改选「OpenAI Compatible」并只填网关根地址。",
   },
   grok_openai_compatible: {
     label: "Grok (xAI) / OpenAI 兼容",
@@ -231,13 +235,30 @@ export function validateProfileConfig(payload) {
       });
     }
 
-    if (/\/v1\/(messages|chat\/completions)\/?$/i.test(parsedUrl.pathname)) {
+    // 「自定义路径前缀」协议下，带路径是【必须】的（baseUrl 要填到版本号那一层），
+    // 故那条「带了额外路径」的提醒不适用——照发会把唯一正确的填法说成可疑。
+    // 但 /chat/completions 结尾仍是填过头（工具会再补一次），照样拦。
+    const isPathPrefix = protocol === "openai_path_prefix";
+    if (isPathPrefix && /\/chat\/completions\/?$/i.test(parsedUrl.pathname)) {
+      issues.push({
+        level: "blocker",
+        title: "Base URL 填得太完整了",
+        detail: "当前协议只需填到版本前缀那一层（如 https://open.bigmodel.cn/api/paas/v4），工具会自动补 /chat/completions。",
+      });
+    } else if (!isPathPrefix && /\/v1\/(messages|chat\/completions)\/?$/i.test(parsedUrl.pathname)) {
       issues.push({
         level: "blocker",
         title: "Base URL 填得太完整了",
         detail: "这里只填基础地址。不要带 /v1/messages 或 /v1/chat/completions，工具会按协议自动拼接。",
       });
-    } else if (parsedUrl.pathname && parsedUrl.pathname !== "/") {
+    } else if (isPathPrefix && (!parsedUrl.pathname || parsedUrl.pathname === "/")) {
+      issues.push({
+        level: "warning",
+        title: "Base URL 缺少路径前缀",
+        detail:
+          "选了「自定义路径前缀」却只填了域名。要填平台后台给的完整兼容端点前缀（如 /api/paas/v4）；若上游本就是标准 /v1，请改选「OpenAI Compatible」。",
+      });
+    } else if (!isPathPrefix && parsedUrl.pathname && parsedUrl.pathname !== "/") {
       issues.push({
         level: "warning",
         title: "Base URL 带了额外路径",

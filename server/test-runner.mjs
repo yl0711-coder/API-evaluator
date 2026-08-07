@@ -40,6 +40,7 @@ import {
   buildProtocolRequest,
   buildProtocolStreamRequest,
   buildProtocolToolRequest,
+  buildProtocolUrl,
   coalesceSseResponse,
   extractFinishReason,
   extractOutputText,
@@ -1707,7 +1708,7 @@ function buildProbeTokenRequest(profile, text) {
   const baseUrl = profile.baseUrl.replace(/\/+$/, "");
   if (profile.protocol === "claude_messages") {
     return {
-      url: `${baseUrl}/v1/messages`,
+      url: buildProtocolUrl(profile.protocol, baseUrl),
       headers: {
         "content-type": "application/json",
         "x-api-key": profile.apiKey,
@@ -1717,7 +1718,7 @@ function buildProbeTokenRequest(profile, text) {
     };
   }
   return {
-    url: `${baseUrl}/v1/chat/completions`,
+    url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: { "content-type": "application/json", authorization: `Bearer ${profile.apiKey}` },
     body: { model: profile.defaultModel, max_tokens: 1, stream: false, messages: [{ role: "user", content: text }] },
   };
