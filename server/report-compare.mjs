@@ -956,9 +956,10 @@ export function aggregateSubject({ files = [], label, scenarioFilter } = {}) {
         firstTokenSampleCount: firstTokenSamples.length,
         // When raw samples are unavailable (MD-parsed path, loadBalancedCompareFiles 未加载 summary),
         // fall back to the per-report P50s already parsed from the table rather than returning null.
-        p50FirstTokenMs: firstTokenSamples.length > 0
-          ? nearestRankPct(firstTokenSamples, 0.5)
-          : nearestRankPct(rows.map((r) => r.p50FirstTokenMs).filter(Number.isFinite), 0.5),
+        p50FirstTokenMs:
+          firstTokenSamples.length > 0
+            ? nearestRankPct(firstTokenSamples, 0.5)
+            : nearestRankPct(rows.map((r) => r.p50FirstTokenMs).filter(Number.isFinite), 0.5),
         p95: avg(rows.map((r) => r.p95)),
         issue: rows.map((r) => r.issue).filter(Boolean)[0] || "",
         conclusion: rows.map((r) => r.conclusion).filter(Boolean)[0] || "",
@@ -1626,11 +1627,17 @@ function buildPairedFirstTokenLatency(matched) {
   const p50A =
     paired.length > 0
       ? nearestRankPct(samplesA, 0.5)
-      : nearestRankPct(fallback.map((r) => r.a.p50FirstTokenMs), 0.5);
+      : nearestRankPct(
+          fallback.map((r) => r.a.p50FirstTokenMs),
+          0.5,
+        );
   const p50B =
     paired.length > 0
       ? nearestRankPct(samplesB, 0.5)
-      : nearestRankPct(fallback.map((r) => r.b.p50FirstTokenMs), 0.5);
+      : nearestRankPct(
+          fallback.map((r) => r.b.p50FirstTokenMs),
+          0.5,
+        );
   const aN = paired.length > 0 ? samplesA.length : fallback.length;
   const bN = paired.length > 0 ? samplesB.length : fallback.length;
   // "samples" = 原始样本池化的精确分位数；"p50" = 各场景 P50 的中位数（分位数不可分解，
@@ -1806,7 +1813,8 @@ export function formatCompareReportMarkdown(cmp, { generatedAt, aiNarrative, bal
       availability: "稳定性成功率 / 场景通过率的比例效果量均值",
       quality: "同名场景配对质量分效果量",
       load: "拐点吞吐量（goodput）比值",
-      firstToken: "P50 首 Token 延迟；需原始流式样本，至少 2 个共同流式场景、每侧至少 3 个有效样本（仅从报告表格解析出 P50 时不参与本分数）",
+      firstToken:
+        "P50 首 Token 延迟；需原始流式样本，至少 2 个共同流式场景、每侧至少 3 个有效样本（仅从报告表格解析出 P50 时不参与本分数）",
     };
     L.push("| 维度 | 权重 | 效应量(对象A相对对象B) | 说明 |", "|---|---:|---:|---|");
     for (const key of ["availability", "quality", "load", "firstToken"]) {
