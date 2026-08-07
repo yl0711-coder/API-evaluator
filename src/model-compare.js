@@ -9,6 +9,114 @@ import { createCascadeTargetPicker } from "./target-picker.js";
 import { openReportOverlay } from "./report-overlay.js";
 import { buildGapFillTaskPayload, runGapFillQueue, summarizeGapFillEstimates } from "./model-compare-gap-fill.js";
 
+function csvCell(value) {
+  const text = String(value ?? "");
+  const safeText = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replace(/"/g, '""')}"`;
+}
+
+function csvNumber(value) {
+  return Number.isFinite(value) ? value : "";
+}
+
+function csvPercent(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "";
+}
+
+function csvMetricValue(row, side) {
+  const value = row?.[side === "a" ? "valueA" : "valueB"];
+  if (!Number.isFinite(value)) return "";
+  return row.format === "percent" ? `${(value * 100).toFixed(1)}%` : value;
+}
+
+function csvMetricUnit(row) {
+  if (row?.format === "percent") return "%";
+  if (row?.format === "milliseconds") return "ms";
+  return row?.unit || "";
+}
+
+function csvCoverage(value) {
+  return Number.isFinite(value?.reportedCount) && Number.isFinite(value?.totalCount) ? `${value.reportedCount}/${value.totalCount}` : "";
+}
+
+export function buildComparisonCsv(comparison) {
+  const subjectA = comparison?.subjects?.a?.label || "对象 A";
+  const subjectB = comparison?.subjects?.b?.label || "对象 B";
+  const rows = [
+    ["对象 A", subjectA],
+    ["对象 B", subjectB],
+    [],
+    [
+      "分区",
+      "指标/场景",
+      "难度",
+      "对象 A",
+      "对象 B",
+      "单位",
+      "说明",
+      "对象 A Token 覆盖",
+      "对象 B Token 覆盖",
+      "对象 A 质量分",
+      "对象 B 质量分",
+      "对象 A 通过率",
+      "对象 B 通过率",
+      "对象 A 平均耗时 ms",
+      "对象 B 平均耗时 ms",
+      "对象 A P50 首 Token ms",
+      "对象 B P50 首 Token ms",
+      "对象 A 输出 Token（含思考）",
+      "对象 B 输出 Token（含思考）",
+      "对象 A 缓存命中 Token",
+      "对象 B 缓存命中 Token",
+      "对象 A 问题摘要",
+      "对象 B 问题摘要",
+    ],
+  ];
+  for (const row of comparison?.summary || []) {
+    rows.push([
+      "摘要",
+      row.label || "",
+      "",
+      csvMetricValue(row, "a"),
+      csvMetricValue(row, "b"),
+      csvMetricUnit(row),
+      row.detail || "",
+      csvCoverage(row.coverageA),
+      csvCoverage(row.coverageB),
+    ]);
+  }
+  for (const row of comparison?.scenarios || []) {
+    const a = row.a || {};
+    const b = row.b || {};
+    rows.push([
+      "逐场景",
+      row.name || "",
+      row.tier || "",
+      "",
+      "",
+      "",
+      "",
+      csvCoverage({ reportedCount: a.outputTokenReportedCount, totalCount: a.outputTokenTotalCount }),
+      csvCoverage({ reportedCount: b.outputTokenReportedCount, totalCount: b.outputTokenTotalCount }),
+      csvNumber(a.quality),
+      csvNumber(b.quality),
+      csvPercent(a.passRate),
+      csvPercent(b.passRate),
+      csvNumber(a.avgMs),
+      csvNumber(b.avgMs),
+      csvNumber(a.p50FirstTokenMs),
+      csvNumber(b.p50FirstTokenMs),
+      csvNumber(a.outputTokens),
+      csvNumber(b.outputTokens),
+      csvNumber(a.cacheReadTokens),
+      csvNumber(b.cacheReadTokens),
+      a.issue || "",
+      b.issue || "",
+    ]);
+  }
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
 export function createModelCompare({ state, confirm }) {
   const form = requireElement("#mc-form");
   const aChannel = requireElement("#mc-a-channel");
@@ -129,7 +237,13 @@ export function createModelCompare({ state, confirm }) {
     if (row.format === "percent") return `${(value * 100).toFixed(1)}%`;
     if (row.format === "milliseconds") return `${Math.round(value).toLocaleString("zh-CN")} ms`;
     const fractionDigits = Math.abs(value) >= 100 || Number.isInteger(value) ? 0 : 1;
-    return `${value.toLocaleString("zh-CN", { maximumFractionDigits: fractionDigits })}${row.unit === "分" ? " 分" : row.unit === "有效 QPS" ? " 有效 QPS" : ""}`;
+    const suffix = row.unit === "分" ? " 分" : row.unit === "有效 QPS" ? " 有效 QPS" : row.unit === "Token" ? " Token" : "";
+    const coverage = row?.[side === "a" ? "coverageA" : "coverageB"];
+    const coverageText =
+      row.unit === "Token" && Number.isFinite(coverage?.reportedCount) && Number.isFinite(coverage?.totalCount)
+        ? `（${coverage.reportedCount}/${coverage.totalCount} 次上报）`
+        : "";
+    return `${value.toLocaleString("zh-CN", { maximumFractionDigits: fractionDigits })}${suffix}${coverageText}`;
   }
 
   function comparisonCell(row, side) {
@@ -150,10 +264,20 @@ export function createModelCompare({ state, confirm }) {
     const quality = Number.isFinite(data.quality) ? `${data.quality.toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 分` : "-";
     const passRate = Number.isFinite(data.passRate) ? `${(data.passRate * 100).toFixed(1)}% 通过` : "通过率 -";
     const avgMs = Number.isFinite(data.avgMs) ? `${Math.round(data.avgMs).toLocaleString("zh-CN")} ms` : "耗时 -";
+    const firstTokenMs = Number.isFinite(data.p50FirstTokenMs)
+      ? `P50 首 Token ${Math.round(data.p50FirstTokenMs).toLocaleString("zh-CN")} ms`
+      : "P50 首 Token -";
+    const usageText = (value, reportedCount, totalCount, label) => {
+      const coverage =
+        Number.isFinite(reportedCount) && Number.isFinite(totalCount) ? `（${reportedCount}/${totalCount} 次上报）` : "（覆盖未知）";
+      return Number.isFinite(value) ? `${label} ${Math.round(value).toLocaleString("zh-CN")} Token${coverage}` : `${label} -${coverage}`;
+    };
+    const outputTokens = usageText(data.outputTokens, data.outputTokenReportedCount, data.outputTokenTotalCount, "输出（含思考）");
+    const cacheReadTokens = usageText(data.cacheReadTokens, data.cacheReadTokenReportedCount, data.cacheReadTokenTotalCount, "缓存命中");
     const issue = shortIssue(data.issue);
     return `<td class="mc-compare-value mc-scenario-value${winner}">
       <strong>${escapeHtml(quality)}</strong>
-      <span>${escapeHtml(passRate)} · ${escapeHtml(avgMs)}</span>
+      <span>${escapeHtml(passRate)} · ${escapeHtml(avgMs)} · ${escapeHtml(firstTokenMs)} · ${escapeHtml(outputTokens)} · ${escapeHtml(cacheReadTokens)}</span>
       ${issue ? `<small title="${escapeHtml(data.issue)}">${escapeHtml(issue)}</small>` : ""}
     </td>`;
   }
@@ -213,6 +337,7 @@ export function createModelCompare({ state, confirm }) {
         <div class="action-row" style="justify-content:flex-start">
           <button type="button" class="secondary" data-mc-view>查看报告</button>
           <button type="button" class="secondary" data-mc-download>下载 Markdown</button>
+          <button type="button" class="secondary" data-mc-export-csv>导出 CSV</button>
         </div>
         <p class="field-hint" style="margin-top:10px">
           对象 A 采用报告：${escapeHtml(notes?.a || "-")}；对象 B 采用报告：${escapeHtml(notes?.b || "-")}。
@@ -221,6 +346,9 @@ export function createModelCompare({ state, confirm }) {
       </section>`;
     resultBox.querySelector("[data-mc-view]").addEventListener("click", () => openReportOverlay(reportId, { title: "模型对比报告" }));
     resultBox.querySelector("[data-mc-download]").addEventListener("click", () => downloadText(`${reportId}.md`, markdown));
+    resultBox
+      .querySelector("[data-mc-export-csv]")
+      .addEventListener("click", () => downloadText(`${reportId}.csv`, `\uFEFF${buildComparisonCsv(comparison)}`, "text/csv"));
   }
 
   // 勾选的场景名。
