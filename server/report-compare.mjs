@@ -252,6 +252,54 @@ export function parseReportBaseName(name) {
   return { channel, model, type, date };
 }
 
+// 「模型对比报告」文件名解析（`${slugA}_vs_${slugB}_compare_${YYYYMMDD}_${HHMMSS}_${hash}`）。
+// 刻意【不】复用 parseReportBaseName：那个是给单对象报告（渠道_模型_类型_日期）用的，语义不同、
+// 别处依赖其行为，改它会牵连全局。
+//
+// 为什么返回 splits 数组而不是直接切出两个 slug：渠道名/模型名本身可能含下划线，甚至含 `_vs_`
+// 子串（如渠道名叫「a_vs_b」），单凭字符串切分无法判断哪个 `_vs_` 才是真正的分隔符。这里把
+// 【所有】可能的切分点都列出来，交给 buildSubjectSlugIndex 建的 slug 索引去精确判定——
+// 能让两侧都命中已知模型的那个切分才是对的。
+export function parseCompareReportBaseName(base) {
+  const name = String(base || "").replace(/\.(md|html)$/i, "");
+  // 尾部锚定：`_compare_` + 8 位日期 + 6 位时刻（+ 可选短 hash）。head 里若也含 `_compare_`
+  // （渠道名带这个词），因为 `.+` 贪婪 + 尾部锚定，切出来的仍是最后那一段。
+  const m = /^(.+)_compare_(\d{8})_(\d{6})(?:_([^_]+))?$/.exec(name);
+  if (!m) return null;
+  const head = m[1];
+  const SEP = "_vs_";
+  const splits = [];
+  for (let i = head.indexOf(SEP); i >= 0; i = head.indexOf(SEP, i + 1)) {
+    const left = head.slice(0, i);
+    const right = head.slice(i + SEP.length);
+    if (left && right) splits.push([left, right]);
+  }
+  if (!splits.length) return null;
+  return { type: "compare", date: m[2], time: m[3], hash: m[4] || null, head, splits };
+}
+
+// slug → 规范模型目标 的索引，供上面的切分候选做精确判定。
+// subjects: [{ targetId?, channel, model, channelAliases?, modelAliases? }]；
+// slugify: 注入的文件名规范化函数（server/report-files.mjs 的 sanitizeReportBaseName）——
+//   注入而非直接 import，是为了让本模块保持无 I/O 依赖（report-files 会连 db/paths）。
+// 两遍登记：先当前名，再含曾用名的笛卡尔组合，保证「A 的曾用名恰好是 B 的现用名」时现用名优先。
+export function buildSubjectSlugIndex(subjects, slugify) {
+  const index = new Map();
+  const put = (channel, model, subject) => {
+    if (!channel || !model) return;
+    const slug = slugify(`${channel}_${model}`);
+    if (slug && !index.has(slug)) index.set(slug, subject);
+  };
+  for (const s of subjects || []) if (s) put(s.channel, s.model, s);
+  for (const s of subjects || []) {
+    if (!s) continue; // 稀疏/含 null 的入参不得让整个索引崩掉（put 已守空字段，这里守空条目）
+    const channels = [s.channel, ...(Array.isArray(s.channelAliases) ? s.channelAliases : [])].filter(Boolean);
+    const models = [s.model, ...(Array.isArray(s.modelAliases) ? s.modelAliases : [])].filter(Boolean);
+    for (const c of channels) for (const m of models) put(c, m, s);
+  }
+  return index;
+}
+
 export function detectReportType(name, md) {
   const t = parseReportBaseName(name).type;
   if (t === "run" || t === "scenario" || t === "admission" || t === "load") return t;
@@ -1400,6 +1448,25 @@ function comparisonViewGoodput(points) {
   return point.qps * point.successRate;
 }
 
+// 逐场景表格里【一侧】的展示字段（两列视图与 N 列视图共用，字段集与顺序必须一致）。
+// 非有限值统一收敛成 null：前端只需判 null，不必再各自 Number.isFinite。
+function scenarioSideView(side) {
+  const n = (v) => (Number.isFinite(v) ? v : null);
+  return {
+    quality: n(side.quality),
+    passRate: n(side.rate),
+    avgMs: n(side.avgMs),
+    outputTokens: n(side.outputTokens),
+    outputTokenReportedCount: n(side.outputTokenReportedCount),
+    outputTokenTotalCount: n(side.outputTokenTotalCount),
+    cacheReadTokens: n(side.cacheReadTokens),
+    cacheReadTokenReportedCount: n(side.cacheReadTokenReportedCount),
+    cacheReadTokenTotalCount: n(side.cacheReadTokenTotalCount),
+    p50FirstTokenMs: n(side.p50FirstTokenMs),
+    issue: side.issue || null,
+  };
+}
+
 // Browser-facing projection for the model comparison matrix. Keep this separate from the full
 // comparison object so the UI consumes a deliberate, stable contract rather than report internals.
 export function buildComparisonView(cmp) {
@@ -1532,32 +1599,8 @@ export function buildComparisonView(cmp) {
       tier: row.tier || null,
       winner: comparisonViewWinner(qualityA, qualityB, "higher"),
       status: qualityA == null || qualityB == null ? "insufficient" : "ready",
-      a: {
-        quality: qualityA,
-        passRate: Number.isFinite(row.a.rate) ? row.a.rate : null,
-        avgMs: Number.isFinite(row.a.avgMs) ? row.a.avgMs : null,
-        outputTokens: Number.isFinite(row.a.outputTokens) ? row.a.outputTokens : null,
-        outputTokenReportedCount: Number.isFinite(row.a.outputTokenReportedCount) ? row.a.outputTokenReportedCount : null,
-        outputTokenTotalCount: Number.isFinite(row.a.outputTokenTotalCount) ? row.a.outputTokenTotalCount : null,
-        cacheReadTokens: Number.isFinite(row.a.cacheReadTokens) ? row.a.cacheReadTokens : null,
-        cacheReadTokenReportedCount: Number.isFinite(row.a.cacheReadTokenReportedCount) ? row.a.cacheReadTokenReportedCount : null,
-        cacheReadTokenTotalCount: Number.isFinite(row.a.cacheReadTokenTotalCount) ? row.a.cacheReadTokenTotalCount : null,
-        p50FirstTokenMs: Number.isFinite(row.a.p50FirstTokenMs) ? row.a.p50FirstTokenMs : null,
-        issue: row.a.issue || null,
-      },
-      b: {
-        quality: qualityB,
-        passRate: Number.isFinite(row.b.rate) ? row.b.rate : null,
-        avgMs: Number.isFinite(row.b.avgMs) ? row.b.avgMs : null,
-        outputTokens: Number.isFinite(row.b.outputTokens) ? row.b.outputTokens : null,
-        outputTokenReportedCount: Number.isFinite(row.b.outputTokenReportedCount) ? row.b.outputTokenReportedCount : null,
-        outputTokenTotalCount: Number.isFinite(row.b.outputTokenTotalCount) ? row.b.outputTokenTotalCount : null,
-        cacheReadTokens: Number.isFinite(row.b.cacheReadTokens) ? row.b.cacheReadTokens : null,
-        cacheReadTokenReportedCount: Number.isFinite(row.b.cacheReadTokenReportedCount) ? row.b.cacheReadTokenReportedCount : null,
-        cacheReadTokenTotalCount: Number.isFinite(row.b.cacheReadTokenTotalCount) ? row.b.cacheReadTokenTotalCount : null,
-        p50FirstTokenMs: Number.isFinite(row.b.p50FirstTokenMs) ? row.b.p50FirstTokenMs : null,
-        issue: row.b.issue || null,
-      },
+      a: scenarioSideView(row.a),
+      b: scenarioSideView(row.b),
     };
   });
   return {
@@ -1568,6 +1611,106 @@ export function buildComparisonView(cmp) {
     summary,
     scenarios,
   };
+}
+
+// —— N 列并排视图（「多模型比对」）——
+//
+// 与 buildComparisonView 的关系：那个是「两列专用」的既有契约（被前端两两对比与 CSV 测试钉住，
+// 不动它）；本函数产出列数可变的同风格结构，供前端 N 列表格渲染。
+//
+// 入参：
+//   baseAgg    —— 基准模型的聚合画像（aggregateSubject 结果），N 列共享同一份基准；
+//   pairs      —— [{ agg, cmp }]：每个对比模型自己的聚合画像 + 它与 base 走 buildComparison 的结果；
+//   sharedScenarios —— 全局共享场景名集合（各 peer 与 base 共有场景再取交集），只作展示口径说明。
+//
+// 关键取舍：每列的指标值取自「该列自己的 cmp」，但 base 列只取一次（用 pairs[0] 的 cmp）。
+// buildComparison 会写 a.scenarioPass（就地改入参），因此调用方必须保证 baseAgg 在最后一次
+// buildComparison 后不再被改写——见 server.mjs handleReportsCompareMulti 的两遍计算注释。
+const MULTI_OVERALL_NOTE = "基准列固定 50 分；各列为该模型相对基准的分数。跨列比较仅供参考，不具传递性。";
+
+function multiRowBestIndex(values, direction) {
+  if (direction === "none") return null;
+  let best = null;
+  for (let i = 0; i < values.length; i += 1) {
+    const v = values[i]?.value;
+    if (!Number.isFinite(v)) continue;
+    if (best === null) {
+      best = i;
+      continue;
+    }
+    const bv = values[best].value;
+    if (direction === "lower" ? v < bv : v > bv) best = i;
+  }
+  if (best === null) return null;
+  // 并列最优 → 不高亮任何一列。两列视图对 valueA === valueB 就是「无胜方」（comparisonViewWinner），
+  // N 列必须同口径：否则 [1.0, 0.8, 1.0] 会把第 0 列点亮、让并列第一的第 2 列看着像输了。
+  // 注意判据是「与最优值并列的列数」，不是「全列同值」——后者漏掉「部分并列」这个真正会误导的情形。
+  const bestValue = values[best].value;
+  const tied = values.filter((x) => Number.isFinite(x?.value) && x.value === bestValue).length;
+  return tied > 1 ? null : best;
+}
+
+export function buildMultiComparisonView({ baseAgg, pairs = [], sharedScenarios = [] } = {}) {
+  const subjects = [
+    { label: baseAgg?.label || "基准", isBase: true },
+    ...pairs.map((p) => ({ label: p.agg?.label || "-", isBase: false })),
+  ];
+  const sharedNames = [...sharedScenarios];
+  // 每列的两列视图：base 列的值统一取 pairs[0] 的视图 A 侧（N 列共享同一 base 聚合），
+  // peer 列取各自视图的 B 侧。没有任何 peer 时只出 base 单列（值全部走 base 自己的画像也无从对比，
+  // 故 pairs 为空时直接返回空表——调用方已限制至少 1 个 peer）。
+  const views = pairs.map((p) => buildComparisonView(p.cmp));
+  if (!views.length) return { subjects, sharedScenarioCount: sharedNames.length, sharedScenarios: sharedNames, summary: [], scenarios: [] };
+
+  const template = views[0].summary;
+  const summary = template.map((row, rowIndex) => {
+    const isOverall = row.id === "overall-score";
+    const cell = (view, side) => {
+      const r = view.summary[rowIndex];
+      return {
+        value: r?.[side === "a" ? "valueA" : "valueB"] ?? null,
+        coverage: r?.[side === "a" ? "coverageA" : "coverageB"] ?? null,
+      };
+    };
+    // 综合相对分：基准列固定 50（打平锚点），每个 peer 列取它相对 base 的 scoreB。
+    const values = isOverall
+      ? [{ value: 50, coverage: null }, ...views.map((view) => cell(view, "b"))]
+      : [cell(views[0], "a"), ...views.map((view) => cell(view, "b"))];
+    const detail = isOverall ? MULTI_OVERALL_NOTE : row.detail || null;
+    return {
+      id: row.id,
+      label: row.label,
+      detail,
+      format: row.format,
+      unit: row.unit,
+      direction: row.direction,
+      values,
+      bestIndex: multiRowBestIndex(values, row.direction),
+      // 任一列缺值即标注不足（与两列视图 status 同语义）。
+      status: values.some((v) => !Number.isFinite(v.value)) ? "insufficient" : "ready",
+    };
+  });
+
+  // 逐场景：只列全局共享场景（每个 peer 与 base 都测过的那批），否则某列必然空着、并排无意义。
+  const rowsByName = views.map((view) => new Map(view.scenarios.map((s) => [s.name, s])));
+  const scenarios = sharedNames
+    .map((name) => {
+      const first = rowsByName[0].get(name);
+      if (!first) return null;
+      const values = [first.a, ...rowsByName.map((m) => m.get(name)?.b ?? null)];
+      const qualityValues = values.map((v) => ({ value: v?.quality ?? null }));
+      return {
+        name,
+        tier: first.tier || null,
+        values,
+        bestIndex: multiRowBestIndex(qualityValues, "higher"),
+        status: qualityValues.some((v) => !Number.isFinite(v.value)) ? "insufficient" : "ready",
+      };
+    })
+    .filter(Boolean)
+    .sort((x, y) => x.name.localeCompare(y.name, "zh"));
+
+  return { subjects, sharedScenarioCount: scenarios.length, sharedScenarios: sharedNames, summary, scenarios };
 }
 
 // —— 综合评分（相对分）：把可用性/质量/压测/首 Token 延迟四个维度各压成 [-1,1] 的效应量，加权合成后

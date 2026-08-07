@@ -88,9 +88,12 @@ import {
   buildComparison,
   buildComparisonView,
   buildCompareAnalysisPrompt,
+  buildMultiComparisonView,
+  buildSubjectSlugIndex,
   commonScenarioNames,
   exclusiveScenarioNames,
   formatCompareReportMarkdown,
+  parseCompareReportBaseName,
   parseReportBaseName,
   pickRecentReports,
 } from "./server/report-compare.mjs";
@@ -214,58 +217,67 @@ if (legacyNewapiToken) await stripLegacyNewapiToken();
 await runReportMaintenance();
 scheduleReportMaintenance();
 
+// 列出报告目录里的 .md 文件名（一次 readdir）。报告目录可达数千文件，多模型比对要为每个对象
+// 各收一遍报告——目录列表读一次传下去，别每个对象重扫一遍。
+async function listReportMdNames() {
+  try {
+    return (await readdir(REPORTS_DIR)).filter((n) => n.toLowerCase().endsWith(".md"));
+  } catch {
+    return []; // 报告目录不存在 → 空
+  }
+}
+
+// 收集某个对象（渠道 + 模型，含曾用名）在报告中心的报告正文，按类型分别限流取最近若干份。
+// names 由调用方传入（listReportMdNames 的结果），避免每个对象各自 readdir 一遍报告目录。
+// 返回 [{ name(不含扩展名), md, mtimeMs }]。
+async function collectSubjectReportFiles(names, subject) {
+  // 候选前缀：当前名 + 曾用名(aliases)的笛卡尔组合，让改名前的历史报告也能被本模型认领。
+  const channels = [subject.channel, ...(Array.isArray(subject.channelAliases) ? subject.channelAliases : [])].filter(Boolean);
+  const models = [subject.model, ...(Array.isArray(subject.modelAliases) ? subject.modelAliases : [])].filter(Boolean);
+  const prefixes = [...new Set(channels.flatMap((c) => models.map((m) => `${sanitizeReportBaseName(`${c}_${m}`)}_`)))];
+  const metas = [];
+  for (const name of names) {
+    if (!prefixes.some((p) => name.startsWith(p))) continue;
+    const base = name.replace(/\.md$/i, "");
+    const type = parseReportBaseName(base).type;
+    if (type !== "run" && type !== "admission" && type !== "scenario" && type !== "load") continue;
+    try {
+      const st = await stat(join(REPORTS_DIR, name));
+      metas.push({ base, type, mtimeMs: st.mtimeMs });
+    } catch {
+      /* 读不到 → 跳过 */
+    }
+  }
+  metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
+  // 限流：run/admission 共享最近 6 份（沿用 load 类型加入前的原始预算）；load 独立取最近 6 份——
+  // 三者混在一个预算里时，密集调参跑压测（6 份以上近期 load 文件）会把 run/admission 全部挤出候选，
+  // 对比里稳定性/准入静默消失（磁盘上明明有）。场景需要按名去重，最多取最近 60 份读盘。
+  // 已知问题（暂不修）：场景是按【文件数】限流（取最近 60 份场景报告），而 pickRecentReports 是
+  // 按【场景名】去重（一份文件可含多条场景行，理论上也可能撞名）。内置场景库已有约 89 个场景，
+  // 若用户实际跑过的场景种类数超过 60，排序在候选池之外的稀有场景会连去重环节都进不去，被静默漏掉
+  // （不报错，只是「共有场景数」会比实际偏小）。多数部署场景种类不会跑到这么全，暂按可接受风险处理。
+  const chosen = [
+    ...metas.filter((m) => m.type === "run" || m.type === "admission").slice(0, 6),
+    ...metas.filter((m) => m.type === "load").slice(0, 6),
+    ...metas.filter((m) => m.type === "scenario").slice(0, 60),
+  ];
+  const files = [];
+  for (const m of chosen) {
+    try {
+      files.push({ name: m.base, md: await readReportFileText(join(REPORTS_DIR, `${m.base}.md`)), mtimeMs: m.mtimeMs });
+    } catch {
+      /* 读失败 → 跳过 */
+    }
+  }
+  return files;
+}
+
 // 「模型比对」共用：按文件名前缀收集两方在报告中心的报告，取最近若干份，再平衡为「双方共有」的报告集。
-// 返回 { balA, balB }（已平衡的报告文件），或 { error, userMessage }（无报告 / 无共有报告）。
+// 返回 { balA, balB, pickedA, pickedB }（已平衡的报告文件），或 { error, userMessage }（无报告 / 无共有报告）。
 // 供 /api/reports/compare（生成对比）与 /api/reports/compare/scenarios（列出可选场景）共用。
 async function loadBalancedCompareFiles(A, B) {
-  let names = [];
-  try {
-    names = (await readdir(REPORTS_DIR)).filter((n) => n.toLowerCase().endsWith(".md"));
-  } catch {
-    /* 报告目录不存在 → 空 */
-  }
-  const collect = async (subject) => {
-    // 候选前缀：当前名 + 曾用名(aliases)的笛卡尔组合，让改名前的历史报告也能被本模型认领。
-    const channels = [subject.channel, ...(Array.isArray(subject.channelAliases) ? subject.channelAliases : [])].filter(Boolean);
-    const models = [subject.model, ...(Array.isArray(subject.modelAliases) ? subject.modelAliases : [])].filter(Boolean);
-    const prefixes = [...new Set(channels.flatMap((c) => models.map((m) => `${sanitizeReportBaseName(`${c}_${m}`)}_`)))];
-    const metas = [];
-    for (const name of names) {
-      if (!prefixes.some((p) => name.startsWith(p))) continue;
-      const base = name.replace(/\.md$/i, "");
-      const type = parseReportBaseName(base).type;
-      if (type !== "run" && type !== "admission" && type !== "scenario" && type !== "load") continue;
-      try {
-        const st = await stat(join(REPORTS_DIR, name));
-        metas.push({ base, type, mtimeMs: st.mtimeMs });
-      } catch {
-        /* 读不到 → 跳过 */
-      }
-    }
-    metas.sort((x, y) => y.mtimeMs - x.mtimeMs);
-    // 限流：run/admission 共享最近 6 份（沿用 load 类型加入前的原始预算）；load 独立取最近 6 份——
-    // 三者混在一个预算里时，密集调参跑压测（6 份以上近期 load 文件）会把 run/admission 全部挤出候选，
-    // 对比里稳定性/准入静默消失（磁盘上明明有）。场景需要按名去重，最多取最近 60 份读盘。
-    // 已知问题（暂不修）：场景是按【文件数】限流（取最近 60 份场景报告），而 pickRecentReports 是
-    // 按【场景名】去重（一份文件可含多条场景行，理论上也可能撞名）。内置场景库已有约 89 个场景，
-    // 若用户实际跑过的场景种类数超过 60，排序在候选池之外的稀有场景会连去重环节都进不去，被静默漏掉
-    // （不报错，只是「共有场景数」会比实际偏小）。多数部署场景种类不会跑到这么全，暂按可接受风险处理。
-    const chosen = [
-      ...metas.filter((m) => m.type === "run" || m.type === "admission").slice(0, 6),
-      ...metas.filter((m) => m.type === "load").slice(0, 6),
-      ...metas.filter((m) => m.type === "scenario").slice(0, 60),
-    ];
-    const files = [];
-    for (const m of chosen) {
-      try {
-        files.push({ name: m.base, md: await readReportFileText(join(REPORTS_DIR, `${m.base}.md`)), mtimeMs: m.mtimeMs });
-      } catch {
-        /* 读失败 → 跳过 */
-      }
-    }
-    return files;
-  };
-  const [filesA, filesB] = await Promise.all([collect(A), collect(B)]);
+  const names = await listReportMdNames();
+  const [filesA, filesB] = await Promise.all([collectSubjectReportFiles(names, A), collectSubjectReportFiles(names, B)]);
   if (!filesA.length || !filesB.length) {
     const missing = [!filesA.length ? `${A.channel} / ${A.model}` : null, !filesB.length ? `${B.channel} / ${B.model}` : null].filter(
       Boolean,
@@ -538,6 +550,8 @@ const API_ROUTES = [
   ["DELETE", "/api/reports/files", handleReportFilesBulkDelete],
   ["DELETE", "/api/reports/files/:id", handleReportFileDelete],
   ["POST", "/api/reports/compare/scenarios", handleReportsCompareScenarios],
+  ["POST", "/api/reports/compare/peers", handleReportsComparePeers],
+  ["POST", "/api/reports/compare/multi", handleReportsCompareMulti],
   ["POST", "/api/reports/compare", handleReportsCompare],
   ["POST", "/api/reports/compare/gaps", handleReportsCompareGaps],
   ["POST", "/api/reports/auto-test-digest", handleReportsAutoTestDigest],
@@ -1902,6 +1916,226 @@ async function handleReportsCompare(req, res) {
     markdown,
     comparison: buildComparisonView(cmp),
     notes: { a: usedNote(aggA), b: usedNote(aggB), ai: aiNote, aiApplied: Boolean(aiNarrative) },
+  });
+  return;
+}
+
+// 「多模型比对」上限：一次最多并列 6 个对比模型。既防表格列数失控，也防一次请求聚合过多报告
+// （每个 peer 都要各自收一遍报告 + 走一次 buildComparison）。
+const MULTI_COMPARE_MAX_PEERS = 6;
+
+// 把「模型目标 + 渠道」拼成 buildSubjectSlugIndex 需要的对象列表（含渠道/模型的曾用名），
+// 用于把对比报告文件名里切出来的 slug 精确映射回当前的模型目标。
+async function loadCompareSubjects() {
+  const [targets, channels] = await Promise.all([loadModelTargets(), loadChannels()]);
+  const byId = new Map(channels.map((c) => [c.id, c]));
+  return targets
+    .map((t) => {
+      const ch = byId.get(t.channelId);
+      return {
+        targetId: t.id,
+        channel: ch?.name || "",
+        model: t.model || "",
+        channelAliases: Array.isArray(ch?.aliases) ? ch.aliases : [],
+        modelAliases: Array.isArray(t.aliases) ? t.aliases : [],
+      };
+    })
+    .filter((s) => s.channel && s.model);
+}
+
+// 「模型比对 · 可比对模型」：反查「曾经和基准模型比对过」的模型列表。
+// 比对历史没有专门的库表，只隐式存在于对比报告文件名里（`${slugA}_vs_${slugB}_compare_...`），
+// 所以这里扫报告目录、按文件名反查。用 slug 索引精确匹配而非字符串切分——渠道名本身可能含
+// 下划线甚至含 `_vs_` 子串，只有「两侧都能命中已知模型」的那个切分点才是真的分隔符。
+async function handleReportsComparePeers(req, res) {
+  const body = await readJson(req);
+  const base = body?.base || {};
+  if (!base.channel || !base.model) {
+    sendJson(res, 400, { error: "invalid_target", userMessage: "请选择基准模型（渠道 + 模型）。" });
+    return;
+  }
+  const subjects = await loadCompareSubjects();
+  const index = buildSubjectSlugIndex(subjects, sanitizeReportBaseName);
+  // 基准模型自身的 slug 集合（现用名 + 曾用名组合）：文件任一侧命中其一即算「与基准比对过」。
+  const baseSlugs = new Set(buildSubjectSlugIndex([base], sanitizeReportBaseName).keys());
+  const idOf = (s) => s.targetId || `${s.channel} ${s.model}`;
+  const baseId = idOf(base);
+
+  const names = await listReportMdNames();
+
+  const peers = new Map();
+  let unresolved = 0;
+  for (const name of names) {
+    const parsed = parseCompareReportBaseName(name);
+    if (!parsed) continue; // 不是对比报告（单对象报告 / 其它命名）
+    // 逐个候选切分点：取第一个「两侧都能解析」的切分。
+    let hit = null;
+    // 是否存在「有一侧是基准」的切分：决定解析失败时该不该计入 unresolved。
+    let baseInvolved = false;
+    for (const [slugA, slugB] of parsed.splits) {
+      const isBaseA = baseSlugs.has(slugA);
+      const isBaseB = baseSlugs.has(slugB);
+      if (isBaseA || isBaseB) baseInvolved = true;
+      const subjA = index.get(slugA) || (isBaseA ? base : null);
+      const subjB = index.get(slugB) || (isBaseB ? base : null);
+      if (!subjA || !subjB) continue;
+      hit = { slugA, slugB, subjA, subjB, isBaseA, isBaseB };
+      break;
+    }
+    if (!hit) {
+      // 只统计「基准在其中一侧、另一侧对应不上」的报告——那才是本页要提醒用户的漏项。
+      // 两侧都跟基准无关的历史报告（比如另外两个模型互比、其中一方已删除）不计入：
+      // 否则用户选个基准就被告知「另有 N 份无法对应」，而那 N 份跟他选的基准毫无关系。
+      if (baseInvolved) unresolved += 1;
+      continue;
+    }
+    // 只保留「一侧是基准」的报告；另一侧即候选 peer。两侧都是基准（自己跟自己比）→ 跳过。
+    const baseOnA = hit.isBaseA || idOf(hit.subjA) === baseId;
+    const baseOnB = hit.isBaseB || idOf(hit.subjB) === baseId;
+    if (baseOnA === baseOnB) continue;
+    const peer = baseOnA ? hit.subjB : hit.subjA;
+    if (idOf(peer) === baseId) continue;
+
+    const key = idOf(peer);
+    const stamp = `${parsed.date}${parsed.time}`;
+    const existing = peers.get(key);
+    if (existing) {
+      existing.compareCount += 1;
+      if (stamp > existing.stamp) {
+        existing.stamp = stamp;
+        existing.lastReportId = name.replace(/\.md$/i, "");
+      }
+    } else {
+      peers.set(key, {
+        targetId: peer.targetId || null,
+        channel: peer.channel,
+        model: peer.model,
+        compareCount: 1,
+        stamp,
+        lastReportId: name.replace(/\.md$/i, ""),
+      });
+    }
+  }
+
+  // lastComparedAt：文件名里的时间戳就是出报告时的本机本地时间（compactDate），
+  // 这里只做显示用的格式化，不假装它是 UTC/带时区的时刻。
+  const fmtStamp = (s) => `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`;
+  const list = [...peers.values()]
+    .sort((x, y) => (x.stamp === y.stamp ? x.model.localeCompare(y.model, "zh") : y.stamp.localeCompare(x.stamp)))
+    .map(({ stamp, ...rest }) => ({ ...rest, lastComparedAt: fmtStamp(stamp) }));
+  sendJson(res, 200, { peers: list, unresolved });
+  return;
+}
+
+// 「模型比对 · 多模型并列」：一个基准模型 + 1~6 个对比模型，产出列数可变的对比表（只在前端展示，
+// 不落报告文件）。两遍计算：
+//   Pass 1 —— 逐个 peer 算出它与基准的共有场景，再对所有 peer 取交集，得到「N 方共享场景集」；
+//   Pass 2 —— 用这个共享场景集把基准【只聚合一次】，各 peer 各聚合一次，逐个走 buildComparison。
+// 为什么基准只聚合一次：N 列必须共享同一份基准画像，否则「基准列」的数字会随勾选了哪些 peer 而变。
+// buildComparison 会就地改写 a.scenarioPass（入参），这里安全的原因是每个 peer 的 matched 场景集
+// 恒等于共享场景集 → 每次写入的值相同（幂等）。若将来放宽共享场景口径，这个前提会失效。
+async function handleReportsCompareMulti(req, res) {
+  const body = await readJson(req);
+  const base = body?.base || {};
+  const rawPeers = Array.isArray(body?.peers) ? body.peers : [];
+  if (!base.channel || !base.model) {
+    sendJson(res, 400, { error: "invalid_target", userMessage: "请选择基准模型（渠道 + 模型）。" });
+    return;
+  }
+  const idOf = (s) => s.targetId || `${s.channel} ${s.model}`;
+  const baseId = idOf(base);
+  // 去重 + 剔除与基准同一个模型（自己跟自己并列没有意义）。
+  const seen = new Set();
+  const peerList = [];
+  for (const p of rawPeers) {
+    if (!p?.channel || !p?.model) continue;
+    const key = idOf(p);
+    if (key === baseId || seen.has(key)) continue;
+    seen.add(key);
+    peerList.push(p);
+  }
+  if (!peerList.length) {
+    sendJson(res, 400, { error: "invalid_target", userMessage: "请至少勾选一个与基准不同的对比模型。" });
+    return;
+  }
+  if (peerList.length > MULTI_COMPARE_MAX_PEERS) {
+    sendJson(res, 400, {
+      error: "too_many_peers",
+      userMessage: `一次最多并列 ${MULTI_COMPARE_MAX_PEERS} 个对比模型，请减少勾选。`,
+    });
+    return;
+  }
+
+  const names = await listReportMdNames();
+  const baseFiles = await collectSubjectReportFiles(names, base);
+  if (!baseFiles.length) {
+    sendJson(res, 400, {
+      error: "no_reports",
+      userMessage: `基准模型暂无可用于对比的报告：${base.channel} / ${base.model}。请先为它跑一次准入 / 稳定性 / 场景测试。`,
+    });
+    return;
+  }
+  const pickedBase = pickRecentReports(baseFiles);
+  await attachSummaries(pickedBase);
+
+  // —— Pass 1：逐个 peer 求「与基准的共有场景」，无任何可比数据的 peer 记入 skipped ——
+  const labelOf = (s) => `${s.channel} / ${s.model}`;
+  const skipped = [];
+  const prepared = [];
+  for (const peer of peerList) {
+    const peerFiles = await collectSubjectReportFiles(names, peer);
+    if (!peerFiles.length) {
+      skipped.push({ label: labelOf(peer), reason: "暂无可用于对比的报告" });
+      continue;
+    }
+    const pickedPeer = pickRecentReports(peerFiles);
+    await attachSummaries(pickedPeer);
+    // balanceCommonReports 只用来判「有没有可比的东西」与算共有场景；Pass 2 用未平衡的 picked，
+    // 因为「双方共有才纳入」是两方概念，套到 N 列上会让基准的数字随勾选组合变化。
+    const [balBase, balPeer] = balanceCommonReports(pickedBase, pickedPeer);
+    if (!balBase.length || !balPeer.length) {
+      skipped.push({ label: labelOf(peer), reason: "与基准没有共同的场景 / 测试种类" });
+      continue;
+    }
+    prepared.push({
+      peer,
+      pickedPeer,
+      common: commonScenarioNames(balBase, balPeer).map((s) => s.name),
+    });
+  }
+  if (!prepared.length) {
+    sendJson(res, 400, {
+      error: "no_common_reports",
+      userMessage: `所选对比模型都无法与基准并列：${skipped.map((s) => `${s.label}（${s.reason}）`).join("、")}。`,
+    });
+    return;
+  }
+
+  // N 方共享场景集 = 各 peer 与基准共有场景再取交集。空集也照样传下去（而不是退回"各用各的"）：
+  // 那样基准列会随 peer 变化，破坏「N 列共享同一基准」的前提。此时场景派生指标为空，notes 里说明。
+  let shared = new Set(prepared[0].common);
+  for (const p of prepared.slice(1)) {
+    const s = new Set(p.common);
+    shared = new Set([...shared].filter((n) => s.has(n)));
+  }
+
+  // —— Pass 2：基准只聚合一次，各 peer 各聚合一次 ——
+  const baseAgg = aggregateSubject({ files: pickedBase, label: labelOf(base), scenarioFilter: shared });
+  const pairs = prepared.map(({ peer, pickedPeer }) => {
+    const agg = aggregateSubject({ files: pickedPeer, label: labelOf(peer), scenarioFilter: shared });
+    return { agg, cmp: buildComparison(baseAgg, agg) };
+  });
+
+  const usedNote = (agg) =>
+    `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入${agg.reportCounts.load ? ` / ${agg.reportCounts.load} 压测` : ""}`;
+  sendJson(res, 200, {
+    comparison: buildMultiComparisonView({ baseAgg, pairs, sharedScenarios: [...shared] }),
+    skipped,
+    notes: {
+      base: usedNote(baseAgg),
+      peers: pairs.map((p) => ({ label: p.agg.label, used: usedNote(p.agg) })),
+      sharedScenarioCount: shared.size,
+    },
   });
   return;
 }

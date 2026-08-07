@@ -1745,6 +1745,29 @@
             </div>
             <div id="mc-result" class="wide"></div>
           </form>
+
+          <form id="mcm-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3>多模型比对（并排）</h3>
+              <p class="section-desc">选一个基准模型，再从「曾经和它比对过的模型」里勾选若干个，把它们相对<strong>同一个基准</strong>的表现并排成一张表。可比对模型来自真实比对记录（曾与基准生成过对比报告的模型）。只在本页展示，不生成报告文件。</p>
+            </div>
+            <label class="wide">
+              基准模型（第一列）
+              <select id="mcm-base-channel"></select>
+              <select id="mcm-base-model" disabled></select>
+            </label>
+            <div class="wide">
+              <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
+                <button type="button" id="mcm-load-peers" class="secondary">加载可比对模型</button>
+                <span class="field-hint" id="mcm-peer-hint">选好基准模型后，加载曾与它比对过的模型清单，勾选要并排的（默认不选，最多 6 个）。</span>
+              </div>
+              <div id="mcm-peers" class="mc-scenarios hidden"></div>
+            </div>
+            <div class="wide action-row">
+              <button type="submit" id="mcm-generate" class="primary">生成并排对比表</button>
+            </div>
+            <div id="mcm-result" class="wide"></div>
+          </form>
         </section>
 
         <section class="page" id="developer" data-requires-admin hidden>

@@ -4660,6 +4660,16 @@ body.better-lighting::after {
   color: var(--good);
 }
 
+/* 多模型并排表的「基准列」：单元格级 class，不用 nth-child——N 列表格的列数不固定，
+   位置选择器会在列数变化时错位（旧的两列表格仍用 nth-child 做胜方整列强调，那里列数恒为 2）。
+   :not(.is-winner) 是必需的：基准列自己拿下某一行时两个类同时命中，而本规则在 .is-winner 之后、
+   特异性相同，不排除就会用蓝底盖掉绿底，只剩绿字配蓝底（.is-winner strong 选的是子元素）。
+   取舍：同一行里"谁最好"的绿色优先于"哪一列是基准"的蓝色——表头已长期标着「基准」。 */
+.mc-compare-value.is-base:not(.is-winner) {
+  background: rgba(var(--blue-rgb), 0.1);
+  box-shadow: inset 0 0 0 1px rgba(var(--blue-rgb), 0.18);
+}
+
 .mc-compare-scroll tr.is-insufficient .mc-compare-value {
   color: var(--muted);
 }

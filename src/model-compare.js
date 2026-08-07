@@ -117,6 +117,84 @@ export function buildComparisonCsv(comparison) {
   return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
 }
 
+// —— 单元格格式化（两列表格与 N 列表格共用）——
+// 刻意做成模块级纯函数：两两对比走 formatMetricValue(row, side) 取 valueA/valueB，
+// 多模型对比走 values[i]，两边只在「从哪取数」上不同，格式化规则必须只有一份。
+
+function formatMetricNumber(value, format, unit, coverage) {
+  if (!Number.isFinite(value)) return "-";
+  if (format === "percent") return `${(value * 100).toFixed(1)}%`;
+  if (format === "milliseconds") return `${Math.round(value).toLocaleString("zh-CN")} ms`;
+  const fractionDigits = Math.abs(value) >= 100 || Number.isInteger(value) ? 0 : 1;
+  const suffix = unit === "分" ? " 分" : unit === "有效 QPS" ? " 有效 QPS" : unit === "Token" ? " Token" : "";
+  const coverageText =
+    unit === "Token" && Number.isFinite(coverage?.reportedCount) && Number.isFinite(coverage?.totalCount)
+      ? `（${coverage.reportedCount}/${coverage.totalCount} 次上报）`
+      : "";
+  return `${value.toLocaleString("zh-CN", { maximumFractionDigits: fractionDigits })}${suffix}${coverageText}`;
+}
+
+function shortIssue(issue) {
+  const text = String(issue || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 42 ? `${text.slice(0, 42)}...` : text;
+}
+
+// 逐场景单元格：只认「一侧的数据对象」，不关心它来自 row.a / row.b / values[i]。
+// extraClass 由调用方给（两列用 is-winner，N 列用 is-winner/is-base）。
+function scenarioCellFrom(data, extraClass = "") {
+  const d = data || {};
+  const quality = Number.isFinite(d.quality) ? `${d.quality.toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 分` : "-";
+  const passRate = Number.isFinite(d.passRate) ? `${(d.passRate * 100).toFixed(1)}% 通过` : "通过率 -";
+  const avgMs = Number.isFinite(d.avgMs) ? `${Math.round(d.avgMs).toLocaleString("zh-CN")} ms` : "耗时 -";
+  const firstTokenMs = Number.isFinite(d.p50FirstTokenMs)
+    ? `P50 首 Token ${Math.round(d.p50FirstTokenMs).toLocaleString("zh-CN")} ms`
+    : "P50 首 Token -";
+  const usageText = (value, reportedCount, totalCount, label) => {
+    const coverage =
+      Number.isFinite(reportedCount) && Number.isFinite(totalCount) ? `（${reportedCount}/${totalCount} 次上报）` : "（覆盖未知）";
+    return Number.isFinite(value) ? `${label} ${Math.round(value).toLocaleString("zh-CN")} Token${coverage}` : `${label} -${coverage}`;
+  };
+  const outputTokens = usageText(d.outputTokens, d.outputTokenReportedCount, d.outputTokenTotalCount, "输出（含思考）");
+  const cacheReadTokens = usageText(d.cacheReadTokens, d.cacheReadTokenReportedCount, d.cacheReadTokenTotalCount, "缓存命中");
+  const issue = shortIssue(d.issue);
+  return `<td class="mc-compare-value mc-scenario-value${extraClass}">
+      <strong>${escapeHtml(quality)}</strong>
+      <span>${escapeHtml(passRate)} · ${escapeHtml(avgMs)} · ${escapeHtml(firstTokenMs)} · ${escapeHtml(outputTokens)} · ${escapeHtml(cacheReadTokens)}</span>
+      ${issue ? `<small title="${escapeHtml(d.issue)}">${escapeHtml(issue)}</small>` : ""}
+    </td>`;
+}
+
+// 一次最多并排几个对比模型。必须与后端 server.mjs 的 MULTI_COMPARE_MAX_PEERS 一致——
+// 前端这道限制只是「早一步给出人话提示」，真正的门是后端那道（越限会返回 400 too_many_peers）。
+const MULTI_MAX_PEERS = 6;
+
+// 多模型对比 CSV：表头随 subjects 数量动态生成。
+// 不改 buildComparisonCsv —— 那个是两列专用契约，被 tests/model-compare-csv.test.mjs 钉住。
+export function buildMultiComparisonCsv(comparison) {
+  const subjects = Array.isArray(comparison?.subjects) ? comparison.subjects : [];
+  const labels = subjects.map((s, i) => s?.label || `对象 ${i + 1}`);
+  const rows = [
+    ["基准模型", labels[0] || "-"],
+    ["对比模型", ...labels.slice(1)],
+    ["共享场景数", String(comparison?.sharedScenarioCount ?? "")],
+    [],
+    ["分区", "指标/场景", "难度", ...labels, "单位", "说明"],
+  ];
+  for (const row of comparison?.summary || []) {
+    const values = (row.values || []).map((v) =>
+      !Number.isFinite(v?.value) ? "" : row.format === "percent" ? `${(v.value * 100).toFixed(1)}%` : v.value,
+    );
+    rows.push(["摘要", row.label || "", "", ...values, csvMetricUnit(row), row.detail || ""]);
+  }
+  for (const row of comparison?.scenarios || []) {
+    const values = (row.values || []).map((v) => (Number.isFinite(v?.quality) ? v.quality : ""));
+    rows.push(["逐场景（质量分）", row.name || "", row.tier || "", ...values, "分", ""]);
+  }
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
 export function createModelCompare({ state, confirm }) {
   const form = requireElement("#mc-form");
   const aChannel = requireElement("#mc-a-channel");
@@ -136,8 +214,19 @@ export function createModelCompare({ state, confirm }) {
   const gapHint = requireElement("#mc-gap-hint");
   const gapProgress = requireElement("#mc-gap-progress");
 
+  // 多模型比对（并排）：基准模型 + 勾选若干「曾与它比对过」的模型。
+  const multiForm = requireElement("#mcm-form");
+  const baseChannel = requireElement("#mcm-base-channel");
+  const baseModel = requireElement("#mcm-base-model");
+  const loadPeersBtn = requireElement("#mcm-load-peers");
+  const peersBox = requireElement("#mcm-peers");
+  const peerHint = requireElement("#mcm-peer-hint");
+  const multiGenerateBtn = requireElement("#mcm-generate");
+  const multiResultBox = requireElement("#mcm-result");
+
   const cascadeA = createCascadeTargetPicker(aChannel, aModel);
   const cascadeB = createCascadeTargetPicker(bChannel, bModel);
+  const cascadeBase = createCascadeTargetPicker(baseChannel, baseModel);
 
   // null = 未加载可选场景（生成时不带 scenarios 字段，后端用全部共有场景）；
   // 数组 = 已加载的两方共有场景 [{name, tier}]，勾选状态在 DOM 上。
@@ -149,6 +238,10 @@ export function createModelCompare({ state, confirm }) {
   let compareRevision = 0;
   let gapFillRunning = false;
   let gapFillCancellationRequested = false;
+  // 多模型比对：null = 未加载可比对模型；数组 = 已加载的 peer 列表（勾选状态在 DOM 上）。
+  let loadedPeers = null;
+  // 同 compareRevision，但管的是多模型表格——两个表格各自独立防「迟到响应写回旧组合」。
+  let multiRevision = 0;
 
   // 由模型目标 id 反查 { channel(渠道名), model, 曾用名 }，供后端按报告文件名匹配。
   // 带上渠道与模型的曾用名(aliases)，让改名前的历史报告也能被本模型认领。
@@ -232,18 +325,12 @@ export function createModelCompare({ state, confirm }) {
   }
 
   function formatMetricValue(row, side) {
-    const value = row?.[side === "a" ? "valueA" : "valueB"];
-    if (!Number.isFinite(value)) return "-";
-    if (row.format === "percent") return `${(value * 100).toFixed(1)}%`;
-    if (row.format === "milliseconds") return `${Math.round(value).toLocaleString("zh-CN")} ms`;
-    const fractionDigits = Math.abs(value) >= 100 || Number.isInteger(value) ? 0 : 1;
-    const suffix = row.unit === "分" ? " 分" : row.unit === "有效 QPS" ? " 有效 QPS" : row.unit === "Token" ? " Token" : "";
-    const coverage = row?.[side === "a" ? "coverageA" : "coverageB"];
-    const coverageText =
-      row.unit === "Token" && Number.isFinite(coverage?.reportedCount) && Number.isFinite(coverage?.totalCount)
-        ? `（${coverage.reportedCount}/${coverage.totalCount} 次上报）`
-        : "";
-    return `${value.toLocaleString("zh-CN", { maximumFractionDigits: fractionDigits })}${suffix}${coverageText}`;
+    return formatMetricNumber(
+      row?.[side === "a" ? "valueA" : "valueB"],
+      row?.format,
+      row?.unit,
+      row?.[side === "a" ? "coverageA" : "coverageB"],
+    );
   }
 
   function comparisonCell(row, side) {
@@ -251,35 +338,8 @@ export function createModelCompare({ state, confirm }) {
     return `<td class="mc-compare-value${winner}"><strong>${escapeHtml(formatMetricValue(row, side))}</strong></td>`;
   }
 
-  function shortIssue(issue) {
-    const text = String(issue || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    return text.length > 42 ? `${text.slice(0, 42)}...` : text;
-  }
-
   function scenarioCell(row, side) {
-    const data = row[side] || {};
-    const winner = row.winner === side ? " is-winner" : "";
-    const quality = Number.isFinite(data.quality) ? `${data.quality.toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 分` : "-";
-    const passRate = Number.isFinite(data.passRate) ? `${(data.passRate * 100).toFixed(1)}% 通过` : "通过率 -";
-    const avgMs = Number.isFinite(data.avgMs) ? `${Math.round(data.avgMs).toLocaleString("zh-CN")} ms` : "耗时 -";
-    const firstTokenMs = Number.isFinite(data.p50FirstTokenMs)
-      ? `P50 首 Token ${Math.round(data.p50FirstTokenMs).toLocaleString("zh-CN")} ms`
-      : "P50 首 Token -";
-    const usageText = (value, reportedCount, totalCount, label) => {
-      const coverage =
-        Number.isFinite(reportedCount) && Number.isFinite(totalCount) ? `（${reportedCount}/${totalCount} 次上报）` : "（覆盖未知）";
-      return Number.isFinite(value) ? `${label} ${Math.round(value).toLocaleString("zh-CN")} Token${coverage}` : `${label} -${coverage}`;
-    };
-    const outputTokens = usageText(data.outputTokens, data.outputTokenReportedCount, data.outputTokenTotalCount, "输出（含思考）");
-    const cacheReadTokens = usageText(data.cacheReadTokens, data.cacheReadTokenReportedCount, data.cacheReadTokenTotalCount, "缓存命中");
-    const issue = shortIssue(data.issue);
-    return `<td class="mc-compare-value mc-scenario-value${winner}">
-      <strong>${escapeHtml(quality)}</strong>
-      <span>${escapeHtml(passRate)} · ${escapeHtml(avgMs)} · ${escapeHtml(firstTokenMs)} · ${escapeHtml(outputTokens)} · ${escapeHtml(cacheReadTokens)}</span>
-      ${issue ? `<small title="${escapeHtml(data.issue)}">${escapeHtml(issue)}</small>` : ""}
-    </td>`;
+    return scenarioCellFrom(row[side], row.winner === side ? " is-winner" : "");
   }
 
   function renderComparison(comparison) {
@@ -676,8 +736,248 @@ export function createModelCompare({ state, confirm }) {
     }
   }
 
+  // —— 多模型并排比对（基准 + 1~6 个对比模型；只在前端出表，不落报告文件）——
+
+  function clearMultiResult() {
+    multiRevision += 1;
+    multiResultBox.innerHTML = "";
+    return multiRevision;
+  }
+
+  // 勾选的 peer。复选框 value 存的是 loadedPeers 的【下标】而不是「渠道/模型」拼串——
+  // 渠道名可含任意字符（含分隔符本身），拼串再解析必然有歧义。
+  function checkedPeers() {
+    if (!loadedPeers) return [];
+    return [...peersBox.querySelectorAll("[data-mcm-peer]:checked")].map((el) => loadedPeers[Number(el.value)]).filter(Boolean);
+  }
+
+  // 计数文案：读模块级 loadedPeers（同 updateScenarioCount 的理由——change 监听挂在持久容器
+  // peersBox 上、只挂一次，故不能闭包渲染时的参数）。重置后计数节点随子节点消失，需空值保护。
+  function updatePeerCount() {
+    const el = peersBox.querySelector("#mcm-peer-count");
+    if (!el) return;
+    el.textContent = `已选 ${checkedPeers().length} / ${loadedPeers?.length ?? 0} 个对比模型（最多 ${MULTI_MAX_PEERS} 个）`;
+  }
+
+  // 回到「未加载」态：换基准模型后旧清单不再适用（那是上一个基准的比对史）。
+  function resetPeers() {
+    clearMultiResult();
+    loadedPeers = null;
+    peersBox.innerHTML = "";
+    peersBox.classList.add("hidden");
+    peerHint.classList.remove("hidden");
+  }
+
+  async function onLoadPeers() {
+    const id = cascadeBase.value;
+    if (!id) {
+      toast("请先选好基准模型（渠道 + 模型）。", true);
+      return;
+    }
+    const baseSubject = subjectOf(id);
+    if (!baseSubject) {
+      toast("找不到所选模型信息，请刷新后重试。", true);
+      return;
+    }
+    clearMultiResult();
+    loadPeersBtn.disabled = true;
+    const prev = loadPeersBtn.textContent;
+    loadPeersBtn.textContent = "加载中…";
+    try {
+      const r = await api("/api/reports/compare/peers", {
+        method: "POST",
+        body: JSON.stringify({ base: { ...baseSubject, targetId: id } }),
+      });
+      loadedPeers = Array.isArray(r.peers) ? r.peers : [];
+      renderPeerChecklist(loadedPeers, r.unresolved);
+    } catch (error) {
+      toast(`加载可比对模型失败：${error.message}`, true);
+    } finally {
+      loadPeersBtn.disabled = false;
+      loadPeersBtn.textContent = prev;
+    }
+  }
+
+  // 渲染可比对模型清单为平铺复选框（默认【不】勾选：并排列数直接影响可读性，交给用户挑）。
+  function renderPeerChecklist(peers, unresolved) {
+    peerHint.classList.add("hidden");
+    const unresolvedNote = unresolved
+      ? `<p class="field-hint">另有 ${unresolved} 份对比报告的两侧模型无法对应到当前配置（渠道/模型已删除，或改名且未留曾用名），未计入清单。</p>`
+      : "";
+    if (!peers.length) {
+      peersBox.innerHTML = `<p class="field-hint">这个基准模型还没有任何两两对比报告。请先在上面的「模型比对」里让它与其它模型各生成一次对比报告，再回来并排查看。</p>${unresolvedNote}`;
+      peersBox.classList.remove("hidden");
+      return;
+    }
+    const items = peers
+      .map(
+        (p, i) =>
+          `<label class="mc-scenario-item"><input type="checkbox" data-mcm-peer value="${i}" /><span>${escapeHtml(`${p.channel} / ${p.model}`)} <em>${escapeHtml(`比对 ${p.compareCount} 次 · 最近 ${p.lastComparedAt}`)}</em></span></label>`,
+      )
+      .join("");
+    peersBox.innerHTML = `
+      <div class="mc-scenario-tools">
+        <span class="field-hint" id="mcm-peer-count"></span>
+        <span class="mc-scenario-actions">
+          <button type="button" class="link-button" data-mcm-all>选前 ${MULTI_MAX_PEERS} 个</button>
+          <button type="button" class="link-button" data-mcm-none>清空</button>
+        </span>
+      </div>
+      <div class="mc-scenario-list">${items}</div>
+      ${unresolvedNote}`;
+    peersBox.classList.remove("hidden");
+    // 这两个按钮是本次 innerHTML 新建的子节点、随重渲染一起丢弃，故可在渲染函数里挂监听
+    // （与 renderScenarioChecklist 同一判据）。持久容器 peersBox 的 change 监听在 init 处只挂一次。
+    peersBox.querySelector("[data-mcm-all]").addEventListener("click", () => {
+      [...peersBox.querySelectorAll("[data-mcm-peer]")].forEach((el, i) => (el.checked = i < MULTI_MAX_PEERS));
+      updatePeerCount();
+      clearMultiResult();
+    });
+    peersBox.querySelector("[data-mcm-none]").addEventListener("click", () => {
+      peersBox.querySelectorAll("[data-mcm-peer]").forEach((el) => (el.checked = false));
+      updatePeerCount();
+      clearMultiResult();
+    });
+    updatePeerCount();
+  }
+
+  async function onMultiSubmit(event) {
+    event.preventDefault();
+    const id = cascadeBase.value;
+    if (!id) {
+      toast("请先选好基准模型（渠道 + 模型）。", true);
+      return;
+    }
+    const baseSubject = subjectOf(id);
+    if (!baseSubject) {
+      toast("找不到所选模型信息，请刷新后重试。", true);
+      return;
+    }
+    if (!loadedPeers) {
+      toast("请先点「加载可比对模型」。", true);
+      return;
+    }
+    const picked = checkedPeers();
+    if (!picked.length) {
+      toast("请至少勾选一个对比模型。", true);
+      return;
+    }
+    if (picked.length > MULTI_MAX_PEERS) {
+      toast(`一次最多并排 ${MULTI_MAX_PEERS} 个对比模型，请减少勾选。`, true);
+      return;
+    }
+    // peer 的曾用名要用本地 state 补齐：后端靠「渠道_模型」前缀认领历史报告，缺曾用名会漏掉改名前的报告。
+    const peers = picked.map((p) => {
+      const local = p.targetId ? subjectOf(p.targetId) : null;
+      return local ? { ...local, targetId: p.targetId } : { channel: p.channel, model: p.model };
+    });
+
+    multiGenerateBtn.disabled = true;
+    const prevLabel = multiGenerateBtn.textContent;
+    multiGenerateBtn.textContent = "生成中…";
+    const requestRevision = clearMultiResult();
+    try {
+      const r = await api("/api/reports/compare/multi", {
+        method: "POST",
+        body: JSON.stringify({ base: { ...baseSubject, targetId: id }, peers }),
+      });
+      if (requestRevision !== multiRevision) return;
+      renderMultiResult(r);
+    } catch (error) {
+      if (requestRevision !== multiRevision) return;
+      toast(`生成失败：${error.message}`, true);
+    } finally {
+      multiGenerateBtn.disabled = false;
+      multiGenerateBtn.textContent = prevLabel;
+    }
+  }
+
+  // N 列单元格：列数不固定，故胜出/基准高亮走【单元格级 class】，不能用 CSS nth-child。
+  function multiMetricCell(row, index) {
+    const v = row.values?.[index] || {};
+    const cls = `${index === 0 ? " is-base" : ""}${row.bestIndex === index ? " is-winner" : ""}`;
+    return `<td class="mc-compare-value${cls}"><strong>${escapeHtml(formatMetricNumber(v.value, row.format, row.unit, v.coverage))}</strong></td>`;
+  }
+
+  function multiScenarioCell(row, index) {
+    return scenarioCellFrom(row.values?.[index], `${index === 0 ? " is-base" : ""}${row.bestIndex === index ? " is-winner" : ""}`);
+  }
+
+  function renderMultiComparison(comparison) {
+    if (!comparison || !Array.isArray(comparison.summary) || !comparison.summary.length) return "";
+    const subjects = Array.isArray(comparison.subjects) ? comparison.subjects : [];
+    const headCells = subjects
+      .map((s, i) => `<th scope="col"><span>${escapeHtml(s?.label || `对象 ${i + 1}`)}</span>${i === 0 ? "<small>基准</small>" : ""}</th>`)
+      .join("");
+    const summaryRows = comparison.summary
+      .map(
+        (row) => `<tr class="${row.status === "insufficient" ? "is-insufficient" : ""}">
+          <th scope="row"><span>${escapeHtml(row.label || "-")}</span>${row.detail ? `<small>${escapeHtml(row.detail)}</small>` : ""}</th>
+          ${subjects.map((_, i) => multiMetricCell(row, i)).join("")}
+        </tr>`,
+      )
+      .join("");
+    const scenarios = Array.isArray(comparison.scenarios) ? comparison.scenarios : [];
+    const scenarioRows = scenarios
+      .map(
+        (row) => `<tr class="${row.status === "insufficient" ? "is-insufficient" : ""}">
+          <th scope="row"><span>${escapeHtml(row.name || "-")}</span>${row.tier ? `<small>${escapeHtml(row.tier)}</small>` : ""}</th>
+          ${subjects.map((_, i) => multiScenarioCell(row, i)).join("")}
+        </tr>`,
+      )
+      .join("");
+    return `
+      <section class="mc-compare-table" aria-label="多模型并排对比">
+        <div class="mc-compare-table-head">
+          <h3>并排对比</h3>
+          <span>${Math.max(subjects.length - 1, 0)} 个对比模型 · ${comparison.sharedScenarioCount ?? 0} 个共享场景</span>
+        </div>
+        <div class="mc-compare-scroll">
+          <table class="mc-compare-summary"><thead><tr><th scope="col">指标</th>${headCells}</tr></thead><tbody>${summaryRows}</tbody></table>
+        </div>
+        <details class="mc-scenario-details">
+          <summary>逐场景对照 <span>${scenarios.length}</span></summary>
+          ${
+            scenarios.length
+              ? `<div class="mc-compare-scroll"><table><thead><tr><th scope="col">场景</th>${headCells}</tr></thead><tbody>${scenarioRows}</tbody></table></div>`
+              : '<p class="field-hint">没有 N 方共享的同名场景（各对比模型与基准的共有场景取交集后为空），摘要里的场景派生指标也会因此为空。可先用上面的两两对比「补齐单方场景」。</p>'
+          }
+        </details>
+      </section>`;
+  }
+
+  function renderMultiResult({ comparison, skipped, notes }) {
+    const skipNote =
+      Array.isArray(skipped) && skipped.length
+        ? `<p class="field-hint">已跳过 ${skipped.length} 个模型：${escapeHtml(skipped.map((s) => `${s.label}（${s.reason}）`).join("、"))}</p>`
+        : "";
+    const usedNote = [`基准采用报告：${notes?.base || "-"}`, ...(notes?.peers || []).map((p) => `${p.label}：${p.used}`)].join("；");
+    multiResultBox.innerHTML = `
+      <section class="mc-result" aria-live="polite">
+        ${renderMultiComparison(comparison)}
+        <div class="action-row" style="justify-content:flex-start">
+          <button type="button" class="secondary" data-mcm-export-csv>导出 CSV</button>
+        </div>
+        ${skipNote}
+        <p class="field-hint" style="margin-top:10px">${escapeHtml(usedNote)}</p>
+      </section>`;
+    multiResultBox.querySelector("[data-mcm-export-csv]").addEventListener("click", () => {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T-]/g, "");
+      downloadText(`多模型对比_${stamp}.csv`, `﻿${buildMultiComparisonCsv(comparison)}`, "text/csv");
+    });
+  }
+
   loadScenariosBtn.addEventListener("click", onLoadScenarios);
   fillGapsBtn.addEventListener("click", onFillGaps);
+  loadPeersBtn.addEventListener("click", onLoadPeers);
+  multiForm.addEventListener("submit", onMultiSubmit);
+  // 勾选变化 → 更新计数并清掉旧表格。挂在持久容器上，故只在此挂一次。
+  peersBox.addEventListener("change", () => {
+    updatePeerCount();
+    clearMultiResult();
+  });
+  // 换基准模型 → 旧的可比对清单属于上一个基准，必须重置，避免拿旧清单发请求。
+  for (const el of [baseChannel, baseModel]) el.addEventListener("change", resetPeers);
   // 勾选变化 → 更新计数。挂在持久容器上，故只在此挂一次（放渲染函数里会每次渲染叠加）。
   scenariosBox.addEventListener("change", () => {
     updateScenarioCount();
@@ -691,9 +991,10 @@ export function createModelCompare({ state, confirm }) {
   function refreshTargets(data) {
     cascadeA.refresh(data);
     cascadeB.refresh(data);
+    cascadeBase.refresh(data);
   }
 
-  // 进入页面：用当前 state 刷新两个级联下拉。
+  // 进入页面：用当前 state 刷新三个级联下拉（两两对比的 A/B + 多模型对比的基准）。
   function load() {
     refreshTargets({ modelTargets: state.modelTargets, channels: state.channels, profiles: state.profiles });
   }
