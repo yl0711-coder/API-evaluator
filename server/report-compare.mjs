@@ -1628,6 +1628,62 @@ export function buildComparisonView(cmp) {
 // buildComparison 后不再被改写——见 server.mjs handleReportsCompareMulti 的两遍计算注释。
 const MULTI_OVERALL_NOTE = "基准列固定 50 分；各列为该模型相对基准的分数。跨列比较仅供参考，不具传递性。";
 
+// N 方口径的「场景派生指标」（平均质量分 / P50 首 Token 延迟）。
+//
+// 为什么不能沿用两列视图的值：buildComparisonView 的这两行做的是【两方】过滤——
+// 「双方共有且均有该指标的场景」。N 列视图若照抄 views[0] 的 A 侧当基准列，基准的分母就变成
+// 「基准 ∩ pairs[0]」，于是：
+//   · 少勾/多勾一个 peer → 基准列数字变（同一个基准在不同组合下漂）；
+//   · 仅调换勾选顺序 → 基准列数字变、高亮列跟着变（pairs[0] 换人了）。
+// 这正是本功能声称要守住的不变量（「基准列必须不随勾选了哪些 peer 而变」）反被打破的地方。
+//
+// 口径：在 N 方共享场景里，取【所有列都有该指标】的场景做分母，base 与各 peer 都在这批场景上算。
+// 于是各列同分母可比，且基准列只算一次、与 peer 的传入顺序无关。分母随勾选的 peer 集合变化是
+// 固有的（N 方共享场景集本身就由 peer 集合决定），故 detail 里显式写出场景个数，不让用户误读。
+function multiSharedScenarioMetrics(baseAgg, pairs, sharedNames) {
+  const shared = new Set(sharedNames);
+  const mapOf = (agg) => new Map((agg?.scenarios || []).filter((s) => shared.has(s.name)).map((s) => [s.name, s]));
+  const baseMap = mapOf(baseAgg);
+  const peerMaps = pairs.map((p) => mapOf(p.agg));
+  const maps = [baseMap, ...peerMaps];
+  // 所有列都测过的场景（缺行的场景无法并排，直接不计入任何列）。
+  const names = [...shared].filter((n) => maps.every((m) => m.has(n)));
+
+  const allFinite = (ns, pick) => ns.filter((n) => maps.every((m) => Number.isFinite(pick(m.get(n)))));
+  const qualityNames = allFinite(names, (s) => s?.quality);
+  const quality = {
+    n: qualityNames.length,
+    values: maps.map((m) => avg(qualityNames.map((n) => m.get(n).quality))),
+  };
+
+  // 首 Token 与两列视图同样的双轨：优先「所有列都有原始样本」的场景，池化取精确 P50；
+  // 一个都没有时退回「所有列都有场景级 P50」的中位数（分位数不可分解，只作展示、不进综合分）。
+  const sampleNames = names.filter((n) => maps.every((m) => (m.get(n).firstTokenSampleCount || 0) > 0));
+  const p50Names = sampleNames.length ? [] : allFinite(names, (s) => s?.p50FirstTokenMs);
+  const firstToken = sampleNames.length
+    ? {
+        source: "samples",
+        n: sampleNames.length,
+        values: maps.map((m) =>
+          nearestRankPct(
+            sampleNames.flatMap((n) => m.get(n).firstTokenSamples || []),
+            0.5,
+          ),
+        ),
+      }
+    : {
+        source: "p50",
+        n: p50Names.length,
+        values: maps.map((m) =>
+          nearestRankPct(
+            p50Names.map((n) => m.get(n).p50FirstTokenMs),
+            0.5,
+          ),
+        ),
+      };
+  return { quality, firstToken };
+}
+
 function multiRowBestIndex(values, direction) {
   if (direction === "none") return null;
   let best = null;
@@ -1662,6 +1718,10 @@ export function buildMultiComparisonView({ baseAgg, pairs = [], sharedScenarios 
   const views = pairs.map((p) => buildComparisonView(p.cmp));
   if (!views.length) return { subjects, sharedScenarioCount: sharedNames.length, sharedScenarios: sharedNames, summary: [], scenarios: [] };
 
+  // 场景派生指标按 N 方口径重算（见 multiSharedScenarioMetrics）：两列视图的这两行是「两方」
+  // 过滤出来的，直接拿 views[0] 的 A 侧当基准列会让基准随 peer 集合与顺序漂移。
+  const nWay = multiSharedScenarioMetrics(baseAgg, pairs, sharedNames);
+
   const template = views[0].summary;
   const summary = template.map((row, rowIndex) => {
     const isOverall = row.id === "overall-score";
@@ -1672,11 +1732,22 @@ export function buildMultiComparisonView({ baseAgg, pairs = [], sharedScenarios 
         coverage: r?.[side === "a" ? "coverageA" : "coverageB"] ?? null,
       };
     };
+    const nWayRow = row.id === "scenario-quality" ? nWay.quality : row.id === "p50-first-token" ? nWay.firstToken : null;
     // 综合相对分：基准列固定 50（打平锚点），每个 peer 列取它相对 base 的 scoreB。
     const values = isOverall
       ? [{ value: 50, coverage: null }, ...views.map((view) => cell(view, "b"))]
-      : [cell(views[0], "a"), ...views.map((view) => cell(view, "b"))];
-    const detail = isOverall ? MULTI_OVERALL_NOTE : row.detail || null;
+      : nWayRow
+        ? nWayRow.values.map((value) => ({ value: Number.isFinite(value) ? value : null, coverage: null }))
+        : [cell(views[0], "a"), ...views.map((view) => cell(view, "b"))];
+    const detail = isOverall
+      ? MULTI_OVERALL_NOTE
+      : row.id === "scenario-quality"
+        ? `仅计各列共有且均有质量分的场景（${nWay.quality.n} 个）`
+        : row.id === "p50-first-token"
+          ? nWay.firstToken.source === "p50"
+            ? `无原始样本，取各场景 P50 的中位数估算（各列共有场景 ${nWay.firstToken.n} 个，不计入综合分）`
+            : `仅计各列都有流式首 Token 样本的共有场景（${nWay.firstToken.n} 个）`
+          : row.detail || null;
     return {
       id: row.id,
       label: row.label,

@@ -25,7 +25,8 @@ function runReportMd(rate, ms) {
   ].join("\n");
 }
 
-// rows: [[场景名, 成功率, 平均质量分], ...]
+// rows: [[场景名, 成功率, 平均质量分], ...]。质量分传 "-" 表示该场景没有质量分
+// （真实情形：该场景全部请求失败 / 未判分），用于验证基准列不被某个 peer 的缺口带偏。
 function scenarioReportMd(rows) {
   return [
     "# 场景测试报告",
@@ -81,6 +82,22 @@ const SUBJECTS = {
         md: scenarioReportMd([
           ["场景甲", "100% (3/3)", "90"],
           ["场景乙", "100% (3/3)", "95"],
+        ]),
+      },
+    ],
+  },
+  // 场景乙没有质量分（全部失败/未判分）。基准与 peer1/peer2 在场景乙上都有分，
+  // 故这个 peer 一旦被勾上，「两方共有且均有质量分」的分母就只剩场景甲——
+  // 若基准列沿用两列口径，基准数字会随它是否在勾选内、排第几位而变。
+  peerGap: {
+    label: "丙渠道 / model-x",
+    files: [
+      { name: `peergap_model-x_run_${D}`, md: runReportMd("90% (9/10)", 1500) },
+      {
+        name: `peergap_model-x_scenario_${D}`,
+        md: scenarioReportMd([
+          ["场景甲", "100% (3/3)", "60"],
+          ["场景乙", "0% (0/3)", "-"],
         ]),
       },
     ],
@@ -160,6 +177,43 @@ test("基准列不随勾选了哪些 peer、以何顺序勾选而变（N 列共�
   assert.deepEqual(reversed.subjects[0], forward.subjects[0]);
   assert.deepEqual(baseColumn(reversed), baseColumn(forward), "换 peer 顺序不得改变基准列");
   assert.deepEqual(baseColumn(soloPeer2), baseColumn(forward), "少勾一个 peer 不得改变基准列");
+});
+
+// 上一条用例的 peer 在每个共享场景上都有质量分，因此走不到「两方过滤」与「N 方过滤」分母不同的
+// 那条路。peerGap 的场景乙缺质量分，才真正区分两种口径。此前基准列的平均质量分取自 pairs[0] 的
+// A 侧（=「基准 ∩ pairs[0]」的口径），于是：换序换掉 pairs[0] → 基准数字变；少勾一个 peer →
+// 基准数字变，且高亮列随之乱跳。
+test("基准列不被某个 peer 的指标缺口带偏：含缺质量分的 peer 时，换序 / 增减勾选均不改变基准列", () => {
+  const withGapFirst = buildView(["peerGap", "peer1"]);
+  const withGapLast = buildView(["peer1", "peerGap"]);
+  const soloGap = buildView(["peerGap"]);
+  const soloPeer1 = buildView(["peer1"]);
+  const baseQuality = (view) => rowOf(view, "scenario-quality").values[0].value;
+
+  assert.equal(baseQuality(withGapFirst), baseQuality(withGapLast), "仅调换勾选顺序不得改变基准列的平均质量分");
+  assert.equal(baseQuality(soloGap), baseQuality(withGapFirst), "基准列必须只由「各列共有」口径决定，与 peer 排序无关");
+
+  // N 方口径：勾了 peerGap 后共有且各列都有质量分的场景只剩场景甲 → 基准列取场景甲的 90。
+  assert.equal(baseQuality(withGapFirst), 90);
+  assert.equal(rowOf(withGapFirst, "scenario-quality").detail, "仅计各列共有且均有质量分的场景（1 个）");
+  // 不勾 peerGap 时两个场景都算 → 基准列 (90+80)/2=85。分母确实随勾选的 peer 集合变化，
+  // 但那是 N 方共享场景集的固有性质，且已写进 detail，不是列间口径不一致。
+  assert.equal(baseQuality(soloPeer1), 85);
+
+  // 高亮不得随顺序漂移：三列都在场景甲上比（基准 90 / peerGap 60 / peer1 70）→ 基准最优。
+  assert.equal(rowOf(withGapFirst, "scenario-quality").bestIndex, 0);
+  assert.equal(rowOf(withGapLast, "scenario-quality").bestIndex, 0);
+});
+
+test("各列同分母：平均质量分的每一列都在同一批场景上聚合", () => {
+  const view = buildView(["peerGap", "peer1"]);
+  const row = rowOf(view, "scenario-quality");
+  // 场景甲：基准 90、peerGap 60、peer1 70。三列都只算场景甲，故值恰为各自的场景甲分数；
+  // 若哪一列偷偷把场景乙也算进去（如 peer1 取 (70+60)/2=65），这里就会红。
+  assert.deepEqual(
+    row.values.map((v) => v.value),
+    [90, 60, 70],
+  );
 });
 
 test("逐场景：只列共享场景（基准独有的场景丙不出现），按名排序，bestIndex 按质量分取最优", () => {
