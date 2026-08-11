@@ -9,6 +9,9 @@
 // 星期 0-7（0 和 7 都是周日）。不支持秒级、宏（@daily）、L/W/# 扩展。
 
 const BEIJING_OFFSET_MS = 8 * 3600 * 1000; // UTC+8 恒定
+// 覆盖完整的闰年周期：允许“每 2 月 29 日”这类语义正确但下一次可能超过一年的表达式，
+// 同时给永不命中的表达式一个确定的拒绝边界。标准五字段 cron 在此窗口内有命中即可视为可调度。
+export const CRON_LOOKAHEAD_DAYS = 1462;
 
 // 5 个字段的取值域（min/max 均含端点）。星期上界取 7，解析时再把 7 归一成 0。
 const FIELD_BOUNDS = [
@@ -102,15 +105,36 @@ export function cronMatches(fields, ms) {
   return domHit && dowHit;
 }
 
+function maxDaysInMonth(month) {
+  if (month === 2) return 29; // 4 年窗口内必覆盖一个闰年
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+// 对“日字段受限、星期字段为 *”这一类，日期必须同时满足 month + dom；例如 2 月 30 日
+// 在任何年份都不存在。先静态拒绝可以避免为明显不可能的表达式扫描数百万分钟。
+function hasPotentialCalendarDate(fields) {
+  // DOM/DOW 都受限时按 POSIX OR 匹配：即便 dom 不可能，指定星期仍会在指定月份出现。
+  if (fields.domStar || !fields.dowStar) return true;
+  for (const month of fields.month) {
+    const maxDay = maxDaysInMonth(month);
+    for (const dom of fields.dom) {
+      if (dom <= maxDay) return true;
+    }
+  }
+  return false;
+}
+
 // 从 fromMs 之后的下一分钟起，逐分钟扫描，返回下次匹配的 ms（毫秒对齐到整分钟，秒=0）。
-// 366 天内无匹配返回 null（防非法/永不触发的表达式吊死）。
-export function cronNextAfter(expr, fromMs = Date.now()) {
+// 最长在四年闰年窗口内查找；无匹配返回 null（防永不触发的表达式吊死）。
+export function cronNextAfter(expr, fromMs = Date.now(), { lookaheadDays = CRON_LOOKAHEAD_DAYS } = {}) {
   const fields = parseCron(expr);
+  if (!hasPotentialCalendarDate(fields)) return null;
   // 对齐到下一个整分钟：先归零秒/毫秒，再 +1 分钟（确保严格晚于 fromMs 所在分钟）。
   const start = new Date(fromMs);
   start.setUTCSeconds(0, 0);
   let cursor = start.getTime() + 60_000;
-  const limit = cursor + 366 * 24 * 60 * 60 * 1000;
+  const days = Number.isSafeInteger(lookaheadDays) && lookaheadDays >= 1 ? lookaheadDays : CRON_LOOKAHEAD_DAYS;
+  const limit = cursor + days * 24 * 60 * 60 * 1000;
   for (; cursor <= limit; cursor += 60_000) {
     if (cronMatches(fields, cursor)) return cursor;
   }

@@ -101,7 +101,7 @@ persisted config and reports. A `docker-compose` file and a Caddy reverse-proxy 
 
 ```bash
 # Build once on a build host / CI:
-docker build -t api-evaluator:0.7.7 .
+docker build -t api-evaluator:0.7.9 .
 # Then on the server (image loaded/pulled), run without rebuilding:
 docker compose --env-file .env.evaluator \
   -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
@@ -140,7 +140,7 @@ native health-recovery controller instead of installing this timer.
 **Resource isolation** — the compose file caps the container (`mem_limit: 512m`, `cpus: "0.75"`) so
 it can be co-located with another service without starving it: on overrun only this container is
 OOM-killed, not the host. On a very small host (e.g. 2 vCPU / 2 GB) set
-`EVALUATOR_MAX_CONCURRENT_TASKS=2`; if memory is tight, set `EVALUATOR_OFFLINE_TOKENIZER=off` (drops
+`EVALUATOR_MAX_CONCURRENT_TASKS=2`（异步任务、同步测试和自动作业共用的总额度）; if memory is tight, set `EVALUATOR_OFFLINE_TOKENIZER=off` (drops
 the ~70–90 MB tokenizer and falls back to the cross-channel baseline).
 
 ## Configuration

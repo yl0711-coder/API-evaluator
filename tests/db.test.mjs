@@ -30,6 +30,7 @@ test("getDbHealth reports a diagnosable snapshot", async () => {
   assert.equal(typeof health.sqliteAvailable, "boolean");
   assert.equal(typeof health.requestWriteFailures, "number");
   assert.equal(typeof health.runWriteFailures, "number");
+  assert.equal(typeof health.configWriteFailures, "number");
   assert.ok("lastError" in health);
 });
 

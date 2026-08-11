@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-08-11
+
+### Fixed
+- **发布身份统一** — `package.json`、Docker Compose 默认镜像、README 构建命令与
+  `/api/health` 的单一版本来源统一为 `0.7.9`。此前 `v0.7.8` tag 内仍显示 `0.7.7`，
+  可能造成部署旧镜像及排障身份错配；修复版应以新的不可变 tag 和镜像 digest 发布，
+  不改写既有 tag。
+- **自动测试 Cron 语义校验** — 对“语法合法但永远不会触发”的表达式（如 2 月 30 日）
+  保存时直接拒绝；保留闰日等四年内有效的规则。历史坏作业被调度时会停用并记录原因，
+  不再静默回退成每日执行。
+- **测试执行统一并发闸** — 异步任务、自动作业和同步测试接口共用
+  `EVALUATOR_MAX_CONCURRENT_TASKS` 总额度；自动作业的
+  `EVALUATOR_AUTO_TEST_CONCURRENCY` 仅作为更小的子额度，不能再与手工测试叠加突破总上限。
+- **SQLite 配置写失败不再伪成功** — SQLite 已可用时，渠道、模型目标与旧 profile 写失败
+  会返回存储错误，不会静默改写 JSON 造成双事实源漂移；仅运行环境完全不支持 SQLite 时保留
+  显式 JSON 降级。
+
+## [0.7.8] - 2026-08-11
+
 ### Added
 - **独立「任务中心」页（新增 `src/task-center.js`，PRD FR-004 / 修 ADM-002、ADM-024）** — 任务状态此前藏在
   报告中心的「最近任务状态」折叠区里，每个任务只有一行聚合状态，**看不出「哪一步没通过」**——而排查时
@@ -658,7 +677,9 @@ Initial open-source release.
 ### Fixed
 - Concurrency-queue slot leak on the task-manager cancel path.
 
-[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.5...dev
+[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.9...dev
+[0.7.9]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.8...v0.7.9
+[0.7.8]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.6...v0.7.8
 [0.7.5]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.4...v0.7.5
 [0.4.6]: https://github.com/yl0711-coder/API-evaluator/compare/v0.4.3...v0.4.6
 [0.3.1]: https://github.com/yl0711-coder/API-evaluator/compare/v0.3.0...v0.3.1
