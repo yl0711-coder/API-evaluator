@@ -18,12 +18,42 @@ export function computeEtag(buffer) {
   return `"${hash.slice(0, 16)}"`;
 }
 
-// 从 accept-encoding 头选择最优编码：brotli > gzip > identity
+// 从 accept-encoding 头选择最优编码：brotli > gzip > identity。
+//
+// 必须真正解析 token 与 q 值，不能用 includes() 子串匹配：
+//   · `br;q=0` 的语义是「我【解不了】br」（RFC 9110 §12.5.3：q=0 即不可接受）。子串匹配会照发
+//     brotli，客户端解压失败 → 页面白屏。实测过：`Accept-Encoding: br;q=0, gzip` 曾拿到
+//     `content-encoding: br` 的响应体。
+//   · 反向误判同样存在：`x-gzip` / `brotli` / 任何含 "br"、"gzip" 子串的 token（甚至 `nobr`）
+//     都会被 includes 命中，从而对不支持该编码的客户端发压缩体。
+// 解析后按「我们支持的编码」自己的优先级选（br 优先），而不是照抄客户端给的 q 值排序——
+// q 值只用来判断「可不可以用」，用不用由服务端定。
 export function negotiateEncoding(acceptEncodingHeader) {
   if (!acceptEncodingHeader) return "identity";
-  const lower = acceptEncodingHeader.toLowerCase();
-  if (lower.includes("br")) return "br";
-  if (lower.includes("gzip")) return "gzip";
+  // token=q：`gzip;q=0.5` → { gzip: 0.5 }；无 q 视作 1；非法 q 视作 1（宁可压也别误判成拒绝）。
+  const weights = new Map();
+  for (const part of String(acceptEncodingHeader).toLowerCase().split(",")) {
+    const [rawToken, ...params] = part.split(";");
+    const token = rawToken.trim();
+    if (!token) continue;
+    let q = 1;
+    for (const p of params) {
+      const m = /^\s*q\s*=\s*([0-9.]+)\s*$/.exec(p);
+      if (m) {
+        const parsed = Number.parseFloat(m[1]);
+        if (Number.isFinite(parsed)) q = parsed;
+      }
+    }
+    weights.set(token, q);
+  }
+  // 显式列出的 token 优先于通配 `*`；q>0 才算可接受。
+  const acceptable = (token) => {
+    if (weights.has(token)) return weights.get(token) > 0;
+    if (weights.has("*")) return weights.get("*") > 0;
+    return false;
+  };
+  if (acceptable("br")) return "br";
+  if (acceptable("gzip")) return "gzip";
   return "identity";
 }
 

@@ -59,6 +59,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 空串归一成 `null`：「未记录」（无会话的内部调用、历史任务）与「某个空名用户」必须可区分。
 
 ### Fixed
+- **声明 `br;q=0` 的客户端仍会收到 brotli 响应体（解压失败 → 页面白屏）** — `negotiateEncoding` 用
+  `includes()` 做子串匹配，没有解析 q 值。而 `q=0` 在 RFC 9110 §12.5.3 里的语义是「我**解不了**这个
+  编码」，不是「优先级低」。实测：请求头 `Accept-Encoding: br;q=0, gzip` 拿到的响应是
+  `content-encoding: br`、body 首字节 `5b 4f`（brotli，非 gzip magic `1f 8b`）——只支持 gzip 的客户端
+  直接解压失败。
+  - 反向误判同时存在：任何含 `br` / `gzip` 子串的 token（`x-gzip`、`brotli`，甚至 `nobr`）都会被
+    `includes()` 命中，从而**对不支持压缩的客户端发压缩体**。
+  - 改为真正按 `,` 拆 token、解析 `;q=`，只有 q>0 才算可接受；显式列出的 token 优先于通配 `*`
+    （故 `br;q=0, *` 退到 gzip）。**优先级仍由服务端定**（br 优先）——q 值只用来判断「可不可以用」，
+    用哪个不照抄客户端的 q 排序。非法 q 视作 1，宁可压也不误判成拒绝。
+  - 新增 4 例回归（q=0 显式拒绝 / 正 q 均可接受 / `*` 通配 / 子串不误命中）；退回 `includes()` 写法
+    精确杀掉其中 3 例。
+- **P1-04 的两个模块级常量此前无任何测试覆盖** — `MAX_UPSTREAM_STREAM_RESPONSE_BYTES` 与
+  `JUDGE_AUDIT_MAX_CALLS` 是**模块加载时**求值的顶层 `const`，既有的两个 P1-04 测试文件都覆盖不到
+  （`env-config.test.mjs` 测解析器本身，`env-config-quota-effect.test.mjs` 测的是 task-manager /
+  auto-test-scheduler 两个**运行期**读取点）。实际后果：一批把这两处退回
+  `Number(env) > 0 ? … : d` 旧写法的改动，在 **1209 个用例全绿**的情况下通过了检查。
+  - 新增 `tests/env-config-constants.test.mjs`（8 例），靠「设好 env 再动态 import」读取模块级常量。
+    `JUDGE_AUDIT_MAX_CALLS` 随之改为 export（仅为可测；同文件的
+    `MAX_UPSTREAM_STREAM_RESPONSE_BYTES` 本就是 export，口径一致）。
+  - 顺带修正一处注释与实际行为不符：`test-runner.mjs` 原注释称 NaN 额度会让
+    `calls >= JUDGE_AUDIT_MAX_CALLS` 恒为 false 从而「无上限烧钱」，但代码里**并不存在**这个判断。
+    实测 NaN 的真实后果是 `items.slice(0, NaN)` 得到空集 → **一题都不评**，却仍返回 `ok: true` 与
+    `callsUsed: NaN`（看起来跑过了、其实什么都没评的静默空转）；真正会超发的是 `Infinity`
+    （27 题 × 2 裁判 = 54 次真实请求，超出额度 50）。两者都坏，但机制与原注释相反。
 - **多模型比对的基准列会随勾选的 peer 及其顺序漂移** — 「多模型比对」声称并写了测试守护的核心不变量是
   「基准列必须不随勾选了哪些 peer 而变」，但「平均质量分」与「P50 首 Token 延迟」这两行实际会漂：
   `buildMultiComparisonView` 拿 `views[0]`（即 `pairs[0]`）的 A 侧当基准列，而这两行在两列视图里做的是

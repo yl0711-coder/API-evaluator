@@ -57,6 +57,38 @@ describe("compression utils", () => {
     assert.strictEqual(negotiateEncoding("GZIP, BR"), "br");
     assert.strictEqual(negotiateEncoding("Gzip"), "gzip");
   });
+
+  // q=0 的语义是「我解不了这个编码」（RFC 9110 §12.5.3）。此前用 includes() 子串匹配，
+  // 对 `br;q=0, gzip` 仍回 brotli——只支持 gzip 的客户端拿到 brotli body 直接解压失败、页面白屏。
+  // 实测复现过：真起服务请求 /assets/*.js 拿到 `content-encoding: br`，body 首字节 5b 4f（非 gzip magic）。
+  it("negotiateEncoding respects q=0 as explicit refusal", () => {
+    assert.strictEqual(negotiateEncoding("br;q=0, gzip"), "gzip", "拒绝 br 时必须退到 gzip");
+    assert.strictEqual(negotiateEncoding("gzip;q=0"), "identity", "拒绝 gzip 且无 br 时必须不压缩");
+    assert.strictEqual(negotiateEncoding("br;q=0, gzip;q=0"), "identity", "两者都拒绝时必须原样发送");
+    assert.strictEqual(negotiateEncoding("gzip;q=0.0"), "identity", "0.0 与 0 等价");
+    assert.strictEqual(negotiateEncoding("br ; q=0"), "identity", "参数前后的空白不影响判定");
+  });
+
+  // 非零 q 只表示「可以用」，用哪个由服务端定（我们固定 br 优先），不照抄客户端的 q 排序。
+  it("negotiateEncoding treats any positive q as acceptable", () => {
+    assert.strictEqual(negotiateEncoding("br;q=0.5, gzip;q=1.0"), "br");
+    assert.strictEqual(negotiateEncoding("gzip;q=0.1"), "gzip");
+  });
+
+  // 通配符：`*` 表示接受任意编码；`*;q=0` 表示除已列出的之外一律拒绝。
+  it("negotiateEncoding handles the * wildcard", () => {
+    assert.strictEqual(negotiateEncoding("*"), "br");
+    assert.strictEqual(negotiateEncoding("*;q=0"), "identity");
+    assert.strictEqual(negotiateEncoding("br;q=0, *"), "gzip", "显式 q=0 优先于通配");
+  });
+
+  // 反向误判：含 "br" / "gzip" 子串但并非该编码的 token 不得命中，
+  // 否则会对不支持压缩的客户端发压缩体。
+  it("negotiateEncoding does not substring-match unrelated tokens", () => {
+    for (const header of ["xbr", "brotli", "nobr", "deflate, x-gzip"]) {
+      assert.strictEqual(negotiateEncoding(header), "identity", `${header} 不应被当成 br/gzip`);
+    }
+  });
 });
 
 describe("isHashedAssetPath", () => {
