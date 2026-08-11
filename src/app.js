@@ -372,6 +372,7 @@ requireElement("#load-demo-data").addEventListener("click", enableDemoMode);
 requireElement("#exit-demo-mode").addEventListener("click", disableDemoMode);
 requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
+  reportBrowser.refresh();    // 同时刷新报告文件列表
 });
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
