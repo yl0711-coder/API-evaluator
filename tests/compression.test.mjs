@@ -1,13 +1,7 @@
 // 压缩功能单元测试：etag 计算、编码协商、缓存逻辑
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import {
-  computeEtag,
-  etagMatches,
-  isHashedAssetPath,
-  negotiateEncoding,
-  sendCompressedStatic,
-} from "../server/compression.mjs";
+import { computeEtag, etagMatches, isHashedAssetPath, negotiateEncoding, sendCompressedStatic } from "../server/compression.mjs";
 
 // 收集 writeHead / end 的假 res，用于断言响应头
 function fakeRes() {

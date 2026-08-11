@@ -81,15 +81,7 @@ export function isHashedAssetPath(filePath) {
 //
 // options.ifNoneMatch 传入请求的 if-none-match 头：命中则回 304，浏览器复用本地副本。
 // 不处理它的话 etag 只是装饰——每次刷新仍然整包重传。
-export async function sendCompressedStatic(
-  res,
-  filePath,
-  buffer,
-  mimeType,
-  securityHeaders,
-  acceptEncoding,
-  options = {},
-) {
+export async function sendCompressedStatic(res, filePath, buffer, mimeType, securityHeaders, acceptEncoding, options = {}) {
   const etag = computeEtag(buffer);
   const isHashed = isHashedAssetPath(filePath);
   const isIndexHtml = filePath.endsWith("index.html");
