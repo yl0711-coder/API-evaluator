@@ -49,14 +49,27 @@ git branch -vv           # 每个分支相对 origin 的跟踪状态
 git branch --show-current  # 你现在到底在哪个分支——不要想当然认为"上次在哪就还在哪"
 ```
 
-截至本文档写作时（2026-07-23），仓库里的真实状态是：
+截至本文档最后校准时（2026-08-07），仓库里的真实状态是：
 
 | Worktree 目录 | 分支 | 相对 `my-improvements` | 状态 |
 |---|---|---|---|
-| `API-evaluator-main`（主目录） | `my-improvements` | — | 主线，`origin` 已同步到此 |
-| `API-evaluator-report-mgmt` | `feat/report-management` | 0 个独有提交 | **已合并回主线**，git 标记 `prunable`，可以 `git worktree remove` 清理 |
-| `API-evaluator-sent-email` | `feat/sent-email` | 1 个独有提交（"自定义阈值报警规则"） | **未合并**，还在开发/待合并 |
-| `API-evaluator-warning-fix` | `feat/warning-fix` | 0 个独有提交，工作区干净 | 刚创建，还没写代码 |
+| `API-evaluator-main`（主目录） | `my-improvements` | — | 主线。**领先 `origin/my-improvements` 21 个提交**（本地未推送） |
+| `API-evaluator-scene-maintain` | `feat/scene-maintain` | **1 个独有提交** `601ed88` | 唯一有未合并内容的分支（exact 判分器修 LaTeX 定界符不对称 + HLE #16 等价写法，带测试） |
+| `API-evaluator-task-center` | `feat/task-center` | 0（与主线同点 `f451441`） | 已合并回主线 |
+| `API-evaluator-for-compare` | `feat/for-compare` | 0 个独有提交 | 已合并回主线 |
+| `API-evaluator-report-tidy` | `feat/report-tidy` | 0 个独有提交 | 已合并回主线 |
+| `API-evaluator-sent-email` | `feat/sent-email` | 0 个独有提交 | 已合并回主线 |
+| `API-evaluator-stability-test` | `feat/stability-test` | 0 个独有提交 | 已合并回主线 |
+| `API-evaluator-timer-test` | `feat/timer-test` | 0 个独有提交 | 已合并回主线，工作区有 1 处未提交变更 |
+| `API-evaluator-token-stats` | `feat/token-stats` | 0 个独有提交 | 已合并回主线 |
+| `API-evaluator-warning-fix` | `feat/warning-fix` | 0 个独有提交 | 已合并回主线 |
+| `API-evaluator-web-beautify` | `feat/web-beautify` | 0 个独有提交 | 已合并回主线，工作区有 4 处未提交变更 |
+
+**约定：文件夹名与分支名一一对应**（`API-evaluator-xxx` ↔ `feat/xxx`）。历史上出现过错位——
+`API-evaluator-auto-test` 这个目录后来被换去签出 `feat/task-center`，目录名却没跟着改，导致
+`git branch -vv` 里 `feat/auto-test` 成了唯一没有路径标记的分支，很容易误判它还有独立工作目录。
+2026-08-07 已把目录改名为 `API-evaluator-task-center`（`git worktree move`），并删掉了已完全合并的
+`feat/auto-test` 本地分支。**换分支时请连目录名一起改，别留错位。**
 
 **这张表会过期**——它只是"写文档那一刻"的快照。别信这张表，信你自己刚跑的 `git worktree list`。
 但它演示了你要问自己的问题：*我这个分支相对主线是超前还是落后？有没有别的分支已经做了我要做的事？

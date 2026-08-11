@@ -12,6 +12,8 @@
 //  2) 全局并发闸——同时最多跑 maxConcurrent 个作业（信号量），避免多作业同刻到期时压垮上游 API。
 //     作业在【等待信号量之前】就标记进 runningJobIds，故跨 tick 不会重复触发同一作业。
 import { computeNextRunAt } from "./auto-test-store.mjs";
+import { envInt } from "./env-config.mjs";
+import { createExecutionLimiter } from "./execution-limiter.mjs";
 
 export function createAutoTestScheduler({
   loadJobs,
@@ -24,10 +26,14 @@ export function createAutoTestScheduler({
   // 活性判定：距上次 tick 超过此毫秒数即判「僵死」（getStatus().stale=true），供 /api/health 暴露、
   // 容器健康检查 + 外部看门狗（autoheal）据此重启「进程活着但定时器僵死」的静默故障。
   staleAfterMs = tickMs * 5,
-  maxConcurrent = Math.max(1, Number(process.env.EVALUATOR_AUTO_TEST_CONCURRENCY || 2)),
+  // 平台级共享闸由 server.mjs 注入。未注入时只保留本调度器的私有闸，方便模块独立测试。
+  executionLimiter,
+  maxConcurrent = envInt("EVALUATOR_AUTO_TEST_CONCURRENCY", 2, { min: 1, max: 32 }),
   // 连续失败熔断阈值：作业连续失败达此次数即自动停用，避免被监控对象挂掉后无限空跑失败。
   // 0 = 关闭熔断。默认 5，可用 EVALUATOR_AUTO_TEST_MAX_FAILURES 覆盖。
-  maxConsecutiveFailures = Math.max(0, Number(process.env.EVALUATOR_AUTO_TEST_MAX_FAILURES || 5)),
+  // 必须走 envInt：旧写法 Math.max(0, Number("abc")) = NaN，会让下方 `maxConsecutiveFailures > 0`
+  // 恒为 false，熔断静默失效——配了熔断却不熔断，比压根没配更危险（P1-04）。
+  maxConsecutiveFailures = envInt("EVALUATOR_AUTO_TEST_MAX_FAILURES", 5, { min: 0, max: 1000 }),
   now = () => Date.now(),
 }) {
   const runningJobIds = new Set();
@@ -35,21 +41,11 @@ export function createAutoTestScheduler({
   // 活性时间戳（ms）：每个 tick 开始时刷新。start() 先置为启动时刻，避免启动瞬间被判僵死。
   let lastTickAt = null;
 
-  // 并发信号量（与 task-manager 同款）：acquire 拿槽/排队，release 直接转交等待者，计数守恒。
-  let activeSlots = 0;
-  const slotWaiters = [];
-  function acquireSlot() {
-    if (activeSlots < maxConcurrent) {
-      activeSlots += 1;
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => slotWaiters.push(resolve));
-  }
-  function releaseSlot() {
-    const next = slotWaiters.shift();
-    if (next) next();
-    else activeSlots = Math.max(0, activeSlots - 1);
-  }
+  // 自动作业保留自己的子额度（兼容 EVALUATOR_AUTO_TEST_CONCURRENCY），但每一项在真正执行前
+  // 还必须取得平台共享额度。获取顺序固定为「自动子额度 → 共享额度」，避免自动作业在等子额度时
+  // 先占用全局槽，饿死手工测试。
+  const autoLimiter = createExecutionLimiter({ getLimit: () => maxConcurrent });
+  const sharedLimiter = executionLimiter || autoLimiter;
 
   function isDue(job, nowMs) {
     if (!job.nextRunAt) return true; // 无 nextRunAt（新启用/迁移）→ 立即到期
@@ -123,8 +119,24 @@ export function createAutoTestScheduler({
     if (!run) return;
     runningJobIds.add(job.id);
     try {
-      await acquireSlot(); // 全局并发闸：超出上限则排队
+      // 正常创建时 validateJob 已拒绝“语法合法但永远没有执行时刻”的 cron；这一层是对
+      // 历史作业/手工写入 JSON 的兜底。绝不能跑一次再按 24h 回退，否则异常作业会悄悄花钱。
+      if (job.cron && !computeNextRunAt(job, now())) {
+        await patchJob(job.id, {
+          enabled: false,
+          nextRunAt: null,
+          lastStatus: "invalid_schedule",
+          lastError: "定时表达式在未来四年内没有可执行时刻，已自动停用；请修正后重新启用。",
+        });
+        return;
+      }
+      await autoLimiter.acquire();
+      let sharedAcquired = false;
       try {
+        if (sharedLimiter !== autoLimiter) {
+          await sharedLimiter.acquire();
+          sharedAcquired = true;
+        }
         const startedMs = now();
         const startedIso = new Date(startedMs).toISOString();
         const nextRunAt = computeNextRunAt(job, startedMs);
@@ -170,7 +182,8 @@ export function createAutoTestScheduler({
           });
         }
       } finally {
-        releaseSlot();
+        if (sharedAcquired) sharedLimiter.release();
+        autoLimiter.release();
       }
     } catch (error) {
       // 兜底：本函数的三个调用点全是「拒绝无人接管」的形态 —— tick 里的 Promise.all、
@@ -236,6 +249,17 @@ export function createAutoTestScheduler({
     const job = jobs.find((j) => j.id === id);
     if (!job) return { ok: false, message: "作业不存在。" };
     if (runningJobIds.has(id)) return { ok: false, message: "该作业正在运行，请稍候。" };
+    // “立即运行”同样不能绕开坏 cron 的安全门禁；否则接口会先回 200，后台却悄悄停用，
+    // 既误导操作者也让状态解释困难。
+    if (job.cron && !computeNextRunAt(job, now())) {
+      await patchJob(job.id, {
+        enabled: false,
+        nextRunAt: null,
+        lastStatus: "invalid_schedule",
+        lastError: "定时表达式在未来四年内没有可执行时刻，已自动停用；请修正后重新启用。",
+      });
+      return { ok: false, message: "定时表达式没有可执行时刻，作业已停用；请修正后重新启用。" };
+    }
     void fireJob(job); // 后台触发，不阻塞 HTTP 响应（测试可能跑数分钟）
     return { ok: true };
   }
@@ -254,6 +278,11 @@ export function createAutoTestScheduler({
       staleAfterMs,
       stale,
       activeJobs: runningJobIds.size,
+      // 生效额度（P1-04）：/api/health 要能看出并发闸与熔断阈值最终取了几，
+      // 否则误配只能靠"熔断从来不触发"这类事后症状发现。
+      maxConcurrent,
+      autoSlots: autoLimiter.getStatus(),
+      maxConsecutiveFailures,
     };
   }
 

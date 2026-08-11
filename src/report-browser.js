@@ -12,6 +12,7 @@ import { requireElement } from "./dom-utils.js";
 import { api } from "./api-client.js";
 import { openReportOverlay } from "./report-overlay.js";
 import { computeDateBounds, matchesReportFilter, parseReportId, reportChannelModelOptions } from "./report-id.js";
+import { areAllReportIdsSelected, clearReportIds, reconcileReportIds, selectReportIds } from "./report-selection.js";
 
 const REPORT_TYPE_LABELS = {
   admission: "准入评测",
@@ -42,7 +43,9 @@ export function createReportBrowser({ state }) {
 
   let reportFiles = []; // 每条已附 parsed = parseReportId(id)
   let reportFilesPage = 0;
-  // 是否超级管理员（role≥100）：仅其可见/可用报告删除按钮（安全另在服务端强制）。
+  const selectedReportIds = new Set();
+  let bulkBusy = false;
+  // 是否超级管理员（role≥100）：仅其可见/可用批量下载与删除按钮（安全另在服务端强制）。
   // 由 app.js 在认证完成后经 setCanConfig 推入——那一刻在顶层 await 之后，故不能在 create 时传值。
   let currentUserCanConfig = false;
   let reportDateMin = ""; // 报告实际日期范围（YYYY-MM-DD），给日期框设 min/max 用
@@ -77,7 +80,20 @@ export function createReportBrowser({ state }) {
       renderReportFilesPage();
     }),
   );
+  reportFilesList.addEventListener("change", (event) => {
+    const checkbox = event.target.closest?.("[data-report-select]");
+    if (!checkbox) return;
+    const id = checkbox.dataset.reportSelect;
+    if (checkbox.checked) selectedReportIds.add(id);
+    else selectedReportIds.delete(id);
+    renderReportFilesPage();
+  });
   reportFilesList.addEventListener("click", (event) => {
+    const bulk = event.target.closest?.("[data-report-bulk-action]");
+    if (bulk) {
+      void handleBulkAction(bulk.dataset.reportBulkAction);
+      return;
+    }
     const pager = event.target.closest?.("[data-report-page]");
     if (pager) {
       const totalPages = Math.max(1, Math.ceil(filteredReportFiles().length / REPORT_PAGE_SIZE));
@@ -91,7 +107,10 @@ export function createReportBrowser({ state }) {
       const id = del.dataset.reportDel;
       if (!confirm(`确认删除报告「${id}」？此操作不可撤销。`)) return;
       api(`/api/reports/files/${encodeURIComponent(id)}`, { method: "DELETE" })
-        .then(() => loadReportFiles())
+        .then(() => {
+          selectedReportIds.delete(id);
+          return loadReportFiles();
+        })
         .catch((error) => alert(`删除失败：${error.message}`));
       return;
     }
@@ -136,6 +155,84 @@ export function createReportBrowser({ state }) {
     const aliasMaps = reportAliasMaps();
     return reportFiles.filter((f) => matchesReportFilter(f.parsed, filter, aliasMaps));
   }
+
+  function renderBulkToolbar(list) {
+    const selectedCount = selectedReportIds.size;
+    const allFilteredSelected = areAllReportIdsSelected(selectedReportIds, list);
+    return `
+      <div class="report-files-toolbar" role="toolbar" aria-label="批量报告操作">
+        <button class="secondary" type="button" data-report-bulk-action="select-filtered"${allFilteredSelected || bulkBusy ? " disabled" : ""}>选择当前筛选结果</button>
+        <button class="secondary" type="button" data-report-bulk-action="clear"${selectedCount === 0 || bulkBusy ? " disabled" : ""}>清空选择</button>
+        <span class="report-files-selection-count">已选 ${selectedCount} 份</span>
+        <span class="report-files-toolbar-spacer"></span>
+        ${currentUserCanConfig ? `<button class="secondary" type="button" data-report-bulk-action="download"${selectedCount === 0 || bulkBusy ? " disabled" : ""}>下载 HTML ZIP</button>` : ""}
+        ${currentUserCanConfig ? `<button class="danger" type="button" data-report-bulk-action="delete"${selectedCount === 0 || bulkBusy ? " disabled" : ""}>批量删除</button>` : ""}
+      </div>`;
+  }
+
+  async function downloadSelectedReports() {
+    const response = await fetch("/api/reports/files/download", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [...selectedReportIds] }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.userMessage || data.message || `下载失败（${response.status}）`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = (response.headers.get("content-disposition")?.match(/filename="([^"]+)"/) || [])[1] || "api-evaluator-reports.zip";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  async function handleBulkAction(action) {
+    const list = filteredReportFiles();
+    if (action === "select-filtered") {
+      selectReportIds(selectedReportIds, list);
+      renderReportFilesPage();
+      return;
+    }
+    if (action === "clear") {
+      clearReportIds(selectedReportIds);
+      renderReportFilesPage();
+      return;
+    }
+    if (selectedReportIds.size === 0 || bulkBusy) return;
+    if (action === "delete" && !confirm(`确认删除已选 ${selectedReportIds.size} 份报告？此操作不可撤销。`)) return;
+    bulkBusy = true;
+    renderReportFilesPage();
+    try {
+      if (action === "download") {
+        await downloadSelectedReports();
+      } else if (action === "delete") {
+        const result = await api("/api/reports/files", {
+          method: "DELETE",
+          body: JSON.stringify({ ids: [...selectedReportIds] }),
+        });
+        for (const id of result.deleted || []) selectedReportIds.delete(id);
+        const failed = result.failed || [];
+        if (failed.length) {
+          alert(
+            `批量删除完成：成功 ${result.deleted?.length || 0} 份，失败 ${failed.length} 份。\n${failed.map((item) => `${item.id}：${item.code}`).join("\n")}`,
+          );
+        } else {
+          alert(`批量删除完成：已删除 ${result.deleted?.length || 0} 份报告。`);
+        }
+        await loadReportFiles();
+      }
+    } catch (error) {
+      alert(`${action === "download" ? "下载" : "批量删除"}失败：${error.message}`);
+    } finally {
+      bulkBusy = false;
+      renderReportFilesPage();
+    }
+  }
   // 据新格式报告去重值填充四个下拉（保留当前选中值）。
   // 渠道/模型互相联动：渠道选项据「当前所选模型」收窄、模型选项据「当前所选渠道」收窄（见 reportChannelModelOptions）。
   function populateReportFilters() {
@@ -171,9 +268,9 @@ export function createReportBrowser({ state }) {
   function renderReportFilesPage() {
     const list = filteredReportFiles();
     if (!list.length) {
-      reportFilesList.innerHTML = reportFiles.length
-        ? `<p class="muted">没有符合筛选条件的报告。</p>`
-        : `<p class="muted">暂无报告（「评测数据/报告」为空）。</p>`;
+      reportFilesList.innerHTML =
+        renderBulkToolbar(list) +
+        (reportFiles.length ? `<p class="muted">没有符合筛选条件的报告。</p>` : `<p class="muted">暂无报告（「评测数据/报告」为空）。</p>`);
       return;
     }
     const totalPages = Math.max(1, Math.ceil(list.length / REPORT_PAGE_SIZE));
@@ -184,6 +281,7 @@ export function createReportBrowser({ state }) {
       .map(
         (f) => `
         <div class="row report-file-row">
+          <input type="checkbox" data-report-select="${escapeHtml(f.id)}" aria-label="选择报告 ${escapeHtml(f.id)}"${selectedReportIds.has(f.id) ? " checked" : ""} />
           <div><strong>${escapeHtml(reportKindLabel(f.id))}</strong><br /><small>${escapeHtml(f.id)}</small></div>
           <small>${escapeHtml(new Date(f.mtimeMs).toLocaleString("zh-CN"))}</small>
           <small>${formatBytes(f.sizeBytes)}</small>
@@ -200,13 +298,14 @@ export function createReportBrowser({ state }) {
       <span class="muted">第 ${reportFilesPage + 1} / ${totalPages} 页 · 共 ${list.length} 个</span>
       <button class="secondary" type="button" data-report-page="next"${reportFilesPage >= totalPages - 1 ? " disabled" : ""}>下一页</button>
     </div>`;
-    reportFilesList.innerHTML = rows + pager;
+    reportFilesList.innerHTML = renderBulkToolbar(list) + rows + pager;
   }
   async function loadReportFiles() {
     reportFilesList.innerHTML = `<p class="muted">加载中…</p>`;
     try {
       const files = await api("/api/reports/files");
       reportFiles = files.map((f) => ({ ...f, parsed: parseReportId(f.id) }));
+      reconcileReportIds(selectedReportIds, reportFiles);
       reportFilesPage = 0;
       populateReportFilters();
       renderReportFilesPage();

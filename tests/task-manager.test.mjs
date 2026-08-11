@@ -134,6 +134,35 @@ test("task manager cancels running tasks through the task context", async () => 
   }
 });
 
+test("task manager refuses completed, failed, and cancelled tasks without appending a cancellation event", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-terminal-cancel-test-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({ taskEventsFile, ...normalizers });
+    for (const status of ["completed", "failed", "cancelled"]) {
+      const task = {
+        id: `terminal-${status}`,
+        type: "stability",
+        status,
+        cancelRequested: false,
+        cancelledBy: null,
+        message: `already-${status}`,
+        abortController: new AbortController(),
+      };
+      manager.tasks.set(task.id, task);
+
+      assert.equal(await manager.cancelTask(task, { actor: "operator" }), false, `${status} must be terminal`);
+      assert.equal(task.status, status);
+      assert.equal(task.cancelRequested, false);
+      assert.equal(task.cancelledBy, null);
+      assert.equal(task.message, `already-${status}`);
+    }
+    assert.equal(await readFile(taskEventsFile, "utf8").catch(() => ""), "");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
 test("task manager runs batch admission tasks", async () => {
   const dir = await mkdtemp(join(tmpdir(), "evaluator-task-admission-batch-test-"));
   try {
@@ -426,9 +455,13 @@ test("recent task recovery marks previous running tasks as interrupted", async (
 
   const recentTasks = await dataStore.readRecentTasks(new Map(), (task) => task);
 
-  assert.equal(recentTasks[0].status, "interrupted");
-  assert.equal(recentTasks[0].recoverable, false);
-  assert.match(recentTasks[0].message, /任务已中断/);
+  // 按 taskId 找，不假设它排在第 0 位：ADM-017 起 readRecentTasks 合并 SQLite 与事件流两个来源，
+  // 本文件前面那些用例真跑出来的任务（时间戳是"现在"）会排在这条 2026-05-20 的固件之前。
+  const zombie = recentTasks.find((task) => task.taskId === "task-running-before-crash");
+  assert.ok(zombie, "停在 running 的历史任务必须仍能从事件流读到（SQLite 里没有它）");
+  assert.equal(zombie.status, "interrupted");
+  assert.equal(zombie.recoverable, false);
+  assert.match(zombie.message, /任务已中断/);
 });
 
 // admission-suite 是唯一一个「一个任务里跑多步、每步都有独立裁决」的类型，接线点比别的类型多：
@@ -555,6 +588,172 @@ test("admission：进度单元按测试包档位给下限估算", () => {
   assert.equal(estimateTaskUnits("admission", { packageLevel: "standard" }, opts), 11);
   assert.equal(estimateTaskUnits("admission", { packageLevel: "deep" }, opts), 12);
   assert.equal(estimateTaskUnits("admission", {}, opts), 11, "没传档位按 standard 兜底（与后端同口径）");
+});
+
+// 任务对象在落定 1 小时后被逐出内存、重启即清空。若终态事件不落 steps，任务中心点开一个
+// 昨天的任务就只有聚合状态、没有「模型 × 步骤」明细——而那个明细正是准入结论的全部依据。
+test("admission-suite：终态事件把 steps 快照落进事件日志（详情不随内存一起消失）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-suite-steps-"));
+  try {
+    const { createAdmissionSuiteRunner } = await import("../server/admission-suite.mjs");
+    const runAdmissionSuite = createAdmissionSuiteRunner({
+      runQuickVerify: async () => ({ cases: [{ id: "connectivity", passed: true }], successRate: 1 }),
+      runStabilityTest: async () => ({
+        successCount: 9,
+        failureCount: 0,
+        successRate: 1,
+        p95TotalMs: 5000,
+        errorCounts: {},
+        firstAttemptSuccessRate: 1,
+      }),
+      runAdmissionTest: async () => ({
+        score: 90,
+        grade: "A",
+        verdict: { verdict: "passed", blocking: true, summary: "硬门槛全部通过。" },
+      }),
+    });
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({ taskEventsFile, ...normalizers, runAdmissionSuite });
+
+    const task = await manager.createTask("admission-suite", { profileIds: ["p1"], modelNames: ["m1"] });
+    await waitFor(() => task.status === "completed");
+    await waitForFileMatch(taskEventsFile, /"event":"completed"/);
+
+    const lines = (await readFile(taskEventsFile, "utf8")).trim().split("\n").map(JSON.parse);
+    const started = lines.find((line) => line.event === "started");
+    const completed = lines.find((line) => line.event === "completed");
+
+    assert.equal(completed.steps.length, 3, "终态事件必须带全部步骤");
+    assert.deepEqual(
+      completed.steps.map((step) => step.stepName),
+      ["quick", "stability", "admission"],
+    );
+    assert.equal(completed.steps[0].verdict, "passed", "verdict 与 executionStatus 都要落，前端靠两者区分红叉语义");
+    // 中间态不落 steps：running 期间每次进度更新都写一份会把事件日志撑爆，且无留存价值。
+    assert.equal(started.steps, undefined, "started 事件不应带 steps");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// 「再测一次」要靠事件日志里的 profileIds/modelNames 回填表单。只落计数的话，用户点了
+// 「再测一次」我们连测的是哪个模型都不知道。同时守住边界：prompt 之类的正文仍不得落盘。
+test("admission-suite：事件日志落 profileIds/modelNames 供「再测一次」，但不落正文", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-suite-payload-"));
+  try {
+    const { createAdmissionSuiteRunner } = await import("../server/admission-suite.mjs");
+    const runAdmissionSuite = createAdmissionSuiteRunner({
+      runQuickVerify: async () => ({ cases: [{ id: "connectivity", passed: false }], successRate: 0 }),
+      runStabilityTest: async () => ({}),
+      runAdmissionTest: async () => ({}),
+    });
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({ taskEventsFile, ...normalizers, runAdmissionSuite });
+
+    const task = await manager.createTask("admission-suite", {
+      profileIds: ["p1", "p2"],
+      modelNames: ["claude-sonnet-5", "gpt-example"],
+      groups: [{ presetId: "basic", prompt: "sk-prompt-must-not-be-persisted", repeats: 3 }],
+      useAiReportAnalysis: "1",
+    });
+    await waitFor(() => task.status === "completed" || task.status === "failed");
+    await waitForFileMatch(taskEventsFile, /"event":"started"/);
+
+    const raw = await readFile(taskEventsFile, "utf8");
+    const started = raw
+      .trim()
+      .split("\n")
+      .map(JSON.parse)
+      .find((line) => line.event === "started");
+    assert.deepEqual(started.payload.profileIds, ["p1", "p2"]);
+    assert.deepEqual(started.payload.modelNames, ["claude-sonnet-5", "gpt-example"]);
+    assert.equal(started.payload.useAiReportAnalysis, true);
+    assert.equal(started.payload.profileCount, 2, "原有计数字段保持兼容");
+    assert.doesNotMatch(raw, /sk-prompt-must-not-be-persisted/, "提示词正文仍然绝不落盘");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// —— 发起人 / 取消人（ADM-016 的「记录+展示」口径）——
+//
+// 刻意【不】做强制隔离：五人自用工具里，取消是止损操作，「A 下班后他卡住的任务能被 B 掐掉」
+// 是协作而非漏洞，限权反而放大损失。这里锁住三件事：身份被记下、能跨重启查到、取消不校验身份。
+// 如果哪天真要加隔离（接外部用户），数据已经在了，加 WHERE owner = ? 即可。
+
+test("任务记下发起人，落进事件流并出现在公开对象里", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-actor-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({
+      taskEventsFile,
+      ...normalizers,
+      runStabilityTest: async () => ({ runId: "r", successRateText: "100%" }),
+    });
+
+    const task = await manager.createTask("stability", { profileId: "p1", rounds: 1 }, { actor: "zhangsan" });
+    assert.equal(task.createdBy, "zhangsan");
+    assert.equal(manager.publicTask(task).createdBy, "zhangsan", "前端要靠公开对象显示发起人");
+    assert.equal(task.cancelledBy, null, "没取消过就不该有取消人");
+
+    await waitFor(() => task.status === "completed");
+    // 必须落进事件流：任务对象落定 1 小时就被逐出内存，只有事件流能跨重启答"这轮谁跑的"。
+    const raw = await readFile(taskEventsFile, "utf8");
+    assert.match(raw, /"createdBy":"zhangsan"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+test("取消任务记下取消人，且不校验他是否为发起人", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-cancel-actor-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    let release;
+    const manager = createTaskManager({
+      taskEventsFile,
+      ...normalizers,
+      // 挂住不返回，让任务停在 running 上好被取消。
+      runStabilityTest: () => new Promise((resolve) => (release = resolve)),
+    });
+
+    const task = await manager.createTask("stability", { profileId: "p1", rounds: 1 }, { actor: "zhangsan" });
+    await waitFor(() => task.status === "running");
+
+    // 关键：取消者【不是】发起人，且必须成功——这是刻意的设计取舍，不是遗漏的校验。
+    await manager.cancelTask(task, { actor: "lisi" });
+    assert.equal(task.cancelRequested, true, "别人的任务也应能取消（取消是止损操作）");
+    assert.equal(task.cancelledBy, "lisi");
+    assert.equal(task.createdBy, "zhangsan", "取消不应改写发起人");
+    // 提示语要说清是谁停的，否则发起人只看到任务莫名中止。
+    assert.match(task.message, /lisi/);
+
+    await waitForFileMatch(taskEventsFile, /"cancelledBy":"lisi"/);
+    release?.({ runId: "r" });
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+test("没有会话的内部调用不记身份，字段为 null 而非空串或 undefined", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-actor-null-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({
+      taskEventsFile,
+      ...normalizers,
+      runStabilityTest: async () => ({ runId: "r" }),
+    });
+    // 不传 actor（定时巡检等内部触发）。null 表示"未记录"，与"某个叫空字符串的用户"必须可区分。
+    const task = await manager.createTask("stability", { profileId: "p1", rounds: 1 });
+    assert.equal(task.createdBy, null);
+    assert.equal(manager.publicTask(task).createdBy, null);
+    // 传空串也要归一成 null，否则前端 `task.createdBy ?` 判断会把 "" 当成有值以外的坑。
+    const blank = await manager.createTask("stability", { profileId: "p2", rounds: 1 }, { actor: "" });
+    assert.equal(blank.createdBy, null);
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
 });
 
 async function waitFor(predicate) {

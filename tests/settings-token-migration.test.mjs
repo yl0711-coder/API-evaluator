@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import test, { before, after } from "node:test";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const PORT = 5393;
+const PORT = 5398; // 避开其它端点测试占用的 5386-5397（原为 5393，与 dev-scenarios-endpoint 撞端口）
 const dataDir = mkdtempSync(join(tmpdir(), "settings-migrate-"));
 const settingsFile = join(dataDir, "配置", "settings.json");
 const LEGACY_TOKEN = "LEGACY-PLAINTEXT-TOKEN-7c1d";

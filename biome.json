@@ -4,6 +4,7 @@
     "includes": [
       "server.mjs",
       "vite.config.js",
+      "playwright.config.mjs",
       "index.html",
       "package.json",
       "server/**",
@@ -11,6 +12,7 @@
       "shared/**",
       "scripts/**",
       "tests/**",
+      "e2e/**",
       "!src/docs/**"
     ]
   },
@@ -24,7 +26,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": false,
+      "preset": "none",
       "correctness": {
         "noUnusedVariables": "error",
         "noUnusedImports": "error"

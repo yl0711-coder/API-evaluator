@@ -55,6 +55,15 @@ function buildSummary() {
             successRate: 1,
             successRateText: "100% (2/2)",
             avgTotalMs: 800,
+            outputTokens: 1_000,
+            outputTokenReportedCount: 2,
+            outputTokenTotalCount: 2,
+            cacheReadTokens: 200,
+            cacheReadTokenReportedCount: 2,
+            cacheReadTokenTotalCount: 2,
+            firstTokenSamples: [450, 480],
+            firstTokenSampleCount: 2,
+            p50FirstTokenMs: 450,
             p95TotalMs: 900,
             avgQualityScore: 92,
             issues: [],
@@ -70,6 +79,15 @@ function buildSummary() {
             successRate: 1,
             successRateText: "100% (2/2)",
             avgTotalMs: 1500,
+            outputTokens: 2_000,
+            outputTokenReportedCount: 1,
+            outputTokenTotalCount: 2,
+            cacheReadTokens: 400,
+            cacheReadTokenReportedCount: 2,
+            cacheReadTokenTotalCount: 2,
+            firstTokenSamples: [700],
+            firstTokenSampleCount: 1,
+            p50FirstTokenMs: 700,
             p95TotalMs: 2000,
             avgQualityScore: 71,
             issues: ["未命中场景关键要点"],
@@ -85,6 +103,15 @@ function buildSummary() {
             successRate: 0.5,
             successRateText: "50% (1/2)",
             avgTotalMs: 3000,
+            outputTokens: null,
+            outputTokenReportedCount: 0,
+            outputTokenTotalCount: 2,
+            cacheReadTokens: null,
+            cacheReadTokenReportedCount: 0,
+            cacheReadTokenTotalCount: 2,
+            firstTokenSamples: [],
+            firstTokenSampleCount: 0,
+            p50FirstTokenMs: null,
             p95TotalMs: 5000,
             avgQualityScore: 40,
             issues: ["请求超时"],
@@ -113,6 +140,13 @@ test("契约：md 解析路 与 结构化路 对同一份 summary 给出相同�
     assert.equal(m.rate, d.rate, `${m.name} 成功率`);
     assert.equal(m.quality, d.quality, `${m.name} 平均质量分`);
     assert.equal(m.avgMs, d.avgMs, `${m.name} 平均耗时`);
+    assert.equal(m.outputTokens, d.outputTokens, `${m.name} 输出 Token`);
+    assert.equal(m.outputTokenReportedCount, d.outputTokenReportedCount, `${m.name} 输出 Token 覆盖分子`);
+    assert.equal(m.outputTokenTotalCount, d.outputTokenTotalCount, `${m.name} 输出 Token 覆盖分母`);
+    assert.equal(m.cacheReadTokens, d.cacheReadTokens, `${m.name} 缓存命中 Token`);
+    assert.equal(m.cacheReadTokenReportedCount, d.cacheReadTokenReportedCount, `${m.name} 缓存 Token 覆盖分子`);
+    assert.equal(m.cacheReadTokenTotalCount, d.cacheReadTokenTotalCount, `${m.name} 缓存 Token 覆盖分母`);
+    assert.equal(m.p50FirstTokenMs, d.p50FirstTokenMs, `${m.name} P50 首 Token`);
     assert.equal(m.p95, d.p95, `${m.name} P95`);
     assert.equal(m.succ, d.succ, `${m.name} 成功次数`);
     assert.equal(m.total, d.total, `${m.name} 总次数`);

@@ -6,6 +6,244 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-08-11
+
+### Fixed
+- **发布身份统一** — `package.json`、Docker Compose 默认镜像、README 构建命令与
+  `/api/health` 的单一版本来源统一为 `0.7.9`。此前 `v0.7.8` tag 内仍显示 `0.7.7`，
+  可能造成部署旧镜像及排障身份错配；修复版应以新的不可变 tag 和镜像 digest 发布，
+  不改写既有 tag。
+- **自动测试 Cron 语义校验** — 对“语法合法但永远不会触发”的表达式（如 2 月 30 日）
+  保存时直接拒绝；保留闰日等四年内有效的规则。历史坏作业被调度时会停用并记录原因，
+  不再静默回退成每日执行。
+- **测试执行统一并发闸** — 异步任务、自动作业和同步测试接口共用
+  `EVALUATOR_MAX_CONCURRENT_TASKS` 总额度；自动作业的
+  `EVALUATOR_AUTO_TEST_CONCURRENCY` 仅作为更小的子额度，不能再与手工测试叠加突破总上限。
+- **SQLite 配置写失败不再伪成功** — SQLite 已可用时，渠道、模型目标与旧 profile 写失败
+  会返回存储错误，不会静默改写 JSON 造成双事实源漂移；仅运行环境完全不支持 SQLite 时保留
+  显式 JSON 降级。
+
+## [0.7.8] - 2026-08-11
+
+### Added
+- **独立「任务中心」页（新增 `src/task-center.js`，PRD FR-004 / 修 ADM-002、ADM-024）** — 任务状态此前藏在
+  报告中心的「最近任务状态」折叠区里，每个任务只有一行聚合状态，**看不出「哪一步没通过」**——而排查时
+  用户想知道的恰恰只有这个。PRD 要求的独立任务中心页一直没落地，现补上：
+  - 列表可按状态 / 类型筛选，点开任意任务看「模型 × 步骤」网格（复用标准评测那套
+    `.flow-model-group` / `.flow-step` 类名，两处观感一致）。运行中的任务自己轮询刷新，切走页面即停。
+  - **前端不自算准入结论**：只如实展示 `executionStatus` × `verdict` 两个正交字段，聚合判定仍归服务端
+    `aggregateSuite` 独有。
+  - `api-client` 新增**只读**的 `observeRemoteTask`（不 POST、不写 `state.activeTasks`，不会新建任务或
+    误取消别人的任务）与 `cancelTaskById`；顺手修掉 `src/api-client.js` 里指向不存在页面「任务管理」的文案。
+  - 「再测一次」只回填表单并跳到标准评测页，**不直接开跑**——任务花钱，最后一下留给用户；模型目标也
+    可能已删除或改名，先核对再填。回填靠 `batch-target-picker` 新增的 `selectMany`，锚点是单值的、跨渠道
+    的一组填不全，故如实返回真正勾上的 id，提示里说清「另有 N 个未回填」。
+  - **能力边界**：任务只在事件流最后 300 行内查得到，更早的查不到。要彻底解决需 SQLite 落库
+    （`evaluation_tasks` 表，ADM-017），属刻意未做的取舍。
+
+### Removed
+- **报告中心的「最近任务状态」折叠区**（连同 `renderTaskEventList`）— 已被上面的任务中心取代，不再并存，
+  避免两处展示同一批数据而口径不一致。`loadTaskEvents` 保留：交付视图仍靠 `state.taskEvents` 识别
+  「因程序关闭而中断」的任务。
+
+### Added
+- **任务状态落 SQLite，记录不再随进程消失（ADM-017，新增 `evaluation_tasks` 表）** — 任务此前只活在
+  内存 `Map` 里：落定 1 小时被逐出、重启即清空，唯一持久痕迹是 `task-events.jsonl` 且**只读最后 300 行**。
+  「上周那次准入到底跑没跑」查不到 —— 这正是上一轮做任务中心时留下的那条能力边界。
+  - 按 `task_id` **upsert** 而非 insert（任务一生要写多次：queued → 终态）。`payload_json` /
+    `result_json` / `steps_json` 用 `COALESCE` 保护：payload 只在建任务时写一次，终态 upsert 若直接
+    覆盖会把「再测一次」的参数摘要抹成 `null`。
+  - **两个来源合并读取**，刻意不写成「有库就只读库」：升级那一刻表是空的而 JSONL 有历史，一跑第一个
+    新任务库里有了 1 行，只读库就会让**全部历史任务凭空消失**。这个坑在实现中真的踩到了，由既有用例
+    抓出。同一 taskId 两边都有时以库为准。
+  - 启动时把残留的 `running` / `queued` 改判 `interrupted`。事件流路径早有等价的**读时**推断，但落库后
+    状态是持久的，必须真写回去，否则重启后列表永远挂着一批「运行中」、前端还会对它们无限轮询。
+  - **进度推进不落库**：一个 27 用例的任务会推进几十次，每次 upsert 是无谓写放大。只在状态跃迁时写，
+    进度靠内存态 + 轮询；读取时内存态覆盖库里的过时进度。
+  - `owner_user_id` 列先建好但仍不做隔离（见下条 ADM-016），将来真要隔离不必再迁一次表。
+  - 未做：列表仍只显示最近 30 条（分页 / 检索是另一档 UI 工作）；幂等键仍是进程内内存态，未落库加
+    `UNIQUE(owner_user_id, idempotency_key)`（ADM-015 的剩余敞口）。
+- **任务记录发起人与取消人（ADM-016 的记录部分）** — 多人共用一台工具时最常问的是「这轮谁跑的、
+  这笔钱谁花的」，而任务对象此前不记创建者。请求级早有 `run_by`（`run-context.mjs` 的
+  `AsyncLocalStorage` → `recordRequest`），任务级一直是空白。现在 `createTask` / `cancelTask` 各接一个
+  可选 `actor`，任务带 `createdBy` / `cancelledBy`，落进事件流（任务落定 1 小时就被逐出内存，只有事件流
+  能跨重启回答）并进 `publicTask`；任务中心列表行显示发起人，明细显示发起 / 取消人。
+  - `actor` 刻意**不走 payload**：payload 要过 `summarizeTaskPayload` 的形状摘要，身份混进去早晚被当
+    敏感字段摘掉、或反过来摘漏。用户名不是敏感字段（不同于 key / baseUrl），泄漏锁定用例照旧通过。
+  - **刻意不做强制隔离**：取消仍对所有登录者放行，不校验 `actor === createdBy`。取消是**止损**操作，
+    五人协作里「A 下班后他卡住的任务能被 B 掐掉」是协作而非漏洞，限权反而放大损失——role 10 正是日常
+    跑测试的人，他连自己刚发起的任务都取消不了就只能看着额度烧完。取消提示语带上操作者，出问题靠
+    事件流追溯。真要加隔离得先有 SQLite 落库（ADM-017），届时数据已经在了，加 `WHERE owner = ?` 即可；
+    先加墙再拆墙要难得多。已加用例锁死「不校验身份」，防后人顺手补上校验。
+  - 空串归一成 `null`：「未记录」（无会话的内部调用、历史任务）与「某个空名用户」必须可区分。
+
+### Fixed
+- **声明 `br;q=0` 的客户端仍会收到 brotli 响应体（解压失败 → 页面白屏）** — `negotiateEncoding` 用
+  `includes()` 做子串匹配，没有解析 q 值。而 `q=0` 在 RFC 9110 §12.5.3 里的语义是「我**解不了**这个
+  编码」，不是「优先级低」。实测：请求头 `Accept-Encoding: br;q=0, gzip` 拿到的响应是
+  `content-encoding: br`、body 首字节 `5b 4f`（brotli，非 gzip magic `1f 8b`）——只支持 gzip 的客户端
+  直接解压失败。
+  - 反向误判同时存在：任何含 `br` / `gzip` 子串的 token（`x-gzip`、`brotli`，甚至 `nobr`）都会被
+    `includes()` 命中，从而**对不支持压缩的客户端发压缩体**。
+  - 改为真正按 `,` 拆 token、解析 `;q=`，只有 q>0 才算可接受；显式列出的 token 优先于通配 `*`
+    （故 `br;q=0, *` 退到 gzip）。**优先级仍由服务端定**（br 优先）——q 值只用来判断「可不可以用」，
+    用哪个不照抄客户端的 q 排序。非法 q 视作 1，宁可压也不误判成拒绝。
+  - 新增 4 例回归（q=0 显式拒绝 / 正 q 均可接受 / `*` 通配 / 子串不误命中）；退回 `includes()` 写法
+    精确杀掉其中 3 例。
+- **P1-04 的两个模块级常量此前无任何测试覆盖** — `MAX_UPSTREAM_STREAM_RESPONSE_BYTES` 与
+  `JUDGE_AUDIT_MAX_CALLS` 是**模块加载时**求值的顶层 `const`，既有的两个 P1-04 测试文件都覆盖不到
+  （`env-config.test.mjs` 测解析器本身，`env-config-quota-effect.test.mjs` 测的是 task-manager /
+  auto-test-scheduler 两个**运行期**读取点）。实际后果：一批把这两处退回
+  `Number(env) > 0 ? … : d` 旧写法的改动，在 **1209 个用例全绿**的情况下通过了检查。
+  - 新增 `tests/env-config-constants.test.mjs`（8 例），靠「设好 env 再动态 import」读取模块级常量。
+    `JUDGE_AUDIT_MAX_CALLS` 随之改为 export（仅为可测；同文件的
+    `MAX_UPSTREAM_STREAM_RESPONSE_BYTES` 本就是 export，口径一致）。
+  - 顺带修正一处注释与实际行为不符：`test-runner.mjs` 原注释称 NaN 额度会让
+    `calls >= JUDGE_AUDIT_MAX_CALLS` 恒为 false 从而「无上限烧钱」，但代码里**并不存在**这个判断。
+    实测 NaN 的真实后果是 `items.slice(0, NaN)` 得到空集 → **一题都不评**，却仍返回 `ok: true` 与
+    `callsUsed: NaN`（看起来跑过了、其实什么都没评的静默空转）；真正会超发的是 `Infinity`
+    （27 题 × 2 裁判 = 54 次真实请求，超出额度 50）。两者都坏，但机制与原注释相反。
+- **多模型比对的基准列会随勾选的 peer 及其顺序漂移** — 「多模型比对」声称并写了测试守护的核心不变量是
+  「基准列必须不随勾选了哪些 peer 而变」，但「平均质量分」与「P50 首 Token 延迟」这两行实际会漂：
+  `buildMultiComparisonView` 拿 `views[0]`（即 `pairs[0]`）的 A 侧当基准列，而这两行在两列视图里做的是
+  **两方**过滤（「双方共有**且双方都有该指标**」），于是基准的分母变成「基准 ∩ pairs[0]」，跟着
+  `pairs[0]` 是谁走。实测：基准 S1=90 / S2=80、某 peer 的 S2 缺质量分时，**仅调换勾选顺序**基准列就从
+  60 变成 80，高亮列一起跳；P50 首 Token 同样（500 → 100）。用户会看到同一个基准在不同组合下给出不同的
+  分，且无从判断哪个才对。
+  - 新增 `multiSharedScenarioMetrics()`：这两行改用 **N 方口径** —— 在共享场景里取「**所有列都有该
+    指标**」的场景做分母，基准与各 peer 都在同一批场景上聚合。基准只算一次、与 peer 传入顺序无关，
+    各列同分母因而可比。
+  - 分母**确实**随勾选的 peer 集合变化，这是固有的（N 方共享场景集本身就由 peer 集合定义），不是缺陷；
+    故 `detail` 文案改成显式写出参与的场景个数，不让用户把「换了一批 peer 后数字变了」误读成算错。
+  - 首 Token 沿用两列视图的双轨口径：优先「各列都有原始样本」的场景池化取精确 P50，一个都没有才退回
+    「各列都有场景级 P50」的中位数（分位数不可分解，只作展示、不进综合分）。
+  - **原有用例为何全绿**：`tests/multi-comparison-view.test.mjs` 确有一条断言该不变量的用例，但它的三个
+    夹具在每个共享场景上都有质量分，走不到「两方过滤」与「N 方过滤」分母不同的那条路。现补一个
+    **在某场景上缺质量分**的 peer 夹具，并加 2 例回归（换序不变 / 各列同分母）。
+- **终态任务的结束时间从未落库，重启后任务时长算不出来（P1-03）** — `runTask` 的 `completed` /
+  `failed` / `cancelled` 三个分支都是「先 `appendTaskEvent` 写事件与 SQLite、后在 `finally` 里赋
+  `task.endedAt`」，于是落库那一刻 `endedAt` 还是 `undefined`。而 `recordEvaluationTask` 的 upsert 里
+  `ended_at` 走 `COALESCE`、此后再无写入——**这个 null 是永久的**：任务被逐出内存（落定 1 小时即逐出）
+  或进程重启后，任务中心只能显示「结束：—」，任务时长、审计与运营统计全部拿不到数。
+  - 修在 `appendTaskEvent` 这个**唯一的事件写入口**，而不是在三个分支各补一次赋值：将来新增终态分支
+    不会再漏这一笔。事件流与 SQLite 两条落盘路径共用同一个时间戳，天然不会打架。
+  - `finally` 里改成 `if (!task.endedAt)` 兜底，只覆盖「一个终态事件都没写成」的情况（如落盘异常逃逸
+    到 `runWithSlot` 的 catch）。**绝不能无条件重赋**：那会让内存里的时间与已落库的那笔差出几毫秒到
+    几百毫秒，同一个任务在「内存态」与「重启后读库」两条路径上显示不同的结束时间。
+  - 顺带修正了一处排序偏斜：`taskSortTime` 对库里的行此前永远拿不到 `endedAt`、只能退到 `createdAt`,
+    与内存态的排序口径不一致；现在两个来源对齐。
+  - 新增 completed / failed / cancelled 三类任务的落库断言，以及跨进程重启后 `endedAt` 仍在的断言。
+- **非法环境变量会让并发闸、熔断与留存清理静默失效（P1-04，新增 `server/env-config.mjs`）** — 全库散着
+  七八处 `Math.max(1, Number(process.env.X || d))`。`Number("abc")` 得到 `NaN`，而**`Math.max(1, NaN)`
+  仍是 `NaN`**，NaN 参与的任何比较恒为 false，于是阀门不是回落默认值而是彻底不工作：
+  - `runningSlots < NaN` 永不成立 → 新任务**永久 queued**，队列提示显示「最多同时跑 NaN 个」；
+  - `maxConsecutiveFailures > 0` 永不成立 → 自动测试的连续失败熔断被静默关掉，**配了熔断却不熔断，
+    比压根没配更危险**；
+  - 更隐蔽的一条：`NaN` 天数传进 `new Date(NaN).toISOString()` 会抛 `RangeError`，被
+    `runReportMaintenance` 最外层的空 catch 吞掉，**整段维护（报告清理 + 历史清理 + 老化压缩）一次都
+    不执行**，磁盘只增不减；
+  - 另一半是 `Infinity`：`Number("Infinity")` 是合法 Number 且 `> 0`，能通过 `> 0 ?:` 那种旧写法的校验，
+    等于把上限直接取消——流式响应字节硬顶、客户端报错限流、裁判调用额度、new-api 导入超时全在其中。
+  - 统一到 `envInt(name, fallback, {min, max})`：**刻意不用 `Number()`**（它把 `""` / `"0x10"` /
+    `"1e3"` / `"Infinity"` 都收下，语义太宽），改为正则卡住纯十进制整数再过 `Number.isSafeInteger`，
+    一次挡掉 NaN、±Infinity、小数与超过 2^53-1 的值。越界**拒绝并回落**而非 clamp——既有的
+    `utils.mjs:clampNumber` 是静默夹取，会把 `10000` 悄悄变成 64，运维看不出自己配错了。
+  - **选择安全默认值而非阻止启动**：这些全是可选调优项，为一个拼错的留存天数把服务拒起（评测平台常年
+    跑在单机 docker 上，起不来就没有任何界面能告诉运维原因）损失更大。原始缺陷的要害是**误配无处可见**，
+    所以关键是新增的明账而非终止进程。凭据类配置不走这里，`EVALUATOR_SESSION_SECRET` 未配置或过弱
+    仍在 `server/auth.mjs` 直接抛错拒启动。
+  - `/api/health` 新增 `limits`（`maxConcurrentTasks` / `runningSlots` / `autoTestConcurrency`）、
+    `autoTest.maxConcurrent` / `autoTest.maxConsecutiveFailures`，以及 `invalidEnvVars`——非空即说明有人
+    配错了值、系统正跑在默认值上。只报变量名与原始值，**不含任何凭据**。修正配置后无需重启，下次读取
+    即从清单消失。
+  - `EVALUATOR_AUTO_TEST_MAX_FAILURES` 用 `min: 0`，因为 0 的语义是「关闭熔断」，必须继续被尊重；
+    字节数与毫秒数两处 `min` 保持 1，只拒绝无意义的值，**不替运维决定「多短算太短」**（`newapi-source`
+    的超时用例就靠 300ms 跑得快，抬高下限会把它打挂）。
+  - 刻意未改 `server/auth.mjs`：那三处已是正确的 `Number.isFinite(n) && n > 0 ? n : d`，且会话 TTL
+    合法地接受小数小时，硬套整数解析器反而是回退。
+- **延迟统计不含重试与退避等待，报告比用户真实体感乐观（ADM-010，新增 `endToEndMs`）** — 一个「首次
+  503、退避 2 秒、二次 800ms 成功」的请求，此前只落 `total_ms = 800`：`performance.now()` 在每次 attempt
+  内重开，最终只留最后一次尝试的耗时。**用户实际等了 2.8 秒，而报告里的 P95 系统性优于真实体感**，
+  准入决策看的正是这个数。ADM-009 已修掉成功率的同类失真（重试掩盖首次失败），这条是它的延迟部分。
+  - **`total_ms` 语义刻意不变**，新增 `endToEndMs` 并存：趋势图与回归判定的延迟序列按
+    `total_ms IS NOT NULL` 取点（`server/db.mjs`），改它的含义会让历史数据不可比。`total_ms` 答「上游
+    一次请求有多快」，`endToEndMs` 答「用户等了多久」，报告并列展示、并说明两者的差就是重试等待。
+  - **确定性重配刻意不计入**：`temperature` / `stream_options` 被拒后就地删参重试是修我方请求体、
+    零退避、且同模型只发生一次（`TEMPERATURE_UNSUPPORTED_MODELS` 记住后首发就不带）。计进去只会让
+    每个模型的**第一条**记录凭空变慢，制造 ADM-010 本想消除的那类失真。已加用例锁死，防后人「顺手统一」。
+  - SQLite 新增 `end_to_end_ms` 列并走 `migrateSchema` 补列 —— 线上都是旧库，漏了迁移就是**写入静默
+    失败**（`recordRequest` 是 best-effort 吞异常的，表现为「新字段永远是空」而非报错）。
+  - 新增 `toIntOrNull`：既有 `toInt` 把 `null` 变成 `0`（`Number(null) === 0`），对可空耗时列是错的
+    ——落 0 之后统计无法区分「从未测到」与「真的零耗时」。既有列沿用 `toInt` 不动（改它会连带影响
+    token 各列，那里 null/0 另有含义）。
+  - 汇总侧覆盖率不足（部分记录缺字段）整体给 `null`，**绝不用 0 填缺失**——那会把 P95 洗低，比不给
+    数字更糟。
+  - **判定门槛仍走 `p95TotalMs`**，准入结论不因新口径改变：否则此前判过的渠道会被重新判一遍。
+  - 未做：`firstByteMs` / `firstTokenMs` 仍是最后一次尝试的口径；压测路径 `noRetry` 本就不重试，
+    无需此口径。
+- **判定阈值有两份，前端与服务端给出互相矛盾的结论（ADM-011，新增 `shared/thresholds.mjs`）** — 同一份
+  稳定性数据，准入报告按服务端的 15s / 45s 三档判「有条件通过」，标准评测页的「人话结论」却按前端
+  硬编码的 30s 判「初筛通过」。**两边都自称权威，用户无从知道该信哪个。** 根因是阈值有两份、且前端
+  那份被抄了两遍：`server/constants.mjs` 的 `15000` / `45000` 被 `admission-policy`、`reporting`、
+  `test-runner`、`model-fingerprint` 共 20 多处正确引用，而 `src/operator-guidance.js` 自带 4 处硬编码
+  `30000` 加各自的 `0.95` / `0.9` / `["A","B"]`，分散在 `buildStandardNextStepAdvice` 与
+  `buildStandardOperatorSummary` 两个函数里——**它们的 if-else 阶梯逐条相同，改一处必须同步改另一处，
+  实际上从来没同步过**。
+  - 新增 `shared/thresholds.mjs` 作为单一来源。放 `shared/` 而非 `server/` 是硬约束：后端**不得**
+    import `src/`（生产镜像不打包 `src/`，0.5.7 升级事故），前端也不该反向依赖 `server/`，前后端共用的
+    纯值只有 `shared/` 一个合法住处。`server/constants.mjs` 改为再导出，后端 20 多处既有引用一处未动。
+  - 两个前端函数抽出共用的 `classifyStandardOutcome`，只负责措辞、不再各自判定。
+  - **顺带修掉一档误导**：p95 超过 45s 时服务端 `evaluateStability` 判 `NOT_PASSED`，而前端旧代码一律
+    只降级到「能用，但速度偏慢」——**一条服务端判不通过的渠道，在人话面板上仍显示能用**。现对齐为
+    失败，并把 15~45s 之间单列为「有条件」。
+  - **刻意保留的口径差异**（已在代码注释写明，别当成新漂移去"修"）：初筛口径**宽于**准入门槛——准入
+    要 9 轮冒烟 9/9 全成功，初筛只要 ≥0.95。分工不同：初筛答「值不值得继续花钱测」，准入答「能不能
+    开放给业务」。`0.9~0.95` 之间那条「需人工复核」的带同样是刻意的，合并阈值会让它消失。
+  - 原有 6 条测试为何没抓到：**它们的 p95 一律取 1000~1200ms，全落在「怎么算都算快」的区间，永远碰不到
+    边界**。新增 3 例专打边界，均已变异验证。
+- **任务详情落定满 1 小时即 404，不需要重启（任务中心的前置缺陷）** — 任务对象落定 1 小时后被逐出内存
+  `Map`（重启则立即消失），而事件日志**既不落 `steps`**，折叠时又只留最后一个事件、**把唯一带 `payload`
+  的首个事件丢掉**。于是「点开一个昨天的任务看明细」根本做不到——比原先记录的「重启后丢失」更糟。
+  - `task-manager`：终态事件（`completed` / `failed` / `cancelled`）额外落一份 `steps` 快照，仍走
+    `publicTaskStep` 轻量摘要（无原始响应体、无 key）。**只在终态落一次**：running 期间每次进度更新都写
+    会把事件日志撑爆。
+  - `task-manager`：`admission-suite` 的 payload 摘要补 `profileIds` / `modelNames`，供「再测一次」回填。
+    **仍不落 key / base URL**，泄漏锁定用例照旧通过。
+  - `data-store`：折叠事件时同时留住首尾两端（first 带 payload、latest 带状态），新增 `readTaskDetail`
+    单任务回退查询；列表**刻意剥掉 `steps`**（30 任务 × 20 步够把列表响应撑到几百 KB）；事件流停在
+    `running` 的僵尸任务显式改判 `interrupted`，否则前端会对着永不推进的「运行中」无限轮询。
+  - `server.mjs`：`handleTaskGet` 内存查不到时回退事件流，不再直接 404。
+- **两处端点测试端口撞车，`npm test` 间歇性失败** — `scenario-persistence-restart` 与 `auto-test-digest`
+  同占 5388、`settings-token-migration` 与 `dev-scenarios-endpoint` 同占 5393（两处注释还写着「避开」它
+  自己所在的区间）。`node --test` 并发跑多个文件时后起的 server 子进程 `EADDRINUSE` 起不来，撞车双方
+  一起失败；**单跑任一文件都是绿的**，所以一直没被发现。改到 5397 / 5398 并修正注释。
+- **`exact` 判分器把 LaTeX 定界符「一边带一边不带」判成答错** — `normalizeAnswer`
+  （`server/benchmark-scorers.mjs`）剥引号/括号的字符类含裸 `(` 与 `)`，却不认 `\(` 与 `\)`：
+  对 `\(…\)` 只会剥掉结尾的 `)` 留下孤零零一个 `\`，而开头的 `\(` 因 `\` 不在类里被完整保留。
+  实测 `\(-((d - 2k)^2) + d\)` 归一化后变成 `\(-((d - 2k)^2) + d\` —— 于是同一个答案的「带定界符」
+  与「不带定界符」两种写法被归一成两个不同的串，期望值带、模型输出不带（或反之）时**哪怕写法一字不差
+  也判错**。新增 `stripMathDelimiters`，在剥引号/括号**之前**整对剥掉 `\(…\)`／`\[…\]`／`$$…$$`／`$…$`；
+  只剥整对（单边残留一律不动，宁可不剥也不制造新的不对称），`$…$` 要求内部无 `$`（避免把「$5 到 $10」
+  这类首尾恰好是 `$` 的普通文本当数学式吃掉中间）。该归一化函数为 `exact`/`structured`/`table`/`set`
+  四个判分器共用，改动对期望值与模型输出同等施加，故只可能把原本因定界符差异误判的 fail 翻成 pass。
+- **HLE 物理 #16：代数等价但形式不同的正确答案被判 0 分** — 期望 `\(-((d - 2k)^2) + d\)`、模型答
+  `\(d - (d - 2k)^2\)`，两者只差一次加法交换，`exact` 是字符串归一化匹配、看不见数学等价。方向是
+  **假阴性**，而 HLE 的用途正是档位降级判别（声称高档却在硬题崩）——判分器把答对的判成答错，等于凭空
+  制造「崩」的证据、污染判别信号。该题 `expected` 改为「可接受形式」数组（镜像原答案保留首位），覆盖
+  LaTeX 定界符有无、`^2` 与 `^{2}` 两种指数写法、`(d-2k)` 与 `(2k-d)` 两种等价平方底数。
+  `server/scenarios/hle.mjs` 标注「自动生成勿手改」且脚本恒生成字符串（`String(row.answer).trim()`），
+  直接手改会被下一次 `--offset` 换批静默抹掉，故在 `scripts/hle-import.mjs` 内建 `ANSWER_ALIASES`
+  覆盖表，键用 HLE 源 id（`row.id`，不随 `--offset`/`--count` 变动，比含跨类别序号的场景 id 稳定），
+  重新生成的产物与手改结果经逐字节比对一致。放宽 `tests/scenarios.test.mjs` 对 HLE `expected` 的
+  类型断言为「非空字符串 或 全非空字符串的数组」（保留原非空校验强度）。
+
+### 已知限制（刻意未做）
+- 上述 HLE #16 的可接受形式是**人工枚举，不是等价性判定，枚举不完**：把平方展开成
+  `-d^2 + 4dk - 4k^2 + d` 之类的写法仍会判错。治本方案是数值抽样等价判定（解析成表达式 → 自由变量
+  代入多组随机值 → 全部相等才算等价），需自写小解析器（LaTeX 剥壳、`^`→幂、隐式乘法 `2k`→`2*k`，
+  **不能用 `eval`**，模型输出是不可信输入）。本次刻意未做：当前受影响的仅此一题（HLE 15 题里 14 题
+  是单字母单选），先修方向为假阴性的定界符 bug、用枚举兜住已知个例；若数学类短答题占比上升再实施。
+
 ## [0.7.5] - 2026-08-04
 
 ### Fixed
@@ -439,7 +677,9 @@ Initial open-source release.
 ### Fixed
 - Concurrency-queue slot leak on the task-manager cancel path.
 
-[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.5...dev
+[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.9...dev
+[0.7.9]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.8...v0.7.9
+[0.7.8]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.6...v0.7.8
 [0.7.5]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.4...v0.7.5
 [0.4.6]: https://github.com/yl0711-coder/API-evaluator/compare/v0.4.3...v0.4.6
 [0.3.1]: https://github.com/yl0711-coder/API-evaluator/compare/v0.3.0...v0.3.1

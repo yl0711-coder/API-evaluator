@@ -381,6 +381,15 @@ export function formatScenarioReport(summary, options = {}) {
         scenario.successRateText,
         scenario.avgQualityScore,
         scenario.avgTotalMs || "-",
+        scenario.outputTokens ?? "-",
+        Number.isFinite(scenario.outputTokenReportedCount)
+          ? `${scenario.outputTokenReportedCount}/${scenario.outputTokenTotalCount ?? scenario.count}`
+          : "-",
+        scenario.cacheReadTokens ?? "-",
+        Number.isFinite(scenario.cacheReadTokenReportedCount)
+          ? `${scenario.cacheReadTokenReportedCount}/${scenario.cacheReadTokenTotalCount ?? scenario.count}`
+          : "-",
+        scenario.p50FirstTokenMs ?? "-",
         scenario.p95TotalMs ?? "-",
         escapeMarkdownTable(redactSensitiveText(scenario.sampleResponse || "-")),
         escapeMarkdownTable(scenario.issues.join("; ") || "-"),
@@ -479,8 +488,8 @@ export function formatScenarioReport(summary, options = {}) {
     "",
     safetySummary ? "## 7. 场景明细" : "## 6. 场景明细",
     "",
-    "| API | 场景 | 成功率 | 平均质量分 | 平均耗时 ms | 慢请求参考 P95 ms | 模型样例回答 | 问题摘要 | 场景结论 | 处理建议 |",
-    "|---|---|---:|---:|---:|---:|---|---|---|---|",
+    "| API | 场景 | 成功率 | 平均质量分 | 平均耗时 ms | 输出 Tokens（含思考） | 输出 Token 覆盖 | 缓存命中 Tokens | 缓存 Token 覆盖 | P50 首 Token ms | 慢请求参考 P95 ms | 模型样例回答 | 问题摘要 | 场景结论 | 处理建议 |",
+    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|",
     detailRows.join("\n"),
     "",
     safetySummary ? "## 8. 错误诊断与处理建议" : "## 7. 错误诊断与处理建议",
@@ -577,6 +586,14 @@ export function formatStabilityReport(summary, records, options = {}) {
     `- 慢请求参考 P95：${summary.p95TotalMs ?? "-"} ms`,
     `- 尾部延迟 P99：${summary.p99TotalMs ?? "-"} ms`,
     `- 最快/最慢：${summary.minTotalMs ?? "-"} ms / ${summary.maxTotalMs ?? "-"} ms`,
+    // 端到端口径（ADM-010）：上面几个数都只含【最后一次尝试】，把重试等待藏掉了。
+    // 历史报告的记录没有这个字段，如实写「未能统计」，不拿单次口径顶替。
+    ...(summary.p95EndToEndMs != null
+      ? [
+          `- **端到端 P95（含重试与退避等待）：${summary.p95EndToEndMs} ms**${summary.retryOverheadP95Ms ? `，其中重试等待约 ${summary.retryOverheadP95Ms} ms` : "（本轮无重试）"}`,
+          `- 端到端平均 / P50：${summary.avgEndToEndMs ?? "-"} ms / ${summary.p50EndToEndMs ?? "-"} ms`,
+        ]
+      : ["- 端到端耗时（含重试与退避）：未能统计（本轮记录缺该字段，通常是升级前落库的历史数据）"]),
     `- 平均输出字符：${summary.avgOutputChars}`,
     `- 输入 tokens 合计：${summary.inputTokens ?? "-"}（专业成本参考）`,
     `- 输出 tokens 合计：${summary.outputTokens ?? "-"}（专业成本参考）`,
@@ -636,6 +653,10 @@ export function formatStabilityReport(summary, records, options = {}) {
     "- 首包时间用于观察上游连接和排队速度。",
     "- P95 是慢请求参考，用于观察尾部延迟，通常比平均值更能反映稳定性。",
     "- P99 是更靠尾部的延迟，LLM 延迟重尾，最慢请求可能比中位数慢数倍，P99 更接近最差体验。",
+    "- 上面的耗时口径都只含**最后一次尝试**。若请求被限流或遇到上游 5xx，工具会自动退避重试，" +
+      "那段等待用户实际是要等的，却不在这些数字里——**端到端 P95** 才是用户真实体感。两者的差就是重试等待。",
+    "- 判定门槛仍按单次口径（P95）执行，端到端只作展示：这样历史报告与新报告的结论可比，" +
+      "不会因为换了口径就把此前判过的渠道重新判一遍。",
     "- 成功率附 95% 置信区间（Wilson 法，小样本安全）：样本越少区间越宽，应连同样本数一起看，不要只看比例点值。",
     "",
     ...buildReportAppendix(summary, options),

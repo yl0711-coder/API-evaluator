@@ -143,6 +143,23 @@ test("scoreExactAnswer normalizes width/case/punctuation and numbers", () => {
   assert.equal(tol.passed, true);
 });
 
+test("scoreExactAnswer strips LaTeX math delimiters symmetrically (期望带定界符、模型不带 → 应判过)", () => {
+  // 回归：剥壳正则的字符类含裸 ")" 但不含 "\)"，曾把 "\(x\)" 啃成 "\(x\" ——
+  // 左定界符留着、右定界符只剩半个反斜杠，导致「一边带定界符一边不带」时同一答案被判错。
+  assert.equal(scoreExactAnswer("<solution>d - (d - 2k)^2</solution>", "\\(d - (d - 2k)^2\\)").passed, true);
+  assert.equal(scoreExactAnswer("<solution>\\(d - (d - 2k)^2\\)</solution>", "d - (d - 2k)^2").passed, true);
+  // 两边都带定界符也要过（此前也是坏的：两边都被啃成 "\(…\"，虽同样残缺但恰好相等，属于蒙对）
+  assert.equal(scoreExactAnswer("<solution>\\(d - (d - 2k)^2\\)</solution>", "\\(d - (d - 2k)^2\\)").passed, true);
+  // 行间公式 \[…\] 与 $…$ / $$…$$ 同理
+  assert.equal(scoreExactAnswer("<solution>\\[x + 1\\]</solution>", "x + 1").passed, true);
+  assert.equal(scoreExactAnswer("<solution>$x + 1$</solution>", "x + 1").passed, true);
+  assert.equal(scoreExactAnswer("<solution>$$x + 1$$</solution>", "x + 1").passed, true);
+  // 剥壳不改变判错能力：真的答错仍判错
+  assert.equal(scoreExactAnswer("<solution>\\(d + (d - 2k)^2\\)</solution>", "\\(d - (d - 2k)^2\\)").passed, false);
+  // 不误伤：内部含 $ 的普通文本不当成定界符对（首尾同为 $ 才剥，且内部无 $）
+  assert.equal(scoreExactAnswer("<solution>$5 to $10</solution>", "$5 to $10").passed, true);
+});
+
 test("scoreExactAnswer accepts an array of acceptable answers and rejects wrong ones", () => {
   assert.equal(scoreExactAnswer("答案：yes", ["yes", "是", "正确"]).passed, true);
   const wrong = scoreExactAnswer("答案：完全不同", "正确答案");

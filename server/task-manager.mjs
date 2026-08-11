@@ -3,8 +3,11 @@
 // 不关心具体测试怎么跑（runner 由调用方注入），便于独立测试任务状态机。
 import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
+import { envInt } from "./env-config.mjs";
+import { createExecutionLimiter } from "./execution-limiter.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath } from "./report-files.mjs";
 import { countSuiteUnits } from "./admission-suite-plan.mjs";
+import { recordEvaluationTask } from "./db.mjs";
 
 // Owns remote task lifecycle only. It does not know how a stability or scenario
 // test works; callers inject runners so task state can be tested independently.
@@ -23,6 +26,8 @@ export function createTaskManager({
   logTechnicalError,
   buildUserErrorMessage,
   onRunComplete, // (result) => void：任务完成回调（用于高危报告提示等），best-effort
+  // 与自动测试/同步接口共享的执行闸。未注入时建私有闸，保留模块独立测试与旧调用方兼容。
+  executionLimiter,
 }) {
   const tasks = new Map();
   // 任务去重键 `${type}::${key}` → taskId，防重复发起造成的双花（这些任务每一次都真实调用
@@ -47,9 +52,6 @@ export function createTaskManager({
     const key = String(payload?.idempotencyKey ?? "").trim();
     return key ? `${normalizeTaskType(type)}::${key}` : null;
   }
-  // 全局重测试并发上限，超出排队。避免多任务并发拖垮宿主或同机其它服务的资源。
-  let runningSlots = 0;
-  const slotWaiters = [];
   // 最近完成任务的耗时（滚动，估算排队 ETA 用）。
   const recentDurationsMs = [];
   function avgTaskSeconds() {
@@ -61,29 +63,21 @@ export function createTaskManager({
   function fmtEta(seconds) {
     return seconds < 90 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`;
   }
+  // 每次调用都读 env：运维改完不必重启（历史行为，保留）。上限 64 是防手滑把并发配成 10000
+  // 直接打爆宿主与上游——真需要更高，改这个常量比误配一次安全。
+  // 解析走 envInt：`Math.max(1, Number("abc"))` 会得到 NaN，旧闸会让任务永久排队且
+  // 提示语显示「最多同时跑 NaN 个」；`Infinity` 则可绕开上限（P1-04）。
   function maxSlots() {
-    return Math.max(1, Number(process.env.EVALUATOR_MAX_CONCURRENT_TASKS || 4));
+    return envInt("EVALUATOR_MAX_CONCURRENT_TASKS", 4, { min: 1, max: 64 });
   }
-  function slotAvailable() {
-    return runningSlots < maxSlots();
-  }
-  function acquireSlot() {
-    if (slotAvailable()) {
-      runningSlots += 1;
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => slotWaiters.push(resolve));
-  }
-  function releaseSlot() {
-    const next = slotWaiters.shift();
-    if (next) {
-      next(); // 槽位直接转交等待者，runningSlots 计数守恒
-      return;
-    }
-    runningSlots = Math.max(0, runningSlots - 1);
-  }
-  async function runWithSlot(task, payload) {
-    await acquireSlot();
+  // 任务中心只是这个共享闸的一个入口；server.mjs 注入同一实例后，自动作业和同步接口
+  // 也会占用同一额度。这里的私有 fallback 仅用于模块单测/独立复用。
+  const limiter = executionLimiter || createExecutionLimiter({ getLimit: maxSlots });
+  async function runWithSlot(task, payload, { slotReserved = false } = {}) {
+    if (!slotReserved) await limiter.acquire();
+    // 即使 createTask 已同步预占槽位，也保留一个异步边界：创建接口先完整返回初始任务快照，
+    // 再开始执行 runner，避免同步/超快 runner 在初始事件刚写完时抢先把状态改成终态。
+    await Promise.resolve();
     // 取到槽位后的整段都纳入一个 try/finally：无论走取消早返回、started 转换还是 runTask，
     // releaseSlot 都恰好执行一次，绝不因中途异常（如 appendTaskEvent 落盘失败）泄漏槽位、卡死队列。
     try {
@@ -118,11 +112,18 @@ export function createTaskManager({
         }
       }
     } finally {
-      releaseSlot();
+      limiter.release();
     }
   }
 
-  async function createTask(type, payload) {
+  // actor：发起人用户名（来自会话，由 server.mjs 传入）。刻意【不经 payload】——payload 要过
+  // summarizeTaskPayload 的形状摘要，把身份混进去早晚被当成敏感字段一起摘掉，或反过来被摘漏。
+  //
+  // 这是「记录 + 展示，不拦截」：五人团队里 A 下班后他卡住的任务应当能被 B 掐掉（取消是止损
+  // 操作，限权反而放大损失），所以取消【不校验身份】。记下来是为了能追溯"这轮谁跑的、谁停的"，
+  // 不是为了做权限边界。真要强制隔离得先有 SQLite 落库（ADM-017），届时加 WHERE owner = ? 即可，
+  // 数据这时已经在了——先加墙再拆墙要难得多。
+  async function createTask(type, payload, { actor = null } = {}) {
     const dedupKey = taskDedupKey(type, payload);
     if (dedupKey) {
       const existingId = activeIdempotencyKeys.get(dedupKey);
@@ -133,14 +134,22 @@ export function createTaskManager({
         return existing;
       }
     }
-    const queued = !slotAvailable();
-    const tasksAhead = runningSlots + slotWaiters.length; // 在跑 + 已排在前面
-    const etaSeconds = queued ? Math.max(10, Math.ceil((tasksAhead + 1) / maxSlots()) * avgTaskSeconds()) : 0;
-    const queuePosition = queued ? slotWaiters.length + 1 : 0;
+    const normalizedType = normalizeTaskType(type);
+    // 在落事件前同步预占一个共享槽，避免两个并发 POST 都看到“有空位”后同时标 running。
+    // 预占失败的任务仍先正常落 queued 事件，再由 runWithSlot 进入 FIFO 等待队列。
+    const slotReserved = limiter.tryAcquire();
+    const limiterStatus = limiter.getStatus();
+    const queued = !slotReserved;
+    const tasksAhead = queued ? limiterStatus.active + limiterStatus.queued : 0; // 在跑 + 已排在前面
+    const etaSeconds = queued ? Math.max(10, Math.ceil((tasksAhead + 1) / limiterStatus.maxConcurrent) * avgTaskSeconds()) : 0;
+    const queuePosition = queued ? limiterStatus.queued + 1 : 0;
     const task = {
       id: crypto.randomUUID(),
-      type: normalizeTaskType(type),
+      type: normalizedType,
       status: queued ? "queued" : "running",
+      // 发起人 / 取消人。null = 未记录（无会话的内部调用，或本次改动之前建的历史任务）。
+      createdBy: actor || null,
+      cancelledBy: null,
       createdAt: new Date().toISOString(),
       startedAt: queued ? null : new Date().toISOString(),
       endedAt: null,
@@ -150,7 +159,7 @@ export function createTaskManager({
       queuePosition,
       etaSeconds,
       message: queued
-        ? `排队中：前面有 ${tasksAhead} 个测试在跑/等待，预计约 ${fmtEta(etaSeconds)} 后开始（为保护线上资源，复杂任务全局最多同时跑 ${maxSlots()} 个）。`
+        ? `排队中：前面有 ${tasksAhead} 个测试在跑/等待，预计约 ${fmtEta(etaSeconds)} 后开始（为保护线上资源，测试执行全局最多同时跑 ${limiterStatus.maxConcurrent} 个）。`
         : "任务已开始。",
       cancelRequested: false,
       // 取消时 abort 在飞的 fetch，请求层据此立即停止，不必等当前请求超时/自然结束。
@@ -161,12 +170,20 @@ export function createTaskManager({
     };
     tasks.set(task.id, task);
     if (dedupKey) activeIdempotencyKeys.set(dedupKey, task.id);
-    await appendTaskEvent(taskEventsFile, task, queued ? "queued" : "started", {
-      payload: summarizeTaskPayload(task.type, payload, { normalizeProfileIds, normalizeScenarioIds }),
-    });
+    try {
+      await appendTaskEvent(taskEventsFile, task, queued ? "queued" : "started", {
+        payload: summarizeTaskPayload(task.type, payload, { normalizeProfileIds, normalizeScenarioIds }),
+      });
+    } catch (error) {
+      // 预占成功但初始事件根本没有落下时，不能把槽和幂等键永远占住。
+      tasks.delete(task.id);
+      if (dedupKey && activeIdempotencyKeys.get(dedupKey) === task.id) activeIdempotencyKeys.delete(dedupKey);
+      if (slotReserved) limiter.release();
+      throw error;
+    }
     // Run in the background so HTTP handlers can return 202 immediately.
     // 经全局并发槽位调度：超出上限的任务会排队，等空闲槽位再执行。
-    void runWithSlot(task, payload).finally(() => {
+    void runWithSlot(task, payload, { slotReserved }).finally(() => {
       // 任务结束（无论成功/失败/取消）即释放去重键，让后续对同一目标的重跑可以重新发起。
       if (dedupKey && activeIdempotencyKeys.get(dedupKey) === task.id) activeIdempotencyKeys.delete(dedupKey);
     });
@@ -251,7 +268,11 @@ export function createTaskManager({
         await appendTaskEvent(taskEventsFile, task, "failed", { errorId: task.errorId });
       }
     } finally {
-      task.endedAt = new Date().toISOString();
+      // 正常路径下 endedAt 已由上面的终态 appendTaskEvent 补好（P1-03），这里只兜底
+      // 「一个终态事件都没写成」的情况（如落盘异常逃逸到 runWithSlot 的 catch）。
+      // 绝不能无条件重赋：那会让内存里的时间与已落库的那笔差出几毫秒到几百毫秒，
+      // 同一个任务在「内存态」与「重启后读库」两条路径上显示不同的结束时间。
+      if (!task.endedAt) task.endedAt = new Date().toISOString();
       // 记录任务耗时，喂给排队 ETA 估算（滚动保留最近 10 条）。
       if (task.startedAt) {
         const durMs = new Date(task.endedAt).getTime() - new Date(task.startedAt).getTime();
@@ -267,15 +288,21 @@ export function createTaskManager({
     }
   }
 
-  async function cancelTask(task) {
+  // actor：执行取消的人。刻意【不校验】他是否等于 createdBy——见 createTask 上方注释。
+  async function cancelTask(task, { actor = null } = {}) {
+    // 只能取消尚未落定的任务。这里而不是路由层单独判断，避免任务刚完成时仍被写入
+    // cancel_requested 事件，导致内存/事件流与 SQLite 的终态不一致。
+    if (!task || (task.status !== "queued" && task.status !== "running")) return false;
     task.cancelRequested = true;
-    task.message = "已请求取消，正在停止当前请求。";
+    task.cancelledBy = actor || null;
+    task.message = actor ? `已请求取消（由 ${actor} 操作），正在停止当前请求。` : "已请求取消，正在停止当前请求。";
     try {
       task.abortController?.abort();
     } catch {
       // best-effort：abort 失败不影响取消标志，下个批次边界仍会停。
     }
     await appendTaskEvent(taskEventsFile, task, "cancel_requested");
+    return true;
   }
 
   return {
@@ -284,6 +311,12 @@ export function createTaskManager({
     cancelTask,
     getTask: (taskId) => tasks.get(taskId),
     publicTask,
+    // 生效额度快照，给 /api/health 用（P1-04）：运维配了 EVALUATOR_MAX_CONCURRENT_TASKS 之后
+    // 得有地方看到"到底几个槽在起作用"，否则误配只能靠任务永久排队这种事后症状发现。
+    getLimits: () => {
+      const status = limiter.getStatus();
+      return { maxConcurrentTasks: status.maxConcurrent, runningSlots: status.active, queuedSlots: status.queued };
+    },
   };
 }
 
@@ -348,6 +381,8 @@ export function publicTask(task) {
     id: task.id,
     type: task.type,
     status: task.status,
+    createdBy: task.createdBy ?? null,
+    cancelledBy: task.cancelledBy ?? null,
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     endedAt: task.endedAt,
@@ -414,12 +449,44 @@ function summarizePublicTaskResult(result) {
   };
 }
 
+// 落定事件（completed/failed/cancelled）之后，任务对象会在 1 小时后被从内存 Map 里删掉，
+// 重启则立刻消失。若此时不把逐步骤快照写进事件日志，「模型 × 步骤」明细就只在这 1 小时内可见——
+// 任务中心点开一个昨天的任务会是一片空白。故终态事件额外落 steps（仍是 publicTaskStep 的
+// 轻量摘要：无原始响应体、无 key）。
+// 只在终态落一次：running 期间每次进度更新都写一遍会把事件日志撑爆，而中间态没有留存价值。
+const TERMINAL_TASK_EVENTS = new Set(["completed", "failed", "cancelled"]);
+
 export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
+  const terminal = TERMINAL_TASK_EVENTS.has(event);
+  // 终态的 endedAt 在这里统一补齐（P1-03）。此前 runTask 的三个终态分支都是「先写事件、
+  // 后在 finally 里赋 endedAt」，于是落库与事件流双双留下 ended_at = null，而 upsert 里
+  // ended_at 走 COALESCE、之后再没有写入——这个 null 是永久的：任务被逐出内存或进程重启后，
+  // 任务中心只能显示「结束：—」，任务时长/审计/运营统计全都算不出来。
+  // 放在唯一的写入口补，而不是在每个分支各赋一次：将来新增终态分支不会再漏这一笔。
+  if (terminal && !task.endedAt) task.endedAt = new Date().toISOString();
+  const steps = terminal && Array.isArray(task.steps) ? task.steps.map(publicTaskStep) : undefined;
+  // 同步落 SQLite（ADM-017）：JSONL 是逐事件流水、只读最后 300 行；这张表是逐任务当前态，
+  // 能答"上周那次准入跑没跑"。两者刻意并存——JSONL 不依赖 SQLite 可用，是最后的兜底。
+  // best-effort：recordEvaluationTask 自己吞掉所有异常，失败只是少一行落库，不影响事件写入。
+  // payload 只在建任务的那次事件带（extra.payload），后续 upsert 靠 COALESCE 保住首份。
+  // 必须 await：两次不等待的 upsert 可能乱序落地，把 completed 覆盖回 queued（status 字段是
+  // 直接赋值而非 COALESCE，先写的赢不了、后写的才赢——顺序错了就是错的状态）。
+  await recordEvaluationTask({
+    ...task,
+    payload: extra.payload ?? null,
+    result: extra.result ?? task.result ?? null,
+    steps: steps ?? task.steps,
+    errorId: task.errorId || extra.errorId || "",
+  });
   await appendJsonLine(taskEventsFile, {
     taskId: task.id,
     type: task.type,
     event,
     status: task.status,
+    // 发起人 / 取消人。用户名不是敏感字段（不同于 key / baseUrl），落进事件流才能在重启后
+    // 仍答得出"这轮谁跑的、谁停的"——任务对象本身落定 1 小时就被逐出内存。
+    createdBy: task.createdBy ?? null,
+    cancelledBy: task.cancelledBy ?? null,
     progress: task.progress,
     completedUnits: task.completedUnits,
     totalUnits: task.totalUnits,
@@ -430,6 +497,7 @@ export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
     startedAt: task.startedAt,
     endedAt: task.endedAt,
     loggedAt: new Date().toISOString(),
+    ...(steps ? { steps } : {}),
     ...extra,
   });
 }
@@ -488,8 +556,16 @@ export function summarizeTaskPayload(type, payload, { normalizeProfileIds, norma
   }
   if (type === "admission-suite") {
     // 事件日志是运维记录，绝不落 key/base URL。只记形状：测了几个模型、跑不跑档位探测。
+    // profileIds/modelNames 例外，因为任务中心的「再测一次」要靠它们回填表单——只有计数的话，
+    // 用户点「再测一次」我们连测的是哪个模型都不知道。它们是内部 id 与模型名，不是凭据：
+    // 模型名早已遍布报告与结果摘要，profileId 任何登录用户都能从 /api/profiles 读到，
+    // 且 stability 分支一直就在落 profileId（见上文），这里不是新开的先例。
     return {
       profileCount: normalizeProfileIds(payload.profileIds).length,
+      profileIds: normalizeProfileIds(payload.profileIds),
+      modelNames: Array.isArray(payload.modelNames) ? payload.modelNames.map((name) => String(name || "")) : [],
+      isClaudeChannel: Boolean(String(payload.claudeChannelId || "").trim()),
+      useAiReportAnalysis: Boolean(payload.useAiReportAnalysis),
       tierProbeCount: Array.isArray(payload.tierProbeModels) ? payload.tierProbeModels.length : 0,
       groupCount: Array.isArray(payload.groups) ? payload.groups.length : 0,
     };

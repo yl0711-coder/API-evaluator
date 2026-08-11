@@ -12,6 +12,7 @@ import { loadRunnableProfiles, resolveAdhocTarget } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
 import { computeEarnedTags, applyEarnedTags } from "./scenario-tag-award.mjs";
 import { P95_LATENCY_SLOW_MS } from "./constants.mjs";
+import { envInt } from "./env-config.mjs";
 import {
   ADMISSION_POLICY_VERSION,
   ITEM_STATUS,
@@ -40,6 +41,7 @@ import {
   buildProtocolRequest,
   buildProtocolStreamRequest,
   buildProtocolToolRequest,
+  buildProtocolUrl,
   coalesceSseResponse,
   extractFinishReason,
   extractOutputText,
@@ -1633,7 +1635,12 @@ async function runScenarioProfile({
 
 // 内联裁判审计：审计模式（只记录，不改结论）。开关关 / 无裁判渠道 / 无回答 → 跳过。
 // 裁判 = 配置里 role==="judge" 的渠道；额度上限默认 50（可 env 调），传 executeTestRequest 真实跑。
-const JUDGE_AUDIT_MAX_CALLS = Number(process.env.EVALUATOR_JUDGE_MAX_CALLS || 50);
+// 走 envInt：NaN 额度会让下方的 `calls >= JUDGE_AUDIT_MAX_CALLS` 恒为 false，裁判调用不再有上限，
+// 直接对着上游按条数烧钱；"Infinity" 同理（P1-04）。
+// 导出仅为可测：它是模块【加载时】求值的顶层 const，退回旧写法时任何运行期用例都不会红
+// （实测发生过：一次不完整的合并把它退成 Number(env || 50)，1209 个用例全绿）。
+// 同文件的 MAX_UPSTREAM_STREAM_RESPONSE_BYTES 也是导出的，口径一致。见 tests/env-config-constants.test.mjs。
+export const JUDGE_AUDIT_MAX_CALLS = envInt("EVALUATOR_JUDGE_MAX_CALLS", 50, { min: 1, max: 10_000 });
 async function maybeRunInlineJudgeAudit({ profile, items, runId, taskContext }) {
   if (!isLiveJudgeEnabled() || !items || items.length === 0) return null;
   const profiles = await loadRunnableProfiles();
@@ -1707,7 +1714,7 @@ function buildProbeTokenRequest(profile, text) {
   const baseUrl = profile.baseUrl.replace(/\/+$/, "");
   if (profile.protocol === "claude_messages") {
     return {
-      url: `${baseUrl}/v1/messages`,
+      url: buildProtocolUrl(profile.protocol, baseUrl),
       headers: {
         "content-type": "application/json",
         "x-api-key": profile.apiKey,
@@ -1717,7 +1724,7 @@ function buildProbeTokenRequest(profile, text) {
     };
   }
   return {
-    url: `${baseUrl}/v1/chat/completions`,
+    url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: { "content-type": "application/json", authorization: `Bearer ${profile.apiKey}` },
     body: { model: profile.defaultModel, max_tokens: 1, stream: false, messages: [{ role: "user", content: text }] },
   };
@@ -1847,6 +1854,7 @@ async function finalizeTestRecord({
   firstTokenMs = null,
   stream = false,
   totalMs,
+  endToEndMs = null,
   statusCode,
   statusText = "",
   responseText,
@@ -1885,6 +1893,11 @@ async function finalizeTestRecord({
     firstByteMs,
     firstTokenMs,
     totalMs,
+    // 端到端耗时（ADM-010）：含被重试掉的失败尝试与退避等待，故 endToEndMs >= totalMs。
+    // totalMs 的语义【刻意保持不变】——趋势图与回归判定的延迟序列按 total_ms 取点
+    // （server/db.mjs），改它的含义会让历史数据不可比。新口径一律走这个新字段。
+    // null 表示没测到（一次请求都没发出，如 Key 缺失 / egress 阻断）。
+    endToEndMs,
     statusCode,
     statusText, // 上游返回的原因短语（reason phrase），供压测报告逐码展示
     success: successOverride ?? Boolean(statusCode && statusCode >= 200 && statusCode < 300 && responseText),

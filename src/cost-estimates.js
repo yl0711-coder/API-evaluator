@@ -23,8 +23,15 @@ export function estimateStabilityCost(payload) {
 
 // 压力测试成本预估（校准前用文档 §4.1 的假设 L）：
 //   闭环：每点请求数 ≈ 并发 × 时长 / L；开环：每点 ≈ 速率 × 时长。扫描时对所有负载点求和。
-const LOAD_ASSUMED_L = { simple: 1.5, think: 6, coding: 12 }; // 秒/请求
+const LOAD_ASSUMED_L = { simple: 1.5, think: 6, coding: 12 }; // 秒/请求（按各档【默认】max_tokens 标定）
 const LOAD_TOKENS = { simple: [30, 80], think: [300, 700], coding: [800, 1400] };
+// 负载档各自的 max_tokens 默认值（同 server/load-test.mjs 的 LOAD_PROFILES，
+// 由 tests/load-test.test.mjs 的常量同步测试钉住，防两边各改一处静默漂移）。
+// 仅作「用户没填 maxTokens 时」的基线；填了则按用户填的为准。
+export const LOAD_PROFILE_MAX_TOKENS = { simple: 64, think: 256, coding: 800 };
+// 每请求的固定开销（建连 + 排队 + 首 token），与输出长度无关。上面的 L 减掉它即「生成耗时」，
+// 只有生成耗时随 max_tokens 变化——用于把 L 换算到用户填的输出上限（见下方 assumedL）。
+const LOAD_FIXED_OVERHEAD_SEC = 0.5;
 export function estimateLoadTestCost(payload) {
   const key = LOAD_ASSUMED_L[payload.promptProfile] ? payload.promptProfile : "simple";
   const durationSec = Number(payload.durationSec || 60);
@@ -32,23 +39,38 @@ export function estimateLoadTestCost(payload) {
   const intervalSec = open ? 0 : Number(payload.intervalSec) || 0; // 闭环思考时间：拉长每请求周期
   const burstPeriodSec = open ? Math.max(1, Number(payload.burstPeriodSec) || 1) : 1; // 开环发送周期：每 N 秒只发 1 秒
   const loads = Array.isArray(payload.loads) && payload.loads.length ? payload.loads : [open ? 10 : 30];
-  const requests = Math.max(
-    1,
-    loads.reduce(
-      (sum, load) =>
-        sum +
-        Math.round(
-          open ? (Number(load) * durationSec) / burstPeriodSec : (Number(load) * durationSec) / (LOAD_ASSUMED_L[key] + intervalSec),
-        ),
-      0,
-    ),
-  );
+
+  // max_tokens 现在由用户决定（不再被负载档锁死，见 server/load-test.mjs）。倍数只往上取：
+  // 填得比档位默认【小】并不代表模型就会少写——输出长度主要由 prompt 决定，max_tokens 只是上限，
+  // 往下砍预估会低报花费。
+  const defaultMaxTokens = LOAD_PROFILE_MAX_TOKENS[key];
+  const tokenScale = Math.max(1, (Number(payload.maxTokens) || defaultMaxTokens) / defaultMaxTokens);
+  // 闭环的请求数由每请求耗时决定，而每请求耗时随输出上限一起变长。只放大 token 不放大 L，
+  // 等于拿「短输出的请求数」乘「长输出的单请求 token」，闭环预估会高报数倍
+  // （简单档填 640 token 实测约 8×）。故把生成耗时同比拉长，固定开销不动。
+  const assumedL = LOAD_FIXED_OVERHEAD_SEC + Math.max(0, LOAD_ASSUMED_L[key] - LOAD_FIXED_OVERHEAD_SEC) * tokenScale;
+
+  const countRequests = (perReqSec) =>
+    Math.max(
+      1,
+      loads.reduce(
+        (sum, load) =>
+          sum + Math.round(open ? (Number(load) * durationSec) / burstPeriodSec : (Number(load) * durationSec) / (perReqSec + intervalSec)),
+        0,
+      ),
+    );
+  const requests = countRequests(assumedL);
   const [lo, hi] = LOAD_TOKENS[key];
+  // 成本等级锚在「未放大 max_tokens 时的请求数」上，取两者较大者：闭环放大后请求数会变少，
+  // 若直接用它定级，会出现「把 max_tokens 调大 → 实际更贵 → 警示等级反而降一档」。只增不减。
+  const riskRequests = Math.max(requests, countRequests(LOAD_ASSUMED_L[key]));
   return {
     requests,
-    lowTokens: requests * lo,
-    highTokens: requests * hi,
-    risk: requests >= 2000 ? "高" : requests >= 500 ? "中高" : "中",
+    // 两端同比放大：只抬高位会让「调大 max_tokens」时低位随请求数变少而跌到基线以下，
+    // 读起来像「上限调大反而更便宜」。tokenScale=1 时与放开前逐位相等（防回归）。
+    lowTokens: Math.round(requests * lo * tokenScale),
+    highTokens: Math.round(requests * hi * tokenScale),
+    risk: riskRequests >= 2000 ? "高" : riskRequests >= 500 ? "中高" : "中",
     note: "压测请求数为估计值（校准前用假设延迟），实际以运行为准，且全部真实计费。扫描会对每个负载点累加。",
   };
 }

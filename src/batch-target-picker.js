@@ -203,6 +203,23 @@ export function createBatchTargetPicker(container, { hiddenSelect, fixedDim } = 
     renderChips();
   }
 
+  // 程序化回填一组模型目标(供任务中心「再测一次」用)。锚点取第一个仍存在的目标所属渠道,
+  // 并只勾选同属该渠道的那些——锚点是单值的,跨渠道的一组没法在同一次里全选中。
+  // 返回真正勾上的 id,让调用方能如实告诉用户「另有 N 个没能回填」,而不是假装全填上了。
+  function selectMany(targetIds) {
+    if (dim !== "A" || !Array.isArray(targetIds) || !targetIds.length) return [];
+    const found = targetIds.map((id) => rawTargets.find((t) => t.id === id)).filter(Boolean);
+    if (!found.length) return [];
+    const channelId = found[0].channelId;
+    const sameChannel = found.filter((t) => t.channelId === channelId);
+    anchor.value = channelId;
+    selected.clear();
+    for (const target of sameChannel) selected.add(target.id);
+    renderList();
+    renderChips();
+    return sameChannel.map((t) => t.id);
+  }
+
   return {
     refresh,
     getSelectedIds: () => [...selected],
@@ -210,5 +227,6 @@ export function createBatchTargetPicker(container, { hiddenSelect, fixedDim } = 
     // 供「Claude 渠道额外快速准入」直接复用同一渠道的 baseUrl/Key。
     getAnchorValue: () => anchor.value,
     selectSingle,
+    selectMany,
   };
 }
