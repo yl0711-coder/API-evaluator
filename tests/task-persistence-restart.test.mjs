@@ -115,6 +115,10 @@ test("ADM-017: 任务记录跨进程重启仍可查，且残留 running 被改�
   assert.equal(afterRestart.body.taskId, task.id);
   assert.equal(afterRestart.body.createdBy, "admin", "身份必须跨重启保留——这是落库的主要动机之一");
   assert.equal(afterRestart.body.recoverable, false, "进程换了，没有 abortController，取消不了");
+  // P1-03：终态的结束时间必须跨重启保留。原缺陷是终态事件在 endedAt 赋值【之前】就落库，
+  // ended_at 永久为 null，重启后任务中心只能显示「结束：—」，任务时长/审计算不出来。
+  assert.ok(afterRestart.body.endedAt, "终态任务的结束时间必须跨重启保留（P1-03）");
+  assert.ok(new Date(afterRestart.body.endedAt).getTime() >= new Date(afterRestart.body.createdAt).getTime(), "结束时间不得早于创建时间");
   // 不能停在 running：那样前端会对着一个永不推进的任务无限轮询。
   assert.ok(
     ["completed", "failed", "cancelled", "interrupted"].includes(afterRestart.body.status),

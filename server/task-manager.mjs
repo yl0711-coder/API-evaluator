@@ -262,7 +262,11 @@ export function createTaskManager({
         await appendTaskEvent(taskEventsFile, task, "failed", { errorId: task.errorId });
       }
     } finally {
-      task.endedAt = new Date().toISOString();
+      // 正常路径下 endedAt 已由上面的终态 appendTaskEvent 补好（P1-03），这里只兜底
+      // 「一个终态事件都没写成」的情况（如落盘异常逃逸到 runWithSlot 的 catch）。
+      // 绝不能无条件重赋：那会让内存里的时间与已落库的那笔差出几毫秒到几百毫秒，
+      // 同一个任务在「内存态」与「重启后读库」两条路径上显示不同的结束时间。
+      if (!task.endedAt) task.endedAt = new Date().toISOString();
       // 记录任务耗时，喂给排队 ETA 估算（滚动保留最近 10 条）。
       if (task.startedAt) {
         const durMs = new Date(task.endedAt).getTime() - new Date(task.startedAt).getTime();
@@ -437,7 +441,14 @@ function summarizePublicTaskResult(result) {
 const TERMINAL_TASK_EVENTS = new Set(["completed", "failed", "cancelled"]);
 
 export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
-  const steps = TERMINAL_TASK_EVENTS.has(event) && Array.isArray(task.steps) ? task.steps.map(publicTaskStep) : undefined;
+  const terminal = TERMINAL_TASK_EVENTS.has(event);
+  // 终态的 endedAt 在这里统一补齐（P1-03）。此前 runTask 的三个终态分支都是「先写事件、
+  // 后在 finally 里赋 endedAt」，于是落库与事件流双双留下 ended_at = null，而 upsert 里
+  // ended_at 走 COALESCE、之后再没有写入——这个 null 是永久的：任务被逐出内存或进程重启后，
+  // 任务中心只能显示「结束：—」，任务时长/审计/运营统计全都算不出来。
+  // 放在唯一的写入口补，而不是在每个分支各赋一次：将来新增终态分支不会再漏这一笔。
+  if (terminal && !task.endedAt) task.endedAt = new Date().toISOString();
+  const steps = terminal && Array.isArray(task.steps) ? task.steps.map(publicTaskStep) : undefined;
   // 同步落 SQLite（ADM-017）：JSONL 是逐事件流水、只读最后 300 行；这张表是逐任务当前态，
   // 能答"上周那次准入跑没跑"。两者刻意并存——JSONL 不依赖 SQLite 可用，是最后的兜底。
   // best-effort：recordEvaluationTask 自己吞掉所有异常，失败只是少一行落库，不影响事件写入。
