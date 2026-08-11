@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildComparisonCsv } from "../src/model-compare.js";
+import { buildComparisonXlsx } from "../src/model-compare-excel.js";
 
 test("buildComparisonCsv exports summary and scenario usage fields with spreadsheet-safe text", () => {
   const csv = buildComparisonCsv({
@@ -39,4 +40,28 @@ test("buildComparisonCsv includes per-scenario token coverage", () => {
   });
 
   assert.match(csv, /"1\/2","2\/2","",""/);
+});
+
+test("buildComparisonXlsx creates a styled two-sheet workbook with comparison usage fields", () => {
+  const bytes = buildComparisonXlsx({
+    subjects: { a: { label: "渠道 A" }, b: { label: "渠道 B" } },
+    summary: [{ label: "场景通过率", valueA: 0.8, valueB: 0.9, format: "percent", winner: "b", detail: "共有场景" }],
+    scenarios: [
+      {
+        name: "场景甲",
+        tier: "中等",
+        winner: "a",
+        a: { quality: 90, passRate: 0.9, avgMs: 800, p50FirstTokenMs: 120, outputTokens: 120, cacheReadTokens: 30 },
+        b: { quality: 80, passRate: 0.8, avgMs: 900, p50FirstTokenMs: 180, outputTokens: 100, cacheReadTokens: 20 },
+      },
+    ],
+  });
+
+  assert.deepEqual([...bytes.slice(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
+  const contents = new TextDecoder().decode(bytes);
+  assert.match(contents, /<sheet name="概览"/);
+  assert.match(contents, /<sheet name="逐场景明细"/);
+  assert.match(contents, /P50 首 Token/);
+  assert.match(contents, /Token 用量/);
+  assert.match(contents, /对象 B 更优/);
 });

@@ -97,8 +97,14 @@ import {
   parseReportBaseName,
   pickRecentReports,
 } from "./server/report-compare.mjs";
-import { openReportInBrowser, reportIdFromHtmlPath, sanitizeReportBaseName } from "./server/report-files.mjs";
-import { createZipArchive } from "./server/report-archive.mjs";
+import {
+  countReportFileTextBytes,
+  createReportFileReadStream,
+  openReportInBrowser,
+  reportIdFromHtmlPath,
+  sanitizeReportBaseName,
+} from "./server/report-files.mjs";
+import { streamZipArchive } from "./server/report-archive.mjs";
 import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobValidationError } from "./server/auto-test-store.mjs";
 import { loadRules, updateRules, normalizeRule, validateRule, RuleValidationError } from "./server/alert-rules-store.mjs";
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
@@ -1646,7 +1652,11 @@ async function handleTaskCancel(req, res, { params }) {
   }
   // 刻意不校验 req.session.username === task.createdBy：取消是止损操作，五人协作里
   // 「A 下班后他卡住的任务能被 B 掐掉」是好事，限权反而放大损失。只如实记下是谁停的。
-  await taskManager.cancelTask(task, { actor: req.session?.username || null });
+  const cancelled = await taskManager.cancelTask(task, { actor: req.session?.username || null });
+  if (!cancelled) {
+    sendJson(res, 409, { error: "task_not_active", message: "任务已结束，不能取消。" });
+    return;
+  }
   sendJson(res, 200, taskManager.publicTask(task));
   return;
 }
@@ -1709,8 +1719,62 @@ async function handleReportFilesList(req, res) {
   return;
 }
 
-const MAX_BULK_REPORTS = 200;
-const MAX_BULK_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+const MAX_BULK_REPORTS = 32;
+const MAX_BULK_DOWNLOAD_BYTES = 24 * 1024 * 1024;
+const BULK_DOWNLOAD_MAX_CONCURRENT = 1;
+const BULK_DOWNLOAD_MAX_QUEUE = 1;
+const BULK_DOWNLOAD_RATE_WINDOW_MS = 5 * 60_000;
+const BULK_DOWNLOAD_RATE_MAX =
+  Number(process.env.EVALUATOR_BULK_DOWNLOAD_RATE_MAX) > 0 ? Number(process.env.EVALUATOR_BULK_DOWNLOAD_RATE_MAX) : 4;
+const bulkReportDownloadLimiter = createRateLimiter({ windowMs: BULK_DOWNLOAD_RATE_WINDOW_MS, max: BULK_DOWNLOAD_RATE_MAX });
+let activeBulkReportDownloads = 0;
+const pendingBulkReportDownloads = [];
+
+function runBulkReportDownload(job) {
+  activeBulkReportDownloads += 1;
+  return Promise.resolve()
+    .then(job)
+    .finally(() => {
+      activeBulkReportDownloads -= 1;
+      const next = pendingBulkReportDownloads.shift();
+      if (!next) return;
+      runBulkReportDownload(next.job).then(next.resolve, next.reject);
+    });
+}
+
+function enqueueBulkReportDownload(job) {
+  if (activeBulkReportDownloads < BULK_DOWNLOAD_MAX_CONCURRENT) return runBulkReportDownload(job);
+  if (pendingBulkReportDownloads.length >= BULK_DOWNLOAD_MAX_QUEUE) {
+    throw new HttpRequestError(429, "bulk_download_queue_full", "已有批量导出正在处理，请稍后重试。");
+  }
+  return new Promise((resolve, reject) => pendingBulkReportDownloads.push({ job, resolve, reject }));
+}
+
+function endBulkDownloadResponse(res) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      res.off("finish", onFinish);
+      res.off("error", onError);
+      res.off("close", onClose);
+    };
+    const onFinish = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("archive_response_closed"));
+    };
+    res.once("finish", onFinish);
+    res.once("error", onError);
+    res.once("close", onClose);
+    res.end();
+  });
+}
 
 function selectedReportIds(body) {
   if (!Array.isArray(body?.ids) || body.ids.length === 0) {
@@ -1743,34 +1807,58 @@ function downloadFileName() {
 
 async function handleReportFilesDownload(req, res) {
   const ids = selectedReportIds(await readJson(req));
-  const entries = [];
-  let totalBytes = 0;
-  for (const id of ids) {
-    let html;
-    try {
-      html = await readReportFileText(join(REPORTS_DIR, `${id}.html`));
-    } catch (error) {
-      if (error?.code === "ENOENT") {
-        throw new HttpRequestError(404, "report_not_found", `报告「${id}」不存在或已删除。`);
-      }
-      throw error;
-    }
-    totalBytes += Buffer.byteLength(html, "utf8");
-    if (totalBytes > MAX_BULK_DOWNLOAD_BYTES) {
-      throw new HttpRequestError(413, "reports_too_large", "所选报告解压后的总大小超过 256 MiB，请减少选择后重试。");
-    }
-    entries.push({ name: `${id}.html`, content: html });
+  const rate = bulkReportDownloadLimiter.check(req.session?.username || "unknown");
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", String(Math.max(1, Math.ceil(rate.retryAfterMs / 1000))));
+    sendJson(res, 429, { error: "bulk_download_rate_limited", userMessage: "批量导出过于频繁，请稍后重试。" });
+    return;
   }
-  const archive = createZipArchive(entries);
-  const filename = downloadFileName();
-  res.writeHead(200, {
-    "Content-Type": "application/zip",
-    "Content-Disposition": `attachment; filename=\"${filename}\"`,
-    "Content-Length": archive.length,
-    "Cache-Control": "no-store",
-    "X-Content-Type-Options": "nosniff",
+
+  await enqueueBulkReportDownload(async () => {
+    if (res.destroyed) return;
+    const entries = [];
+    let totalBytes = 0;
+    for (const id of ids) {
+      const path = join(REPORTS_DIR, `${id}.html`);
+      try {
+        const file = await stat(path);
+        if (!file.isFile()) throw Object.assign(new Error("report_not_found"), { code: "ENOENT" });
+        const size = await countReportFileTextBytes(path, { maxBytes: MAX_BULK_DOWNLOAD_BYTES - totalBytes });
+        totalBytes += size;
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          throw new HttpRequestError(404, "report_not_found", `报告「${id}」不存在或已删除。`);
+        }
+        if (error?.code === "report_size_limit_exceeded") {
+          throw new HttpRequestError(413, "reports_too_large", "所选报告解压后的总大小超过 24 MiB，请减少选择后重试。");
+        }
+        throw error;
+      }
+      entries.push({ name: `${id}.html`, path });
+    }
+
+    const filename = downloadFileName();
+    res.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename=\"${filename}\"`,
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    try {
+      await streamZipArchive(
+        entries.map((entry) => ({ name: entry.name, stream: createReportFileReadStream(entry.path) })),
+        res,
+        {
+          maxSourceBytes: MAX_BULK_DOWNLOAD_BYTES,
+        },
+      );
+      await endBulkDownloadResponse(res);
+    } catch (error) {
+      // Headers may already be sent; terminating this response is safer than
+      // emitting a corrupt archive or attempting a second JSON response.
+      res.destroy(error);
+    }
   });
-  res.end(archive);
 }
 
 async function handleReportFilesBulkDelete(req, res) {
@@ -1925,12 +2013,17 @@ async function handleReportsCompare(req, res) {
   const reportId = sanitizeReportBaseName(baseName);
   const usedNote = (agg) =>
     `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入${agg.reportCounts.load ? ` / ${agg.reportCounts.load} 压测` : ""}`;
-  sendCompressedJson(res, 200, {
-    reportId,
-    markdown,
-    comparison: buildComparisonView(cmp),
-    notes: { a: usedNote(aggA), b: usedNote(aggB), ai: aiNote, aiApplied: Boolean(aiNarrative) },
-  }, req.headers["accept-encoding"]);
+  sendCompressedJson(
+    res,
+    200,
+    {
+      reportId,
+      markdown,
+      comparison: buildComparisonView(cmp),
+      notes: { a: usedNote(aggA), b: usedNote(aggB), ai: aiNote, aiApplied: Boolean(aiNarrative) },
+    },
+    req.headers["accept-encoding"],
+  );
   return;
 }
 
@@ -1972,7 +2065,7 @@ async function handleReportsComparePeers(req, res) {
   const index = buildSubjectSlugIndex(subjects, sanitizeReportBaseName);
   // 基准模型自身的 slug 集合（现用名 + 曾用名组合）：文件任一侧命中其一即算「与基准比对过」。
   const baseSlugs = new Set(buildSubjectSlugIndex([base], sanitizeReportBaseName).keys());
-  const idOf = (s) => s.targetId || `${s.channel} ${s.model}`;
+  const idOf = (s) => s.targetId || `${s.channel}\u0000${s.model}`;
   const baseId = idOf(base);
 
   const names = await listReportMdNames();
@@ -2056,7 +2149,7 @@ async function handleReportsCompareMulti(req, res) {
     sendJson(res, 400, { error: "invalid_target", userMessage: "请选择基准模型（渠道 + 模型）。" });
     return;
   }
-  const idOf = (s) => s.targetId || `${s.channel} ${s.model}`;
+  const idOf = (s) => s.targetId || `${s.channel}\u0000${s.model}`;
   const baseId = idOf(base);
   // 去重 + 剔除与基准同一个模型（自己跟自己并列没有意义）。
   const seen = new Set();
@@ -2142,15 +2235,20 @@ async function handleReportsCompareMulti(req, res) {
 
   const usedNote = (agg) =>
     `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入${agg.reportCounts.load ? ` / ${agg.reportCounts.load} 压测` : ""}`;
-  sendCompressedJson(res, 200, {
-    comparison: buildMultiComparisonView({ baseAgg, pairs, sharedScenarios: [...shared] }),
-    skipped,
-    notes: {
-      base: usedNote(baseAgg),
-      peers: pairs.map((p) => ({ label: p.agg.label, used: usedNote(p.agg) })),
-      sharedScenarioCount: shared.size,
+  sendCompressedJson(
+    res,
+    200,
+    {
+      comparison: buildMultiComparisonView({ baseAgg, pairs, sharedScenarios: [...shared] }),
+      skipped,
+      notes: {
+        base: usedNote(baseAgg),
+        peers: pairs.map((p) => ({ label: p.agg.label, used: usedNote(p.agg) })),
+        sharedScenarioCount: shared.size,
+      },
     },
-  }, req.headers["accept-encoding"]);
+    req.headers["accept-encoding"],
+  );
   return;
 }
 
@@ -2323,7 +2421,12 @@ async function handleSupportBundle(req, res) {
   const tasks = await readRecentTasks(taskManager.tasks, taskManager.publicTask);
   const errors = await readRecentErrors();
   const storage = getDbHealth();
-  sendCompressedJson(res, 200, buildSupportBundle({ profiles, requests, testRuns, tasks, errors, storage }), req.headers["accept-encoding"]);
+  sendCompressedJson(
+    res,
+    200,
+    buildSupportBundle({ profiles, requests, testRuns, tasks, errors, storage }),
+    req.headers["accept-encoding"],
+  );
   return;
 }
 

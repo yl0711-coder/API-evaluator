@@ -289,6 +289,9 @@ export function createTaskManager({
 
   // actor：执行取消的人。刻意【不校验】他是否等于 createdBy——见 createTask 上方注释。
   async function cancelTask(task, { actor = null } = {}) {
+    // 只能取消尚未落定的任务。这里而不是路由层单独判断，避免任务刚完成时仍被写入
+    // cancel_requested 事件，导致内存/事件流与 SQLite 的终态不一致。
+    if (!task || (task.status !== "queued" && task.status !== "running")) return false;
     task.cancelRequested = true;
     task.cancelledBy = actor || null;
     task.message = actor ? `已请求取消（由 ${actor} 操作），正在停止当前请求。` : "已请求取消，正在停止当前请求。";
@@ -298,6 +301,7 @@ export function createTaskManager({
       // best-effort：abort 失败不影响取消标志，下个批次边界仍会停。
     }
     await appendTaskEvent(taskEventsFile, task, "cancel_requested");
+    return true;
   }
 
   return {

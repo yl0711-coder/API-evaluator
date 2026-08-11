@@ -60,6 +60,7 @@ test("requiresAdmin 规则", () => {
   assert.equal(requiresAdmin("POST", "/api/profiles/abc/key"), true);
   assert.equal(requiresAdmin("GET", "/api/profiles"), false);
   assert.equal(requiresAdmin("GET", "/api/support-bundle"), true);
+  assert.equal(requiresAdmin("POST", "/api/reports/files/download"), true);
   assert.equal(requiresAdmin("POST", "/api/tests/quick"), false);
   // 设置读写都不再一刀切要超管：普通管理员可改「不影响 new-api」的设置，
   // new-api 相关字段在端点内字段级门禁（见 server.mjs PUT /api/settings）。
@@ -81,6 +82,8 @@ test("删除报告文件仅超管：DELETE /api/reports/* 需超管，GET 列表
   // 普通用户看列表/查看 → 放行
   assert.equal(evaluateApiAccess({ method: "GET", pathname: "/api/reports/files", session: user }).allow, true);
   assert.equal(evaluateApiAccess({ method: "GET", pathname: "/api/reports/foo/view", session: user }).allow, true);
+  assert.equal(evaluateApiAccess({ method: "POST", pathname: "/api/reports/files/download", session: user }).error, "forbidden_admin");
+  assert.equal(evaluateApiAccess({ method: "POST", pathname: "/api/reports/files/download", session: admin }).allow, true);
 });
 
 test("v0.3.0 渠道写=超管(100)，模型目标写=管理员(10)即可", () => {

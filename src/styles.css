@@ -153,6 +153,7 @@ code {
 .main {
   padding: 34px;
   overflow: auto;
+  min-width: 0; /* Grid 子项允许收缩，宽表交给内部滚动容器处理。 */
   min-height: 0;
   transition: padding 0.25s ease;
 }
@@ -4529,6 +4530,10 @@ body.better-lighting::after {
 
 .mc-compare-table {
   margin-bottom: 16px;
+}
+
+#mc-result {
+  min-width: 0; /* 表单网格子项可收缩，宽表由 .mc-compare-scroll 横向滚动。 */
 }
 
 .mc-compare-table-head {

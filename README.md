@@ -107,6 +107,36 @@ docker compose --env-file .env.evaluator \
   -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
 ```
 
+### Health recovery on systemd hosts
+
+The compose deployment intentionally does **not** mount the Docker socket into any container. Docker's socket API
+is privileged even when the mount is read-only. Instead, install the supplied host-side systemd timer: it checks
+only the fixed `api-evaluator` container and restarts it only when Docker reports its health as `unhealthy`.
+
+```bash
+# Stop the legacy socket-owning watcher during an upgrade, if it exists.
+docker rm -f api-evaluator-autoheal 2>/dev/null || true
+
+# Run the updated compose deployment first, so Docker owns the healthcheck.
+docker compose --env-file .env.evaluator \
+  -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
+
+# Copy recovery assets to a host location that application containers cannot write.
+sudo install -d -o root -g root -m 0755 /usr/local/lib/api-evaluator
+sudo install -o root -g root -m 0755 deploy/api-evaluator-health-recovery.sh \
+  /usr/local/lib/api-evaluator/api-evaluator-health-recovery.sh
+sudo install -o root -g root -m 0644 deploy/api-evaluator-health-recovery.service \
+  /etc/systemd/system/api-evaluator-health-recovery.service
+sudo install -o root -g root -m 0644 deploy/api-evaluator-health-recovery.timer \
+  /etc/systemd/system/api-evaluator-health-recovery.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now api-evaluator-health-recovery.timer
+```
+
+Check the timer with `systemctl list-timers api-evaluator-health-recovery.timer` and recovery attempts with
+`journalctl -u api-evaluator-health-recovery.service`. For Kubernetes, Nomad, or another orchestrator, use its
+native health-recovery controller instead of installing this timer.
+
 **Resource isolation** — the compose file caps the container (`mem_limit: 512m`, `cpus: "0.75"`) so
 it can be co-located with another service without starving it: on overrun only this container is
 OOM-killed, not the host. On a very small host (e.g. 2 vCPU / 2 GB) set
