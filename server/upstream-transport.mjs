@@ -9,14 +9,19 @@ import { readProfileApiKey } from "./secret-store.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
 import { firstTokenPatternFor, isStreamOptionsUnsupportedError, isTemperatureUnsupportedError, normalizeHttpError } from "./protocols.mjs";
 import { summarizeText } from "./utils.mjs";
+import { envInt } from "./env-config.mjs";
 
 export const MAX_UPSTREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
 // 流式 SSE 每个 token 单独成帧、外裹一层 JSON 信封（Claude 更是每 token 多个事件），体积是同等纯
 // 文本的 50–100 倍；长输出（maxTokens override ≥ ~8k 或推理模型长思考）流式下轻松 5–7MB。若沿用上面
 // 2MB 上限，健康渠道的长流式响应会在 2MB 处被截断、误判 response_too_large → 判 F（好渠道判成坏渠道）。
 // 故流式单独放大上限；仍有硬顶（+每请求超时兜底），不会因坏上游无界缓冲。可用 env 覆盖。
-export const MAX_UPSTREAM_STREAM_RESPONSE_BYTES =
-  Number(process.env.EVALUATOR_MAX_STREAM_RESPONSE_BYTES) > 0 ? Number(process.env.EVALUATOR_MAX_STREAM_RESPONSE_BYTES) : 24 * 1024 * 1024;
+// 走 envInt：旧写法的 `> 0` 已挡住 NaN，但收下 "Infinity"——那等于把这个硬顶取消，坏上游
+// 一路吐流就能把评测机的内存吃干（这个上限存在的唯一目的就是防这件事）。上限 512MB 是形式约束（P1-04）。
+// min 同样保持 1（只拒无意义的值，不替运维定"多小算太小"）；测试若要压出截断分支会配很小的上限。
+export const MAX_UPSTREAM_STREAM_RESPONSE_BYTES = envInt("EVALUATOR_MAX_STREAM_RESPONSE_BYTES", 24 * 1024 * 1024, {
+  max: 512 * 1024 * 1024,
+});
 
 // 流式完整性：只在「流被截断 / 出错帧 / 内容块损坏」这些**确定**的不完整信号上判失败。
 // 刻意不采纳 summarizeStreamStructure 的全部 issue（如 invalid_json_chunk、event_order_invalid 等

@@ -12,6 +12,7 @@
 //  2) 全局并发闸——同时最多跑 maxConcurrent 个作业（信号量），避免多作业同刻到期时压垮上游 API。
 //     作业在【等待信号量之前】就标记进 runningJobIds，故跨 tick 不会重复触发同一作业。
 import { computeNextRunAt } from "./auto-test-store.mjs";
+import { envInt } from "./env-config.mjs";
 
 export function createAutoTestScheduler({
   loadJobs,
@@ -24,10 +25,12 @@ export function createAutoTestScheduler({
   // 活性判定：距上次 tick 超过此毫秒数即判「僵死」（getStatus().stale=true），供 /api/health 暴露、
   // 容器健康检查 + 外部看门狗（autoheal）据此重启「进程活着但定时器僵死」的静默故障。
   staleAfterMs = tickMs * 5,
-  maxConcurrent = Math.max(1, Number(process.env.EVALUATOR_AUTO_TEST_CONCURRENCY || 2)),
+  maxConcurrent = envInt("EVALUATOR_AUTO_TEST_CONCURRENCY", 2, { min: 1, max: 32 }),
   // 连续失败熔断阈值：作业连续失败达此次数即自动停用，避免被监控对象挂掉后无限空跑失败。
   // 0 = 关闭熔断。默认 5，可用 EVALUATOR_AUTO_TEST_MAX_FAILURES 覆盖。
-  maxConsecutiveFailures = Math.max(0, Number(process.env.EVALUATOR_AUTO_TEST_MAX_FAILURES || 5)),
+  // 必须走 envInt：旧写法 Math.max(0, Number("abc")) = NaN，会让下方 `maxConsecutiveFailures > 0`
+  // 恒为 false，熔断静默失效——配了熔断却不熔断，比压根没配更危险（P1-04）。
+  maxConsecutiveFailures = envInt("EVALUATOR_AUTO_TEST_MAX_FAILURES", 5, { min: 0, max: 1000 }),
   now = () => Date.now(),
 }) {
   const runningJobIds = new Set();
@@ -254,6 +257,10 @@ export function createAutoTestScheduler({
       staleAfterMs,
       stale,
       activeJobs: runningJobIds.size,
+      // 生效额度（P1-04）：/api/health 要能看出并发闸与熔断阈值最终取了几，
+      // 否则误配只能靠"熔断从来不触发"这类事后症状发现。
+      maxConcurrent,
+      maxConsecutiveFailures,
     };
   }
 

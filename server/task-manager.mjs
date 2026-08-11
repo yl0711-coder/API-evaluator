@@ -3,6 +3,7 @@
 // 不关心具体测试怎么跑（runner 由调用方注入），便于独立测试任务状态机。
 import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
+import { envInt } from "./env-config.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath } from "./report-files.mjs";
 import { countSuiteUnits } from "./admission-suite-plan.mjs";
 import { recordEvaluationTask } from "./db.mjs";
@@ -62,8 +63,12 @@ export function createTaskManager({
   function fmtEta(seconds) {
     return seconds < 90 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`;
   }
+  // 每次调用都读 env：运维改完不必重启（历史行为，保留）。上限 64 是防手滑把并发配成 10000
+  // 直接打爆宿主与上游——真需要更高，改这个常量比误配一次安全。
+  // 解析走 envInt：`Math.max(1, Number("abc"))` 会得到 NaN，`runningSlots < NaN` 恒 false，
+  // 任务将永久排队且提示语显示「最多同时跑 NaN 个」；`Infinity` 则绕开上限（P1-04）。
   function maxSlots() {
-    return Math.max(1, Number(process.env.EVALUATOR_MAX_CONCURRENT_TASKS || 4));
+    return envInt("EVALUATOR_MAX_CONCURRENT_TASKS", 4, { min: 1, max: 64 });
   }
   function slotAvailable() {
     return runningSlots < maxSlots();
@@ -301,6 +306,9 @@ export function createTaskManager({
     cancelTask,
     getTask: (taskId) => tasks.get(taskId),
     publicTask,
+    // 生效额度快照，给 /api/health 用（P1-04）：运维配了 EVALUATOR_MAX_CONCURRENT_TASKS 之后
+    // 得有地方看到"到底几个槽在起作用"，否则误配只能靠任务永久排队这种事后症状发现。
+    getLimits: () => ({ maxConcurrentTasks: maxSlots(), runningSlots }),
   };
 }
 

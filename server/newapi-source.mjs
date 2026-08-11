@@ -7,6 +7,7 @@
 // 通用：任何 new-api 用户配自己的来源即可复用（channels 表结构来自 new-api 开源，版本兼容见 README）。
 // 「邮件报警配置」页的一键同步（fetchNewapiSmtp）复用同一条 EVALUATOR_NEWAPI_DB_DSN，只读 options 表。
 import { envCompat } from "./env-compat.mjs";
+import { envInt } from "./env-config.mjs";
 import { readConfig } from "./newapi-tag-writer.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
 
@@ -39,8 +40,11 @@ async function fetchViaApi() {
   const headers = { Authorization: token, "New-Api-User": userId };
   const PAGE_SIZE = 100;
   const PAGE_CAP = 50; // 最多 5000 个渠道；超出则只导前 5000 并告警，避免无界翻页
-  const PAGE_TIMEOUT_MS =
-    Number(process.env.EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS) > 0 ? Number(process.env.EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS) : 15_000;
+  // 走 envInt：旧写法的 `> 0` 挡住了 NaN 但收下 "Infinity"，那会让每页请求永不超时——
+  // new-api 无响应时导入流程就永久挂住（此前修过一轮进程生命周期问题，正是同类）。上限 10 分钟（P1-04）。
+  // min 保持 1：这里只负责拒绝无意义的值（NaN/Infinity/0/负数/小数），不替运维决定"多短算太短"，
+  // tests/newapi-source.test.mjs 就用 300ms 跑超时回归。
+  const PAGE_TIMEOUT_MS = envInt("EVALUATOR_NEWAPI_IMPORT_TIMEOUT_MS", 15_000, { max: 600_000 });
   const rows = [];
   let truncated = false;
   // 出站守卫：这是全站第三个出站点，此前漏在守卫之外（P2-1）。base 是超管在设置页填的 new-api
