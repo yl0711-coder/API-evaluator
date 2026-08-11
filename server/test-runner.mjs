@@ -1637,7 +1637,10 @@ async function runScenarioProfile({
 // 裁判 = 配置里 role==="judge" 的渠道；额度上限默认 50（可 env 调），传 executeTestRequest 真实跑。
 // 走 envInt：NaN 额度会让下方的 `calls >= JUDGE_AUDIT_MAX_CALLS` 恒为 false，裁判调用不再有上限，
 // 直接对着上游按条数烧钱；"Infinity" 同理（P1-04）。
-const JUDGE_AUDIT_MAX_CALLS = envInt("EVALUATOR_JUDGE_MAX_CALLS", 50, { min: 1, max: 10_000 });
+// 导出仅为可测：它是模块【加载时】求值的顶层 const，退回旧写法时任何运行期用例都不会红
+// （实测发生过：一次不完整的合并把它退成 Number(env || 50)，1209 个用例全绿）。
+// 同文件的 MAX_UPSTREAM_STREAM_RESPONSE_BYTES 也是导出的，口径一致。见 tests/env-config-constants.test.mjs。
+export const JUDGE_AUDIT_MAX_CALLS = envInt("EVALUATOR_JUDGE_MAX_CALLS", 50, { min: 1, max: 10_000 });
 async function maybeRunInlineJudgeAudit({ profile, items, runId, taskContext }) {
   if (!isLiveJudgeEnabled() || !items || items.length === 0) return null;
   const profiles = await loadRunnableProfiles();
