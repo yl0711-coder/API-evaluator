@@ -12,6 +12,7 @@ import { loadRunnableProfiles, resolveAdhocTarget } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
 import { computeEarnedTags, applyEarnedTags } from "./scenario-tag-award.mjs";
 import { P95_LATENCY_SLOW_MS } from "./constants.mjs";
+import { envInt } from "./env-config.mjs";
 import {
   ADMISSION_POLICY_VERSION,
   ITEM_STATUS,
@@ -1634,7 +1635,9 @@ async function runScenarioProfile({
 
 // 内联裁判审计：审计模式（只记录，不改结论）。开关关 / 无裁判渠道 / 无回答 → 跳过。
 // 裁判 = 配置里 role==="judge" 的渠道；额度上限默认 50（可 env 调），传 executeTestRequest 真实跑。
-const JUDGE_AUDIT_MAX_CALLS = Number(process.env.EVALUATOR_JUDGE_MAX_CALLS || 50);
+// 走 envInt：NaN 额度会让下方的 `calls >= JUDGE_AUDIT_MAX_CALLS` 恒为 false，裁判调用不再有上限，
+// 直接对着上游按条数烧钱；"Infinity" 同理（P1-04）。
+const JUDGE_AUDIT_MAX_CALLS = envInt("EVALUATOR_JUDGE_MAX_CALLS", 50, { min: 1, max: 10_000 });
 async function maybeRunInlineJudgeAudit({ profile, items, runId, taskContext }) {
   if (!isLiveJudgeEnabled() || !items || items.length === 0) return null;
   const profiles = await loadRunnableProfiles();

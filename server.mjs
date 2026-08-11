@@ -147,6 +147,7 @@ import { createRouter } from "./server/router.mjs";
 import { createRateLimiter } from "./server/rate-limit.mjs";
 import { APP_VERSION } from "./server/version.mjs";
 import { sendCompressedStatic, sendCompressedJson } from "./server/compression.mjs";
+import { envInt, invalidEnvVars } from "./server/env-config.mjs";
 
 const PORT = Number(process.env.API_PORT || process.env.PORT || 5180);
 // 部署适配：绑定地址可配（容器内需 0.0.0.0；默认仍 127.0.0.1，本地行为不变）
@@ -611,9 +612,12 @@ async function handleApi(req, res) {
 // 仍是「距创建超过 N 天即删」，默认值改大以配合新增的压缩层，不新增单独的「压缩后再留几天」变量）。
 async function runReportMaintenance() {
   try {
+    // 全部走 envInt：这里的 NaN 不只是"用错额度"——retentionDays 为 NaN 会让 pruneReports 里的
+    // new Date(NaN).toISOString() 抛 RangeError，被本函数最外层的空 catch 吞掉，整段维护
+    // （报告清理 + 历史清理 + 老化压缩）静默一次都不执行，磁盘继续只增不减（P1-04）。
     const removed = await pruneReports({
-      retentionDays: Number(process.env.EVALUATOR_REPORT_RETENTION_DAYS || 180),
-      maxTotal: Number(process.env.EVALUATOR_REPORT_MAX_TOTAL || 2000),
+      retentionDays: envInt("EVALUATOR_REPORT_RETENTION_DAYS", 180, { min: 1, max: 36500 }),
+      maxTotal: envInt("EVALUATOR_REPORT_MAX_TOTAL", 2000, { min: 1, max: 1_000_000 }),
     });
     for (const report of removed) {
       for (const filePath of [report.pathMd, report.pathHtml]) {
@@ -625,7 +629,7 @@ async function runReportMaintenance() {
     }
     // 同步清理请求/运行/告警/指纹历史表，防 evaluator.db 只增不减吃满卷。
     const history = await pruneHistory({
-      retentionDays: Number(process.env.EVALUATOR_HISTORY_RETENTION_DAYS || 90),
+      retentionDays: envInt("EVALUATOR_HISTORY_RETENTION_DAYS", 90, { min: 1, max: 36500 }),
     });
     const historyTotal = Object.values(history).reduce((sum, n) => sum + (n || 0), 0);
     if (historyTotal) {
@@ -633,7 +637,7 @@ async function runReportMaintenance() {
     }
     // 剩下的（未到删除线）报告里，超过压缩阈值且尚未压缩的原地 gzip，缓解长期磁盘增长。
     const compressed = await compressAgedReportFiles({
-      compressAfterDays: Number(process.env.EVALUATOR_REPORT_COMPRESS_AFTER_DAYS || 30),
+      compressAfterDays: envInt("EVALUATOR_REPORT_COMPRESS_AFTER_DAYS", 30, { min: 1, max: 36500 }),
     });
     if (compressed.length) {
       console.log(`[reports] 已压缩 ${compressed.length} 份老化报告`);
@@ -646,8 +650,9 @@ async function runReportMaintenance() {
 // 长期不重启的进程不能只在启动时清理一次，否则报告/历史只会一直增长。
 // 启动跑一次（调用处不变）之外，另加定时重跑；unref 避免这个计时器阻止进程正常退出。
 function scheduleReportMaintenance() {
-  const intervalHours = Number(process.env.EVALUATOR_MAINTENANCE_INTERVAL_HOURS || 24);
-  if (!Number.isFinite(intervalHours) || intervalHours <= 0) return;
+  // 这一处原本就挡住了 NaN/Infinity（下方 isFinite 校验），但"非法即静默不再定时维护"同样不好；
+  // 改走 envInt 后回落到 24 小时并在 /api/health 显形，行为更接近运维的预期。
+  const intervalHours = envInt("EVALUATOR_MAINTENANCE_INTERVAL_HOURS", 24, { min: 1, max: 8760 });
   setInterval(runReportMaintenance, intervalHours * 3600 * 1000).unref();
 }
 
@@ -699,6 +704,13 @@ function handleHealth(req, res) {
     safetyScenariosEnabled: getTestScenarios().some((scenario) => scenario.category === "safety"),
     version: APP_VERSION,
     autoTest: autoTestScheduler.getStatus(),
+    // 生效额度 + 被拒的非法环境变量（P1-04）。invalidEnvVars 非空即说明有人配错了值、系统正跑在
+    // 默认值上；只报变量名与原始值，不含任何凭据类配置。
+    limits: {
+      ...taskManager.getLimits(),
+      autoTestConcurrency: autoTestScheduler.getStatus().maxConcurrent,
+    },
+    invalidEnvVars: invalidEnvVars(),
   });
 }
 
@@ -756,7 +768,8 @@ async function handleDevScenarioDelete(req, res, { params }) {
 // 按客户端 IP 轻量限流：正常前端每分钟寥寥几条，60/分钟绰绰有余；灌日志会被挡在 429。
 const clientErrorLimiter = createRateLimiter({
   windowMs: 60_000,
-  max: Number(process.env.EVALUATOR_CLIENT_ERROR_RATE_MAX) > 0 ? Number(process.env.EVALUATOR_CLIENT_ERROR_RATE_MAX) : 60,
+  // 原写法用 `> 0 ?:` 挡住了 NaN，但 "Infinity" 是合法 Number 且 > 0，会让这道限流阀彻底失效。
+  max: envInt("EVALUATOR_CLIENT_ERROR_RATE_MAX", 60, { min: 1, max: 1_000_000 }),
 });
 
 async function handleClientErrorReport(req, res) {
