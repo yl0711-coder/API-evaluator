@@ -146,6 +146,7 @@ import { withRunBy } from "./server/run-context.mjs";
 import { createRouter } from "./server/router.mjs";
 import { createRateLimiter } from "./server/rate-limit.mjs";
 import { APP_VERSION } from "./server/version.mjs";
+import { sendCompressedStatic, sendCompressedJson } from "./server/compression.mjs";
 
 const PORT = Number(process.env.API_PORT || process.env.PORT || 5180);
 // 部署适配：绑定地址可配（容器内需 0.0.0.0；默认仍 127.0.0.1，本地行为不变）
@@ -1911,12 +1912,12 @@ async function handleReportsCompare(req, res) {
   const reportId = sanitizeReportBaseName(baseName);
   const usedNote = (agg) =>
     `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入${agg.reportCounts.load ? ` / ${agg.reportCounts.load} 压测` : ""}`;
-  sendJson(res, 200, {
+  sendCompressedJson(res, 200, {
     reportId,
     markdown,
     comparison: buildComparisonView(cmp),
     notes: { a: usedNote(aggA), b: usedNote(aggB), ai: aiNote, aiApplied: Boolean(aiNarrative) },
-  });
+  }, req.headers["accept-encoding"]);
   return;
 }
 
@@ -2128,7 +2129,7 @@ async function handleReportsCompareMulti(req, res) {
 
   const usedNote = (agg) =>
     `${agg.reportCounts.scenario} 场景 / ${agg.reportCounts.run} 稳定性 / ${agg.reportCounts.admission} 准入${agg.reportCounts.load ? ` / ${agg.reportCounts.load} 压测` : ""}`;
-  sendJson(res, 200, {
+  sendCompressedJson(res, 200, {
     comparison: buildMultiComparisonView({ baseAgg, pairs, sharedScenarios: [...shared] }),
     skipped,
     notes: {
@@ -2136,7 +2137,7 @@ async function handleReportsCompareMulti(req, res) {
       peers: pairs.map((p) => ({ label: p.agg.label, used: usedNote(p.agg) })),
       sharedScenarioCount: shared.size,
     },
-  });
+  }, req.headers["accept-encoding"]);
   return;
 }
 
@@ -2309,7 +2310,7 @@ async function handleSupportBundle(req, res) {
   const tasks = await readRecentTasks(taskManager.tasks, taskManager.publicTask);
   const errors = await readRecentErrors();
   const storage = getDbHealth();
-  sendJson(res, 200, buildSupportBundle({ profiles, requests, testRuns, tasks, errors, storage }));
+  sendCompressedJson(res, 200, buildSupportBundle({ profiles, requests, testRuns, tasks, errors, storage }), req.headers["accept-encoding"]);
   return;
 }
 
@@ -2364,11 +2365,13 @@ async function serveStatic(req, res) {
 
   try {
     const content = await readFile(staticPath);
-    res.writeHead(200, {
-      "content-type": MIME_TYPES[extname(staticPath)] || "application/octet-stream",
-      ...staticSecurityHeaders(staticPath),
+    const mimeType = MIME_TYPES[extname(staticPath)] || "application/octet-stream";
+    const securityHeaders = staticSecurityHeaders(staticPath);
+    const acceptEncoding = req.headers["accept-encoding"];
+
+    await sendCompressedStatic(res, staticPath, content, mimeType, securityHeaders, acceptEncoding, {
+      ifNoneMatch: req.headers["if-none-match"],
     });
-    res.end(content);
     return;
   } catch {
     res.writeHead(404);
