@@ -2,7 +2,6 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, rm, stat, statfs } from "node:fs/promises";
 import { extname, join } from "node:path";
-import "./server/http-pool.mjs"; // 启用全局 HTTP keep-alive 连接池（必须在任何 fetch 调用前加载）
 import { MIME_TYPES, getTestScenarios } from "./server/constants.mjs";
 import {
   getAllScenariosForAdmin,
@@ -2370,7 +2369,9 @@ async function serveStatic(req, res) {
     const securityHeaders = staticSecurityHeaders(staticPath);
     const acceptEncoding = req.headers["accept-encoding"];
 
-    await sendCompressedStatic(res, staticPath, content, mimeType, securityHeaders, acceptEncoding);
+    await sendCompressedStatic(res, staticPath, content, mimeType, securityHeaders, acceptEncoding, {
+      ifNoneMatch: req.headers["if-none-match"],
+    });
     return;
   } catch {
     res.writeHead(404);

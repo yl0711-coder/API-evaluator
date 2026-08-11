@@ -54,8 +54,19 @@ async function checkStatic() {
   console.log(`  content-encoding: ${brotli.headers["content-encoding"] || "(无)"}`);
   console.log(`  压缩率: ${((1 - brotli.body.length / uncompressed.body.length) * 100).toFixed(1)}%`);
 
+  // 条件请求：带上首次拿到的 etag，应回 304
+  if (uncompressed.headers.etag) {
+    const revalidated = await request("/", {
+      "accept-encoding": "gzip",
+      "if-none-match": uncompressed.headers.etag,
+    });
+    console.log("\nGET / (带 if-none-match):");
+    console.log(`  状态: ${revalidated.status}（应为 304）`);
+    console.log(`  body 字节: ${revalidated.body.length}（应为 0）`);
+    console.log(revalidated.status === 304 && revalidated.body.length === 0 ? "  ✓ 条件请求生效" : "  ✗ 仍在整包重传");
+  }
+
   // 检查带 hash 的资源缓存头
-  const assetsReq = await request("/");
   const html = uncompressed.body.toString("utf8");
   const jsMatch = html.match(/\/assets\/index-[a-zA-Z0-9_-]+\.js/);
   if (jsMatch) {
@@ -66,6 +77,7 @@ async function checkStatic() {
     console.log(`  大小: ${jsResp.body.length} 字节`);
     console.log(`  content-encoding: ${jsResp.headers["content-encoding"] || "(无)"}`);
     console.log(`  cache-control: ${jsResp.headers["cache-control"] || "(无)"}`);
+    console.log(`  vary: ${jsResp.headers.vary || "(无)"}`);
 
     const hasImmutable = jsResp.headers["cache-control"]?.includes("immutable");
     const hasLongMaxAge = /max-age=(\d+)/.test(jsResp.headers["cache-control"] || "");
@@ -94,7 +106,8 @@ async function main() {
     console.log("  1. 静态资源（/, /assets/*.js, /assets/*.css）支持 gzip 和 brotli");
     console.log("  2. 压缩率应达到 70% 以上");
     console.log("  3. 带 hash 的资源有 immutable + max-age=31536000");
-    console.log("  4. index.html 有 no-cache + etag");
+    console.log("  4. index.html 有 no-cache + etag，带 if-none-match 复访回 304");
+    console.log("  5. 压缩响应都带 vary: accept-encoding");
   } catch (error) {
     console.error("错误:", error.message);
     console.error("\n请确保服务器已启动：node --env-file=.env.evaluator server.mjs");
