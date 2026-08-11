@@ -134,6 +134,35 @@ test("task manager cancels running tasks through the task context", async () => 
   }
 });
 
+test("task manager refuses completed, failed, and cancelled tasks without appending a cancellation event", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-task-terminal-cancel-test-"));
+  try {
+    const taskEventsFile = join(dir, "task-events.jsonl");
+    const manager = createTaskManager({ taskEventsFile, ...normalizers });
+    for (const status of ["completed", "failed", "cancelled"]) {
+      const task = {
+        id: `terminal-${status}`,
+        type: "stability",
+        status,
+        cancelRequested: false,
+        cancelledBy: null,
+        message: `already-${status}`,
+        abortController: new AbortController(),
+      };
+      manager.tasks.set(task.id, task);
+
+      assert.equal(await manager.cancelTask(task, { actor: "operator" }), false, `${status} must be terminal`);
+      assert.equal(task.status, status);
+      assert.equal(task.cancelRequested, false);
+      assert.equal(task.cancelledBy, null);
+      assert.equal(task.message, `already-${status}`);
+    }
+    assert.equal(await readFile(taskEventsFile, "utf8").catch(() => ""), "");
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
 test("task manager runs batch admission tasks", async () => {
   const dir = await mkdtemp(join(tmpdir(), "evaluator-task-admission-batch-test-"));
   try {

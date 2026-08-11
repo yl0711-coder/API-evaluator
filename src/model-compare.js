@@ -8,6 +8,7 @@ import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { openReportOverlay } from "./report-overlay.js";
 import { buildGapFillTaskPayload, runGapFillQueue, summarizeGapFillEstimates } from "./model-compare-gap-fill.js";
+import { buildComparisonXlsx } from "./model-compare-excel.js";
 
 function csvCell(value) {
   const text = String(value ?? "");
@@ -398,6 +399,7 @@ export function createModelCompare({ state, confirm }) {
           <button type="button" class="secondary" data-mc-view>查看报告</button>
           <button type="button" class="secondary" data-mc-download>下载 Markdown</button>
           <button type="button" class="secondary" data-mc-export-csv>导出 CSV</button>
+          <button type="button" class="secondary" data-mc-export-xlsx>导出 Excel</button>
         </div>
         <p class="field-hint" style="margin-top:10px">
           对象 A 采用报告：${escapeHtml(notes?.a || "-")}；对象 B 采用报告：${escapeHtml(notes?.b || "-")}。
@@ -409,6 +411,15 @@ export function createModelCompare({ state, confirm }) {
     resultBox
       .querySelector("[data-mc-export-csv]")
       .addEventListener("click", () => downloadText(`${reportId}.csv`, `\uFEFF${buildComparisonCsv(comparison)}`, "text/csv"));
+    resultBox
+      .querySelector("[data-mc-export-xlsx]")
+      .addEventListener("click", () =>
+        downloadText(
+          `${reportId}.xlsx`,
+          buildComparisonXlsx(comparison),
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+      );
   }
 
   // 勾选的场景名。

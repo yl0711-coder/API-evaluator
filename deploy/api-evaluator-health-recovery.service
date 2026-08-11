@@ -1,0 +1,18 @@
+[Unit]
+Description=Restart API-evaluator only when its Docker healthcheck is unhealthy
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/lib/api-evaluator/api-evaluator-health-recovery.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/run/docker.sock

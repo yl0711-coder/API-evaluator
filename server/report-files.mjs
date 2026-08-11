@@ -1,9 +1,10 @@
 // 报告文件落盘：把 Markdown + 渲染后的 HTML 写到报告目录，并登记报告中心元数据。
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, rename, stat, utimes, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, open, readdir, readFile, rename, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import { gunzip, gzip } from "node:zlib";
+import { createGunzip, gunzip, gzip } from "node:zlib";
 import { recordReport } from "./db.mjs";
 import { REPORTS_DIR } from "./paths.mjs";
 import { renderReportHtml } from "./report-html.mjs";
@@ -128,6 +129,50 @@ export async function readReportFileText(path) {
     return (await gunzipAsync(buf)).toString("utf8");
   }
   return buf.toString("utf8");
+}
+
+async function isGzipReportFile(path) {
+  const handle = await open(path, "r");
+  try {
+    const probe = Buffer.alloc(2);
+    const { bytesRead } = await handle.read(probe, 0, probe.length, 0);
+    return bytesRead === 2 && probe[0] === GZIP_MAGIC[0] && probe[1] === GZIP_MAGIC[1];
+  } finally {
+    await handle.close();
+  }
+}
+
+// Returns the report's original bytes without creating a whole-file Buffer.
+// Old reports can be gzip-compressed in place, so detection intentionally uses
+// the magic bytes rather than the file extension.
+export async function createReportFileReadStream(path) {
+  const gzipCompressed = await isGzipReportFile(path);
+  const input = createReadStream(path);
+  if (!gzipCompressed) return input;
+  const output = createGunzip();
+  input.on("error", (error) => output.destroy(error));
+  return input.pipe(output);
+}
+
+// Counts uncompressed report bytes with a hard ceiling. The caller uses this
+// preflight pass to reject an oversized archive before HTTP headers are sent.
+export async function countReportFileTextBytes(path, { maxBytes = Number.MAX_SAFE_INTEGER } = {}) {
+  const stream = await createReportFileReadStream(path);
+  let total = 0;
+  try {
+    for await (const chunk of stream) {
+      total += chunk.length;
+      if (total > maxBytes) {
+        const error = new Error("report_size_limit_exceeded");
+        error.code = "report_size_limit_exceeded";
+        throw error;
+      }
+    }
+  } catch (error) {
+    stream.destroy(error);
+    throw error;
+  }
+  return total;
 }
 
 // 老化报告原地压缩：扫描 REPORTS_DIR 下 .md/.html 文件，超过 compressAfterDays 且尚未压缩的，

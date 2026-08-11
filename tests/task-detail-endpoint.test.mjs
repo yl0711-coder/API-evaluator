@@ -103,6 +103,39 @@ async function get(path, ck) {
   return { status: r.status, body: await r.json().catch(() => null) };
 }
 
+async function post(path, body, ck) {
+  const r = await fetch(`http://127.0.0.1:${PORT}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: `http://127.0.0.1:${PORT}`, cookie: ck || "" },
+    body: JSON.stringify(body),
+  });
+  return { status: r.status, body: await r.json().catch(() => null) };
+}
+
+async function waitForTaskStatus(taskId, expectedStatus) {
+  for (let i = 0; i < 50; i += 1) {
+    const task = await get(`/api/tasks/${taskId}`, cookie);
+    if (task.body?.status === expectedStatus) return task;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Task ${taskId} did not reach ${expectedStatus}.`);
+}
+
+test("cancelling a terminal task returns 409 and preserves its failed status", async () => {
+  const created = await post("/api/tasks", { type: "stability", payload: { profileId: "p-terminal", rounds: 1 } }, cookie);
+  assert.equal(created.status, 202);
+  const terminal = await waitForTaskStatus(created.body.id, "failed");
+  assert.equal(terminal.body.cancelRequested, false);
+
+  const cancelled = await post(`/api/tasks/${created.body.id}/cancel`, {}, cookie);
+  assert.equal(cancelled.status, 409);
+  assert.equal(cancelled.body.error, "task_not_active");
+
+  const after = await get(`/api/tasks/${created.body.id}`, cookie);
+  assert.equal(after.body.status, "failed");
+  assert.equal(after.body.cancelRequested, false);
+});
+
 before(async () => {
   // 事件日志所在目录须与 server/paths.mjs 的布局一致（评测数据/日志/task-events.jsonl）。
   mkdirSync(join(dataDir, "日志"), { recursive: true });
@@ -157,7 +190,9 @@ test("/api/tasks/recent 排在 /api/tasks/:id 之前，不会被当成 id=recent
   const r = await get("/api/tasks/recent", cookie);
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.body), "recent 必须返回数组；若被 :id 规则截获会返回单个对象或 404");
-  assert.equal(r.body.length, 2, "两个任务各折叠成一条");
+  assert.ok(r.body.length >= 2, "预置任务应各折叠成一条；同文件中的其他端点回归可能额外创建任务");
+  assert.ok(r.body.some((task) => task.taskId === "task-finished"));
+  assert.ok(r.body.some((task) => task.taskId === "task-zombie"));
   assert.ok(
     r.body.every((task) => task.steps === undefined),
     "列表刻意不带 steps（30 任务 × 20 步会把响应撑到几百 KB）",

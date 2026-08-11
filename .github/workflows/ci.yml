@@ -21,9 +21,12 @@ jobs:
       - run: pnpm audit --prod --audit-level=high
       - run: pnpm rebuild esbuild
       - run: node --check server.mjs
+      - run: node scripts/check-text-source.mjs
       # 风格闸：排在测试之前，让格式问题几秒内失败，不必等完整测试套跑完。
       # 直接调二进制（同下方 vite build），绕开 pnpm 的 pre-script 依赖检查。
       # 当前 biome.json 里 linter 关闭，故本步只校验格式；开 linter 后本步自动覆盖 lint。
       - run: node_modules/.bin/biome ci .
       - run: node --test tests/*.test.mjs
       - run: node_modules/.bin/vite build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e

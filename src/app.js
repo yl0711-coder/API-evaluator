@@ -339,7 +339,7 @@ const highRiskBanner = createHighRiskBanner({ state });
 
 // 「查看报告」<details> 面板（列表 / 筛选 / 分页 / 删除）：见 src/report-browser.js。
 // 它自己接管 toggle 展开事件，故不进 showPage 的懒加载派发。
-// 删除按钮的可见性依赖 canConfig，须等认证完成后经 setCanConfig 推入（见下方顶层 await 之后）。
+// 批量下载与删除按钮的可见性依赖 canConfig，须等认证完成后经 setCanConfig 推入（见下方顶层 await 之后）。
 const reportBrowser = createReportBrowser({ state });
 
 // 仪表盘（渠道健康 / 结论分布 / 待办 / 最近报告 / 工作流引导）：见 src/dashboard.js。
@@ -669,7 +669,7 @@ createStandardEvalController({
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
-reportBrowser.setCanConfig(authUser?.canConfig); // 报告删除按钮的可见性依据（服务端另有强制鉴权）
+reportBrowser.setCanConfig(authUser?.canConfig); // 报告受限操作的可见性依据（服务端另有强制鉴权）
 applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 

@@ -45,7 +45,7 @@ export function createReportBrowser({ state }) {
   let reportFilesPage = 0;
   const selectedReportIds = new Set();
   let bulkBusy = false;
-  // 是否超级管理员（role≥100）：仅其可见/可用报告删除按钮（安全另在服务端强制）。
+  // 是否超级管理员（role≥100）：仅其可见/可用批量下载与删除按钮（安全另在服务端强制）。
   // 由 app.js 在认证完成后经 setCanConfig 推入——那一刻在顶层 await 之后，故不能在 create 时传值。
   let currentUserCanConfig = false;
   let reportDateMin = ""; // 报告实际日期范围（YYYY-MM-DD），给日期框设 min/max 用
@@ -165,7 +165,7 @@ export function createReportBrowser({ state }) {
         <button class="secondary" type="button" data-report-bulk-action="clear"${selectedCount === 0 || bulkBusy ? " disabled" : ""}>清空选择</button>
         <span class="report-files-selection-count">已选 ${selectedCount} 份</span>
         <span class="report-files-toolbar-spacer"></span>
-        <button class="secondary" type="button" data-report-bulk-action="download"${selectedCount === 0 || bulkBusy ? " disabled" : ""}>下载 HTML ZIP</button>
+        ${currentUserCanConfig ? `<button class="secondary" type="button" data-report-bulk-action="download"${selectedCount === 0 || bulkBusy ? " disabled" : ""}>下载 HTML ZIP</button>` : ""}
         ${currentUserCanConfig ? `<button class="danger" type="button" data-report-bulk-action="delete"${selectedCount === 0 || bulkBusy ? " disabled" : ""}>批量删除</button>` : ""}
       </div>`;
   }
