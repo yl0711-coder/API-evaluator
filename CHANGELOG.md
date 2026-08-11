@@ -59,6 +59,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 空串归一成 `null`：「未记录」（无会话的内部调用、历史任务）与「某个空名用户」必须可区分。
 
 ### Fixed
+- **终态任务的结束时间从未落库，重启后任务时长算不出来（P1-03）** — `runTask` 的 `completed` /
+  `failed` / `cancelled` 三个分支都是「先 `appendTaskEvent` 写事件与 SQLite、后在 `finally` 里赋
+  `task.endedAt`」，于是落库那一刻 `endedAt` 还是 `undefined`。而 `recordEvaluationTask` 的 upsert 里
+  `ended_at` 走 `COALESCE`、此后再无写入——**这个 null 是永久的**：任务被逐出内存（落定 1 小时即逐出）
+  或进程重启后，任务中心只能显示「结束：—」，任务时长、审计与运营统计全部拿不到数。
+  - 修在 `appendTaskEvent` 这个**唯一的事件写入口**，而不是在三个分支各补一次赋值：将来新增终态分支
+    不会再漏这一笔。事件流与 SQLite 两条落盘路径共用同一个时间戳，天然不会打架。
+  - `finally` 里改成 `if (!task.endedAt)` 兜底，只覆盖「一个终态事件都没写成」的情况（如落盘异常逃逸
+    到 `runWithSlot` 的 catch）。**绝不能无条件重赋**：那会让内存里的时间与已落库的那笔差出几毫秒到
+    几百毫秒，同一个任务在「内存态」与「重启后读库」两条路径上显示不同的结束时间。
+  - 顺带修正了一处排序偏斜：`taskSortTime` 对库里的行此前永远拿不到 `endedAt`、只能退到 `createdAt`,
+    与内存态的排序口径不一致；现在两个来源对齐。
+  - 新增 completed / failed / cancelled 三类任务的落库断言，以及跨进程重启后 `endedAt` 仍在的断言。
+- **非法环境变量会让并发闸、熔断与留存清理静默失效（P1-04，新增 `server/env-config.mjs`）** — 全库散着
+  七八处 `Math.max(1, Number(process.env.X || d))`。`Number("abc")` 得到 `NaN`，而**`Math.max(1, NaN)`
+  仍是 `NaN`**，NaN 参与的任何比较恒为 false，于是阀门不是回落默认值而是彻底不工作：
+  - `runningSlots < NaN` 永不成立 → 新任务**永久 queued**，队列提示显示「最多同时跑 NaN 个」；
+  - `maxConsecutiveFailures > 0` 永不成立 → 自动测试的连续失败熔断被静默关掉，**配了熔断却不熔断，
+    比压根没配更危险**；
+  - 更隐蔽的一条：`NaN` 天数传进 `new Date(NaN).toISOString()` 会抛 `RangeError`，被
+    `runReportMaintenance` 最外层的空 catch 吞掉，**整段维护（报告清理 + 历史清理 + 老化压缩）一次都
+    不执行**，磁盘只增不减；
+  - 另一半是 `Infinity`：`Number("Infinity")` 是合法 Number 且 `> 0`，能通过 `> 0 ?:` 那种旧写法的校验，
+    等于把上限直接取消——流式响应字节硬顶、客户端报错限流、裁判调用额度、new-api 导入超时全在其中。
+  - 统一到 `envInt(name, fallback, {min, max})`：**刻意不用 `Number()`**（它把 `""` / `"0x10"` /
+    `"1e3"` / `"Infinity"` 都收下，语义太宽），改为正则卡住纯十进制整数再过 `Number.isSafeInteger`，
+    一次挡掉 NaN、±Infinity、小数与超过 2^53-1 的值。越界**拒绝并回落**而非 clamp——既有的
+    `utils.mjs:clampNumber` 是静默夹取，会把 `10000` 悄悄变成 64，运维看不出自己配错了。
+  - **选择安全默认值而非阻止启动**：这些全是可选调优项，为一个拼错的留存天数把服务拒起（评测平台常年
+    跑在单机 docker 上，起不来就没有任何界面能告诉运维原因）损失更大。原始缺陷的要害是**误配无处可见**，
+    所以关键是新增的明账而非终止进程。凭据类配置不走这里，`EVALUATOR_SESSION_SECRET` 未配置或过弱
+    仍在 `server/auth.mjs` 直接抛错拒启动。
+  - `/api/health` 新增 `limits`（`maxConcurrentTasks` / `runningSlots` / `autoTestConcurrency`）、
+    `autoTest.maxConcurrent` / `autoTest.maxConsecutiveFailures`，以及 `invalidEnvVars`——非空即说明有人
+    配错了值、系统正跑在默认值上。只报变量名与原始值，**不含任何凭据**。修正配置后无需重启，下次读取
+    即从清单消失。
+  - `EVALUATOR_AUTO_TEST_MAX_FAILURES` 用 `min: 0`，因为 0 的语义是「关闭熔断」，必须继续被尊重；
+    字节数与毫秒数两处 `min` 保持 1，只拒绝无意义的值，**不替运维决定「多短算太短」**（`newapi-source`
+    的超时用例就靠 300ms 跑得快，抬高下限会把它打挂）。
+  - 刻意未改 `server/auth.mjs`：那三处已是正确的 `Number.isFinite(n) && n > 0 ? n : d`，且会话 TTL
+    合法地接受小数小时，硬套整数解析器反而是回退。
 - **延迟统计不含重试与退避等待，报告比用户真实体感乐观（ADM-010，新增 `endToEndMs`）** — 一个「首次
   503、退避 2 秒、二次 800ms 成功」的请求，此前只落 `total_ms = 800`：`performance.now()` 在每次 attempt
   内重开，最终只留最后一次尝试的耗时。**用户实际等了 2.8 秒，而报告里的 P95 系统性优于真实体感**，
