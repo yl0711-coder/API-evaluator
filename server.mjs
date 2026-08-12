@@ -57,6 +57,7 @@ import {
   closeDatabase,
   deleteReport,
   getDbHealth,
+  PersistentStorageWriteError,
   pruneHistory,
   pruneReports,
   queryLastTestedByProfile,
@@ -154,10 +155,26 @@ import { createRateLimiter } from "./server/rate-limit.mjs";
 import { APP_VERSION } from "./server/version.mjs";
 import { sendCompressedStatic, sendCompressedJson } from "./server/compression.mjs";
 import { envInt, invalidEnvVars } from "./server/env-config.mjs";
+import { createExecutionLimiter } from "./server/execution-limiter.mjs";
 
 const PORT = Number(process.env.API_PORT || process.env.PORT || 5180);
 // 部署适配：绑定地址可配（容器内需 0.0.0.0；默认仍 127.0.0.1，本地行为不变）
 const HOST = process.env.HOST || process.env.API_HOST || "127.0.0.1";
+// 唯一的平台级执行闸：异步任务、自动作业和旧同步测试接口均从这里取槽。
+// 自动测试仍可设置更小的子额度 EVALUATOR_AUTO_TEST_CONCURRENCY，但永远不能突破这个总上限。
+const executionLimiter = createExecutionLimiter({
+  getLimit: () => envInt("EVALUATOR_MAX_CONCURRENT_TASKS", 4, { min: 1, max: 64 }),
+});
+
+async function runWithExecutionSlot(run) {
+  await executionLimiter.acquire();
+  try {
+    return await run();
+  } finally {
+    executionLimiter.release();
+  }
+}
+
 // 一键准入复合任务：编排器只负责按顺序调下面三个 runner，判定全部交给 admission-policy.mjs。
 // runner 在这里注入，编排逻辑因此可以用假 runner 单测（tests/admission-suite.test.mjs）。
 const runAdmissionSuite = createAdmissionSuiteRunner({ runQuickVerify, runStabilityTest, runAdmissionTest });
@@ -175,6 +192,7 @@ const taskManager = createTaskManager({
   errorLogFile: ERROR_LOG_FILE,
   logTechnicalError,
   buildUserErrorMessage,
+  executionLimiter,
   onRunComplete: (result) => {
     noteRunIfEnabled(result); // 高危报告提示：手动测试完成时按开关判危记录
     evaluateAlertRules(result); // 自定义阈值报警规则：手动测试完成时按规则判断是否报警
@@ -193,6 +211,7 @@ const autoTestScheduler = createAutoTestScheduler({
   },
   logError: (error, job) =>
     logErrorSafely({ source: "auto-test-scheduler", error, context: { jobId: job?.id, kind: job?.kind, targetId: job?.targetId } }),
+  executionLimiter,
 });
 
 try {
@@ -352,6 +371,20 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
+    if (error instanceof PersistentStorageWriteError) {
+      const errorId = await logErrorSafely({
+        source: "persistent-storage",
+        error,
+        context: { method: req.method, url: req.url, scope: error.scope },
+      });
+      sendJson(res, 503, {
+        error: "persistent_storage_unavailable",
+        userMessage: "配置未保存：持久化存储暂时不可写，请检查 SQLite 数据卷、磁盘空间和权限后重试。",
+        errorId,
+      });
+      return;
+    }
+
     const errorId = await logErrorSafely({
       source: "server",
       error,
@@ -380,7 +413,10 @@ const httpServer = createServer(async (req, res) => {
     .then((r) => {
       if (r?.migrated) console.log(`已把单价/参数下沉到 ${r.migrated} 个模型目标。`);
     })
-    .catch(() => {});
+    .catch((error) => {
+      // 迁移失败不能冒充“已完成”；服务仍可启动供排障，但日志必须留下可操作证据。
+      console.error(`[migration] 配置迁移失败，请检查 SQLite 数据卷后重试：${error?.message || error}`);
+    });
   const backend = (process.env.EVALUATOR_AUTH_BACKEND || "local").toLowerCase();
   if (backend !== "newapi" && backend !== "new-api" && !hasConfiguredLocalUsers()) {
     console.warn("[auth] 登录后端=local 但未配置任何账号：请设置 EVALUATOR_ADMIN_PASSWORD（或 EVALUATOR_LOCAL_USERS），否则无法登录。");
@@ -714,6 +750,7 @@ function handleHealth(req, res) {
     // 默认值上；只报变量名与原始值，不含任何凭据类配置。
     limits: {
       ...taskManager.getLimits(),
+      execution: executionLimiter.getStatus(),
       autoTestConcurrency: autoTestScheduler.getStatus().maxConcurrent,
     },
     invalidEnvVars: invalidEnvVars(),
@@ -1085,7 +1122,11 @@ async function handleAutoTestJobUpsert(req, res) {
       // 新建、或改动节奏（周期/cron）/由停用转启用后：重算 nextRunAt；已有且未改则沿用旧值。停用则清空。
       const cadenceChanged =
         !existing || existing.periodHours !== next.periodHours || existing.cron !== next.cron || (!existing.enabled && next.enabled);
-      if (next.enabled && (cadenceChanged || !next.nextRunAt)) next.nextRunAt = computeNextRunAt(next);
+      if (next.enabled && (cadenceChanged || !next.nextRunAt)) {
+        const nextRunAt = computeNextRunAt(next);
+        if (!nextRunAt) throw new JobValidationError("定时表达式没有可执行时刻，请修改后再保存。");
+        next.nextRunAt = nextRunAt;
+      }
       if (!next.enabled) next.nextRunAt = null;
       // 由停用转启用（含熔断自动停用后的人工复活）：清零连续失败熔断状态，让作业重新开始计数。
       if (existing && !existing.enabled && next.enabled) {
@@ -1560,7 +1601,7 @@ async function handleModelTargetDelete(req, res, { params }) {
 // 轻量快检：真伪 + token 虚报 + 真实消耗，少量探针、输出封顶、成本可控
 async function handleTestQuickVerify(req, res) {
   const body = await readJson(req);
-  const result = await runQuickVerify(body);
+  const result = await runWithExecutionSlot(() => runQuickVerify(body));
   openReportInBrowser(result.reportHtmlPath);
   sendJson(res, 200, result);
   return;
@@ -1568,7 +1609,7 @@ async function handleTestQuickVerify(req, res) {
 
 async function handleTestAdmission(req, res) {
   const body = await readJson(req);
-  const result = await runAdmissionTest(body);
+  const result = await runWithExecutionSlot(() => runAdmissionTest(body));
   openReportInBrowser(result.reportHtmlPath);
   openReportInBrowser(result.aiAnalysisHtmlPath); // AI 辅助分析独立成文，存在时一并打开
   sendJson(res, 200, result);
@@ -1577,28 +1618,28 @@ async function handleTestAdmission(req, res) {
 
 async function handleTestBatchAdmission(req, res) {
   const body = await readJson(req);
-  const result = await runBatchAdmissionTest(body);
+  const result = await runWithExecutionSlot(() => runBatchAdmissionTest(body));
   sendJson(res, 200, result);
   return;
 }
 
 async function handleTestStability(req, res) {
   const body = await readJson(req);
-  const result = await runStabilityTest(body);
+  const result = await runWithExecutionSlot(() => runStabilityTest(body));
   sendJson(res, 200, result);
   return;
 }
 
 async function handleTestBatchStability(req, res) {
   const body = await readJson(req);
-  const result = await runBatchStabilityTest(body);
+  const result = await runWithExecutionSlot(() => runBatchStabilityTest(body));
   sendJson(res, 200, result);
   return;
 }
 
 async function handleTestScenario(req, res) {
   const body = await readJson(req);
-  const result = await runScenarioTest(body);
+  const result = await runWithExecutionSlot(() => runScenarioTest(body));
   sendJson(res, 200, result);
   return;
 }

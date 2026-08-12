@@ -177,6 +177,30 @@ test("config 级失败（runner 返回 success:false）→ failed 且带 lastErr
   assert.match(job.lastError, /没有找到被测/);
 });
 
+test("历史遗留的无执行时刻 cron 会被停用，且绝不发起上游请求", async () => {
+  const store = makeStore([{ id: "bad-cron", targetId: "tq", kind: "quick", cron: "0 0 30 2 *", enabled: true, nextRunAt: null }]);
+  const { calls, runners } = makeRunners();
+  await build(store, runners).tick();
+
+  const job = store.snapshot()[0];
+  assert.equal(calls.length, 0, "发现坏 cron 后不能再调用上游");
+  assert.equal(job.enabled, false);
+  assert.equal(job.nextRunAt, null);
+  assert.equal(job.lastStatus, "invalid_schedule");
+  assert.match(job.lastError, /未来四年内没有可执行时刻/);
+});
+
+test("立即运行也拒绝历史坏 cron，不能先回成功再悄悄停用", async () => {
+  const store = makeStore([{ id: "bad-cron-now", targetId: "tq", kind: "quick", cron: "0 0 30 2 *", enabled: true, nextRunAt: null }]);
+  const { calls, runners } = makeRunners();
+  const result = await build(store, runners).runJobNow("bad-cron-now");
+
+  assert.equal(result.ok, false);
+  assert.match(result.message, /没有可执行时刻/);
+  assert.equal(calls.length, 0);
+  assert.equal(store.snapshot()[0].enabled, false);
+});
+
 test("并发闸：maxConcurrent=1 时，多作业同刻到期也一次只跑一个", async () => {
   const store = makeStore([
     { id: "j1", targetId: "t1", kind: "quick", periodHours: 1, enabled: true, nextRunAt: null },

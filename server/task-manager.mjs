@@ -4,6 +4,7 @@
 import crypto from "node:crypto";
 import { appendJsonLine, clampNumber, summarizeText } from "./utils.mjs";
 import { envInt } from "./env-config.mjs";
+import { createExecutionLimiter } from "./execution-limiter.mjs";
 import { openReportInBrowser, reportIdFromHtmlPath } from "./report-files.mjs";
 import { countSuiteUnits } from "./admission-suite-plan.mjs";
 import { recordEvaluationTask } from "./db.mjs";
@@ -25,6 +26,8 @@ export function createTaskManager({
   logTechnicalError,
   buildUserErrorMessage,
   onRunComplete, // (result) => void：任务完成回调（用于高危报告提示等），best-effort
+  // 与自动测试/同步接口共享的执行闸。未注入时建私有闸，保留模块独立测试与旧调用方兼容。
+  executionLimiter,
 }) {
   const tasks = new Map();
   // 任务去重键 `${type}::${key}` → taskId，防重复发起造成的双花（这些任务每一次都真实调用
@@ -49,9 +52,6 @@ export function createTaskManager({
     const key = String(payload?.idempotencyKey ?? "").trim();
     return key ? `${normalizeTaskType(type)}::${key}` : null;
   }
-  // 全局重测试并发上限，超出排队。避免多任务并发拖垮宿主或同机其它服务的资源。
-  let runningSlots = 0;
-  const slotWaiters = [];
   // 最近完成任务的耗时（滚动，估算排队 ETA 用）。
   const recentDurationsMs = [];
   function avgTaskSeconds() {
@@ -65,31 +65,19 @@ export function createTaskManager({
   }
   // 每次调用都读 env：运维改完不必重启（历史行为，保留）。上限 64 是防手滑把并发配成 10000
   // 直接打爆宿主与上游——真需要更高，改这个常量比误配一次安全。
-  // 解析走 envInt：`Math.max(1, Number("abc"))` 会得到 NaN，`runningSlots < NaN` 恒 false，
-  // 任务将永久排队且提示语显示「最多同时跑 NaN 个」；`Infinity` 则绕开上限（P1-04）。
+  // 解析走 envInt：`Math.max(1, Number("abc"))` 会得到 NaN，旧闸会让任务永久排队且
+  // 提示语显示「最多同时跑 NaN 个」；`Infinity` 则可绕开上限（P1-04）。
   function maxSlots() {
     return envInt("EVALUATOR_MAX_CONCURRENT_TASKS", 4, { min: 1, max: 64 });
   }
-  function slotAvailable() {
-    return runningSlots < maxSlots();
-  }
-  function acquireSlot() {
-    if (slotAvailable()) {
-      runningSlots += 1;
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => slotWaiters.push(resolve));
-  }
-  function releaseSlot() {
-    const next = slotWaiters.shift();
-    if (next) {
-      next(); // 槽位直接转交等待者，runningSlots 计数守恒
-      return;
-    }
-    runningSlots = Math.max(0, runningSlots - 1);
-  }
-  async function runWithSlot(task, payload) {
-    await acquireSlot();
+  // 任务中心只是这个共享闸的一个入口；server.mjs 注入同一实例后，自动作业和同步接口
+  // 也会占用同一额度。这里的私有 fallback 仅用于模块单测/独立复用。
+  const limiter = executionLimiter || createExecutionLimiter({ getLimit: maxSlots });
+  async function runWithSlot(task, payload, { slotReserved = false } = {}) {
+    if (!slotReserved) await limiter.acquire();
+    // 即使 createTask 已同步预占槽位，也保留一个异步边界：创建接口先完整返回初始任务快照，
+    // 再开始执行 runner，避免同步/超快 runner 在初始事件刚写完时抢先把状态改成终态。
+    await Promise.resolve();
     // 取到槽位后的整段都纳入一个 try/finally：无论走取消早返回、started 转换还是 runTask，
     // releaseSlot 都恰好执行一次，绝不因中途异常（如 appendTaskEvent 落盘失败）泄漏槽位、卡死队列。
     try {
@@ -124,7 +112,7 @@ export function createTaskManager({
         }
       }
     } finally {
-      releaseSlot();
+      limiter.release();
     }
   }
 
@@ -146,13 +134,18 @@ export function createTaskManager({
         return existing;
       }
     }
-    const queued = !slotAvailable();
-    const tasksAhead = runningSlots + slotWaiters.length; // 在跑 + 已排在前面
-    const etaSeconds = queued ? Math.max(10, Math.ceil((tasksAhead + 1) / maxSlots()) * avgTaskSeconds()) : 0;
-    const queuePosition = queued ? slotWaiters.length + 1 : 0;
+    const normalizedType = normalizeTaskType(type);
+    // 在落事件前同步预占一个共享槽，避免两个并发 POST 都看到“有空位”后同时标 running。
+    // 预占失败的任务仍先正常落 queued 事件，再由 runWithSlot 进入 FIFO 等待队列。
+    const slotReserved = limiter.tryAcquire();
+    const limiterStatus = limiter.getStatus();
+    const queued = !slotReserved;
+    const tasksAhead = queued ? limiterStatus.active + limiterStatus.queued : 0; // 在跑 + 已排在前面
+    const etaSeconds = queued ? Math.max(10, Math.ceil((tasksAhead + 1) / limiterStatus.maxConcurrent) * avgTaskSeconds()) : 0;
+    const queuePosition = queued ? limiterStatus.queued + 1 : 0;
     const task = {
       id: crypto.randomUUID(),
-      type: normalizeTaskType(type),
+      type: normalizedType,
       status: queued ? "queued" : "running",
       // 发起人 / 取消人。null = 未记录（无会话的内部调用，或本次改动之前建的历史任务）。
       createdBy: actor || null,
@@ -166,7 +159,7 @@ export function createTaskManager({
       queuePosition,
       etaSeconds,
       message: queued
-        ? `排队中：前面有 ${tasksAhead} 个测试在跑/等待，预计约 ${fmtEta(etaSeconds)} 后开始（为保护线上资源，复杂任务全局最多同时跑 ${maxSlots()} 个）。`
+        ? `排队中：前面有 ${tasksAhead} 个测试在跑/等待，预计约 ${fmtEta(etaSeconds)} 后开始（为保护线上资源，测试执行全局最多同时跑 ${limiterStatus.maxConcurrent} 个）。`
         : "任务已开始。",
       cancelRequested: false,
       // 取消时 abort 在飞的 fetch，请求层据此立即停止，不必等当前请求超时/自然结束。
@@ -177,12 +170,20 @@ export function createTaskManager({
     };
     tasks.set(task.id, task);
     if (dedupKey) activeIdempotencyKeys.set(dedupKey, task.id);
-    await appendTaskEvent(taskEventsFile, task, queued ? "queued" : "started", {
-      payload: summarizeTaskPayload(task.type, payload, { normalizeProfileIds, normalizeScenarioIds }),
-    });
+    try {
+      await appendTaskEvent(taskEventsFile, task, queued ? "queued" : "started", {
+        payload: summarizeTaskPayload(task.type, payload, { normalizeProfileIds, normalizeScenarioIds }),
+      });
+    } catch (error) {
+      // 预占成功但初始事件根本没有落下时，不能把槽和幂等键永远占住。
+      tasks.delete(task.id);
+      if (dedupKey && activeIdempotencyKeys.get(dedupKey) === task.id) activeIdempotencyKeys.delete(dedupKey);
+      if (slotReserved) limiter.release();
+      throw error;
+    }
     // Run in the background so HTTP handlers can return 202 immediately.
     // 经全局并发槽位调度：超出上限的任务会排队，等空闲槽位再执行。
-    void runWithSlot(task, payload).finally(() => {
+    void runWithSlot(task, payload, { slotReserved }).finally(() => {
       // 任务结束（无论成功/失败/取消）即释放去重键，让后续对同一目标的重跑可以重新发起。
       if (dedupKey && activeIdempotencyKeys.get(dedupKey) === task.id) activeIdempotencyKeys.delete(dedupKey);
     });
@@ -312,7 +313,10 @@ export function createTaskManager({
     publicTask,
     // 生效额度快照，给 /api/health 用（P1-04）：运维配了 EVALUATOR_MAX_CONCURRENT_TASKS 之后
     // 得有地方看到"到底几个槽在起作用"，否则误配只能靠任务永久排队这种事后症状发现。
-    getLimits: () => ({ maxConcurrentTasks: maxSlots(), runningSlots }),
+    getLimits: () => {
+      const status = limiter.getStatus();
+      return { maxConcurrentTasks: status.maxConcurrent, runningSlots: status.active, queuedSlots: status.queued };
+    },
   };
 }
 

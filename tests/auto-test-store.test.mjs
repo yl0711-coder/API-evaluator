@@ -225,6 +225,18 @@ test("validateJob：cron 合法 → null；非法 → 可读错误；有 cron �
   assert.match(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "0 9 * *" })), /定时表达式不合法/, "字段不足");
 });
 
+test("validateJob：语法合法但永不触发的 cron 必须拒绝，不能回退为每日执行", () => {
+  const impossible = normalizeJob({ targetId: "t", kind: "quick", cron: "0 0 30 2 *" });
+  assert.match(validateJob(impossible), /未来四年内没有可执行时刻/);
+  assert.equal(computeNextRunAt(impossible, Date.UTC(2026, 0, 1)), null, "不得伪造 24 小时后的 nextRunAt");
+});
+
+test("validateJob：闰日 cron 在四年窗口内有效，不被误判为无执行时刻", () => {
+  const leapDay = normalizeJob({ targetId: "t", kind: "quick", cron: "0 0 29 2 *" });
+  assert.equal(validateJob(leapDay), null);
+  assert.equal(computeNextRunAt(leapDay, Date.UTC(2026, 0, 1)), "2028-02-28T16:00:00.000Z");
+});
+
 test("computeNextRunAt：对象入参 + cron → 按 cron 算下次（北京时间）", () => {
   // 北京周一 09:30 → UTC 周一 01:30。工作日白天每小时，下次应是北京 10:00 = UTC 02:00。
   const from = Date.UTC(2026, 0, 5, 1, 30); // 北京 2026-01-05(周一) 09:30

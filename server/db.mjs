@@ -213,15 +213,27 @@ const openConnections = new Map(); // path -> DatabaseSync 实例（按路径缓
 const dbHealth = {
   requestWriteFailures: 0,
   runWriteFailures: 0,
+  configWriteFailures: 0,
   lastError: null,
   warned: false,
 };
+
+// 配置目录以 SQLite 为主事实源时，写失败不能伪装成“成功后改写 JSON”。调用方应返回 503，
+// 让管理员明确知道配置没有保存；只有运行环境根本不支持 node:sqlite 时才允许走旧 JSON 降级。
+export class PersistentStorageWriteError extends Error {
+  constructor(scope, cause) {
+    super("持久化存储写入失败。");
+    this.name = "PersistentStorageWriteError";
+    this.scope = scope;
+    this.cause = cause;
+  }
+}
 
 function noteDbError(scope, error) {
   dbHealth.lastError = `${scope}: ${error?.message ? String(error.message) : String(error)}`;
   if (!dbHealth.warned) {
     dbHealth.warned = true;
-    console.warn(`[db] SQLite 写入失败，已降级到 JSONL（后续失败仅计数不再刷屏）：${dbHealth.lastError}`);
+    console.warn(`[db] SQLite 操作失败（后续失败仅计数不再刷屏）：${dbHealth.lastError}`);
   }
 }
 
@@ -232,6 +244,7 @@ export function getDbHealth() {
     sqliteAvailable: moduleAvailable === true,
     requestWriteFailures: dbHealth.requestWriteFailures,
     runWriteFailures: dbHealth.runWriteFailures,
+    configWriteFailures: dbHealth.configWriteFailures,
     lastError: dbHealth.lastError,
   };
 }
@@ -249,6 +262,27 @@ async function ensureModule() {
 
 export async function isSqliteAvailable() {
   return ensureModule();
+}
+
+async function getConfigDatabase(scope, path) {
+  // 只有“模块根本不可用”这一种状态允许调用方转写 JSON，且这是启动环境能力而非运行中故障。
+  if (!(await ensureModule())) return null;
+  try {
+    const db = await getDatabase(path);
+    if (db) return db;
+    throw new Error("SQLite 数据库不可用。");
+  } catch (error) {
+    dbHealth.configWriteFailures += 1;
+    noteDbError(scope, error);
+    throw new PersistentStorageWriteError(scope, error);
+  }
+}
+
+function configWriteError(scope, error) {
+  if (error instanceof PersistentStorageWriteError) return error;
+  dbHealth.configWriteFailures += 1;
+  noteDbError(scope, error);
+  return new PersistentStorageWriteError(scope, error);
 }
 
 export async function getDatabase(path = defaultDbPath()) {
@@ -714,9 +748,10 @@ export async function loadModelConfigs({ path } = {}) {
 }
 
 export async function saveModelConfigs(profiles, { path } = {}) {
+  const db = await getConfigDatabase("saveModelConfigs", path);
+  // 仅 Node 运行环境完全没有 SQLite 支持时才让上层显式降级 JSON。
+  if (!db) return false;
   try {
-    const db = await getDatabase(path);
-    if (!db) return false;
     const list = Array.isArray(profiles) ? profiles : [];
     const insert = db.prepare(`
       INSERT INTO model_configs
@@ -759,8 +794,7 @@ export async function saveModelConfigs(profiles, { path } = {}) {
       throw error;
     }
   } catch (error) {
-    noteDbError("saveModelConfigs", error);
-    return false;
+    throw configWriteError("saveModelConfigs", error);
   }
 }
 
@@ -778,9 +812,9 @@ export async function loadChannels({ path } = {}) {
 }
 
 export async function saveChannels(channels, { path } = {}) {
+  const db = await getConfigDatabase("saveChannels", path);
+  if (!db) return false;
   try {
-    const db = await getDatabase(path);
-    if (!db) return false;
     const list = Array.isArray(channels) ? channels : [];
     const insert = db.prepare(`
       INSERT INTO channels (id, name, base_url, status, source, newapi_channel_id, created_at, updated_at, raw_json)
@@ -813,8 +847,7 @@ export async function saveChannels(channels, { path } = {}) {
       throw error;
     }
   } catch (error) {
-    noteDbError("saveChannels", error);
-    return false;
+    throw configWriteError("saveChannels", error);
   }
 }
 
@@ -831,9 +864,9 @@ export async function loadModelTargets({ path } = {}) {
 }
 
 export async function saveModelTargets(targets, { path } = {}) {
+  const db = await getConfigDatabase("saveModelTargets", path);
+  if (!db) return false;
   try {
-    const db = await getDatabase(path);
-    if (!db) return false;
     const list = Array.isArray(targets) ? targets : [];
     const insert = db.prepare(`
       INSERT INTO model_targets (id, channel_id, model, created_at, updated_at, raw_json)
@@ -863,8 +896,7 @@ export async function saveModelTargets(targets, { path } = {}) {
       throw error;
     }
   } catch (error) {
-    noteDbError("saveModelTargets", error);
-    return false;
+    throw configWriteError("saveModelTargets", error);
   }
 }
 
