@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>模型档案 · 模型评测平台</title>
+    <!-- 独立页面，只引自己的样式：不加载主站 styles.css（4700+ 行、整套 Aurora Console 皮肤），
+         这一页的印刷风格不需要它，也不该被它的全局选择器（input/select/button/table…）牵制。
+         视觉基调刻意与主站不同——这正是把它独立出来的原因。 -->
+    <link rel="stylesheet" href="./model-profile.css" />
+  </head>
+  <body>
+    <!-- 返回主站。独立页面没有主站侧栏，必须留一条明确的回路，否则用户只能靠浏览器后退。 -->
+    <nav class="mp-topnav">
+      <!-- 内层限宽并居中，与下方 .mp-sheet 同宽；外层只负责那条通宽的分隔线 -->
+      <div class="mp-topnav-inner">
+        <a class="mp-back" href="/">← 返回评测平台</a>
+        <span class="mp-topnav-title">模型档案</span>
+      </div>
+    </nav>
+
+    <main class="mp-main" id="model-profile">
+    <article class="mp-sheet">
+      <header class="mp-mast">
+        <div class="mp-mast-left">
+          <p class="mp-kicker">模型评测档案</p>
+          <h1 id="mp-title">请先选择渠道与模型</h1>
+          <p class="mp-dek" id="mp-dek"></p>
+        </div>
+        <!-- 两行标签+下拉：用 grid 而不是两个独立 label，让「渠道/模型」两个下拉的左右边缘
+             严格对齐（各自 flex 会按自身内容宽度排，两行就对不齐）。 -->
+        <div class="mp-mast-right">
+          <label for="mp-channel">渠道</label>
+          <select id="mp-channel"></select>
+          <label for="mp-model">模型</label>
+          <select id="mp-model" disabled></select>
+        </div>
+      </header>
+
+      <p class="mp-lede" id="mp-lede">选择一个模型后，这里给出一段可直接对外交付的结论摘要。</p>
+
+      <section class="mp-part" id="mp-part-uptime" hidden>
+        <h2><span class="mp-num">Ⅰ</span> 可用性</h2>
+        <p class="mp-sub" id="mp-uptime-sub"></p>
+        <div class="mp-strip" id="mp-uptime-strip"></div>
+        <div class="mp-strip-axis" id="mp-uptime-ticks"></div>
+        <p class="mp-caption">
+          一条竖线代表一天。<i class="mp-k good"></i>正常 ≥99%　<i class="mp-k warn"></i>降级 95–99%　<i class="mp-k bad"></i>故障 &lt;95%　<i class="mp-k none"></i>未测（矮条）。
+          测试由人工或定时作业触发，并非全天候探测，所以「未测」是常态而非异常。
+        </p>
+      </section>
+
+      <section class="mp-part" id="mp-part-metrics" hidden>
+        <h2><span class="mp-num">Ⅱ</span> 指标</h2>
+        <table class="mp-figures" id="mp-metrics"></table>
+        <p class="mp-caption" id="mp-metrics-caption"></p>
+      </section>
+
+      <section class="mp-part" id="mp-part-obs" hidden>
+        <h2><span class="mp-num">Ⅲ</span> 观察</h2>
+        <ul class="mp-obs" id="mp-flags"></ul>
+      </section>
+
+      <section class="mp-part" id="mp-part-tiers" hidden>
+        <h2><span class="mp-num">Ⅳ</span> 难度剖面</h2>
+        <table class="mp-figures mp-tiers" id="mp-tiers"></table>
+      </section>
+
+      <section class="mp-part" id="mp-part-trend" hidden>
+        <h2>
+          <span class="mp-num">Ⅴ</span> 逐轮明细
+          <span class="mp-ctl">
+            <select id="mp-trend-xmode" aria-label="趋势图横轴">
+              <option value="count">按测试次数</option>
+              <option value="hour">按时间 · 小时</option>
+            </select>
+            <select id="mp-trend-window" class="hidden" aria-label="趋势图时间范围">
+              <option value="0">全部</option>
+              <option value="24">最近 24 小时</option>
+              <option value="48">最近 48 小时</option>
+              <option value="168">最近一周</option>
+            </select>
+          </span>
+        </h2>
+        <div id="mp-regression"></div>
+        <div class="mp-figure" id="mp-trend-chart"></div>
+        <details class="mp-details">
+          <summary>回归告警 <span id="mp-alert-count"></span></summary>
+          <table class="mp-figures" id="mp-alerts"></table>
+        </details>
+      </section>
+
+      <section class="mp-part" id="mp-part-scenarios" hidden>
+        <h2>
+          <span class="mp-num">Ⅵ</span> 场景
+          <span class="mp-ctl">
+            <select id="mp-sc-tier" aria-label="场景难度筛选"></select>
+            <select id="mp-sc-sort" aria-label="场景排序">
+              <option value="quality-asc">质量分 低→高</option>
+              <option value="quality-desc">质量分 高→低</option>
+              <option value="slow">耗时 慢→快</option>
+              <option value="name">名称</option>
+            </select>
+          </span>
+        </h2>
+        <table class="mp-figures mp-scen" id="mp-scenarios"></table>
+      </section>
+
+      <section class="mp-part" id="mp-part-reports" hidden>
+        <h2>
+          <span class="mp-num">Ⅶ</span> 报告归档
+          <span class="mp-ctl">
+            <select id="mp-rep-type" aria-label="报告种类"></select>
+            <select id="mp-rep-range" aria-label="报告时间范围">
+              <option value="0">全部时间</option>
+              <option value="7">最近 7 天</option>
+              <option value="30">最近 30 天</option>
+              <option value="90">最近 90 天</option>
+            </select>
+          </span>
+        </h2>
+        <table class="mp-figures mp-reps" id="mp-reports"></table>
+        <div class="mp-pager" id="mp-pager"></div>
+      </section>
+    </article>
+    </main>
+
+    <script type="module" src="/src/model-profile-page.js"></script>
+  </body>
+</html>

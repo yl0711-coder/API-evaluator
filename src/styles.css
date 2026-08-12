@@ -143,6 +143,14 @@ code {
   cursor: pointer;
 }
 
+/* 侧栏里指向独立页面的链接（如「模型档案」/model-profile/）：它是 <a> 而不是 <button>，
+   需要补 button 默认就有的 display/box 行为，否则宽度与内边距跟同组按钮对不齐。 */
+.nav-button.nav-link {
+  display: block;
+  box-sizing: border-box;
+  text-decoration: none;
+}
+
 .nav-button.active,
 .nav-button:hover {
   background: rgba(var(--accent-rgb), 0.12);
@@ -2590,6 +2598,7 @@ button.danger {
   color: var(--muted);
   font-size: 12.5px;
   cursor: pointer;
+  text-decoration: none; /* 其中「模型档案」是真链接（href），默认会带下划线 */
 }
 .dash .recent .sec-head a:hover {
   color: var(--accent);
@@ -2714,9 +2723,19 @@ button.danger {
   margin-top: 18px;
   color: var(--muted);
   font-size: 13px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dash .dash-empty .links .sep {
+  color: var(--line);
 }
 /* .dash .status-grid 的 md 档降级已并入下方总览 md 断点块（原在此处单独一个 980px 块）。 */
-.dash .links button.linklike {
+/* 空状态出口：既有 <button data-go-page>（SPA 内跳页），也有 <a href>（跳独立页面，
+   如 /model-profile/）。两者外观必须一致，故选择器同时覆盖。 */
+.dash .links button.linklike,
+.dash .links a.linklike {
   background: none;
   border: 0;
   color: var(--blue);
@@ -2724,8 +2743,10 @@ button.danger {
   cursor: pointer;
   padding: 0;
   font-family: inherit;
+  text-decoration: none;
 }
-.dash .links button.linklike:hover {
+.dash .links button.linklike:hover,
+.dash .links a.linklike:hover {
   text-decoration: underline;
 }
 .dash .dash-empty .primary {
@@ -4735,4 +4756,11 @@ body.better-lighting::after {
   .mc-compare-value {
     min-width: 156px;
   }
+}
+
+/* 总览页「最近报告」区块头部的两个链接并排 */
+.dash .recent .sec-head .sec-links {
+  display: inline-flex;
+  gap: 16px;
+  align-items: baseline;
 }

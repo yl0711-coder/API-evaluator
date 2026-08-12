@@ -52,9 +52,14 @@ function collectSelectors() {
 }
 
 const selectors = collectSelectors();
-const html = readFileSync(join(root, "index.html"), "utf8");
+// 全部 HTML 入口拼在一起校验：v0.7.10 起「模型档案」是独立页面（model-profile/index.html），
+// 它的元素不在 index.html 里。这里只需回答「这个选择器在**某个**页面里存在吗」——
+// 哪个模块用在哪个页面由 import 关系决定，不是本测试的职责。
+// 新增独立页面时把入口加进这个数组。
+const HTML_ENTRIES = ["index.html", join("model-profile", "index.html")];
+const html = HTML_ENTRIES.map((rel) => readFileSync(join(root, rel), "utf8")).join("\n");
 
-test("src/ 里每个 requireElement 的 #id 选择器都能在 index.html 找到", () => {
+test("src/ 里每个 requireElement 的 #id 选择器都能在 HTML 入口里找到", () => {
   const missing = [];
   for (const [sel, files] of selectors) {
     const id = sel.match(/^#([\w-]+)$/)?.[1];
@@ -64,7 +69,7 @@ test("src/ 里每个 requireElement 的 #id 选择器都能在 index.html 找到
   assert.deepEqual(
     missing,
     [],
-    `以下选择器在 index.html 里找不到对应 id —— 页面加载到这里会抛「页面缺少必要元素」：\n  ${missing.join("\n  ")}`,
+    `以下选择器在任何 HTML 入口（${HTML_ENTRIES.join(" / ")}）里都找不到对应 id —— 页面加载到这里会抛「页面缺少必要元素」：\n  ${missing.join("\n  ")}`,
   );
 });
 
@@ -104,5 +109,5 @@ test("复合选择器（非 #id）也应能在 index.html 里找到痕迹", () =
       if (!html.includes(needle)) suspicious.push(`${sel}（片段 "${needle}" 未出现）  ←  ${[...files].join(", ")}`);
     }
   }
-  assert.deepEqual(suspicious, [], `以下复合选择器的片段在 index.html 里找不到：\n  ${suspicious.join("\n  ")}`);
+  assert.deepEqual(suspicious, [], `以下复合选择器的片段在任何 HTML 入口里都找不到：\n  ${suspicious.join("\n  ")}`);
 });

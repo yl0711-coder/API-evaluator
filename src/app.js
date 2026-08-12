@@ -128,6 +128,9 @@ const taskCenter = createTaskCenter({
     return standardPicker.selectMany(profileIds);
   },
 });
+// 注：「模型档案」不在这里 —— 它是独立页面（/model-profile/，入口 src/model-profile-page.js），
+// 不属于本 SPA。它的元素不在 index.html 里，若在此 createModelProfile 会因 requireElement
+// 找不到元素而抛错，整个主站白屏。
 // 注册到 _onProfileData（必须在顶层 await 之前）。
 _onProfileData.push((data) => autoTestConfig.refreshTargets(data));
 _onProfileData.push((data) => modelCompare.refreshTargets(data));

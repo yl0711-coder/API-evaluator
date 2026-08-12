@@ -8,6 +8,7 @@ const sourceRoots = [
   "vite.config.js",
   "playwright.config.mjs",
   "index.html",
+  "model-profile", // 「模型档案」独立页面入口（HTML + 自带 CSS）
   "package.json",
   "server",
   "src",
