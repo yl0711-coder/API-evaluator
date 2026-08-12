@@ -67,6 +67,7 @@ import {
   querySpendSummary,
 } from "./server/db.mjs";
 import { buildProfileTrend } from "./server/trend-service.mjs";
+import { buildModelProfileView } from "./server/model-profile.mjs";
 import { formatAutoTestDigestReport } from "./server/auto-test-digest.mjs";
 import {
   executeTestRequest,
@@ -257,7 +258,7 @@ async function listReportMdNames() {
 // 收集某个对象（渠道 + 模型，含曾用名）在报告中心的报告正文，按类型分别限流取最近若干份。
 // names 由调用方传入（listReportMdNames 的结果），避免每个对象各自 readdir 一遍报告目录。
 // 返回 [{ name(不含扩展名), md, mtimeMs }]。
-async function collectSubjectReportFiles(names, subject) {
+async function collectSubjectReportFiles(names, subject, { splitAdmissionBudget = false } = {}) {
   // 候选前缀：当前名 + 曾用名(aliases)的笛卡尔组合，让改名前的历史报告也能被本模型认领。
   const channels = [subject.channel, ...(Array.isArray(subject.channelAliases) ? subject.channelAliases : [])].filter(Boolean);
   const models = [subject.model, ...(Array.isArray(subject.modelAliases) ? subject.modelAliases : [])].filter(Boolean);
@@ -283,8 +284,17 @@ async function collectSubjectReportFiles(names, subject) {
   // 按【场景名】去重（一份文件可含多条场景行，理论上也可能撞名）。内置场景库已有约 89 个场景，
   // 若用户实际跑过的场景种类数超过 60，排序在候选池之外的稀有场景会连去重环节都进不去，被静默漏掉
   // （不报错，只是「共有场景数」会比实际偏小）。多数部署场景种类不会跑到这么全，暂按可接受风险处理。
+  // splitAdmissionBudget：给 admission 单独的 6 份预算，而不是与 run 共享。
+  // 起因与上面 load 独立预算完全同类：run 与 admission 共享 6 份时，密集跑稳定性（本地实测某模型
+  // 有 15 份较新的 run）会把 admission 全部挤出候选，页面显示「还没有准入评测报告」而磁盘上明明有。
+  // 【只有模型档案页传 true】—— 对比链路(/api/reports/compare)刻意保持原预算不动：
+  // 它的统计口径被既有用例与报告文案钉住（「用于对比的报告数量」两方需相等，见 balanceCommonReports），
+  // 悄悄多喂一份准入报告会改变已产出报告的可复现性。档案页是纯展示、无配对统计，扩预算无副作用。
+  const runAdmissionSlice = splitAdmissionBudget
+    ? [...metas.filter((m) => m.type === "run").slice(0, 6), ...metas.filter((m) => m.type === "admission").slice(0, 6)]
+    : metas.filter((m) => m.type === "run" || m.type === "admission").slice(0, 6);
   const chosen = [
-    ...metas.filter((m) => m.type === "run" || m.type === "admission").slice(0, 6),
+    ...runAdmissionSlice,
     ...metas.filter((m) => m.type === "load").slice(0, 6),
     ...metas.filter((m) => m.type === "scenario").slice(0, 60),
   ];
@@ -600,6 +610,9 @@ const API_ROUTES = [
   ["POST", "/api/reports/compare/gaps", handleReportsCompareGaps],
   ["POST", "/api/reports/auto-test-digest", handleReportsAutoTestDigest],
   ["GET", "/api/reports/:id/view", handleReportView],
+
+  // 单模型档案（指标 + 趋势 + 报告，只读既有报告与历史，不发起测试）
+  ["GET", "/api/model-profile", handleModelProfile],
 
   // 趋势 / 回归告警 / 花费
   ["GET", "/api/trend", handleTrend],
@@ -2074,6 +2087,8 @@ const MULTI_COMPARE_MAX_PEERS = 6;
 
 // 把「模型目标 + 渠道」拼成 buildSubjectSlugIndex 需要的对象列表（含渠道/模型的曾用名），
 // 用于把对比报告文件名里切出来的 slug 精确映射回当前的模型目标。
+// 顺带带上 protocol / channelStatus：模型档案页要显示它们，而这里已经把渠道和模型目标都取到了，
+// 不值得让它另外再查一遍。模型比对那几个消费者只读 targetId/channel/model/aliases，多几个字段无影响。
 async function loadCompareSubjects() {
   const [targets, channels] = await Promise.all([loadModelTargets(), loadChannels()]);
   const byId = new Map(channels.map((c) => [c.id, c]));
@@ -2086,6 +2101,8 @@ async function loadCompareSubjects() {
         model: t.model || "",
         channelAliases: Array.isArray(ch?.aliases) ? ch.aliases : [],
         modelAliases: Array.isArray(t.aliases) ? t.aliases : [],
+        protocol: ch?.protocol || null,
+        channelStatus: ch?.status || null,
       };
     })
     .filter((s) => s.channel && s.model);
@@ -2422,6 +2439,61 @@ async function handleReportView(req, res, { params }) {
 }
 
 // 单渠道趋势 + 基线回归 + 告警（?profileId=...）
+// 「模型档案」：单个模型目标的完整画像 —— 指标当前值（aggregateSubject 读既有报告）
+// + 历史曲线与 90 天可用性（buildProfileTrend 读 SQLite）+ 回归告警。
+//
+// 与 /api/reports/compare 的关系：那个是「两个对象比较」，走 loadBalancedCompareFiles 把双方
+// 报告平衡成共有集；这里是「一个对象的自我画像」，不需要平衡，直接 pickRecentReports 取最近若干份。
+// 只读，不发起任何测试。
+async function handleModelProfile(req, res, { url }) {
+  const targetId = url.searchParams.get("targetId") || "";
+  if (!targetId) {
+    sendJson(res, 400, { error: "missing_target", userMessage: "请提供 targetId。" });
+    return;
+  }
+  const subjects = await loadCompareSubjects();
+  const subject = subjects.find((s) => s.targetId === targetId);
+  if (!subject) {
+    sendJson(res, 404, { error: "target_not_found", userMessage: "找不到这个模型目标（可能已被删除）。" });
+    return;
+  }
+
+  const names = await listReportMdNames();
+  // splitAdmissionBudget：档案页要如实显示准入等级，不能被密集的稳定性报告挤掉（见该选项的注释）。
+  const files = await collectSubjectReportFiles(names, subject, { splitAdmissionBudget: true });
+  const picked = pickRecentReports(files);
+  // 报告的结构化 summary（test_runs.raw_json）：让场景报告不必从渲染后的 markdown 表格反解析数字。
+  // 与 loadBalancedCompareFiles 同样的处理，取不到就照旧解析 md（老报告/孤儿报告/库不可用都得能看）。
+  await attachSummaries(picked);
+  const agg = aggregateSubject({ files: picked, label: `${subject.channel} / ${subject.model}` });
+
+  // 趋势与告警按 profileId(=targetId) 查库，与「稳定性趋势」页同一数据源。
+  // 无报告也要能出页面：此时 agg 各项为空，趋势仍可能有数据（反之亦然），
+  // 两边独立缺失都不该让整页 500。
+  const [trend, alerts] = await Promise.all([
+    buildProfileTrend(targetId, { limit: 200 }),
+    queryRegressionAlerts({ profileId: targetId, limit: 50 }),
+  ]);
+
+  const lastTested = (await queryLastTestedByProfile())[targetId] || null;
+  const view = buildModelProfileView({
+    agg,
+    trend,
+    alerts,
+    target: {
+      id: targetId,
+      channel: subject.channel,
+      model: subject.model,
+      protocol: subject.protocol,
+      channelStatus: subject.channelStatus,
+      lastTestedAt: lastTested,
+    },
+  });
+  // 场景明细可达数十条、trend.rounds 可达数千条 —— 压缩后再发（同报告类端点的做法）。
+  sendCompressedJson(res, 200, view, req.headers["accept-encoding"]);
+  return;
+}
+
 async function handleTrend(req, res, { url }) {
   const profileId = url.searchParams.get("profileId") || "";
   if (!profileId) {
@@ -2510,9 +2582,36 @@ async function handleLogin(req, res) {
   });
 }
 
+async function fileExists(path) {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// 目录式路径 → 该目录下的 index.html。用于「模型档案」这类独立子页面（/model-profile/）。
+// 只认**显式以 / 结尾**的路径，不做 SPA 式的 catch-all 回退：未知路径仍应 404，
+// 否则拼错的资源路径会被静默喂回一个 HTML，排障时看到的是「脚本语法错误」而非 404。
+function resolveStaticRequestPath(rawPathname) {
+  if (rawPathname === "/") return "/index.html";
+  if (rawPathname.endsWith("/")) return `${rawPathname}index.html`;
+  return rawPathname;
+}
+
 async function serveStatic(req, res) {
   const rawPathname = getRawRequestPathname(req.url);
-  const requestedPath = rawPathname === "/" ? "/index.html" : rawPathname;
+  // /model-profile → /model-profile/ ：少一条斜杠就 404 对用户太苛刻（手输、复制粘贴都会掉）。
+  // 只对「确实存在同名目录且其中有 index.html」的路径重定向，不做通用兜底。
+  if (!rawPathname.endsWith("/") && !extname(rawPathname)) {
+    const asDir = resolveRequestPathInside(STATIC_ROOT, `${rawPathname}/index.html`);
+    if (asDir && (await fileExists(asDir))) {
+      res.writeHead(308, { location: `${rawPathname}/` });
+      res.end();
+      return;
+    }
+  }
+  const requestedPath = resolveStaticRequestPath(rawPathname);
   const staticPath = resolveRequestPathInside(STATIC_ROOT, requestedPath);
   if (!staticPath) {
     res.writeHead(403);
