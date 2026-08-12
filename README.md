@@ -137,11 +137,24 @@ Check the timer with `systemctl list-timers api-evaluator-health-recovery.timer`
 `journalctl -u api-evaluator-health-recovery.service`. For Kubernetes, Nomad, or another orchestrator, use its
 native health-recovery controller instead of installing this timer.
 
-**Resource isolation** — the compose file caps the container (`mem_limit: 512m`, `cpus: "0.75"`) so
+**Resource isolation** — the compose file caps the container (`mem_limit: 768m`, `cpus: "0.90"`) so
 it can be co-located with another service without starving it: on overrun only this container is
-OOM-killed, not the host. On a very small host (e.g. 2 vCPU / 2 GB) set
+OOM-killed, not the host. These defaults target a 1 vCPU / 1 GB host, with
 `EVALUATOR_MAX_CONCURRENT_TASKS=2`（异步任务、同步测试和自动作业共用的总额度）; if memory is tight, set `EVALUATOR_OFFLINE_TOKENIZER=off` (drops
 the ~70–90 MB tokenizer and falls back to the cross-channel baseline).
+
+### Performance diagnosis and tuning
+
+`GET /api/health` includes a `performance` snapshot with process CPU and memory, event-loop delay,
+global execution slots (`active` and `queued`), automatic-test status, and rolling upstream counts for
+timeouts, 429s, 5xx responses, network errors, retries, and end-to-end latency. Task API responses and
+the task center expose `timing.queueWaitMs`, `timing.executionMs`, `timing.finalizeMs`, and
+`timing.totalMs` for completed, failed, and cancelled tasks.
+
+Tune in this order: inspect queue depth, event-loop delay, CPU, and memory; then inspect upstream
+timeouts, retries, and rate limits. Increase `EVALUATOR_MAX_CONCURRENT_TASKS` only when CPU is not
+saturated and upstream requests are not being limited. Keep model comparisons, bulk report exports,
+and maintenance work low priority so they do not compete with evaluations.
 
 ## Configuration
 

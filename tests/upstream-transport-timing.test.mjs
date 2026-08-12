@@ -190,6 +190,7 @@ test("ADM-010: 429 重试后成功，endToEndMs 含失败尝试与退避，total
 
   assert.equal(hits, 2, "应真的重试了一次，否则本用例没测到重试路径");
   assert.equal(record.attempts, 2);
+  assert.ok(record.retryWaitMs >= RETRY_AFTER_MS, `retryWaitMs 应记录退避等待，实际 ${record.retryWaitMs}ms`);
   // 最后一次尝试是本地 mock 的即时 200，必然远快于退避时长。
   assert.ok(record.totalMs < RETRY_AFTER_MS, `totalMs 应只含最后一次尝试，实际 ${record.totalMs}ms`);
   // 端到端必须把那 700ms 退避 + 第一次失败请求算进去。这是修复前根本不存在的字段。

@@ -54,10 +54,10 @@ services:
     volumes:
       - evaluator_data:/data
     # 资源安全带：cgroup 硬限制——超限只会本容器被 OOM kill，不会拖垮宿主或同机其它服务。
-    # 这是小机（如 2 vCPU / 2 GB）上的保守起步值（评测本身轻，几百 MB 足够）；压测取峰值后再定死。
+    # 这是 1 vCPU / 1 GB 主机的保守起步值；压测取峰值后再定死。
     # 小机另可设 EVALUATOR_MAX_CONCURRENT_TASKS=2 / EVALUATOR_OFFLINE_TOKENIZER=off（见 README）。
-    mem_limit: 512m
-    cpus: "0.75"
+    mem_limit: 768m
+    cpus: "0.90"
     # 健康检查同时校验 HTTP 存活与调度器活性：autoTest.stale=true（心跳超时=定时器僵死）也判 unhealthy。
     # 宿主机侧的 systemd timer 会据此重启固定容器，见 deploy/api-evaluator-health-recovery.*。
     healthcheck:

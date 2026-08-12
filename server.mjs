@@ -156,6 +156,7 @@ import { APP_VERSION } from "./server/version.mjs";
 import { sendCompressedStatic, sendCompressedJson } from "./server/compression.mjs";
 import { envInt, invalidEnvVars } from "./server/env-config.mjs";
 import { createExecutionLimiter } from "./server/execution-limiter.mjs";
+import { createProcessPerformanceSnapshot } from "./server/performance.mjs";
 
 const PORT = Number(process.env.API_PORT || process.env.PORT || 5180);
 // 部署适配：绑定地址可配（容器内需 0.0.0.0；默认仍 127.0.0.1，本地行为不变）
@@ -163,7 +164,7 @@ const HOST = process.env.HOST || process.env.API_HOST || "127.0.0.1";
 // 唯一的平台级执行闸：异步任务、自动作业和旧同步测试接口均从这里取槽。
 // 自动测试仍可设置更小的子额度 EVALUATOR_AUTO_TEST_CONCURRENCY，但永远不能突破这个总上限。
 const executionLimiter = createExecutionLimiter({
-  getLimit: () => envInt("EVALUATOR_MAX_CONCURRENT_TASKS", 4, { min: 1, max: 64 }),
+  getLimit: () => envInt("EVALUATOR_MAX_CONCURRENT_TASKS", 2, { min: 1, max: 64 }),
 });
 
 async function runWithExecutionSlot(run) {
@@ -754,6 +755,7 @@ function handleHealth(req, res) {
       autoTestConcurrency: autoTestScheduler.getStatus().maxConcurrent,
     },
     invalidEnvVars: invalidEnvVars(),
+    performance: createProcessPerformanceSnapshot({ limiter: executionLimiter, scheduler: autoTestScheduler }),
   });
 }
 

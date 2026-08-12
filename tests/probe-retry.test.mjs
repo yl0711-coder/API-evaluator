@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
+import { createProcessPerformanceSnapshot, resetPerformanceForTests } from "../server/performance.mjs";
 import { buildApiKeyRef, saveProfileApiKey } from "../server/secret-store.mjs";
 import { executeTestRequest } from "../server/test-runner.mjs";
 
