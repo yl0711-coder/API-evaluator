@@ -30,6 +30,10 @@ export function createTaskManager({
   executionLimiter,
 }) {
   const tasks = new Map();
+  const elapsedMs = (from, to = new Date().toISOString()) => {
+    const value = new Date(to).getTime() - new Date(from).getTime();
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  };
   // 任务去重键 `${type}::${key}` → taskId，防重复发起造成的双花（这些任务每一次都真实调用
   // 付费 API）。必须由调用方在 payload.idempotencyKey 显式带上非空字符串才生效——绝不能按
   // profileIds/scenarioIds 的形状去猜「是不是补齐场景」：普通的「复杂场景测试」表单完全可以只选
@@ -68,7 +72,7 @@ export function createTaskManager({
   // 解析走 envInt：`Math.max(1, Number("abc"))` 会得到 NaN，旧闸会让任务永久排队且
   // 提示语显示「最多同时跑 NaN 个」；`Infinity` 则可绕开上限（P1-04）。
   function maxSlots() {
-    return envInt("EVALUATOR_MAX_CONCURRENT_TASKS", 4, { min: 1, max: 64 });
+    return envInt("EVALUATOR_MAX_CONCURRENT_TASKS", 2, { min: 1, max: 64 });
   }
   // 任务中心只是这个共享闸的一个入口；server.mjs 注入同一实例后，自动作业和同步接口
   // 也会占用同一额度。这里的私有 fallback 仅用于模块单测/独立复用。
@@ -92,6 +96,7 @@ export function createTaskManager({
       if (task.status === "queued") {
         task.status = "running";
         task.startedAt = new Date().toISOString();
+        task.timing.queueWaitMs = elapsedMs(task.createdAt, task.startedAt);
         task.message = "任务已开始。";
         await appendTaskEvent(taskEventsFile, task, "started");
       }
@@ -110,6 +115,7 @@ export function createTaskManager({
             context: { taskId: task.id, taskType: task.type },
           }).catch(() => {});
         }
+        await appendTaskEvent(taskEventsFile, task, "failed").catch(() => {});
       }
     } finally {
       limiter.release();
@@ -153,6 +159,7 @@ export function createTaskManager({
       createdAt: new Date().toISOString(),
       startedAt: queued ? null : new Date().toISOString(),
       endedAt: null,
+      timing: { queueWaitMs: queued ? null : 0, executionMs: null, finalizeMs: null, totalMs: null },
       progress: 0,
       completedUnits: 0,
       totalUnits: estimateTaskUnits(type, payload, { normalizeProfileIds, normalizeScenarioIds }),
@@ -192,6 +199,8 @@ export function createTaskManager({
 
   async function runTask(task, payload) {
     const context = { task };
+    const executionStartedAt = Date.now();
+    let finalizationStartedAt = null;
     try {
       let result;
       if (task.type === "stability") {
@@ -217,6 +226,8 @@ export function createTaskManager({
         task.message = "任务已取消。";
         await appendTaskEvent(taskEventsFile, task, "cancelled");
       } else {
+        task.timing.executionMs = Date.now() - executionStartedAt;
+        finalizationStartedAt = Date.now();
         const publicResult = summarizePublicTaskResult(result);
         task.status = "completed";
         task.progress = 100;
@@ -241,6 +252,7 @@ export function createTaskManager({
           // AI 辅助分析独立成文，存在时一并打开（同受 EVALUATOR_OPEN_REPORT 开关控制）。
           openReportInBrowser(resultSummary.aiAnalysisHtmlPath);
         }
+        task.timing.finalizeMs = Date.now() - finalizationStartedAt;
         await appendTaskEvent(taskEventsFile, task, "completed", { result: resultSummary });
       }
     } catch (error) {
@@ -273,6 +285,13 @@ export function createTaskManager({
       // 绝不能无条件重赋：那会让内存里的时间与已落库的那笔差出几毫秒到几百毫秒，
       // 同一个任务在「内存态」与「重启后读库」两条路径上显示不同的结束时间。
       if (!task.endedAt) task.endedAt = new Date().toISOString();
+      task.timing.executionMs ??= Date.now() - executionStartedAt;
+      task.timing.finalizeMs ??= finalizationStartedAt == null ? 0 : Date.now() - finalizationStartedAt;
+      task.timing.totalMs = elapsedMs(task.createdAt, task.endedAt);
+      // Persist the completed timing snapshot after the terminal event as well.
+      // This covers failure/cancellation paths where the event was emitted before
+      // the finally block calculated execution and finalization durations.
+      await recordEvaluationTask({ ...task }).catch(() => {});
       // 记录任务耗时，喂给排队 ETA 估算（滚动保留最近 10 条）。
       if (task.startedAt) {
         const durMs = new Date(task.endedAt).getTime() - new Date(task.startedAt).getTime();
@@ -386,6 +405,7 @@ export function publicTask(task) {
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     endedAt: task.endedAt,
+    timing: task.timing ?? null,
     progress: task.progress,
     completedUnits: task.completedUnits,
     totalUnits: task.totalUnits,
@@ -464,6 +484,19 @@ export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
   // 任务中心只能显示「结束：—」，任务时长/审计/运营统计全都算不出来。
   // 放在唯一的写入口补，而不是在每个分支各赋一次：将来新增终态分支不会再漏这一笔。
   if (terminal && !task.endedAt) task.endedAt = new Date().toISOString();
+  if (terminal && task.timing) {
+    // A cancellation/error can reach its terminal event before runTask's finally
+    // block. Complete the snapshot here so both SQLite and JSONL retain useful
+    // timings for every terminal outcome, not only successful evaluations.
+    const endedAtMs = new Date(task.endedAt).getTime();
+    const startedAtMs = new Date(task.startedAt).getTime();
+    if (task.timing.executionMs == null) {
+      task.timing.executionMs = Number.isFinite(endedAtMs) && Number.isFinite(startedAtMs) ? Math.max(0, endedAtMs - startedAtMs) : 0;
+    }
+    if (task.timing.finalizeMs == null) task.timing.finalizeMs = 0;
+    const total = new Date(task.endedAt).getTime() - new Date(task.createdAt).getTime();
+    task.timing.totalMs = Number.isFinite(total) && total >= 0 ? total : null;
+  }
   const steps = terminal && Array.isArray(task.steps) ? task.steps.map(publicTaskStep) : undefined;
   // 同步落 SQLite（ADM-017）：JSONL 是逐事件流水、只读最后 300 行；这张表是逐任务当前态，
   // 能答"上周那次准入跑没跑"。两者刻意并存——JSONL 不依赖 SQLite 可用，是最后的兜底。
@@ -496,6 +529,7 @@ export async function appendTaskEvent(taskEventsFile, task, event, extra = {}) {
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     endedAt: task.endedAt,
+    timing: task.timing ?? null,
     loggedAt: new Date().toISOString(),
     ...(steps ? { steps } : {}),
     ...extra,

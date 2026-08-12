@@ -28,7 +28,7 @@ export function createAutoTestScheduler({
   staleAfterMs = tickMs * 5,
   // 平台级共享闸由 server.mjs 注入。未注入时只保留本调度器的私有闸，方便模块独立测试。
   executionLimiter,
-  maxConcurrent = envInt("EVALUATOR_AUTO_TEST_CONCURRENCY", 2, { min: 1, max: 32 }),
+  maxConcurrent = envInt("EVALUATOR_AUTO_TEST_CONCURRENCY", 1, { min: 1, max: 32 }),
   // 连续失败熔断阈值：作业连续失败达此次数即自动停用，避免被监控对象挂掉后无限空跑失败。
   // 0 = 关闭熔断。默认 5，可用 EVALUATOR_AUTO_TEST_MAX_FAILURES 覆盖。
   // 必须走 envInt：旧写法 Math.max(0, Number("abc")) = NaN，会让下方 `maxConsecutiveFailures > 0`

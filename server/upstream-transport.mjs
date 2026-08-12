@@ -10,6 +10,7 @@ import { assertPublicTarget } from "./egress-guard.mjs";
 import { firstTokenPatternFor, isStreamOptionsUnsupportedError, isTemperatureUnsupportedError, normalizeHttpError } from "./protocols.mjs";
 import { summarizeText } from "./utils.mjs";
 import { envInt } from "./env-config.mjs";
+import { recordUpstreamTiming } from "./performance.mjs";
 
 export const MAX_UPSTREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
 // 流式 SSE 每个 token 单独成帧、外裹一层 JSON 信封（Claude 更是每 token 多个事件），体积是同等纯
@@ -116,6 +117,9 @@ export async function executeUpstreamRequest(
     firstByteMs: null,
     firstTokenMs: null,
     totalMs: null,
+    retryWaitMs: 0,
+    attemptStatuses: [],
+    attemptErrors: [],
     // 端到端耗时（修 ADM-010）：含被重试掉的失败尝试与它们之间的退避等待。
     // totalMs 只是【最后一次】尝试的耗时——一个"首次 503、退避 2s、二次 800ms 成功"的请求，
     // totalMs 记 800ms，报告里的 P95 因此系统性优于用户真实体感，而准入决策看的正是这个数。
@@ -151,7 +155,7 @@ export async function executeUpstreamRequest(
   // 之前没这个字段，只能拿 firstTokenMs 是否有值反推——而流式请求若一个可见 token 都没吐到
   // （空响应、上游中途死掉），它同样是 null，反推会把这类请求误判成非流式。
   let streaming = false;
-  const finalize = () => {
+  const finalize = async () => {
     // 统一在这里算端到端：循环有多个 break 出口（成功、不可重试、超上限、退避中被取消），
     // 逐个出口赋值必然漏掉某条。endToEndStartedAt 为 null 表示一次请求都没发出去
     // （Key 缺失 / buildRequest 抛错 / egress 阻断），此时端到端无意义，保持 null 而不是记 0。
@@ -161,7 +165,7 @@ export async function executeUpstreamRequest(
       // 的情形——「端到端比单次还快」在报告里是说不通的。
       if (r.totalMs != null) r.endToEndMs = Math.max(r.endToEndMs, r.totalMs);
     }
-    return finalizeRecord({
+    const result = await finalizeRecord({
       options,
       profile,
       requestId,
@@ -171,6 +175,9 @@ export async function executeUpstreamRequest(
       stream: streaming,
       totalMs: r.totalMs,
       endToEndMs: r.endToEndMs,
+      retryWaitMs: r.retryWaitMs,
+      attemptStatuses: r.attemptStatuses,
+      attemptErrors: r.attemptErrors,
       statusCode: r.statusCode,
       statusText: r.statusText,
       responseText: r.responseText,
@@ -186,6 +193,16 @@ export async function executeUpstreamRequest(
       attempts,
       successOverride: computeSuccess(r),
     });
+    recordUpstreamTiming({
+      statusCode: result.statusCode,
+      normalizedError: result.normalizedError,
+      attempts: result.attempts,
+      attemptStatuses: result.attemptStatuses,
+      attemptErrors: result.attemptErrors,
+      retryWaitMs: result.retryWaitMs,
+      endToEndMs: result.endToEndMs,
+    });
+    return result;
   };
 
   const apiKey = await readProfileApiKey(profile);
@@ -193,7 +210,7 @@ export async function executeUpstreamRequest(
     r.rawError = "API Key 未配置或无法从密钥存储读取。";
     r.normalizedError = "auth_failed";
     r.totalMs = 0;
-    return finalize();
+    return await finalize();
   }
   let request;
   try {
@@ -204,7 +221,7 @@ export async function executeUpstreamRequest(
     r.totalMs = 0;
     r.rawError = error instanceof Error ? error.message : String(error);
     r.normalizedError = "network_error";
-    return finalize();
+    return await finalize();
   }
   // 已知拒绝自定义 temperature 的模型（本进程内曾被 400 过）：首发就不带，省掉那次注定失败的往返。
   const tempKey = `${profile.baseUrl}|${profile.defaultModel}`;
@@ -260,6 +277,7 @@ export async function executeUpstreamRequest(
       });
       r.firstByteMs = Math.round(performance.now() - started);
       r.statusCode = response.status;
+      r.attemptStatuses.push(response.status);
       // 原因短语：直接取上游实际返回的 statusText（HTTP/1.1 可被上游自定义），不套用标准短语。
       r.statusText = typeof response.statusText === "string" ? response.statusText : "";
       // 流式响应体积远大于纯文本（每 token 独立成帧），用放大后的上限，避免长流式被误截断判 F。
@@ -316,6 +334,7 @@ export async function executeUpstreamRequest(
       // 原始响应（已受 MAX_UPSTREAM_RESPONSE_BYTES 限长）。仅调用方明确要求时保留：全文只随记录进报告，
       // 不进 requests.jsonl（同 responseText，见 finalizeRecord）。
       if (options.keepRawResponse && !r.responseText) r.rawResponse = raw;
+      r.attemptErrors.push(r.normalizedError || "");
     } catch (error) {
       // 记真实耗时，不再拿 timeoutMs 顶替：真超时两者本来就≈相等，但「用户取消」是提前中断的，
       // 一条实际 1-2 秒的记录会被写成 total_ms=300000，污染所有基于 test_requests.total_ms 的
@@ -337,6 +356,8 @@ export async function executeUpstreamRequest(
         r.normalizedError = "network_error";
         retryable = true; // 瞬时网络错误：可重试
       }
+      r.attemptStatuses.push(null);
+      r.attemptErrors.push(r.normalizedError);
     } finally {
       clearTimeout(timer);
       unlinkAbort();
@@ -355,9 +376,10 @@ export async function executeUpstreamRequest(
     // 放在退避 sleep 之前是刻意的——reconfigured 的 retryAfterMs 恒为 0，这里不会漏掉真实等待。
     if (reconfigured) endToEndStartedAt = performance.now();
     if (await sleepUnlessAborted(backoffMs, options.abortSignal)) break; // 退避中被取消则立刻收手
+    r.retryWaitMs += backoffMs;
   }
 
-  return finalize();
+  return await finalize();
 }
 
 // firstTokenPattern：命中即视为「首个可见输出 token 已到达」（见 protocols.firstTokenPatternFor）。

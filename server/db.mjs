@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS evaluation_tasks (
   payload_json TEXT,
   result_json TEXT,
   steps_json TEXT,
+  timing_json TEXT,
   updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON evaluation_tasks(status);
@@ -312,6 +313,11 @@ function migrateSchema(db) {
   } catch {
     // 列已存在
   }
+  try {
+    db.exec("ALTER TABLE evaluation_tasks ADD COLUMN timing_json TEXT");
+  } catch {
+    // column already exists
+  }
 }
 
 export function closeDatabase(path = defaultDbPath()) {
@@ -456,8 +462,8 @@ export async function recordEvaluationTask(task, { path } = {}) {
       INSERT INTO evaluation_tasks (
         task_id, type, status, owner_user_id, cancelled_by, created_at, started_at, ended_at,
         progress, completed_units, total_units, message, error, error_id,
-        payload_json, result_json, steps_json, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        payload_json, result_json, steps_json, timing_json, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(task_id) DO UPDATE SET
         status = excluded.status,
         cancelled_by = excluded.cancelled_by,
@@ -474,6 +480,7 @@ export async function recordEvaluationTask(task, { path } = {}) {
         payload_json = COALESCE(excluded.payload_json, evaluation_tasks.payload_json),
         result_json = COALESCE(excluded.result_json, evaluation_tasks.result_json),
         steps_json = COALESCE(excluded.steps_json, evaluation_tasks.steps_json),
+        timing_json = COALESCE(excluded.timing_json, evaluation_tasks.timing_json),
         updated_at = excluded.updated_at
     `);
     stmt.run(
@@ -494,6 +501,7 @@ export async function recordEvaluationTask(task, { path } = {}) {
       task.payload ? JSON.stringify(task.payload) : null,
       task.result ? JSON.stringify(task.result) : null,
       Array.isArray(task.steps) && task.steps.length ? JSON.stringify(task.steps) : null,
+      task.timing ? JSON.stringify(task.timing) : null,
       new Date().toISOString(),
     );
     return true;
@@ -511,7 +519,7 @@ export async function queryRecentEvaluationTasks(limit = 30, { path } = {}) {
   const rows = db
     .prepare(`
       SELECT task_id, type, status, owner_user_id, cancelled_by, created_at, started_at, ended_at,
-             progress, completed_units, total_units, message, error, error_id, payload_json, result_json
+             progress, completed_units, total_units, message, error, error_id, payload_json, result_json, timing_json
       FROM evaluation_tasks ORDER BY created_at DESC, rowid DESC LIMIT ?
     `)
     .all(Math.max(1, Math.floor(limit)));
@@ -546,6 +554,7 @@ function taskRowToPublic(row, { withSteps = false } = {}) {
     errorId: row.error_id ?? "",
     payload: safeParse(row.payload_json),
     result: safeParse(row.result_json),
+    timing: safeParse(row.timing_json),
     ...(withSteps ? { steps: safeParse(row.steps_json) ?? undefined } : {}),
     // 落库来源的任务一律不可恢复：进程重启后内存里没有它的 abortController，取消不了、也不会自己推进。
     recoverable: false,

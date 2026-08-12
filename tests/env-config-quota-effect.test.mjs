@@ -72,7 +72,7 @@ test("P1-04: 并发数非法时任务仍能被调度，不会永久排队", asyn
     await waitFor(() => task.status === "completed", `任务停在 ${task.status}——并发额度回落失败`);
     const limits = manager.getLimits();
     assert.ok(Number.isSafeInteger(limits.maxConcurrentTasks) && limits.maxConcurrentTasks > 0);
-    assert.equal(limits.maxConcurrentTasks, 4, "应回落到默认 4 个槽位");
+    assert.equal(limits.maxConcurrentTasks, 2, "应回落到默认 2 个槽位");
   });
 });
 
