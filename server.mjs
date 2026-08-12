@@ -749,6 +749,12 @@ function handleAuthMe(req, res) {
   });
 }
 
+// ⚠️ 本端点在免登录白名单里（server/api-access.mjs 的 PUBLIC_API_PATHS）——容器健康检查
+// 必须能无凭据调用。所以下面每一个字段都是**对任何能访问到本服务的人公开**的，
+// 包括 performance 里的进程诊断（内存/CPU/事件循环延迟/并发队列/上游错误计数）。
+// 这是有意的权衡，理由与代价见 api-access.mjs 里 PUBLIC_API_PATHS 的注释。
+// 往这里加字段前先确认：它不含 key / baseUrl / 渠道名 / 模型名 / prompt / 用户数据。
+// 需要更细的诊断信息请另开需登录的端点（如已有的 /api/support-bundle，仅超管）。
 function handleHealth(req, res) {
   // autoTest.stale=true 表示调度器心跳超时（进程活着但定时器僵死）——容器健康检查据此判 unhealthy，
   // autoheal 看门狗再重启，补上「进程活着但自动测试停摆」这类静默故障的自动恢复（见 deploy compose）。

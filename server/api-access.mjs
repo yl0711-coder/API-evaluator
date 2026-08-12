@@ -4,6 +4,27 @@
 import { canWriteConfig, isRoleAllowed } from "./auth.mjs";
 
 // 免登录白名单（其余 /api/* 均需有效会话）。
+//
+// ⚠️ 白名单端点的响应体等于**对任何能访问到本服务的人公开**，加字段前先问一句
+// 「这条信息给陌生人看要紧吗」。当前两个都是刻意如此：
+//
+//   · /api/health —— 容器健康检查与 autoheal 看门狗必须能在无凭据的情况下调用
+//     （见 deploy 的 compose healthcheck）。它的响应里含**进程与运行时诊断**：
+//     pid、版本号、内存/CPU/事件循环延迟、并发额度与队列深度、上游请求错误计数
+//     （见 server.mjs 的 handleHealth 与 server/performance.mjs）。
+//     这是【有意接受】的权衡：这些是聚合数值，不含 API key、baseUrl、渠道名、模型名、
+//     prompt 或任何用户数据；换来的是健康检查不必持凭据。
+//     代价要认清：未登录者可据此推断服务版本（据以查已知漏洞）、是否正在跑测试、
+//     负载水位。因此本服务【不应直接暴露在公网】——按 README 与部署文档，
+//     它设计为在内网/本机运行，公网暴露时应由反向代理对 /api/health 限流或限源。
+//     若哪天要往 health 里加更敏感的东西（如渠道名、baseUrl、错误详情），
+//     必须另开一个需登录的诊断端点，不要往这里塞。
+//
+//   · /api/client-errors —— 前端崩溃上报。未登录也可能崩（登录框本身就会崩），
+//     上报必须在鉴权之前可用，否则最需要诊断的那类故障永远收不到。
+//
+// tests/api-access.test.mjs 钉住了这个集合：增删白名单成员会让「白名单只含这两个」失败，
+// 强制改动者回到这段注释确认是有意的。
 export const PUBLIC_API_PATHS = new Set(["/api/health", "/api/client-errors"]);
 
 // 哪些请求需要超管(role 100)：support-bundle，以及 /api/profiles、/api/channels 的写操作（非 GET）。
