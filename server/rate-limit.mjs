@@ -6,9 +6,17 @@
 //   check 返回 { allowed, retryAfterMs }；每次 check 计一次数，同一 key 在窗口内超过 max 即拒。
 export function createRateLimiter({ windowMs, max, now = () => Date.now(), maxKeys = 10000 }) {
   const buckets = new Map(); // key -> { count, resetAt }
+  const keyLimit = Number.isSafeInteger(maxKeys) && maxKeys > 0 ? maxKeys : 10000;
+  let earliestResetAt = Infinity;
 
   function sweep(t) {
     for (const [k, b] of buckets) if (t >= b.resetAt) buckets.delete(k);
+    earliestResetAt = Infinity;
+    for (const b of buckets.values()) earliestResetAt = Math.min(earliestResetAt, b.resetAt);
+  }
+
+  function retryAfterForCapacity(t) {
+    return Number.isFinite(earliestResetAt) ? Math.max(0, earliestResetAt - t) : 0;
   }
 
   return {
@@ -17,9 +25,13 @@ export function createRateLimiter({ windowMs, max, now = () => Date.now(), maxKe
       let b = buckets.get(key);
       if (!b || t >= b.resetAt) {
         // 惰性清理：跨窗口时顺手扫掉过期桶，避免被大量一次性 key（如伪造来源）撑爆内存。
-        if (buckets.size > maxKeys) sweep(t);
+        if (buckets.size >= keyLimit && t >= earliestResetAt) sweep(t);
+        if (buckets.size >= keyLimit) {
+          return { allowed: false, retryAfterMs: retryAfterForCapacity(t) };
+        }
         b = { count: 0, resetAt: t + windowMs };
         buckets.set(key, b);
+        earliestResetAt = Math.min(earliestResetAt, b.resetAt);
       }
       b.count += 1;
       if (b.count > max) return { allowed: false, retryAfterMs: Math.max(0, b.resetAt - t) };
