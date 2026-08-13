@@ -3342,12 +3342,39 @@ button.secondary:hover:not(:disabled) {
 .model-group + .model-group {
   margin-top: 6px;
 }
+/* details.model-group 收起时 gap 不该在标题下留白，只在展开时生效。 */
+.model-group:not([open]) {
+  gap: 0;
+}
 .model-group-head {
   display: flex;
   align-items: baseline;
   gap: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  /* summary 默认 display:list-item，那个三角就是它的项目符号；置 none 即去掉。
+     改用下面的 ▸ 自绘：默认三角各浏览器长相不一，颜色/字号也不受控。 */
+  list-style: none;
+}
+/* Safari 与旧版 Chrome 不认 list-style，得单独关掉这个 WebKit 私有伪元素。 */
+.model-group-head::-webkit-details-marker {
+  display: none;
+}
+/* 自绘折叠箭头：颜色跟随 --muted，主题切换时自动适配。 */
+.model-group-head::before {
+  content: "▸";
+  font-size: 11px;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+/* 展开时转 90° 变朝下（▾）。带上 > 只作用于本组标题，不影响嵌套结构。 */
+.model-group[open] > .model-group-head::before {
+  transform: rotate(90deg);
+}
+/* 悬停高亮渠道名，提示整行可点。 */
+.model-group-head:hover b {
+  color: var(--accent);
 }
 .model-group-head b {
   font-size: 13.5px;
