@@ -8,14 +8,28 @@ const DOC = {
   mode: "chat",
   sourceOfficial: false,
   baselines: [
-    { model: "claude-opus-4-8", probes: [
-      { id: "p01", inputTokens: 65 }, { id: "p02", inputTokens: 137 }, { id: "p03", inputTokens: 60 },
-      { id: "p04", inputTokens: 182 }, { id: "p09", inputTokens: 67 }, { id: "p13", inputTokens: 92 },
-    ] },
-    { model: "claude-opus-4-6", probes: [
-      { id: "p01", inputTokens: 44 }, { id: "p02", inputTokens: 92 }, { id: "p03", inputTokens: 53 },
-      { id: "p04", inputTokens: 173 }, { id: "p09", inputTokens: 60 }, { id: "p13", inputTokens: 52 },
-    ] },
+    {
+      model: "claude-opus-4-8",
+      probes: [
+        { id: "p01", inputTokens: 65 },
+        { id: "p02", inputTokens: 137 },
+        { id: "p03", inputTokens: 60 },
+        { id: "p04", inputTokens: 182 },
+        { id: "p09", inputTokens: 67 },
+        { id: "p13", inputTokens: 92 },
+      ],
+    },
+    {
+      model: "claude-opus-4-6",
+      probes: [
+        { id: "p01", inputTokens: 44 },
+        { id: "p02", inputTokens: 92 },
+        { id: "p03", inputTokens: 53 },
+        { id: "p04", inputTokens: 173 },
+        { id: "p09", inputTokens: 60 },
+        { id: "p13", inputTokens: 52 },
+      ],
+    },
   ],
 };
 

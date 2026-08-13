@@ -23,12 +23,19 @@ test("api 模式：调 new-api /api/channel/ 取渠道（透传 token、翻页�
       seenUser = req.headers["new-api-user"];
       const page = Number(new URL(req.url, "http://x").searchParams.get("p") || 0);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(page === 0
-        ? { success: true, data: [
-            { id: 1, type: 1, name: "A", base_url: "https://a.test", models: "gpt-4o", status: 1 },
-            { id: 14, type: 14, name: "Claude", base_url: "https://c.test", models: "claude-sonnet-4-5", status: 2 },
-          ] }
-        : { success: true, data: [] }));
+      res.end(
+        JSON.stringify(
+          page === 0
+            ? {
+                success: true,
+                data: [
+                  { id: 1, type: 1, name: "A", base_url: "https://a.test", models: "gpt-4o", status: 1 },
+                  { id: 14, type: 14, name: "Claude", base_url: "https://c.test", models: "claude-sonnet-4-5", status: 2 },
+                ],
+              }
+            : { success: true, data: [] },
+        ),
+      );
     },
     async (base) => {
       process.env.EVALUATOR_IMPORT_SOURCE = "api";
@@ -59,13 +66,17 @@ test("api 模式：base 指向内网 → 被出站守卫拦截，不发请求", 
   process.env.EVALUATOR_IMPORT_SOURCE = "api";
   process.env.EVALUATOR_NEWAPI_IMPORT_TOKEN = "tok-123";
   delete process.env.EVALUATOR_EGRESS_DENY_PRIVATE; // 默认开启守卫
-  for (const base of ["http://169.254.169.254", "http://[::ffff:a9fe:a9fe]", "http://10.0.0.5:3000"]) {
-    process.env.EVALUATOR_NEWAPI_BASE_URL = base;
-    await assert.rejects(() => fetchNewapiChannels(), /安全策略拦截|内网|保留/, `${base} 应被拦`);
+  try {
+    for (const base of ["http://169.254.169.254", "http://[::ffff:a9fe:a9fe]", "http://10.0.0.5:3000"]) {
+      process.env.EVALUATOR_NEWAPI_BASE_URL = base;
+      await assert.rejects(() => fetchNewapiChannels(), /安全策略拦截|内网|保留/, `${base} 应被拦`);
+    }
+  } finally {
+    // 放 finally：任一 base 断言抛出也不把 IMPORT_SOURCE/BASE_URL/TOKEN 泄漏给同文件后续用例
+    delete process.env.EVALUATOR_IMPORT_SOURCE;
+    delete process.env.EVALUATOR_NEWAPI_BASE_URL;
+    delete process.env.EVALUATOR_NEWAPI_IMPORT_TOKEN;
   }
-  delete process.env.EVALUATOR_IMPORT_SOURCE;
-  delete process.env.EVALUATOR_NEWAPI_BASE_URL;
-  delete process.env.EVALUATOR_NEWAPI_IMPORT_TOKEN;
 });
 
 test("未配置来源 → 明确报错", async () => {

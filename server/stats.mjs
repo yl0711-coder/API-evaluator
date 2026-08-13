@@ -22,11 +22,7 @@ function erf(x) {
   const sign = x < 0 ? -1 : 1;
   const ax = Math.abs(x);
   const t = 1 / (1 + 0.3275911 * ax);
-  const y =
-    1 -
-    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
-      t *
-      Math.exp(-ax * ax);
+  const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-ax * ax);
   return sign * y;
 }
 
@@ -36,10 +32,7 @@ export function normalCdf(z) {
 
 // Lanczos 近似的 ln Γ(x)
 function gammaln(x) {
-  const cof = [
-    76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155,
-    0.1208650973866179e-2, -0.5395239384953e-5,
-  ];
+  const cof = [76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
   let y = x;
   let tmp = x + 5.5;
   tmp -= (x + 0.5) * Math.log(tmp);
@@ -184,14 +177,10 @@ export function proportionReport(successes, total, { digits = 1 } = {}) {
 // bootstrap 置信区间（连续指标 / 任意统计量）
 // ---------------------------------------------------------------------------
 
-export function bootstrapCI(
-  values,
-  { statistic, resamples = 2000, alpha = 0.05, seed = 1469598103 } = {},
-) {
+export function bootstrapCI(values, { statistic, resamples = 2000, alpha = 0.05, seed = 1469598103 } = {}) {
   const clean = cleanNumbers(values);
   const n = clean.length;
-  const stat =
-    typeof statistic === "function" ? statistic : (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+  const stat = typeof statistic === "function" ? statistic : (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
   if (n === 0) {
     return { point: null, lower: null, upper: null, n: 0, resamples: 0, method: "bootstrap", note: "无样本" };
   }
@@ -279,9 +268,7 @@ export function wilcoxonSignedRank(a, b, { correction = true } = {}) {
   if (n === 0) {
     return { pValue: 1, wPlus: 0, wMinus: 0, statistic: 0, n: 0, method: "none", note: "全部差值为 0" };
   }
-  const entries = nonzero
-    .map((d) => ({ d, abs: Math.abs(d) }))
-    .sort((x, y) => x.abs - y.abs);
+  const entries = nonzero.map((d) => ({ d, abs: Math.abs(d) })).sort((x, y) => x.abs - y.abs);
   const ranks = new Array(n);
   let tieTerm = 0; // Σ(t^3 - t)
   let i = 0;
@@ -359,13 +346,7 @@ export function pairedTTest(a, b) {
 // 独立两渠道的比例对比：用 Wilson CI 是否重叠作为保守判定（小样本安全，不用 CLT）。
 //   CI 重叠 → "差异不显著"，不下 A 优于 B。
 //   配对场景（同一批 prompt）应改用 mcnemarTest。
-export function compareProportions(
-  aSuccesses,
-  aTotal,
-  bSuccesses,
-  bTotal,
-  { labelA = "A", labelB = "B" } = {},
-) {
+export function compareProportions(aSuccesses, aTotal, bSuccesses, bTotal, { labelA = "A", labelB = "B" } = {}) {
   const a = wilsonInterval(aSuccesses, aTotal);
   const b = wilsonInterval(bSuccesses, bTotal);
   if (a.n === 0 || b.n === 0) {

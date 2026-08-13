@@ -2,20 +2,31 @@
 // 测试执行引擎：构造并发起对被测 API 的探测请求（普通生成 / 工具调用 / 流式结构），
 // 归一化结果与错误、落库为脱敏测试记录，并编排准入 / 稳定性 / 场景 / 快检各类测试。
 import crypto from "node:crypto";
-import {
-  buildAiAnalysisResult,
-  buildAiReportAnalysisPrompt,
-  isAiReportAnalysisEnabled,
-} from "./ai-report-analysis.mjs";
+import { executeUpstreamRequest, streamCompletenessError } from "./upstream-transport.mjs";
+import { buildAiAnalysisResult, buildAiReportAnalysisPrompt, isAiReportAnalysisEnabled } from "./ai-report-analysis.mjs";
 import { getSettings } from "./settings-store.mjs";
 import { getTestScenarios } from "./scenarios/index.mjs";
+import { HttpRequestError } from "./http-request.mjs";
 import { REQUEST_LOG_FILE, TEST_RUNS_FILE } from "./paths.mjs";
-import { loadRunnableProfiles } from "./run-targets.mjs";
+import { loadRunnableProfiles, resolveAdhocTarget } from "./run-targets.mjs";
 import { loadModelTargets, saveModelTargets } from "./model-target-store.mjs";
 import { computeEarnedTags, applyEarnedTags } from "./scenario-tag-award.mjs";
+import { P95_LATENCY_SLOW_MS } from "./constants.mjs";
+import { envInt } from "./env-config.mjs";
+import {
+  ADMISSION_POLICY_VERSION,
+  ITEM_STATUS,
+  OBSERVATION_ONLY_CASE_IDS,
+  computeAdmissionScore,
+  evaluateAdmission,
+  pickSevereError,
+  resolveGroupStatus,
+  resolveItemStatus,
+  validateStructuredJsonCase,
+  validateWeatherToolCall,
+} from "./admission-policy.mjs";
 import { evaluateScenarioOutput } from "./scenario-evaluator.mjs";
-import { readProfileApiKey } from "./secret-store.mjs";
-import { assertPublicTarget } from "./egress-guard.mjs";
+// readProfileApiKey / assertPublicTarget 已随 runUpstreamProbe 迁至 upstream-transport.mjs
 import {
   buildFingerprintProbeCases,
   buildFingerprintProbeSummary,
@@ -30,16 +41,13 @@ import {
   buildProtocolRequest,
   buildProtocolStreamRequest,
   buildProtocolToolRequest,
+  buildProtocolUrl,
   coalesceSseResponse,
   extractFinishReason,
   extractOutputText,
   extractToolCall,
-  firstTokenPatternFor,
   extractUsage,
-  isStreamOptionsUnsupportedError,
-  isTemperatureUnsupportedError,
   normalizeEmptyResponse,
-  normalizeHttpError,
   summarizeStreamStructure,
 } from "./protocols.mjs";
 import { buildRunConsumption, estimateProfileRunEconomics } from "./costing.mjs";
@@ -57,7 +65,7 @@ import {
   saveAiAnalysisReport,
   saveReportFiles,
 } from "./reporting.mjs";
-import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary } from "./summaries.mjs";
+import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary, countTemperatureStripped } from "./summaries.mjs";
 import { buildFingerprintSnapshot, trackModelFingerprint } from "./fingerprint-tracking.mjs";
 import { buildTierProbeCases, classifyTierFromRecords, evaluateTierCase, loadTierContext } from "./tier-admission.mjs";
 import { buildTrendSeries, detectRegression, toTrendPoint } from "./regression.mjs";
@@ -78,37 +86,8 @@ import {
 } from "./utils.mjs";
 import { saveRunArtifacts } from "./workspace-store.mjs";
 
-export const MAX_UPSTREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
-// 流式 SSE 每个 token 单独成帧、外裹一层 JSON 信封（Claude 更是每 token 多个事件），体积是同等纯
-// 文本的 50–100 倍；长输出（maxTokens override ≥ ~8k 或推理模型长思考）流式下轻松 5–7MB。若沿用上面
-// 2MB 上限，健康渠道的长流式响应会在 2MB 处被截断、误判 response_too_large → 判 F（好渠道判成坏渠道）。
-// 故流式单独放大上限；仍有硬顶（+每请求超时兜底），不会因坏上游无界缓冲。可用 env 覆盖。
-export const MAX_UPSTREAM_STREAM_RESPONSE_BYTES =
-  Number(process.env.EVALUATOR_MAX_STREAM_RESPONSE_BYTES) > 0
-    ? Number(process.env.EVALUATOR_MAX_STREAM_RESPONSE_BYTES)
-    : 24 * 1024 * 1024;
-
-// 流式完整性：只在「流被截断 / 出错帧 / 内容块损坏」这些**确定**的不完整信号上判失败。
-// 刻意不采纳 summarizeStreamStructure 的全部 issue（如 invalid_json_chunk、event_order_invalid 等
-// 软信号）——那些在健康但怪癖的中转上会误触发，把好流判失败，是评测工具最不该犯的错。
-// finish_reason=length 这类「内容被 max_tokens 截断」不在此列：那种流仍有完整终止帧，属正常截断，
-// 由 isTruncatedFinish 另行处理，不当失败。
-const FATAL_STREAM_ISSUES = new Set([
-  "empty_stream", // 2xx 却一个事件都没有
-  "missing_done", // OpenAI SSE 无 [DONE] 终止帧 → 半截流
-  "missing_message_stop", // Claude SSE 无 message_stop 终止帧 → 半截流
-  "missing_content_block_stop", // Claude 内容块未收尾
-  "stream_error_event", // 吐到一半改口报错帧
-  "content_block_not_found", // Claude 已知的块错位崩溃
-  "content_block_dropped", // delta 落在从未 start 的块 → 内容丢失
-]);
-
-export function streamCompletenessError(streamValidation) {
-  if (!streamValidation || streamValidation.passed) return "";
-  const fatal = (streamValidation.issues || []).filter((issue) => FATAL_STREAM_ISSUES.has(issue));
-  if (!fatal.length) return "";
-  return fatal.includes("stream_error_event") ? "stream_error" : "stream_incomplete";
-}
+// 以下从 upstream-transport.mjs 搬出；重导出以维持下游兼容。
+export { MAX_UPSTREAM_RESPONSE_BYTES, MAX_UPSTREAM_STREAM_RESPONSE_BYTES, streamCompletenessError } from "./upstream-transport.mjs";
 
 // Owns all real upstream evaluation work. server.mjs should route requests here
 // instead of carrying test execution details in the HTTP entrypoint.
@@ -126,7 +105,9 @@ async function attachRunArtifacts(runId, summary, artifacts = {}) {
 // 报告命名：渠道_模型；取不到渠道/模型则返回空串（→ 多目标）。profile.name = "渠道 / 模型"。
 // 导出：压测模块（load-test.mjs）复用同一套报告命名，避免重复实现。
 export function reportTargetSlug(profile) {
-  const channel = String(profile?.name || "").split(" / ")[0].trim();
+  const channel = String(profile?.name || "")
+    .split(" / ")[0]
+    .trim();
   const model = String(profile?.defaultModel || profile?.model || "").trim();
   if (!channel) return model;
   return model ? `${channel}_${model}` : channel;
@@ -137,24 +118,6 @@ export function buildReportId(type, headSlug) {
   const hash = crypto.randomUUID().slice(0, 4);
   const head = (headSlug || "").trim() || "多目标";
   return `${head}_${type}_${stamp}_${hash}`;
-}
-
-export async function runQuickTest(profileId, prompt) {
-  const profiles = await loadRunnableProfiles();
-  const profile = profiles.find((item) => item.id === profileId);
-  if (!profile) {
-    return {
-      success: false,
-      normalizedError: "profile_not_found",
-      message: "没有找到被测 API 配置。",
-    };
-  }
-
-  return executeTestRequest(profile, prompt, {
-    runId: "quick-test",
-    caseId: "quick-connectivity",
-    writeLog: true,
-  });
 }
 
 // 轻量快检（quick-verify）：固定一小撮探针、输出封顶控成本，一次性给出
@@ -238,7 +201,10 @@ export async function runQuickVerify(body, taskContext = {}) {
 
   // 成功率 + 延迟：让快检也进「稳定性趋势」与基线回归（可用性/耗时退化都能被看见、被告警）。
   const successCount = records.filter((r) => r.success).length;
-  const okTotalTimes = records.filter((r) => r.success).map((r) => r.totalMs).filter(Number.isFinite);
+  const okTotalTimes = records
+    .filter((r) => r.success)
+    .map((r) => r.totalMs)
+    .filter(Number.isFinite);
 
   const summary = {
     runId,
@@ -343,15 +309,17 @@ function normalizePredicted(predicted) {
 }
 
 export async function runAdmissionTest(body, taskContext = {}) {
-  const profiles = await loadRunnableProfiles();
-  const profile = profiles.find((item) => item.id === body.profileId);
-  if (!profile) {
+  const baseProfile = await resolveAdmissionProfile(body);
+  if (!baseProfile) {
     throw new Error("没有找到被测 API 配置。");
   }
 
-  const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel)
-    ? body.packageLevel
-    : "standard";
+  // 高级设置里手填的温度。与稳定性/场景测试同一套口径：留空 = 不覆盖、走协议层默认。
+  // 存在的理由是有些模型只接受特定温度（如月之暗面只认 1），不给对的值整轮准入都会 400。
+  const temperatureOverride = optionalTemperature(body.temperature);
+  const profile = temperatureOverride != null ? { ...baseProfile, temperatureOverride } : baseProfile;
+
+  const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel) ? body.packageLevel : "standard";
   const runId = buildReportId("admission", reportTargetSlug(profile));
   const startedAt = new Date();
   const cases = buildAdmissionCases(packageLevel, profile.defaultModel);
@@ -361,6 +329,11 @@ export async function runAdmissionTest(body, taskContext = {}) {
   const records = [];
 
   for (const testCase of cases) {
+    // 取消必须在每轮开头检查，否则「取消」只 abort 掉在飞的那一个请求，循环照样往下走：
+    // 剩余用例的 fetch 因 signal 已 abort 而瞬间 reject，几秒内刷完全部用例、写一堆
+    // status=0 的垃圾请求记录，任务最后还显示 27/27 99%。实测复现过（standard 档 Claude
+    // 模型共 27 条用例，取消后 2 秒内多写了 24 行）。runQuickVerify 的循环一直是这么做的。
+    assertTaskNotCancelled(taskContext);
     const record = await executeAdmissionTestCase(profile, testCase, runId, taskContext);
     const admission = evaluateAdmissionCase(testCase, record);
     delete record.responseText;
@@ -369,6 +342,11 @@ export async function runAdmissionTest(body, taskContext = {}) {
       caseName: testCase.name,
       admission,
     });
+    // 单 API 准入作为独立异步任务跑时，进度条靠这里推进（standard 档 11 条用例，每条最长
+    // 300s——不上报的话用户会看着 0% 干等十几分钟，然后倾向于重新点一次 = 双花）。
+    // 作为 admission-suite 的一个步骤被嵌套调用时，taskContext 是隔离过的子上下文，
+    // 这里的计数写不进去、只透出 message，不会污染外层的步骤进度。
+    updateTaskProgress(taskContext, records.length, cases.length, `准入评测进行中：${records.length}/${cases.length} 项用例`);
   }
 
   const endedAt = new Date();
@@ -484,9 +462,7 @@ export async function runBatchAdmissionTest(body, taskContext = {}) {
     throw new Error("没有找到可用的被测 API 配置。");
   }
 
-  const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel)
-    ? body.packageLevel
-    : "standard";
+  const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel) ? body.packageLevel : "standard";
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 3, 1);
   const batchId = buildReportId(
     "admission-batch",
@@ -593,6 +569,20 @@ export async function runStabilityTest(body, taskContext = {}) {
   });
 }
 
+// 准入目标解析：优先 body.profileId（已登记的模型目标）；若带 channelId+model 且没有匹配的
+// profileId，走临时（不落库）目标——用于对渠道下尚未登记的模型做一次性快速准入探测。
+async function resolveAdmissionProfile(body) {
+  if (body.profileId) {
+    const profiles = await loadRunnableProfiles();
+    const profile = profiles.find((item) => item.id === body.profileId);
+    if (profile) return profile;
+  }
+  if (body.channelId && body.model) {
+    return resolveAdhocTarget({ channelId: body.channelId, model: body.model });
+  }
+  return null;
+}
+
 function buildAdmissionCases(packageLevel, modelName = "") {
   const cases = [
     {
@@ -683,9 +673,22 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
 
   // 用例可声明自身输出上限（如档位判别题校准时限 256 token）。只下调、不上调：
   //   取 min(渠道配置, 用例上限)，既复现校准运行参数，又不会把硬推理题放成超时重请求。
-  const effectiveProfile = testCase.maxTokens
+  let effectiveProfile = testCase.maxTokens
     ? { ...profile, maxTokens: Math.min(Number(profile.maxTokens) || 512, testCase.maxTokens) }
     : profile;
+
+  // 档位判别题上，用户手填的温度刻意不生效——这些题回到工具默认采样（OpenAI 协议 0.2、
+  // Claude 协议不发 temperature），即本功能上线前它们一直在用的条件。
+  // 理由：档位结论来自「在线通过率 vs 离线参考分布」的似然比比较，采样温度一换就不是同条件对比，
+  // 分类器会给出一个基于错基线的「疑似降级」——那是对上游的误控告，比少覆盖一处严重得多。
+  // 同理于上面的 maxTokens 封顶：两者都是为对齐参考分布。
+  // 也不担心因此触发 400：档位题只对 Claude 家族跑（见 tier-admission.mjs 的 loadTierContext），
+  // 而 Claude 恰恰是拒收自定义 temperature 的那一族，不带反而更安全。
+  // 诚实边界：离线校准脚本本身一个 temperature 都不发，OpenAI 协议下的 0.2 与它仍有细微差异——
+  // 那是本功能之前就存在的偏差，不在这次改动范围内。
+  if (testCase.tier && effectiveProfile.temperatureOverride != null) {
+    effectiveProfile = { ...effectiveProfile, temperatureOverride: null };
+  }
 
   if (testCase.kind === "tool") {
     return executeToolCallTestRequest(effectiveProfile, baseOptions);
@@ -698,11 +701,13 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
 
 function evaluateAdmissionCase(testCase, record) {
   if (testCase.kind === "tool") {
-    const passed = record.success && record.toolCall?.name === "get_weather";
-    return {
-      passed,
-      issue: passed ? "工具调用结构正常。" : record.rawError || "没有返回期望的工具调用结构。",
-    };
+    if (!record.success || !record.toolCall) {
+      return { passed: false, issue: record.rawError || "没有返回期望的工具调用结构。" };
+    }
+    // 修 ADM-013：原实现只比对函数名，arguments 为 {}、损坏 JSON 或城市填错都算通过——
+    // 而"能报出工具名但传不对参数"的渠道在真实业务里同样不可用。
+    const check = validateWeatherToolCall(record.toolCall);
+    return { passed: check.passed, issue: check.issue };
   }
 
   if (testCase.kind === "stream") {
@@ -723,12 +728,11 @@ function evaluateAdmissionCase(testCase, record) {
 
   const text = String(record.responseSummary || "");
   if (testCase.id === "json_structure") {
-    const parsed = parseLooseJson(record.responseText || record.responseSummary);
-    const passed = Boolean(parsed && Object.hasOwn(parsed, "channelReady") && parsed.modelType && parsed.risk);
-    return {
-      passed,
-      issue: passed ? "结构化 JSON 字段完整。" : "没有返回可解析且字段完整的 JSON。",
-    };
+    // 修 ADM-012：原实现只查字段【存在】（Object.hasOwn + 真值），于是
+    // {"channelReady":"false","modelType":123,"risk":"critical"} 会通过——字符串 "false"
+    // 是真值、数字 123 是真值、"critical" 也是真值。硬门槛必须校验类型和取值。
+    const check = validateStructuredJsonCase(record.responseText || record.responseSummary);
+    return { passed: check.passed, issue: check.issue };
   }
   if (testCase.id === "model_identity") {
     const parsed = parseLooseJson(record.responseText || record.responseSummary);
@@ -739,25 +743,38 @@ function evaluateAdmissionCase(testCase, record) {
       identityCheck,
     };
   }
+  // 以下三项降为观察项（修 ADM-014）。判据仍是"命中关键词 + 长度阈值"——它既放过"逻辑错但
+  // 词凑够"的回答，也误杀"正确但简洁"的回答，不足以支撑准入结论。observation:true 让
+  // buildAdmissionSummary 把它们排除在计分通过率和硬门槛之外，但结果照样执行、照样展示为证据。
+  // 要让它们重新参与判定，需要先有隔离执行器（编程题）或人工标定的评分器（解释题）。
   if (testCase.id === "coding_small") {
     const passed = /function|const|let|return|Number|parseInt|parseFloat|修复|代码/i.test(text) && text.length >= 50;
     return {
       passed,
-      issue: passed ? "编程小任务有有效回答。" : "编程回答过短或缺少修复代码。",
+      observation: true,
+      issue: passed
+        ? "观察项：编程小任务有有效回答（关键词与长度启发式，不作准入依据）。"
+        : "观察项：编程回答过短或缺少修复代码（启发式判断，不阻断准入）。",
     };
   }
   if (testCase.id === "behavior_reasoning") {
     const passed = /(渠道|模型|协议|延迟|稳定|路由|缓存|限流)/.test(text) && text.length >= 80;
     return {
       passed,
-      issue: passed ? "行为解释具备基本专业性。" : "解释过短或缺少渠道评测关键点。",
+      observation: true,
+      issue: passed
+        ? "观察项：行为解释具备基本专业性（关键词与长度启发式，不作准入依据）。"
+        : "观察项：解释过短或缺少渠道评测关键点（启发式判断，不阻断准入）。",
     };
   }
   if (testCase.id === "long_context_light") {
     const passed = /(检查项|通过标准|失败处理|协议|模型|token|超时)/i.test(text) && text.length >= 120;
     return {
       passed,
-      issue: passed ? "轻量长上下文任务完成。" : "长上下文检查项不完整。",
+      observation: true,
+      issue: passed
+        ? "观察项：规则理解与结构化整理完成（关键词与长度启发式，不作准入依据）。"
+        : "观察项：检查项不完整（启发式判断，不阻断准入）。",
     };
   }
   if (testCase.id.startsWith("fingerprint_")) {
@@ -776,7 +793,9 @@ function evaluateAdmissionCase(testCase, record) {
 function evaluateModelIdentity(modelName, parsed, rawText) {
   const expectedFamily = inferModelFamily(modelName);
   const reportedFamily = normalizeModelFamily(parsed?.modelFamily || parsed?.family || parsed?.provider || rawText);
-  const confidence = String(parsed?.confidence || "").trim().toLowerCase();
+  const confidence = String(parsed?.confidence || "")
+    .trim()
+    .toLowerCase();
   const evidence = summarizeText(parsed?.evidence || parsed?.notes || rawText || "");
 
   if (!expectedFamily) {
@@ -849,32 +868,82 @@ function buildUpstreamUsage(records, probeRecords = []) {
   };
 }
 
+// 观察证据不参与计分（修 ADM-014，与 ADM-007 同源）：
+//   - coding_small / behavior_reasoning / long_context_light：靠"关键词 + 长度"判分；
+//   - fingerprint_* / tier_*（admission.probe）：按 PRD 7.6 只用于横向差异与历史漂移，
+//     且指纹失败已在 purityAssessment 里单独扣分，再进 passRate 就是同一件事扣两次。
+// 把它们算进 passRate，等于让启发式决定综合分 25 分的权重。它们仍然执行、仍然出现在
+// cases[] 中（observation:true），只是不进计分、不进硬门槛。
+function isObservationRecord(record) {
+  return record?.admission?.observation === true || record?.admission?.probe === true || OBSERVATION_ONLY_CASE_IDS.includes(record?.caseId);
+}
+
 function buildAdmissionSummary({ runId, profile, records, packageLevel, startedAt, endedAt, tierContext = null }) {
   const requestCount = records.length;
   const successCount = records.filter((record) => record.success).length;
-  const passedCount = records.filter((record) => record.admission?.passed).length;
   const successRate = requestCount ? successCount / requestCount : 0;
-  const passRate = requestCount ? passedCount / requestCount : 0;
+
+  // 首次成功率：与 successRate（重试后最终成功）并列的第二口径。准入决策关心的恰恰是这个差——
+  // 一个靠重试才成功的渠道，报告里不该和一次就成的长得一模一样。此前准入侧只把 attempts 用于
+  // 计费求和（见 upstreamUsage），双口径只有稳定性/压测路径有（server/summaries.mjs），
+  // 准入报告因此只有一个数。记录缺 attempts 时给 null 并在报告里标注「未能统计」，
+  // **不得**默认按「首次即成功」算——那会把不稳定渠道洗成干净的。
+  const hasAttempts = records.some((record) => Number(record.attempts) > 0);
+  const firstAttemptSuccessCount = hasAttempts ? records.filter((record) => record.success && Number(record.attempts) === 1).length : null;
+  const firstAttemptSuccessRate = hasAttempts && requestCount ? firstAttemptSuccessCount / requestCount : null;
+  const recoveredCount = hasAttempts ? successCount - firstAttemptSuccessCount : null;
+
+  const gradedRecords = records.filter((record) => !isObservationRecord(record));
+  const observationRecords = records.filter((record) => isObservationRecord(record));
+  const gradedCaseCount = gradedRecords.length;
+  const passedCount = gradedRecords.filter((record) => record.admission?.passed).length;
+  const passRate = gradedCaseCount ? passedCount / gradedCaseCount : 0;
+
   const errorCounts = countErrors(records.filter((record) => !record.success));
   const avgTotalMs = mean(records.map((record) => record.totalMs)) ?? null;
-  const p95TotalMs = percentile(records.map((record) => record.totalMs), 0.95);
+  const p95TotalMs = percentile(
+    records.map((record) => record.totalMs),
+    0.95,
+  );
   const inputTokens = sumNullable(records.map((record) => record.inputTokens));
   const outputTokens = sumNullable(records.map((record) => record.outputTokens));
-  const tokenCoverage = records.filter((record) => record.inputTokens !== null || record.outputTokens !== null).length / Math.max(1, requestCount);
-  const jsonPassed = Boolean(records.find((record) => record.caseId === "json_structure")?.admission?.passed);
-  const toolCallPassed = Boolean(records.find((record) => record.caseId === "tool_call")?.admission?.passed);
-  const streamPassed = Boolean(records.find((record) => record.caseId === "stream_structure")?.admission?.passed);
+  const tokenCoverage =
+    records.filter((record) => record.inputTokens !== null || record.outputTokens !== null).length / Math.max(1, requestCount);
+
+  const caseSummaries = records.map((record) => ({
+    id: record.caseId,
+    name: record.caseName,
+    passed: Boolean(record.admission?.passed),
+    observation: isObservationRecord(record),
+    statusCode: record.statusCode,
+    totalMs: record.totalMs,
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    summary: record.responseSummary,
+    issue: record.admission?.issue,
+    identityCheck: record.admission?.identityCheck || null,
+    streamValidation: record.streamValidation || null,
+    probe: record.admission?.probe || false,
+    signals: record.admission?.signals || [],
+  }));
+
+  // 三态而非布尔：用例没跑（如 quick 包不含编程题）必须是 not_applicable，不能靠 [].every()
+  // 变成 true 白送分，也不能算成失败（修 ADM-007）。
+  const jsonStatus = resolveItemStatus(caseSummaries, "json_structure");
+  const toolCallStatus = resolveItemStatus(caseSummaries, "tool_call");
+  const streamStatus = resolveItemStatus(caseSummaries, "stream_structure");
+  const identityStatus = resolveItemStatus(caseSummaries, "model_identity");
+  const observationStatus = resolveGroupStatus(caseSummaries, OBSERVATION_ONLY_CASE_IDS);
+  const jsonPassed = jsonStatus === ITEM_STATUS.PASSED;
+  const toolCallPassed = toolCallStatus === ITEM_STATUS.PASSED;
+  const streamPassed = streamStatus === ITEM_STATUS.PASSED;
+  const identityPassed = identityStatus === ITEM_STATUS.PASSED;
   const identityRecord = records.find((record) => record.caseId === "model_identity");
   const identityCheck = identityRecord?.admission?.identityCheck || null;
-  const identityPassed = Boolean(identityRecord?.admission?.passed);
-  const codingPassed = records
-    .filter((record) => ["coding_small", "behavior_reasoning", "long_context_light"].includes(record.caseId))
-    .every((record) => record.admission?.passed);
-  const severeError = Object.keys(errorCounts).find((code) =>
-    ["auth_failed", "model_not_found", "content_block_not_found", "upstream_5xx"].includes(code),
-  );
-  const identityPenalty = identityCheck?.status === "conflict" ? 15 : identityCheck?.status === "unknown" ? 3 : 0;
-  const latencyPenalty = p95TotalMs && p95TotalMs > 45000 ? 10 : p95TotalMs && p95TotalMs > 15000 ? 5 : 0;
+
+  // 修 ADM-018：显式优先级，不再取决于 errorCounts 的键插入顺序（即用例执行顺序）。
+  const severeError = pickSevereError(errorCounts);
+
   const tokenAudit = buildTokenAudit(records);
   const billingAudit = auditBillingDimensions(records, { model: profile.defaultModel });
   const fingerprintSummary = buildFingerprintProbeSummary(records);
@@ -894,30 +963,26 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     fingerprintSummary,
     tierDiscrimination,
   });
-  const score = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        successRate * 35 +
-          passRate * 25 +
-          (jsonPassed ? 10 : 0) +
-          (toolCallPassed ? 10 : 0) +
-          (streamPassed ? 10 : 0) +
-          (identityPassed ? 5 : 0) +
-          (codingPassed ? 10 : 0) +
-          tokenCoverage * 5 -
-          latencyPenalty -
-          identityPenalty,
-      ),
-    ),
-  );
+  // 综合分改由 policy 按"实际适用权重"归一化计算，不再把不存在的维度写死进分母。
+  // 它只用于排序与历史对比，能否交付看下面的 verdict（PRD 7.6.1）。
+  const score = computeAdmissionScore({
+    successRate,
+    passRate,
+    jsonStatus,
+    toolCallStatus,
+    streamStatus,
+    identityStatus,
+    tokenCoverage,
+    p95TotalMs,
+    identityConflict: identityCheck?.status === "conflict",
+  });
   const grade = gradeAdmission(score, { successRate, severeError, toolCallPassed, jsonPassed, streamPassed, identityCheck });
   const recommendation = buildAdmissionRecommendation(grade, { severeError, successRate, p95TotalMs });
 
-  return {
+  const summary = {
     runId,
     type: "admission",
+    policyVersion: ADMISSION_POLICY_VERSION,
     profileId: profile.id,
     profileName: profile.name,
     profileRole: profile.role || "target",
@@ -933,8 +998,21 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     successCount,
     successRate,
     successRateText: `${Math.round(successRate * 100)}%`,
+    firstAttemptSuccessCount,
+    firstAttemptSuccessRate,
+    firstAttemptSuccessRateText: firstAttemptSuccessRate === null ? null : `${Math.round(firstAttemptSuccessRate * 100)}%`,
+    recoveredCount,
+    // 手填温度被上游拒收、传输层就地摘掉的请求数。准入页也有温度入口（高级设置），
+    // 不留痕的话用户会把这份报告的分数读成「我设的那个温度下的表现」，实际跑的是模型默认温度。
+    temperatureStrippedCount: countTemperatureStripped(records),
+    gradedCaseCount,
     passedCount,
     passRate,
+    observation: {
+      total: observationRecords.length,
+      passed: observationRecords.filter((record) => record.admission?.passed).length,
+      status: observationStatus,
+    },
     score,
     grade,
     avgTotalMs,
@@ -956,22 +1034,14 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     errorCounts,
     recommendation,
     nextAction: nextActionForAdmission(grade),
-    cases: records.map((record) => ({
-      id: record.caseId,
-      name: record.caseName,
-      passed: Boolean(record.admission?.passed),
-      statusCode: record.statusCode,
-      totalMs: record.totalMs,
-      inputTokens: record.inputTokens,
-      outputTokens: record.outputTokens,
-      summary: record.responseSummary,
-      issue: record.admission?.issue,
-      identityCheck: record.admission?.identityCheck || null,
-      streamValidation: record.streamValidation || null,
-      probe: record.admission?.probe || false,
-      signals: record.admission?.signals || [],
-    })),
+    cases: caseSummaries,
   };
+
+  // 修 ADM-008：硬门槛失败时综合分再高也不能翻案。verdict 与 grade 并存——grade 有 8 处
+  // 下游消费方（等级跌落告警、高风险库、报告对比等），改它的语义会连带影响告警口径和
+  // 历史可比性，所以这里只做纯增量字段。
+  summary.verdict = evaluateAdmission(summary);
+  return summary;
 }
 
 function gradeAdmission(score, { successRate, severeError, toolCallPassed, jsonPassed, streamPassed, identityCheck }) {
@@ -1009,7 +1079,7 @@ function buildAdmissionRecommendation(grade, { severeError, successRate, p95Tota
       detail: `检测到关键错误 ${severeError}。建议先确认协议类型、模型名、Key 权限和上游渠道状态。`,
     };
   }
-  if (p95TotalMs && p95TotalMs > 45000) {
+  if (p95TotalMs && p95TotalMs > P95_LATENCY_SLOW_MS) {
     return {
       level: "watch",
       title: "链路较慢，需要观察",
@@ -1031,25 +1101,63 @@ function nextActionForAdmission(grade) {
   return "暂停接入，先修复 Key、模型名、权限或上游状态。";
 }
 
-async function runStabilityForProfile({ profile, body, taskContext = {}, onProgress = null }) {
+// 兜底文案：groups 缺失/为空/全部数量<=0 时退化为单组扁平路径（供旧调用方如
+// standard-eval-controller.js 的内联 /api/tests/stability、auto-test-scheduler.mjs 继续使用）。
+const DEFAULT_STABILITY_PROMPT = "请用两句话说明你可以正常工作，并返回当前测试编号。";
+
+function normalizeStabilityGroups(body) {
+  if (Array.isArray(body.groups) && body.groups.length > 0) {
+    const groups = body.groups
+      .map((group) => {
+        const repeats = Number(group.repeats);
+        if (!Number.isFinite(repeats) || repeats <= 0) return null;
+        return {
+          presetId: group.presetId != null ? String(group.presetId) : null,
+          prompt: String(group.prompt || "").trim() || DEFAULT_STABILITY_PROMPT,
+          repeats: clampNumber(repeats, 1, 20, 1),
+        };
+      })
+      .filter(Boolean);
+    if (groups.length > 0) return groups;
+  }
   const rounds = clampNumber(body.rounds, 1, 100, 10);
+  const prompt = String(body.prompt || "").trim() || DEFAULT_STABILITY_PROMPT;
+  return [{ presetId: null, prompt, repeats: rounds }];
+}
+
+async function runStabilityForProfile({ profile, body, taskContext = {}, onProgress = null }) {
   const concurrency = clampNumber(body.concurrency, 1, 5, 1);
-  const prompt = String(body.prompt || "").trim() || "请用两句话说明你可以正常工作，并返回当前测试编号。";
+  const temperatureOverride = optionalTemperature(body.temperature);
+  const runProfile = temperatureOverride != null ? { ...profile, temperatureOverride } : profile;
+  const groups = normalizeStabilityGroups(body);
+  const jobs = [];
+  for (const group of groups) {
+    for (let repeat = 1; repeat <= group.repeats; repeat += 1) {
+      jobs.push({ group, repeat });
+    }
+  }
+  const rounds = jobs.length;
   const runId = buildReportId("run", reportTargetSlug(profile));
   const startedAt = new Date();
   const records = [];
 
-  for (let index = 0; index < rounds; index += concurrency) {
+  for (let index = 0; index < jobs.length; index += concurrency) {
     assertTaskNotCancelled(taskContext);
-    const batch = Array.from({ length: Math.min(concurrency, rounds - index) }, (_, offset) => {
-      const round = index + offset + 1;
-      const casePrompt = buildRoundPrompt(prompt, round, rounds);
-      return executeTestRequest(profile, casePrompt, {
+    const batch = jobs.slice(index, index + concurrency).map((job, offset) => {
+      const globalRound = index + offset + 1;
+      const casePrompt = buildRoundPrompt(job.group.prompt, job.repeat, job.group.repeats);
+      return executeTestRequest(runProfile, casePrompt, {
         runId,
-        caseId: `round-${round}`,
+        caseId: `round-${globalRound}`,
         writeLog: true,
         abortSignal: taskContext?.task?.abortController?.signal,
-      });
+      }).then((record) => ({
+        ...record,
+        groupId: job.group.presetId,
+        groupPrompt: job.group.prompt,
+        repeat: job.repeat,
+        repeatsInGroup: job.group.repeats,
+      }));
     });
     records.push(...(await Promise.all(batch)));
     onProgress?.(records.length, rounds);
@@ -1062,7 +1170,7 @@ async function runStabilityForProfile({ profile, body, taskContext = {}, onProgr
     records,
     rounds,
     concurrency,
-    prompt,
+    prompt: groups[0]?.prompt || DEFAULT_STABILITY_PROMPT,
     startedAt,
     endedAt,
   });
@@ -1239,9 +1347,28 @@ function optionalOverrideInt(value, min, max) {
   return Math.min(max, Math.max(min, Math.floor(n)));
 }
 
+// 温度一次性覆盖：留空 → null（走协议默认：OpenAI 0.2，Claude 不带该字段）。
+// 与 optionalOverrideInt 不同，这里不夹取而是超范围直接报错：温度填错（比如把 20 当成 2.0）
+// 静默夹到 2 会让用户以为跑的是自己填的值，而这个参数会实质改变模型输出。
+function optionalTemperature(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 2) {
+    throw new HttpRequestError(400, "invalid_temperature", "温度必须是 0-2 之间的数字，留空则用默认值。");
+  }
+  return n;
+}
+
 // 表单复选框未勾选时字段直接缺席，勾选时为 "1"；JSON 调用方可传 true/"true"/"on"/"yes"。
 function isScenarioFlagOn(value) {
-  return value === true || ["1", "true", "on", "yes"].includes(String(value ?? "").trim().toLowerCase());
+  return (
+    value === true ||
+    ["1", "true", "on", "yes"].includes(
+      String(value ?? "")
+        .trim()
+        .toLowerCase(),
+    )
+  );
 }
 
 export async function runScenarioTest(body, taskContext = {}) {
@@ -1262,9 +1389,11 @@ export async function runScenarioTest(body, taskContext = {}) {
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const requestConcurrency = clampNumber(body.requestConcurrency || body.concurrency, 1, 3, 1);
   const repeats = clampNumber(body.repeats, 1, 5, 1);
-  // 一次性覆盖：仅本次运行生效，不持久化。留空则回落（maxTokens→场景默认 4096，timeoutMs→渠道配置）。
+  // 一次性覆盖：仅本次运行生效，不持久化。留空则回落（maxTokens→场景默认 4096，timeoutMs→渠道配置，temperature→协议默认）。
   const maxTokensOverride = optionalOverrideInt(body.maxTokens, 1, 32768);
   const timeoutMsOverride = optionalOverrideInt(body.timeoutMs, 1000, 600000);
+  // temperature 覆盖：0-2 范围，支持小数。留空则走协议默认（OpenAI 0.2，Claude 不带）。
+  const temperatureOverride = optionalTemperature(body.temperature);
   // 「在报告中完整显示返回」：表单复选框传 "1"；同时容忍 JSON 调用方传 true/"true"/"on"/"yes"。
   const fullResponseInReport = isScenarioFlagOn(body.fullResponseInReport);
   // 「发送流式请求（SSE）」：开启则整轮场景都走流式，并采集真 TTFT。
@@ -1288,6 +1417,7 @@ export async function runScenarioTest(body, taskContext = {}) {
           requestConcurrency,
           maxTokensOverride,
           timeoutMsOverride,
+          temperatureOverride,
           keepFullResponse: fullResponseInReport,
           streamRequest,
           taskContext,
@@ -1406,7 +1536,9 @@ export const MAX_BATCH_PROFILES = 20; // 批量目标数硬上限:防一次选�
 export function normalizeProfileIds(value) {
   const raw = Array.isArray(value)
     ? value.map((item) => String(item || "").trim())
-    : String(value || "").split(",").map((item) => item.trim());
+    : String(value || "")
+        .split(",")
+        .map((item) => item.trim());
   // 去重 + 封顶(去重避免同目标重复跑;封顶是资源兜底,前端另给软提示)
   return [...new Set(raw.filter(Boolean))].slice(0, MAX_BATCH_PROFILES);
 }
@@ -1421,7 +1553,19 @@ export function normalizeScenarioIds(value) {
   return ids.length > 0 ? ids : getTestScenarios().map((scenario) => scenario.id);
 }
 
-async function runScenarioProfile({ runId, profile, scenarios, repeats, requestConcurrency, maxTokensOverride = null, timeoutMsOverride = null, keepFullResponse = false, streamRequest = false, taskContext }) {
+async function runScenarioProfile({
+  runId,
+  profile,
+  scenarios,
+  repeats,
+  requestConcurrency,
+  maxTokensOverride = null,
+  timeoutMsOverride = null,
+  temperatureOverride = null,
+  keepFullResponse = false,
+  streamRequest = false,
+  taskContext,
+}) {
   const records = [];
   // LLM 裁判审计（内联）：仅在开关开启时收集 (问题, 回答) 对，回答剥离前抓取。
   const collectForJudge = isLiveJudgeEnabled();
@@ -1444,6 +1588,7 @@ async function runScenarioProfile({ runId, profile, scenarios, repeats, requestC
           ...profile,
           maxTokens: maxTokensOverride ?? SCENARIO_MAX_OUTPUT_TOKENS,
           timeoutMs: timeoutMsOverride ?? profile.timeoutMs,
+          temperatureOverride: temperatureOverride, // 传递到协议层，让它覆盖默认温度值
         };
         const record = await executeTestRequest(caseProfile, buildScenarioPrompt(scenario, repeat, repeats), {
           runId,
@@ -1484,15 +1629,18 @@ async function runScenarioProfile({ runId, profile, scenarios, repeats, requestC
     );
   }
 
-  const judgeAudit = collectForJudge
-    ? await maybeRunInlineJudgeAudit({ profile, items: judgeItems, runId, taskContext })
-    : null;
+  const judgeAudit = collectForJudge ? await maybeRunInlineJudgeAudit({ profile, items: judgeItems, runId, taskContext }) : null;
   return buildScenarioProfileSummary(profile, records, { judgeAudit });
 }
 
 // 内联裁判审计：审计模式（只记录，不改结论）。开关关 / 无裁判渠道 / 无回答 → 跳过。
 // 裁判 = 配置里 role==="judge" 的渠道；额度上限默认 50（可 env 调），传 executeTestRequest 真实跑。
-const JUDGE_AUDIT_MAX_CALLS = Number(process.env.EVALUATOR_JUDGE_MAX_CALLS || 50);
+// 走 envInt：NaN 额度会让下方的 `calls >= JUDGE_AUDIT_MAX_CALLS` 恒为 false，裁判调用不再有上限，
+// 直接对着上游按条数烧钱；"Infinity" 同理（P1-04）。
+// 导出仅为可测：它是模块【加载时】求值的顶层 const，退回旧写法时任何运行期用例都不会红
+// （实测发生过：一次不完整的合并把它退成 Number(env || 50)，1209 个用例全绿）。
+// 同文件的 MAX_UPSTREAM_STREAM_RESPONSE_BYTES 也是导出的，口径一致。见 tests/env-config-constants.test.mjs。
+export const JUDGE_AUDIT_MAX_CALLS = envInt("EVALUATOR_JUDGE_MAX_CALLS", 50, { min: 1, max: 10_000 });
 async function maybeRunInlineJudgeAudit({ profile, items, runId, taskContext }) {
   if (!isLiveJudgeEnabled() || !items || items.length === 0) return null;
   const profiles = await loadRunnableProfiles();
@@ -1517,289 +1665,17 @@ async function maybeRunInlineJudgeAudit({ profile, items, runId, taskContext }) 
   });
 }
 
-// 把外部取消信号（任务级 AbortController）接到单请求的 controller：取消时立即
-// abort 在飞的 fetch，不必等当前请求超时/自然结束。返回解绑函数，在 finally 调用。
-export function linkExternalAbort(controller, signal) {
-  if (!signal) return () => {};
-  if (signal.aborted) {
-    controller.abort();
-    return () => {};
-  }
-  const onAbort = () => controller.abort();
-  signal.addEventListener("abort", onAbort, { once: true });
-  return () => signal.removeEventListener("abort", onAbort);
-}
-
-// 上游探测的统一骨架：三类探测（普通生成 / 工具调用 / 流式结构）只在
-//   ① buildRequest 构造请求 ② interpret 解释成功响应 ③ computeSuccess 成功判定 三处不同；
-// 其余（超时 / 外部中止 / 截断保护 / 计时 / auth-fail / finalize 落库）完全一致。
-// 瞬时失败退避重试参数：限流型中转最常见的就是 429，单次不重试会整轮判 F。
-const RETRY_MAX_ATTEMPTS = 3; // 含首次：最多 1 + 2 次重试
-const RETRY_BASE_DELAY_MS = 600; // 指数退避基数
-const RETRY_MAX_DELAY_MS = 20000; // 单次退避上限（同时钳制 Retry-After，避免被上游要求长睡）
-// 本进程内记住哪些模型（baseUrl|model）拒绝自定义 temperature，后续同模型请求首发就不带，
-// 省掉那次注定 400 的往返。仅内存态：模型不会中途改变是否支持，重启后从头学习即可。
-const TEMPERATURE_UNSUPPORTED_MODELS = new Set();
-// 同款记忆：本进程内曾因 stream_options 被 400 的模型，后续流式请求首发就不带，省掉注定失败的往返。
-const STREAM_OPTIONS_UNSUPPORTED_MODELS = new Set();
-
-// Retry-After（秒数或 HTTP 日期）→ 毫秒。无法解析 → null。
-function parseRetryAfter(value) {
-  if (!value) return null;
-  const secs = Number(value);
-  if (Number.isFinite(secs)) return Math.max(0, Math.round(secs * 1000));
-  const at = Date.parse(value);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
-}
-
-// 退避睡眠，可被外部取消打断。返回 true=被取消，false=正常睡完。
-function sleepUnlessAborted(ms, signal) {
-  return new Promise((resolve) => {
-    if (signal?.aborted) return resolve(true);
-    const cleanup = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener?.("abort", onAbort);
-    };
-    const onAbort = () => {
-      cleanup();
-      resolve(true);
-    };
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve(false);
-    }, ms);
-    signal?.addEventListener?.("abort", onAbort, { once: true });
-  });
-}
-
-// API key 仅请求时读取，绝不进日志/报告（finalizeTestRecord 只写脱敏元数据）。
-// 429 / 5xx / 瞬时网络错误会指数退避重试；超时与用户取消止损不重试。
-async function runUpstreamProbe(profile, options, { buildRequest, interpret, computeSuccess, captureFirstToken = false }) {
-  const requestId = crypto.randomUUID();
-  const startedAt = new Date();
-  const timeoutMs = Number(profile.timeoutMs || 300000);
-
-  // 贯穿各 finalize 分支的可变结果（含变体特有字段 toolCall / streamValidation / firstTokenMs）。
-  const r = {
-    firstByteMs: null,
-    firstTokenMs: null,
-    totalMs: null,
-    statusCode: null,
-    statusText: "", // HTTP reason phrase（原因短语）；HTTP/1.1 可自定义，HTTP/2 无、为空
-    responseText: "",
-    usage: null,
-    finishReason: null,
-    rawError: "",
-    // 未截断的原始响应体；仅 options.keepRawResponse 时填充（见下方采集点）。
-    rawResponse: "",
-    rawResponsePartial: false, // 上面那份是断流残体（非完整响应），报告须如实标注
-    normalizedError: "",
-    toolCall: null,
-    streamValidation: null,
-  };
-  let attempts = 0; // 实际发出的请求次数（含重试），写进记录便于诊断
-  // 是否流式：取自【真正发出去的请求体】，不取调用方声明，两者不会脱节。
-  // 之前没这个字段，只能拿 firstTokenMs 是否有值反推——而流式请求若一个可见 token 都没吐到
-  // （空响应、上游中途死掉），它同样是 null，反推会把这类请求误判成非流式。
-  let streaming = false;
-  const finalize = () =>
-    finalizeTestRecord({
-      options,
-      profile,
-      requestId,
-      startedAt,
-      firstByteMs: r.firstByteMs,
-      firstTokenMs: r.firstTokenMs,
-      stream: streaming,
-      totalMs: r.totalMs,
-      statusCode: r.statusCode,
-      statusText: r.statusText,
-      responseText: r.responseText,
-      usage: r.usage,
-      finishReason: r.finishReason,
-      rawError: r.rawError,
-      rawResponse: r.rawResponse,
-      rawResponsePartial: r.rawResponsePartial,
-      normalizedError: r.normalizedError,
-      toolCall: r.toolCall,
-      streamValidation: r.streamValidation,
-      attempts,
-      successOverride: computeSuccess(r),
-    });
-
-  const apiKey = await readProfileApiKey(profile);
-  if (!apiKey) {
-    r.rawError = "API Key 未配置或无法从密钥存储读取。";
-    r.normalizedError = "auth_failed";
-    r.totalMs = 0;
-    return finalize();
-  }
-  let request;
-  try {
-    request = buildRequest({ ...profile, apiKey });
-    streaming = request.body?.stream === true;
-    await assertPublicTarget(request.url); // egress 阻断等确定性失败：不重试
-  } catch (error) {
-    r.totalMs = 0;
-    r.rawError = error instanceof Error ? error.message : String(error);
-    r.normalizedError = "network_error";
-    return finalize();
-  }
-  // 已知拒绝自定义 temperature 的模型（本进程内曾被 400 过）：首发就不带，省掉那次注定失败的往返。
-  const tempKey = `${profile.baseUrl}|${profile.defaultModel}`;
-  if (request.body?.temperature !== undefined && TEMPERATURE_UNSUPPORTED_MODELS.has(tempKey)) {
-    delete request.body.temperature;
-  }
-  // 同上：已知不认 stream_options 的模型，流式请求首发就不带（拿不到上游 usage，调用方回退字符估算）。
-  if (request.body?.stream_options !== undefined && STREAM_OPTIONS_UNSUPPORTED_MODELS.has(tempKey)) {
-    delete request.body.stream_options;
-  }
-
-  for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
-    attempts = attempt;
-    // 每次尝试独立的超时控制器；外部取消（options.abortSignal）贯穿所有尝试。
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const unlinkAbort = linkExternalAbort(controller, options.abortSignal);
-    // 重置本次尝试的瞬时字段，避免上次失败残留泄漏到下一次。
-    r.firstByteMs = null;
-    r.firstTokenMs = null;
-    r.statusCode = null;
-    r.statusText = "";
-    r.responseText = "";
-    r.usage = null;
-    r.finishReason = null;
-    r.rawError = "";
-    r.rawResponse = "";
-    r.rawResponsePartial = false;
-    r.normalizedError = "";
-    r.toolCall = null;
-    r.streamValidation = null;
-    let retryable = false;
-    let retryAfterMs = null;
-    // 确定性重配：上游拒收某个我方可选参数（temperature / stream_options），已就地删掉并原样重试。
-    // 这不是负载信号、也不退避，故 noRetry（压测）也应放行——否则压测首批请求会白白判失败。
-    let reconfigured = false;
-    try {
-      const started = performance.now();
-      const response = await fetch(request.url, {
-        method: "POST",
-        headers: request.headers,
-        body: JSON.stringify(request.body),
-        signal: controller.signal,
-        redirect: "error",
-      });
-      r.firstByteMs = Math.round(performance.now() - started);
-      r.statusCode = response.status;
-      // 原因短语：直接取上游实际返回的 statusText（HTTP/1.1 可被上游自定义），不套用标准短语。
-      r.statusText = typeof response.statusText === "string" ? response.statusText : "";
-      // 流式响应体积远大于纯文本（每 token 独立成帧），用放大后的上限，避免长流式被误截断判 F。
-      const responseByteCap = streaming ? MAX_UPSTREAM_STREAM_RESPONSE_BYTES : MAX_UPSTREAM_RESPONSE_BYTES;
-      const rawResult = await readBoundedResponseText(response, responseByteCap, controller, {
-        firstTokenPattern: captureFirstToken ? firstTokenPatternFor(profile.protocol) : null,
-      });
-      r.totalMs = Math.round(performance.now() - started);
-      // 真 TTFT：首个「可见输出 token」所在分片的到达时刻。仅流式可测；非流式 JSON 整体返回、
-      // 无 token 级时序，故 captureFirstToken=false 时保持 null。
-      // 刻意不退回 firstChunkAt：首帧可能是 Claude 的 message_start / 中转保活帧，
-      // 用它会让 TTFT 系统性偏快且跨协议不可比——测不到就留 null（报告按「—」省略），不给假数字。
-      if (captureFirstToken && rawResult.firstTokenAt != null) {
-        r.firstTokenMs = Math.max(0, Math.round(rawResult.firstTokenAt - started));
-      }
-      if (rawResult.truncated) {
-        r.rawError = `上游响应超过 ${responseByteCap} bytes，已停止读取。`;
-        r.normalizedError = "response_too_large";
-        break; // finally 会清理；不重试
-      }
-      const raw = rawResult.text;
-      if (!response.ok) {
-        r.rawError = summarizeText(raw);
-        r.normalizedError = normalizeHttpError(response.status, raw);
-        if (response.status === 429 || response.status >= 500) {
-          retryable = true; // 限流 / 上游 5xx：可重试
-          retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
-        } else if (
-          response.status === 400 &&
-          request.body?.temperature !== undefined &&
-          isTemperatureUnsupportedError(raw)
-        ) {
-          // 部分 OpenAI 系模型（o 系 / GPT-5 系）拒绝自定义 temperature：去掉后立即原样重试。
-          // 就地删掉，本次调用后续尝试都不再带 temperature（guard 保证只触发一次，不会死循环）；
-          // 并记住该模型，让后续请求首发就不带。
-          TEMPERATURE_UNSUPPORTED_MODELS.add(tempKey);
-          delete request.body.temperature;
-          retryable = true;
-          reconfigured = true;
-          retryAfterMs = 0; // 确定性重配，不退避
-        } else if (
-          response.status === 400 &&
-          request.body?.stream_options !== undefined &&
-          isStreamOptionsUnsupportedError(raw)
-        ) {
-          // 同 temperature：部分中转不认 stream_options（我们只用它取 usage）。去掉后立即原样重试，
-          // 否则「勾了流式」的场景题会被误判失败、压测（noRetry 之外的路径）整轮 0% 成功率。
-          // 代价仅是没有上游 usage → 调用方回退按字符估算输出 token。
-          STREAM_OPTIONS_UNSUPPORTED_MODELS.add(tempKey);
-          delete request.body.stream_options;
-          retryable = true;
-          reconfigured = true;
-          retryAfterMs = 0; // 确定性重配，不退避
-        }
-      } else {
-        interpret(r, raw);
-      }
-      // 「在报告中完整显示返回」：没提取到文本时（空响应 / SSE 异常 / 上游错误页），rawError 已被
-      // summarizeText 砍到 500 字并压平换行，恰恰是最需要看全文的情形却只剩开头。这里留一份未截断的
-      // 原始响应（已受 MAX_UPSTREAM_RESPONSE_BYTES 限长）。仅调用方明确要求时保留：全文只随记录进报告，
-      // 不进 requests.jsonl（同 responseText，见 finalizeTestRecord）。
-      if (options.keepRawResponse && !r.responseText) r.rawResponse = raw;
-    } catch (error) {
-      r.totalMs = r.totalMs ?? timeoutMs;
-      // undici 的 fetch reject 常是 "fetch failed"，真正的 errno 在 error.cause.code（如 ECONNRESET）。
-      // 附到 rawError，供压测区分网络错误是本机侧还是上游侧。
-      const errno = error?.cause?.code || error?.code || "";
-      r.rawError = [error instanceof Error ? error.message : String(error), errno].filter(Boolean).join(" ");
-      // 断流前已收到的半截 body（readBoundedResponseText 挂上来的）：标记为不完整，
-      // 报告不得把它当完整响应体展示。
-      if (options.keepRawResponse && typeof error?.partialText === "string" && error.partialText) {
-        r.rawResponse = error.partialText;
-        r.rawResponsePartial = true;
-      }
-      if (/abort|timeout|timed out/i.test(r.rawError)) {
-        r.normalizedError = "timeout"; // 超时或用户取消：止损，不重试
-      } else {
-        r.normalizedError = "network_error";
-        retryable = true; // 瞬时网络错误：可重试
-      }
-    } finally {
-      clearTimeout(timer);
-      unlinkAbort();
-    }
-
-    // options.noRetry：压测模式下每请求只测一次——重试会吞掉 429/5xx（正是要测的限流/不稳信号）、
-    // 并把退避 sleep 混进延迟，污染 QPS / 尾延迟 / 错误分类。见 server/load-test.mjs。
-    // 例外：确定性重配（reconfigured）是修我方请求体、零退避、totalMs 按最后一次尝试计，
-    // 不会污染任何负载信号，故压测也放行——不然首批请求全因可选参数被拒而误判失败。
-    if (!retryable || (options.noRetry && !reconfigured) || attempt >= RETRY_MAX_ATTEMPTS) break;
-    const backoffMs =
-      retryAfterMs != null
-        ? Math.min(retryAfterMs, RETRY_MAX_DELAY_MS)
-        : Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS);
-    if (await sleepUnlessAborted(backoffMs, options.abortSignal)) break; // 退避中被取消则立刻收手
-  }
-
-  return finalize();
-}
+export { linkExternalAbort } from "./upstream-transport.mjs";
 
 // 普通生成探测：解析输出文本与 usage；空回复按 normalizeEmptyResponse 归一。
 // options.stream=true 时改发 SSE 流式请求（贴近真实前端流量，且可测真 TTFT）。
 // 解析层无需分流：coalesceSseResponse 会把 SSE 拼回非流式响应形状，下面 interpret 原样复用。
 export async function executeTestRequest(profile, prompt, options = {}) {
   const streaming = options.stream === true;
-  return runUpstreamProbe(profile, options, {
+  return executeUpstreamRequest(profile, options, {
     captureFirstToken: streaming, // 真 TTFT 仅流式可测；非流式整体返回，保持 null
-    buildRequest: (p) =>
-      streaming ? buildProtocolStreamRequest(p, prompt, { includeUsage: true }) : buildProtocolRequest(p, prompt),
+    finalizeRecord: finalizeTestRecord,
+    buildRequest: (p) => (streaming ? buildProtocolStreamRequest(p, prompt, { includeUsage: true }) : buildProtocolRequest(p, prompt)),
     interpret: (r, raw) => {
       // 上游若无视 stream:false 回了 SSE，safeJson 读不出 → 用 SSE 兜底拼回非流式形状。
       const parsed = safeJson(raw) || coalesceSseResponse(profile.protocol, raw);
@@ -1825,7 +1701,9 @@ export async function executeTestRequest(profile, prompt, options = {}) {
     // 流式：除「2xx + 有文本」外，还须流完整（无致命不完整信号）；非流式走 finalize 默认。
     computeSuccess: (r) =>
       streaming
-        ? Boolean(r.statusCode && r.statusCode >= 200 && r.statusCode < 300 && r.responseText && !streamCompletenessError(r.streamValidation))
+        ? Boolean(
+            r.statusCode && r.statusCode >= 200 && r.statusCode < 300 && r.responseText && !streamCompletenessError(r.streamValidation),
+          )
         : undefined,
   });
 }
@@ -1836,31 +1714,41 @@ function buildProbeTokenRequest(profile, text) {
   const baseUrl = profile.baseUrl.replace(/\/+$/, "");
   if (profile.protocol === "claude_messages") {
     return {
-      url: `${baseUrl}/v1/messages`,
-      headers: { "content-type": "application/json", "x-api-key": profile.apiKey, "anthropic-version": profile.anthropicVersion || "2023-06-01" },
+      url: buildProtocolUrl(profile.protocol, baseUrl),
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": profile.apiKey,
+        "anthropic-version": profile.anthropicVersion || "2023-06-01",
+      },
       body: { model: profile.defaultModel, max_tokens: 1, stream: false, messages: [{ role: "user", content: text }] },
     };
   }
   return {
-    url: `${baseUrl}/v1/chat/completions`,
+    url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: { "content-type": "application/json", authorization: `Bearer ${profile.apiKey}` },
     body: { model: profile.defaultModel, max_tokens: 1, stream: false, messages: [{ role: "user", content: text }] },
   };
 }
 
 async function measureProbeInputTokens(profile, text, options = {}) {
-  return runUpstreamProbe(profile, { writeLog: false, ...options }, {
-    buildRequest: (p) => buildProbeTokenRequest(p, text),
-    interpret: (r, raw) => {
-      r.usage = extractUsage(safeJson(raw) || coalesceSseResponse(profile.protocol, raw));
+  return executeUpstreamRequest(
+    profile,
+    { writeLog: false, ...options },
+    {
+      finalizeRecord: finalizeTestRecord,
+      buildRequest: (p) => buildProbeTokenRequest(p, text),
+      interpret: (r, raw) => {
+        r.usage = extractUsage(safeJson(raw) || coalesceSseResponse(profile.protocol, raw));
+      },
+      computeSuccess: (r) => Number(r.usage?.inputTokens) > 0,
     },
-    computeSuccess: (r) => Number(r.usage?.inputTokens) > 0,
-  });
+  );
 }
 
 // 工具调用探测：要求模型返回 tool_call；缺失记 tool_call_missing。成功 = 2xx 且拿到 toolCall。
 export async function executeToolCallTestRequest(profile, options = {}) {
-  return runUpstreamProbe(profile, options, {
+  return executeUpstreamRequest(profile, options, {
+    finalizeRecord: finalizeTestRecord,
     buildRequest: (p) => buildProtocolToolRequest(p),
     interpret: (r, raw) => {
       const parsed = safeJson(raw) || coalesceSseResponse(profile.protocol, raw);
@@ -1878,8 +1766,9 @@ export async function executeToolCallTestRequest(profile, options = {}) {
 
 // 流式结构探测：校验 SSE 事件结构（captureFirstToken 测真 TTFT）。成功 = 2xx 且结构校验通过。
 export async function executeStreamStructureTestRequest(profile, prompt, options = {}) {
-  return runUpstreamProbe(profile, options, {
+  return executeUpstreamRequest(profile, options, {
     captureFirstToken: true,
+    finalizeRecord: finalizeTestRecord,
     buildRequest: (p) => buildProtocolStreamRequest(p, prompt),
     interpret: (r, raw) => {
       r.streamValidation = summarizeStreamStructure(profile.protocol, raw);
@@ -1895,72 +1784,7 @@ export async function executeStreamStructureTestRequest(profile, prompt, options
   });
 }
 
-// firstTokenPattern：命中即视为「首个可见输出 token 已到达」（见 protocols.firstTokenPatternFor）。
-// 不传则只记 firstChunkAt，行为与旧版一致。
-export async function readBoundedResponseText(response, maxBytes, controller, { firstTokenPattern = null } = {}) {
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-    controller.abort();
-    return { text: "", truncated: true, firstChunkAt: null, firstTokenAt: null };
-  }
-
-  if (!response.body?.getReader) {
-    if (!contentLength) {
-      controller.abort();
-      return { text: "", truncated: true, firstChunkAt: null, firstTokenAt: null };
-    }
-    const text = await response.text();
-    return {
-      text: text.slice(0, maxBytes),
-      truncated: Buffer.byteLength(text, "utf8") > maxBytes,
-      firstChunkAt: null,
-      firstTokenAt: null,
-    };
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  const chunks = [];
-  let totalBytes = 0;
-  let firstChunkAt = null; // 首个分片到达时刻（performance.now()）——含 message_start / 保活帧，不等于首 token
-  let firstTokenAt = null; // 首个「可见输出 token」所在分片的到达时刻，才是 TTFT 的正确口径
-  // 滑动窗：只留尾部若干字符 + 新分片，既能匹配跨分片被切断的标记，又不让正则开销随响应体线性增长。
-  let matchWindow = "";
-  const MATCH_WINDOW = 4096;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      if (firstChunkAt === null) firstChunkAt = performance.now();
-      totalBytes += value.byteLength;
-      if (totalBytes > maxBytes) {
-        await reader.cancel();
-        controller.abort();
-        return { text: chunks.join(""), truncated: true, firstChunkAt, firstTokenAt };
-      }
-      const piece = decoder.decode(value, { stream: true });
-      chunks.push(piece);
-      if (firstTokenPattern && firstTokenAt === null) {
-        matchWindow = (matchWindow + piece).slice(-MATCH_WINDOW);
-        if (firstTokenPattern.test(matchWindow)) firstTokenAt = performance.now();
-      }
-    }
-    chunks.push(decoder.decode());
-    return { text: chunks.join(""), truncated: false, firstChunkAt, firstTokenAt };
-  } catch (error) {
-    // 流中途断掉（socket 被掐断 / 超时中止）：已收到的半截 body 往往是「上游到底发出来没有」的
-    // 唯一证据，不能连同异常一起丢掉。仍按原样抛出——错误归类（network_error / timeout）不变，
-    // 只是把残体挂在异常上给调用方（见 runUpstreamProbe 的 catch）。
-    const partial = chunks.join("");
-    if (partial) error.partialText = partial;
-    throw error;
-  } finally {
-    reader.releaseLock?.();
-  }
-}
+export { readBoundedResponseText } from "./upstream-transport.mjs";
 
 export function stripHeavyRunResult(result) {
   if (!result || typeof result !== "object") {
@@ -2030,6 +1854,7 @@ async function finalizeTestRecord({
   firstTokenMs = null,
   stream = false,
   totalMs,
+  endToEndMs = null,
   statusCode,
   statusText = "",
   responseText,
@@ -2039,8 +1864,12 @@ async function finalizeTestRecord({
   rawResponse = "",
   rawResponsePartial = false,
   normalizedError,
+  retryWaitMs = 0,
+  attemptStatuses = [],
+  attemptErrors = [],
   toolCall = null,
   streamValidation = null,
+  temperatureStripped = false,
   attempts = 1,
   successOverride = undefined,
 }) {
@@ -2057,6 +1886,9 @@ async function finalizeTestRecord({
     // 实际发出的输出窗口（场景题会把它抬到 scenario.maxTokens）。落进 requests.jsonl 便于
     // 直接核对"发的是不是 8192"，不必靠输出长度反推。
     requestMaxTokens: Number(profile.maxTokens) || null,
+    // 高级设置里手填的温度被传输层摘掉了（该模型拒收自定义 temperature）。落进记录，
+    // 汇总时聚合成一条界面提示——否则用户以为跑的是自己填的温度，实际跑的是模型默认值。
+    temperatureStripped,
     // 实际发出的是不是 SSE 流式请求。诊断时不必再靠 firstTokenMs 反推（那会把「流式但没吐内容」
     // 的失败误判成非流式）。
     stream,
@@ -2064,6 +1896,14 @@ async function finalizeTestRecord({
     firstByteMs,
     firstTokenMs,
     totalMs,
+    retryWaitMs,
+    // 端到端耗时（ADM-010）：含被重试掉的失败尝试与退避等待，故 endToEndMs >= totalMs。
+    // totalMs 的语义【刻意保持不变】——趋势图与回归判定的延迟序列按 total_ms 取点
+    // （server/db.mjs），改它的含义会让历史数据不可比。新口径一律走这个新字段。
+    // null 表示没测到（一次请求都没发出，如 Key 缺失 / egress 阻断）。
+    endToEndMs,
+    attemptStatuses,
+    attemptErrors,
     statusCode,
     statusText, // 上游返回的原因短语（reason phrase），供压测报告逐码展示
     success: successOverride ?? Boolean(statusCode && statusCode >= 200 && statusCode < 300 && responseText),
@@ -2105,12 +1945,7 @@ async function finalizeTestRecord({
 }
 
 function buildRoundPrompt(prompt, round, rounds) {
-  return [
-    prompt,
-    "",
-    `本次是稳定性测试第 ${round}/${rounds} 轮。`,
-    "请正常完成任务，不要只回复测试编号。",
-  ].join("\n");
+  return [prompt, "", `本次是稳定性测试第 ${round}/${rounds} 轮。`, "请正常完成任务，不要只回复测试编号。"].join("\n");
 }
 
 function buildScenarioPrompt(scenario, repeat, repeats) {

@@ -50,11 +50,22 @@ const ANTHROPIC_VERSION = "2023-06-01";
 const DEFAULT_MODELS = ["claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-sonnet-4-5"];
 
 function parseArgs(argv) {
-  const args = { models: DEFAULT_MODELS.slice(), out: resolve(HERE, "claude-token-baseline.json"), baseUrl: "https://api.anthropic.com", proxy: "", mode: "count_tokens", dryRun: false };
+  const args = {
+    models: DEFAULT_MODELS.slice(),
+    out: resolve(HERE, "claude-token-baseline.json"),
+    baseUrl: "https://api.anthropic.com",
+    proxy: "",
+    mode: "count_tokens",
+    dryRun: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--dry-run") args.dryRun = true;
-    else if (a === "--models") args.models = String(argv[++i] || "").split(",").map((s) => s.trim()).filter(Boolean);
+    else if (a === "--models")
+      args.models = String(argv[++i] || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
     else if (a === "--model") args.models = [argv[++i]];
     else if (a === "--out") args.out = resolve(process.cwd(), argv[++i]);
     else if (a === "--base-url") args.baseUrl = argv[++i];
@@ -172,9 +183,7 @@ async function countTokens({ baseUrl, apiKey, model, text, proxy, mode }) {
         throw new Error(`响应非 JSON: ${res.text.slice(0, 120)}`);
       }
       // count_tokens → input_tokens;chat → usage.prompt_tokens(兼容个别中转回 input_tokens)。
-      const n = isChat
-        ? Number(json.usage?.prompt_tokens ?? json.usage?.input_tokens)
-        : Number(json.input_tokens);
+      const n = isChat ? Number(json.usage?.prompt_tokens ?? json.usage?.input_tokens) : Number(json.input_tokens);
       if (!Number.isFinite(n)) throw new Error(`响应缺少 token 计数: ${res.text.slice(0, 160)}`);
       return n;
     }
@@ -227,23 +236,19 @@ function groupByTokenVector(baselines) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  console.log(`探针版本: ${TOKENIZER_PROBE_VERSION} | 探针数: ${TOKENIZER_PROBES.length} | 模式: ${args.mode} | 模型: ${args.models.join(", ")}`);
+  console.log(
+    `探针版本: ${TOKENIZER_PROBE_VERSION} | 探针数: ${TOKENIZER_PROBES.length} | 模式: ${args.mode} | 模型: ${args.models.join(", ")}`,
+  );
 
   if (args.dryRun) {
     console.log("\n[dry-run] 不调用 API。下表为各探针的字符数与离线 o200k(GPT 系)估算,用于直观感受分词差异:\n");
     console.log("id".padEnd(18), "category".padEnd(12), "chars".padStart(7), "o200k".padStart(7));
     for (const p of TOKENIZER_PROBES) {
       const o = await offlineO200k(p.text);
-      console.log(
-        p.id.padEnd(18),
-        p.category.padEnd(12),
-        String([...p.text].length).padStart(7),
-        String(o ?? "—").padStart(7),
-      );
+      console.log(p.id.padEnd(18), p.category.padEnd(12), String([...p.text].length).padStart(7), String(o ?? "—").padStart(7));
     }
     console.log(
-      "\n说明:o200k 是 OpenAI 的分词器,Claude 的真实 token 数会与之系统性不同。" +
-        "拿到官方 key 后去掉 --dry-run 即可写出 Claude 基线。",
+      "\n说明:o200k 是 OpenAI 的分词器,Claude 的真实 token 数会与之系统性不同。" + "拿到官方 key 后去掉 --dry-run 即可写出 Claude 基线。",
     );
     return;
   }

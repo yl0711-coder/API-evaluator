@@ -178,15 +178,19 @@ test("authenticateLocal: matches configured user, rejects wrong password / unkno
 test("localUsers parses EVALUATOR_ADMIN_PASSWORD and EVALUATOR_LOCAL_USERS (password may contain colon)", () => {
   process.env.EVALUATOR_ADMIN_PASSWORD = "pw100";
   process.env.EVALUATOR_LOCAL_USERS = "tester:pw10:10, bad-entry, ops:p:o:100";
-  const users = auth.localUsers();
-  assert.equal(users.get("admin").role, 100);
-  assert.equal(users.get("admin").password, "pw100");
-  assert.equal(users.get("tester").role, 10);
-  assert.equal(users.get("ops").password, "p:o"); // name=ops, role=100, password 中间含冒号
-  assert.equal(users.get("ops").role, 100);
-  assert.equal(users.has("bad-entry"), false);
-  delete process.env.EVALUATOR_ADMIN_PASSWORD;
-  delete process.env.EVALUATOR_LOCAL_USERS;
+  try {
+    const users = auth.localUsers();
+    assert.equal(users.get("admin").role, 100);
+    assert.equal(users.get("admin").password, "pw100");
+    assert.equal(users.get("tester").role, 10);
+    assert.equal(users.get("ops").password, "p:o"); // name=ops, role=100, password 中间含冒号
+    assert.equal(users.get("ops").role, 100);
+    assert.equal(users.has("bad-entry"), false);
+  } finally {
+    // 放 finally：任一断言抛出也不把 ADMIN_PASSWORD/LOCAL_USERS 泄漏给同文件后续用例
+    delete process.env.EVALUATOR_ADMIN_PASSWORD;
+    delete process.env.EVALUATOR_LOCAL_USERS;
+  }
 });
 
 test("authenticate dispatches to local by default, newapi when backend set", async () => {

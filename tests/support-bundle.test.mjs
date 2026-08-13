@@ -49,10 +49,17 @@ test("support bundle surfaces storage health for diagnosing SQLite/JSONL drift",
     testRuns: [],
     tasks: [],
     errors: [],
-    storage: { sqliteAvailable: true, requestWriteFailures: 3, runWriteFailures: 0, lastError: "recordRequest: disk full" },
+    storage: {
+      sqliteAvailable: true,
+      requestWriteFailures: 3,
+      runWriteFailures: 0,
+      configWriteFailures: 2,
+      lastError: "recordRequest: disk full",
+    },
   });
   assert.equal(bundle.storage.sqliteAvailable, true);
   assert.equal(bundle.storage.requestWriteFailures, 3);
+  assert.equal(bundle.storage.configWriteFailures, 2);
   assert.equal(bundle.storage.lastError, "recordRequest: disk full");
   // 缺省时不报错，给出可识别占位
   const noStorage = buildSupportBundle({ profiles: [], requests: [], testRuns: [], tasks: [], errors: [] });

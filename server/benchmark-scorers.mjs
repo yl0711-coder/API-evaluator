@@ -92,8 +92,12 @@ export function buildHaystack({ filler, needle, depthRatio = 0.5, repeats = 50 }
 
 // 判分：模型回答里是否取回了 needle 的答案（归一化子串匹配）。
 export function scoreNeedleRetrieval(response, needleAnswer) {
-  const text = String(response || "").toLowerCase().replace(/\s+/g, "");
-  const target = String(needleAnswer || "").toLowerCase().replace(/\s+/g, "");
+  const text = String(response || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  const target = String(needleAnswer || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
   if (!target) return { retrieved: false, score: 0, note: "未指定 needle 答案" };
   const retrieved = text.includes(target);
   return { retrieved, score: retrieved ? 1 : 0 };
@@ -201,9 +205,33 @@ function toHalfWidth(s) {
     .replace(/　/g, " ");
 }
 
-// 归一化：半角化、折叠空白、去首尾、小写、剥成对引号/括号与尾随标点。
+// 剥掉【成对】的 LaTeX 数学定界符：\(…\)、\[…\]、$$…$$、$…$。
+// 必须在下面「剥引号/括号/尾随标点」之前整对剥掉 —— 那条规则的字符类含裸 ( 与 )，却不认 \( 与 \)：
+// 对 \(…\) 只会把结尾的 ) 剥掉、留下孤零零的 \，而开头的 \( 因 \ 不在类里被完整保留。
+// 于是同一个答案「带定界符」与「不带定界符」两种写法会被归一成两个不同的串（左边多 \(、右边多 \），
+// 期望值带、模型输出不带（或反之）时判成答错 —— 假阴性，且与数学内容无关。
+// 只剥整对：单边残留一律不动，宁可不剥也不制造新的不对称。
+// $…$ 要求内部无 $，避免把 "$5 到 $10" 这类首尾恰好是 $ 的普通文本当成数学式吃掉中间。
+function stripMathDelimiters(t) {
+  let out = t;
+  // 允许 $$\(…\)$$ 这类嵌套包裹，最多剥两层（够用且不会在异常输入上打转）。
+  for (let i = 0; i < 2; i += 1) {
+    const next = out
+      .replace(/^\\\((.*)\\\)$/s, "$1")
+      .replace(/^\\\[(.*)\\\]$/s, "$1")
+      .replace(/^\$\$([^$]*)\$\$$/s, "$1")
+      .replace(/^\$([^$]*)\$$/s, "$1")
+      .trim();
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+// 归一化：半角化、折叠空白、去首尾、小写、剥成对 LaTeX 数学定界符、剥成对引号/括号与尾随标点。
 function normalizeAnswer(s) {
   let t = toHalfWidth(s).replace(/\s+/g, " ").trim().toLowerCase();
+  t = stripMathDelimiters(t);
   t = t.replace(/^["'`“”‘’（(\[【]+/, "").replace(/["'`“”‘’）)\]】。.!！?？，,;；:：]+$/, "");
   return t.trim();
 }
@@ -225,12 +253,18 @@ function extractAnswer(response) {
   // 取最后一处，避免命中题面里的示例标签。再剥一层答案标签（奥赛填空等会把 "Answer: ..." 整行放进来）。
   const sols = [...text.matchAll(/<solution>\s*([\s\S]*?)\s*<\/solution>/gi)];
   if (sols.length) return afterAnswerLabel(sols[sols.length - 1][1].trim());
-  text = text.replace(/```[a-zA-Z0-9_-]*\n?/g, "").replace(/```/g, "").trim();
+  text = text
+    .replace(/```[a-zA-Z0-9_-]*\n?/g, "")
+    .replace(/```/g, "")
+    .trim();
   const boxed = text.match(/\\boxed\{([^}]*)\}/);
   if (boxed) return boxed[1].trim();
   const labeled = afterAnswerLabel(text);
   if (labeled !== text) return labeled; // 命中答案标签
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   return lines.length ? lines[lines.length - 1] : text;
 }
 
@@ -262,7 +296,10 @@ export function scoreExactAnswer(response, expected, opts = {}) {
     }
   }
   // 失败信息同时给出「期望」与「抽取」，避免误以为抽取值==模型回答就该判对（真正比对的是期望答案）。
-  const expectedText = accepted.map((x) => String(x)).join(" / ").slice(0, 80);
+  const expectedText = accepted
+    .map((x) => String(x))
+    .join(" / ")
+    .slice(0, 80);
   return { passed: false, score: 0, extracted: candidate, issues: [`答案不符（期望：${expectedText}；抽取：${candidate.slice(0, 60)}）`] };
 }
 
@@ -302,7 +339,10 @@ function parseStructured(text) {
   }
   const loose = parseLooseJson(t);
   if (loose != null) return loose;
-  const lines = t.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = t
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   if (lines.length > 1) {
     const arr = [];
     for (const ln of lines) {
@@ -385,7 +425,14 @@ export function scoreTableReformat(response, expected) {
   if (!expRows) return { passed: false, score: 0, matched: 0, total: 0, issues: ["expected 不是可解析的表格"] };
   const got = parseStructured(String(response || ""));
   const gotRows = toRowList(got);
-  if (!gotRows) return { passed: false, score: 0, matched: 0, total: expRows.length, issues: ["模型输出不是可解析的表格（应为行对象数组/JSON/JSONL）"] };
+  if (!gotRows)
+    return {
+      passed: false,
+      score: 0,
+      matched: 0,
+      total: expRows.length,
+      issues: ["模型输出不是可解析的表格（应为行对象数组/JSON/JSONL）"],
+    };
   const expN = expRows.map(normalizeRow);
   const gotN = gotRows.map(normalizeRow);
   const used = new Array(gotN.length).fill(false);

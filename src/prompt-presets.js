@@ -197,7 +197,10 @@ const PRESETS_BY_KIND = {
 export function renderPromptPresetOptions(kindOrSelectedId = "stability", maybeSelectedId = "basic") {
   const { presets, selectedId } = resolvePresetArgs(kindOrSelectedId, maybeSelectedId);
   return presets
-    .map((preset) => `<option value="${escapeHtml(preset.id)}"${preset.id === selectedId ? " selected" : ""}>${escapeHtml(preset.label)}</option>`)
+    .map(
+      (preset) =>
+        `<option value="${escapeHtml(preset.id)}"${preset.id === selectedId ? " selected" : ""}>${escapeHtml(preset.label)}</option>`,
+    )
     .join("");
 }
 
@@ -212,7 +215,8 @@ export function applyPromptPresetToForm({ kind = "stability", form, select, hint
   const preset = getPromptPreset(kind, select.value);
   const promptInput = form.elements.prompt;
   if (hint) {
-    hint.textContent = preset.id === "custom" ? `${preset.hint} 下方文本框现在可以编辑。` : `${preset.hint} 下方文本框已自动填入，可直接开始测试。`;
+    hint.textContent =
+      preset.id === "custom" ? `${preset.hint} 下方文本框现在可以编辑。` : `${preset.hint} 下方文本框已自动填入，可直接开始测试。`;
   }
   if (promptInput) {
     promptInput.readOnly = preset.id !== "custom";
@@ -238,4 +242,54 @@ function resolvePresetArgs(kindOrSelectedId, maybeSelectedId) {
     presets: STABILITY_PROMPT_PRESETS,
     selectedId: kindOrSelectedId,
   };
+}
+
+// 读取分组选择器当前状态，组装成后端需要的 groups 数组。数量为 0 的预设不入选；
+// custom 预设额外要求填了非空文案，否则视为未选中（不阻塞提交，只是跳过这一组）。
+export function readStabilityGroups(form) {
+  const groups = [];
+  for (const preset of STABILITY_PROMPT_PRESETS) {
+    const input = form.querySelector(`.stability-group-repeats[data-preset-id="${preset.id}"]`);
+    const repeats = clampGroupRepeats(input?.value);
+    if (repeats <= 0) continue;
+    if (preset.id === "custom") {
+      const customPrompt = String(form.elements.prompt?.value || "").trim();
+      if (!customPrompt) continue;
+      groups.push({ presetId: preset.id, prompt: customPrompt, repeats });
+    } else {
+      groups.push({ presetId: preset.id, prompt: preset.prompt, repeats });
+    }
+  }
+  return groups;
+}
+
+function clampGroupRepeats(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(20, n);
+}
+
+// 为每个稳定性预设渲染一行「文案名 + 数量框」，custom 行额外含 textarea。
+// selectedRepeats: { presetId: number } 用于恢复已选数量（如重置为默认态时传入）。
+// idPrefix：本页面内 custom 文案 textarea 的 DOM id 前缀，避免同一页面多处使用本选择器时 id 冲突
+// （如稳定性测试页与自动测试配置页都用它）；readStabilityGroups 靠 name="prompt" 定位，不受影响。
+export function renderStabilityGroupPicker(selectedRepeats = {}, idPrefix = "stability") {
+  return STABILITY_PROMPT_PRESETS.map((preset) => {
+    const defaultRepeats = preset.id === "custom" ? 1 : 3;
+    const repeats = selectedRepeats[preset.id] ?? defaultRepeats;
+    const customTextarea =
+      preset.id === "custom"
+        ? `<textarea id="${escapeHtml(idPrefix)}-prompt" name="prompt" rows="4" placeholder="在此输入自定义测试文案…" class="stability-custom-prompt"></textarea>`
+        : "";
+    return [
+      `<div class="stability-group-row" data-preset-id="${escapeHtml(preset.id)}">`,
+      `  <label class="stability-group-label" title="${escapeHtml(preset.hint)}">`,
+      `    <input type="number" class="stability-group-repeats" name="stability-repeats-${escapeHtml(preset.id)}"`,
+      `      min="0" max="20" value="${Number(repeats)}" data-preset-id="${escapeHtml(preset.id)}">`,
+      `    <span class="stability-group-name">${escapeHtml(preset.label)}</span>`,
+      `  </label>`,
+      customTextarea,
+      `</div>`,
+    ].join("\n");
+  }).join("\n");
 }

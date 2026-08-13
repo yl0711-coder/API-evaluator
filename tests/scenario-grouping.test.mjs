@@ -30,8 +30,14 @@ test("distinctGroups：去重、保序、丢空串/假值", () => {
 test("filterRowsByGroup：空＝全部；命中组＝子集；不存在组＝空", () => {
   const all = rows();
   assert.deepEqual(filterRowsByGroup(all, ""), all, "空 → 不筛");
-  assert.deepEqual(filterRowsByGroup(all, "基础").map((r) => r.id), ["b1", "b2"]);
-  assert.deepEqual(filterRowsByGroup(all, "HLE").map((r) => r.id), ["h1"]);
+  assert.deepEqual(
+    filterRowsByGroup(all, "基础").map((r) => r.id),
+    ["b1", "b2"],
+  );
+  assert.deepEqual(
+    filterRowsByGroup(all, "HLE").map((r) => r.id),
+    ["h1"],
+  );
   assert.deepEqual(filterRowsByGroup(all, "不存在"), [], "无命中");
   assert.deepEqual(filterRowsByGroup(undefined, "基础"), []);
 });
@@ -62,6 +68,10 @@ test("selectedRows：跨分组返回全部已选（不受当前筛选影响，�
   all[2].selected = true; // 再选中 HLE 的 h1（与已选的 b2 不同组）
   const sel = selectedRows(all);
   assert.deepEqual(sel.map((r) => r.id).sort(), ["b2", "h1"].sort(), "chips 显示跨组全部已选");
-  assert.deepEqual(selectedRows(rows()).map((r) => r.id), ["b2"], "默认仅 b2 已选");
+  assert.deepEqual(
+    selectedRows(rows()).map((r) => r.id),
+    ["b2"],
+    "默认仅 b2 已选",
+  );
   assert.deepEqual(selectedRows([]), []);
 });

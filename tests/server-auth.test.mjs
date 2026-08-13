@@ -77,12 +77,22 @@ test("超管(100)可写渠道；管理员(10)写渠道 403、但可写模型目�
   assert.ok(admin && tester, "登录失败");
 
   // 超管建渠道 -> 200
-  const created = await call("POST", "/api/channels", admin, { name: "渠道Z", baseUrl: "https://z.test", protocol: "openai_chat", apiKey: "sk-z" });
+  const created = await call("POST", "/api/channels", admin, {
+    name: "渠道Z",
+    baseUrl: "https://z.test",
+    protocol: "openai_chat",
+    apiKey: "sk-z",
+  });
   assert.equal(created.status, 200);
   const channel = await created.json();
 
   // 管理员写渠道 -> 403 forbidden_admin
-  const denied = await call("POST", "/api/channels", tester, { name: "x", baseUrl: "https://x.test", protocol: "openai_chat", apiKey: "k" });
+  const denied = await call("POST", "/api/channels", tester, {
+    name: "x",
+    baseUrl: "https://x.test",
+    protocol: "openai_chat",
+    apiKey: "k",
+  });
   assert.equal(denied.status, 403);
   assert.equal((await denied.json()).error, "forbidden_admin");
 
@@ -115,7 +125,12 @@ test("缺必填字段 -> 400 validation_error（不是被兜成 500）", async (
 test("sync-models：手动渠道 -> 400 not_newapi_channel；不存在的渠道 -> 404", async () => {
   assert.ok(ready);
   const admin = await login("admin", "adminpw");
-  const created = await call("POST", "/api/channels", admin, { name: "手动SM", baseUrl: "https://sm.test", protocol: "openai_chat", apiKey: "k" });
+  const created = await call("POST", "/api/channels", admin, {
+    name: "手动SM",
+    baseUrl: "https://sm.test",
+    protocol: "openai_chat",
+    apiKey: "k",
+  });
   const channel = await created.json();
   const manual = await call("POST", `/api/channels/${channel.id}/sync-models`, admin, {});
   assert.equal(manual.status, 400);

@@ -69,6 +69,9 @@ test("stability reports contain useful conclusions and no API key", async () => 
     assert.match(markdown, /报告不包含 API Key/);
     assert.equal(markdown.includes("sk-should-not-be-in-report"), false);
     assert.match(markdown, /\[redacted-secret\]/);
+    // summary 没有 groups/cacheHitRate 字段（旧调用方/手搭夹具）时应优雅降级，不崩、不出现分组明细节
+    assert.match(markdown, /缓存命中率：未提供缓存统计信号/);
+    assert.doesNotMatch(markdown, /分组明细/);
 
     const files = await reporting.saveReportFiles("run-test", markdown, "测试报告");
     const html = await readFile(files.htmlPath, "utf8");
@@ -342,10 +345,9 @@ test("scenario reports explain content safety risks in plain language", async ()
 test("完整返回：成功给回答全文；失败给未截断的上游响应体；无响应体则如实标注已截断", async () => {
   const reporting = await import(`../server/reporting.mjs?case=fullresp-${Date.now()}`);
   // 造一段超过 summarizeText 上限(500)的 SSE，尾部放一个哨兵——它只可能来自未截断的全文。
-  const sse = Array.from(
-    { length: 40 },
-    (_, i) => `data: {"choices":[{"delta":{"content":""},"index":${i}}],"usage":null}`,
-  ).join("\n\n") + '\n\ndata: {"choices":[],"usage":{"prompt_tokens":143,"completion_tokens":0}}\n\ndata: [DONE]';
+  const sse =
+    Array.from({ length: 40 }, (_, i) => `data: {"choices":[{"delta":{"content":""},"index":${i}}],"usage":null}`).join("\n\n") +
+    '\n\ndata: {"choices":[],"usage":{"prompt_tokens":143,"completion_tokens":0}}\n\ndata: [DONE]';
   assert.ok(sse.length > 500, "样本必须长过摘要上限，否则测不出截断");
 
   const base = {

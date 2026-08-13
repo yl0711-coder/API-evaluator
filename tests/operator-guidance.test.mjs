@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { P95_LATENCY_OK_MS, P95_LATENCY_SLOW_MS } from "../shared/thresholds.mjs";
 import {
   applyProfileTemplateToForm,
   buildStandardActionPlan,
@@ -13,25 +14,56 @@ import {
 
 function mockProfileForm() {
   const field = () => ({ value: "", placeholder: "" });
-  return { elements: { provider: field(), protocol: field(), maxTokens: field(), timeoutMs: field(), baseUrl: field(), defaultModel: field(), notes: field() } };
+  return {
+    elements: {
+      provider: field(),
+      protocol: field(),
+      maxTokens: field(),
+      timeoutMs: field(),
+      baseUrl: field(),
+      defaultModel: field(),
+      notes: field(),
+    },
+  };
 }
 
 test("profile templates cover common model families with valid shape", () => {
   const required = ["label", "provider", "protocol", "baseUrlPlaceholder", "modelPlaceholder", "maxTokens", "timeoutMs", "notes"];
   for (const [key, template] of Object.entries(PROFILE_TEMPLATES)) {
     for (const field of required) assert.ok(template[field] !== undefined, `${key} 缺字段 ${field}`);
-    assert.ok(["openai_compatible", "openai_chat", "claude_messages"].includes(template.protocol), `${key} 协议非法`);
+    assert.ok(["openai_compatible", "openai_chat", "claude_messages", "openai_path_prefix"].includes(template.protocol), `${key} 协议非法`);
   }
   // 用户点名要能配的常见模型家族都有预设
-  for (const key of ["gemini_openai_compatible", "kimi_openai_compatible", "doubao_openai_compatible", "glm_openai_compatible", "qwen_openai_compatible", "grok_openai_compatible"]) {
+  for (const key of [
+    "gemini_openai_compatible",
+    "kimi_openai_compatible",
+    "doubao_openai_compatible",
+    "glm_openai_compatible",
+    "qwen_openai_compatible",
+    "grok_openai_compatible",
+  ]) {
     assert.ok(PROFILE_TEMPLATES[key], `缺预设 ${key}`);
   }
   // 选预设能把协议/厂商自动填进表单
   const form = mockProfileForm();
   const applied = applyProfileTemplateToForm(form, "qwen_openai_compatible");
   assert.equal(applied.provider, "Alibaba");
-  assert.equal(form.elements.protocol.value, "openai_compatible");
+  // DashScope 兼容前缀是 /compatible-mode/v1，不是 /v1 → 该预设走自定义前缀协议
+  assert.equal(form.elements.protocol.value, "openai_path_prefix");
   assert.equal(form.elements.notes.value, applied.notes);
+
+  // 通用中转预设仍是标准 /v1，不受本次改动影响
+  const relayForm = mockProfileForm();
+  applyProfileTemplateToForm(relayForm, "relay_openai_compatible");
+  assert.equal(relayForm.elements.protocol.value, "openai_compatible");
+
+  // 前缀非 /v1 的厂商预设，Base URL 占位符必须给出带前缀的完整地址（否则用户照填域名就 404）
+  for (const key of ["glm_openai_compatible", "qwen_openai_compatible", "gemini_openai_compatible", "doubao_openai_compatible"]) {
+    const template = PROFILE_TEMPLATES[key];
+    assert.equal(template.protocol, "openai_path_prefix", `${key} 应走自定义前缀协议`);
+    const path = new URL(template.baseUrlPlaceholder).pathname;
+    assert.ok(path && path !== "/", `${key} 的 baseUrlPlaceholder 缺版本前缀：${template.baseUrlPlaceholder}`);
+  }
 });
 
 test("operator guidance maps common API errors to user-facing advice", () => {
@@ -48,16 +80,23 @@ test("operator guidance recommends next step after standard evaluation", () => {
   const passAdvice = buildStandardNextStepAdvice({
     quick: { success: true },
     stability: { successRate: 1, p95TotalMs: 1200 },
-    scenario: { results: [{ avgQualityScore: 80 }] },
+    admission: { grade: "A" },
   });
   assert.match(passAdvice.join("\n"), /复制交付模板/);
 
   const failAdvice = buildStandardNextStepAdvice({
     quick: { success: false },
     stability: null,
-    scenario: null,
+    admission: null,
   });
   assert.match(failAdvice.join("\n"), /不要继续消耗 token/);
+
+  const gradeFailAdvice = buildStandardNextStepAdvice({
+    quick: { success: true },
+    stability: { successRate: 1, p95TotalMs: 1200 },
+    admission: { grade: "D" },
+  });
+  assert.match(gradeFailAdvice.join("\n"), /标准准入等级为 D/);
 });
 
 test("operator guidance validates API profile configuration before save", () => {
@@ -84,6 +123,41 @@ test("operator guidance validates API profile configuration before save", () => 
   assert.equal(warning.hasBlockers, false);
 });
 
+test("openai_path_prefix：带版本前缀是正确填法，不该被当成可疑路径", () => {
+  const base = {
+    protocol: "openai_path_prefix",
+    defaultModel: "glm-4.6",
+    apiKey: "sk-glm",
+    timeoutMs: "300000",
+    maxTokens: "1024",
+  };
+  // 正确填法：填到版本号那一层 → 零 issue（此前会报「Base URL 带了额外路径」）
+  const ok = validateProfileConfig({ ...base, baseUrl: "https://open.bigmodel.cn/api/paas/v4" });
+  assert.equal(ok.hasBlockers, false);
+  assert.equal(ok.hasWarnings, false, `不该有警告，实际：${JSON.stringify(ok.issues)}`);
+
+  // 填过头（带上 /chat/completions）→ blocker，工具会再补一次
+  const tooFull = validateProfileConfig({ ...base, baseUrl: "https://open.bigmodel.cn/api/paas/v4/chat/completions" });
+  assert.equal(tooFull.hasBlockers, true);
+  assert.ok(tooFull.issues.some((i) => /版本前缀那一层/.test(i.detail)));
+
+  // 选了该协议却只填域名 → 提醒缺前缀（否则会拼成 https://x.com/chat/completions）
+  const noPrefix = validateProfileConfig({ ...base, baseUrl: "https://open.bigmodel.cn" });
+  assert.equal(noPrefix.hasWarnings, true);
+  assert.ok(noPrefix.issues.some((i) => /缺少路径前缀/.test(i.title)));
+
+  // 老协议的两条判定一字不变
+  const legacyTooFull = validateProfileConfig({
+    ...base,
+    protocol: "openai_compatible",
+    baseUrl: "https://api.example.com/v1/chat/completions",
+  });
+  assert.equal(legacyTooFull.hasBlockers, true);
+  assert.ok(legacyTooFull.issues.some((i) => /不要带/.test(i.detail)));
+  const legacyExtraPath = validateProfileConfig({ ...base, protocol: "openai_compatible", baseUrl: "https://api.example.com/gw" });
+  assert.ok(legacyExtraPath.issues.some((i) => /带了额外路径/.test(i.title)));
+});
+
 test("profile config requires API key for new profiles but allows blank when editing", () => {
   const base = {
     baseUrl: "https://api.example.com",
@@ -104,7 +178,7 @@ test("operator guidance builds plain-language summary and action buttons", () =>
   const summary = buildStandardOperatorSummary({
     quick: { success: true },
     stability: { successRate: 1, p95TotalMs: 1000 },
-    scenario: { results: [{ avgQualityScore: 85 }] },
+    admission: { grade: "A" },
   });
   assert.equal(summary.level, "pass");
   assert.match(summary.title, /初筛通过/);
@@ -113,21 +187,101 @@ test("operator guidance builds plain-language summary and action buttons", () =>
   const passActions = buildStandardActionPlan({
     quick: { success: true },
     stability: { successRate: 1, p95TotalMs: 1000 },
-    scenario: { results: [{ avgQualityScore: 85 }] },
+    admission: { grade: "A" },
   });
   assert.deepEqual(
     passActions.map((action) => action.action),
-    ["handoff", "stability-basic", "scenario-basic"],
+    ["handoff", "stability-candidate", "admission-deep"],
   );
   assert.equal(passActions[0].kind, "primary");
 
   const actions = buildStandardActionPlan({
     quick: { success: false },
     stability: null,
-    scenario: null,
+    admission: null,
   });
   assert.deepEqual(
     actions.map((action) => action.action),
     ["profile-config", "quick-retry"],
   );
+
+  const gradeFailSummary = buildStandardOperatorSummary({
+    quick: { success: true },
+    stability: { successRate: 1, p95TotalMs: 1000 },
+    admission: { grade: "E" },
+  });
+  assert.equal(gradeFailSummary.level, "fail");
+  assert.match(gradeFailSummary.title, /标准准入等级为 E/);
+});
+
+// —— 以下为 ADM-011（阈值口径不一致）的回归锁 ——
+//
+// 为什么原有 6 条测试没能发现这个 bug：它们的 p95 一律取 1000~1200 ms，全都落在
+// 「怎么算都算快」的区间里，永远碰不到阈值边界。于是前端硬编码的 30000 与服务端的
+// 15000/45000 冲突了很久也没被任何断言照到。下面的用例专打边界。
+
+test("ADM-011: 前端初筛延迟分档与服务端 15s/45s 对齐，不再自带 30s 口径", () => {
+  const at = (p95TotalMs) =>
+    buildStandardOperatorSummary({ quick: { success: true }, stability: { successRate: 1, p95TotalMs }, admission: { grade: "A" } });
+
+  // 边界内侧：恰好等于 OK 阈值仍算通过（用 <= 而非 <）。
+  assert.equal(at(P95_LATENCY_OK_MS).level, "pass");
+
+  // 15s~45s 之间：服务端 evaluateStability 判 warning（有条件通过），前端必须是 watch 而非 pass。
+  // 旧代码这里返回 pass —— 因为它拿 30000 比，20s 被当成快。这是本次修复的核心。
+  const conditional = at(20000);
+  assert.equal(conditional.level, "watch");
+  assert.match(conditional.detail, new RegExp(String(P95_LATENCY_OK_MS)));
+
+  // 恰好等于 SLOW 阈值：仍属有条件，不算过慢（服务端也是 > 才 NOT_PASSED）。
+  assert.equal(at(P95_LATENCY_SLOW_MS).level, "watch");
+
+  // 超过 45s：服务端判 NOT_PASSED，前端必须同为 fail。
+  // 旧代码这里只降级到 watch「能用，但速度偏慢」—— 一条服务端判不通过的渠道，
+  // 在人话面板上仍显示能用，这是最容易误导用户的一档。
+  const tooSlow = at(P95_LATENCY_SLOW_MS + 1);
+  assert.equal(tooSlow.level, "fail");
+  assert.match(tooSlow.title, /过慢/);
+});
+
+test("ADM-011: 两个消费者共用同一判定阶梯，不会互相漂移", () => {
+  // buildStandardNextStepAdvice 与 buildStandardOperatorSummary 曾各自抄一套 if-else。
+  // 现在同源，故对同一输入必须给出同向结论。取 20s（旧代码两处都会误判成通过的值）。
+  const input = { quick: { success: true }, stability: { successRate: 1, p95TotalMs: 20000 }, admission: { grade: "A" } };
+  const summary = buildStandardOperatorSummary(input);
+  const advice = buildStandardNextStepAdvice(input).join("\n");
+
+  assert.equal(summary.level, "watch");
+  assert.match(advice, /偏慢/);
+  // 按钮方案跟着同一判定走：非 pass 就不该出现「跑深度准入」那套推进动作。
+  const actions = buildStandardActionPlan(input).map((a) => a.action);
+  assert.deepEqual(actions, ["reports", "stability-smoke", "handoff"]);
+});
+
+test("ADM-011: 缺失 p95 不得当成快，成功率中间带给人工复核", () => {
+  // p95 为 0 / null 表示「没测到延迟」。刻意放行（不阻断），但不得因此判成 pass 以外的档位错乱。
+  const noP95 = buildStandardOperatorSummary({
+    quick: { success: true },
+    stability: { successRate: 1, p95TotalMs: null },
+    admission: { grade: "A" },
+  });
+  assert.equal(noP95.level, "pass");
+
+  // 0.9~0.95 之间是刻意留的带：既不够好也不够差，必须是 watch「需人工复核」，
+  // 不能硬掰成通过或失败。合并阈值会让这条带消失。
+  const midBand = buildStandardOperatorSummary({
+    quick: { success: true },
+    stability: { successRate: 0.92, p95TotalMs: 1000 },
+    admission: { grade: "A" },
+  });
+  assert.equal(midBand.level, "watch");
+  assert.match(midBand.title, /人工复核/);
+
+  // 低于 0.9 仍是 fail。
+  const low = buildStandardOperatorSummary({
+    quick: { success: true },
+    stability: { successRate: 0.5, p95TotalMs: 1000 },
+    admission: { grade: "A" },
+  });
+  assert.equal(low.level, "fail");
 });

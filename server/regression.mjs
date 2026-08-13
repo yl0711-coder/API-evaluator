@@ -9,7 +9,7 @@ import { percentile } from "./utils.mjs";
 
 const isNum = (v) => Number.isFinite(Number(v));
 
-// 场景测试的「基础」分组名（= DEFAULT_SCENARIO_GROUPS[0]，见 server/scenarios/store.mjs）。
+// 场景测试的「基础」分组名（= DEFAULT_SCENARIO_GROUPS[0]，见 server/settings-store.mjs）。
 export const BASIC_SCENARIO_GROUP = "基础";
 
 // 从若干运行 summary 里，挑出 type==="scenario" 且其 scenarios[] 属于目标分组的 case id 集合。
@@ -30,11 +30,20 @@ export function summarizeRoundStats(rounds) {
   const rs = (rounds || []).filter((r) => r && r.totalMs != null && Number.isFinite(Number(r.totalMs)));
   if (!rs.length) return { successRate: null, p95Ms: null };
   const ok = rs.filter((r) => r.success).length;
-  return { successRate: ok / rs.length, p95Ms: percentile(rs.map((r) => Number(r.totalMs)), 0.95) };
+  return {
+    successRate: ok / rs.length,
+    p95Ms: percentile(
+      rs.map((r) => Number(r.totalMs)),
+      0.95,
+    ),
+  };
 }
 
 function median(values) {
-  const a = (values || []).filter(isNum).map(Number).sort((x, y) => x - y);
+  const a = (values || [])
+    .filter(isNum)
+    .map(Number)
+    .sort((x, y) => x - y);
   const n = a.length;
   if (!n) return null;
   return n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2;

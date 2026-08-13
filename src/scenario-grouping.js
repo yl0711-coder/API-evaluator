@@ -24,7 +24,11 @@ export function resolveGroupFilterValue(groups, current) {
 // 「全选/清空」应作用的 id 集合＝当前分组筛选下可见项的 id。
 // 关键防呆：筛到某分组后全选，绝不能波及被隐藏的其它分组（如误勾昂贵的 HLE）。
 export function visibleSelectableIds(rows, group) {
-  return new Set(filterRowsByGroup(rows, group).map((r) => r?.id).filter(Boolean));
+  return new Set(
+    filterRowsByGroup(rows, group)
+      .map((r) => r?.id)
+      .filter(Boolean),
+  );
 }
 
 // 跨分组的全部已选项——chips 与「已选 X / Y」计数用（不受当前筛选影响）。

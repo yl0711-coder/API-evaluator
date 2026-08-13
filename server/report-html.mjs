@@ -117,9 +117,7 @@ function splitTableCells(line) {
 }
 
 function renderReportTable(lines) {
-  const rows = lines
-    .filter((line) => !isTableSeparator(line))
-    .map((line) => splitTableCells(line).map((cell) => formatReportInline(cell)));
+  const rows = lines.filter((line) => !isTableSeparator(line)).map((line) => splitTableCells(line).map((cell) => formatReportInline(cell)));
   if (!rows.length) return "";
   const [head, ...body] = rows;
   return [
@@ -131,10 +129,12 @@ function renderReportTable(lines) {
 }
 
 function formatReportInline(text) {
-  return escapeHtmlText(text)
-    // 多反引号代码段（如模型把 JSON 包进 ```json ... ```）：先按成对的反引号串收口，
-    // 否则单反引号规则只吃掉中间一对，留下散落的 `` 看起来像渲染坏了。
-    .replace(/(`{2,})\s*([\s\S]*?)\s*\1/g, (_, _ticks, inner) => `<code>${inner}</code>`)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  return (
+    escapeHtmlText(text)
+      // 多反引号代码段（如模型把 JSON 包进 ```json ... ```）：先按成对的反引号串收口，
+      // 否则单反引号规则只吃掉中间一对，留下散落的 `` 看起来像渲染坏了。
+      .replace(/(`{2,})\s*([\s\S]*?)\s*\1/g, (_, _ticks, inner) => `<code>${inner}</code>`)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+  );
 }

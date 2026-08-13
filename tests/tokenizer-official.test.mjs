@@ -24,7 +24,13 @@ test("EVALUATOR_OFFLINE_TOKENIZER=off 一键关闭（内存紧张机器回退横
   try {
     assert.equal(resolveOpenAiEncoding("gpt-4o"), null); // 关闭后即使 OpenAI 也不走官方分词器
     assert.equal(await countExactTokens("hello", "gpt-4o"), null);
-    const r = await auditAbsoluteTokens({ probes: [{ id: "a", text: "x", reportedTokens: 10 }, { id: "b", text: "yy", reportedTokens: 20 }], model: "gpt-4o" });
+    const r = await auditAbsoluteTokens({
+      probes: [
+        { id: "a", text: "x", reportedTokens: 10 },
+        { id: "b", text: "yy", reportedTokens: 20 },
+      ],
+      model: "gpt-4o",
+    });
     assert.equal(r.applicable, false);
   } finally {
     delete process.env.EVALUATOR_OFFLINE_TOKENIZER;

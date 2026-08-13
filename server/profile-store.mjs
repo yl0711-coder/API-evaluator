@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { PROFILES_FILE } from "./paths.mjs";
 import { loadModelConfigs, saveModelConfigs } from "./db.mjs";
 import { normalizePricePerMillion } from "./costing.mjs";
+import { OPENAI_PATH_PREFIX_PROTOCOL } from "./protocols.mjs";
 import { buildApiKeyRef, getSecretStorageName, readProfileApiKey, saveProfileApiKey } from "./secret-store.mjs";
 import { requiredString, writeJsonAtomic } from "./utils.mjs";
 
@@ -17,7 +18,10 @@ export function hashApiKey(key) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-const normalizeBaseUrl = (url) => String(url || "").trim().replace(/\/+$/, "");
+const normalizeBaseUrl = (url) =>
+  String(url || "")
+    .trim()
+    .replace(/\/+$/, "");
 
 // 查重：同 baseUrl + 同 defaultModel + 同 keyHash 视为同一渠道。candidate 需带 keyHash。
 // 老数据若缺 keyHash，则按需从 vault 读 key 现算（仅在 url+模型已匹配的少数候选上）。
@@ -82,6 +86,9 @@ export async function normalizeProfile(body, existingProfile = null) {
 export function normalizeProtocol(protocol) {
   if (protocol === "claude_messages") return "claude_messages";
   if (protocol === "openai_chat") return "openai_chat";
+  // OpenAI 兼容但版本前缀不是 /v1（智谱 /api/paas/v4、DashScope /compatible-mode/v1 等）：
+  // baseUrl 原样 + /chat/completions。见 protocols.mjs 的 buildProtocolUrl。
+  if (protocol === OPENAI_PATH_PREFIX_PROTOCOL) return OPENAI_PATH_PREFIX_PROTOCOL;
   return "openai_compatible";
 }
 

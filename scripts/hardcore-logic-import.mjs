@@ -51,7 +51,10 @@ const GAME_CN = {
   hanoi: "汉诺塔",
   hitori: "数墙",
 };
-const gameKey = (name) => String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+const gameKey = (name) =>
+  String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
 const gameCn = (name) => GAME_CN[gameKey(name)] || String(name || "未知");
 const gameSlug = (name) => gameKey(name) || "game";
 
@@ -148,7 +151,10 @@ function promptSolutionType(prompt) {
   const region = oi >= 0 ? s.slice(oi) : s;
   const mi = region.search(/"solution"\s*:/);
   if (mi < 0) return "unknown";
-  const ch = region.slice(mi).replace(/"solution"\s*:/, "").replace(/^\s+/, "")[0];
+  const ch = region
+    .slice(mi)
+    .replace(/"solution"\s*:/, "")
+    .replace(/^\s+/, "")[0];
   if (ch === "[") return "array";
   if (ch === "{") return "object";
   return "scalar";

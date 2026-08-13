@@ -40,8 +40,38 @@ test("normalizeChannel：必填名称，默认值与价格/模型清单归一", 
   assert.throws(() => normalizeChannel({ baseUrl: "https://x" }), /渠道名称/);
 });
 
+// 新协议必须能穿过渠道规范化落库——normalizeProtocol 是白名单，漏加会被静默改写成
+// openai_compatible：用户在 UI 上选了「自定义路径前缀」，保存后却又变回 /v1，依然 404。
+test("normalizeChannel：openai_path_prefix 协议不被兜底改写", () => {
+  const ch = normalizeChannel({
+    name: "智谱直连",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    protocol: "openai_path_prefix",
+    models: "glm-4.6",
+  });
+  assert.equal(ch.protocol, "openai_path_prefix");
+  assert.equal(ch.baseUrl, "https://open.bigmodel.cn/api/paas/v4", "版本前缀必须原样保留，不能被当成多余路径剥掉");
+  // resolveTestTarget 要把协议透传给 test-runner，否则请求仍按 /v1 拼
+  const target = resolveTestTarget({ id: "mt-glm", channelId: ch.id, model: "glm-4.6", maxTokens: 1024, timeoutMs: 300000 }, ch);
+  assert.equal(target.protocol, "openai_path_prefix");
+  assert.equal(target.baseUrl, "https://open.bigmodel.cn/api/paas/v4");
+});
+
 test("normalizeChannel：编辑时沿用 existing 的创建时间与未传字段", () => {
-  const existing = { id: "c1", name: "老", provider: "P", baseUrl: "https://a", protocol: "openai_compatible", maxTokens: 1024, timeoutMs: 120000, models: ["m1"], status: "disabled", source: "newapi", newapiChannelId: 7, createdAt: "2020-01-01T00:00:00.000Z" };
+  const existing = {
+    id: "c1",
+    name: "老",
+    provider: "P",
+    baseUrl: "https://a",
+    protocol: "openai_compatible",
+    maxTokens: 1024,
+    timeoutMs: 120000,
+    models: ["m1"],
+    status: "disabled",
+    source: "newapi",
+    newapiChannelId: 7,
+    createdAt: "2020-01-01T00:00:00.000Z",
+  };
   const ch = normalizeChannel({ id: "c1", name: "新名" }, existing);
   assert.equal(ch.id, "c1");
   assert.equal(ch.name, "新名");
@@ -72,7 +102,10 @@ test("normalizeModelTarget：maxTokens/timeoutMs 默认 512/300000，编辑未�
   assert.equal(explicit.maxTokens, 2048);
   assert.equal(explicit.timeoutMs, 120000);
   // 编辑（全量覆盖）未带这两个字段 → 沿用 existing，不被打回默认
-  const edited = normalizeModelTarget({ channelId: "c1", model: "gpt-4o", note: "只改备注" }, { id: "x", maxTokens: 4096, timeoutMs: 90000 });
+  const edited = normalizeModelTarget(
+    { channelId: "c1", model: "gpt-4o", note: "只改备注" },
+    { id: "x", maxTokens: 4096, timeoutMs: 90000 },
+  );
   assert.equal(edited.maxTokens, 4096, "编辑未传 maxTokens 应沿用 existing");
   assert.equal(edited.timeoutMs, 90000, "编辑未传 timeoutMs 应沿用 existing");
 });
@@ -95,22 +128,32 @@ test("normalizeModelTarget：显式传 tags → 覆盖 existing；显式空数�
     "显式数组覆盖",
   );
   // 显式 [] 与「缺省 tags」语义不同：前者主动清空，后者保留——区分点是 Array.isArray(body.tags)。
-  assert.deepEqual(
-    normalizeModelTarget({ channelId: "c1", model: "m", tags: [] }, { tags: ["推理"] }).tags,
-    [],
-    "显式空数组清空",
-  );
+  assert.deepEqual(normalizeModelTarget({ channelId: "c1", model: "m", tags: [] }, { tags: ["推理"] }).tags, [], "显式空数组清空");
   assert.deepEqual(normalizeModelTarget({ channelId: "c1", model: "m" }).tags, [], "无 tags 无 existing → []");
 });
 
 test("判重键：渠道按 url+keyHash；模型目标按 channelId+model", () => {
   assert.equal(channelDedupKey({ baseUrl: "https://a/", keyHash: "h1" }), "https://a|h1");
-  assert.equal(channelDedupKey({ baseUrl: "https://a", keyHash: "h2" }) === channelDedupKey({ baseUrl: "https://a", keyHash: "h1" }), false);
+  assert.equal(
+    channelDedupKey({ baseUrl: "https://a", keyHash: "h2" }) === channelDedupKey({ baseUrl: "https://a", keyHash: "h1" }),
+    false,
+  );
   assert.equal(modelTargetDedupKey({ channelId: "c1", model: "gpt-4o" }), "c1|gpt-4o");
 });
 
 test("resolveTestTarget：把渠道+模型还原成 profile 形状；无渠道→null", () => {
-  const channel = { id: "c1", name: "中转A", provider: "P", baseUrl: "https://a", apiKeyRef: "profile:c1:api-key", hasKey: true, protocol: "openai_chat", maxTokens: 512, timeoutMs: 60000, status: "enabled" };
+  const channel = {
+    id: "c1",
+    name: "中转A",
+    provider: "P",
+    baseUrl: "https://a",
+    apiKeyRef: "profile:c1:api-key",
+    hasKey: true,
+    protocol: "openai_chat",
+    maxTokens: 512,
+    timeoutMs: 60000,
+    status: "enabled",
+  };
   const target = { id: "t1", channelId: "c1", model: "gpt-4o" };
   const resolved = resolveTestTarget(target, channel);
   assert.equal(resolved.id, "t1");
@@ -133,16 +176,27 @@ test("deterministicModelTargetId：同 channel+model 稳定、不同则不同", 
 
 test("migrateProfileToChannelAndTarget：老 profile → channel + target，复用 id 与 apiKeyRef", () => {
   const profile = {
-    id: "p1", name: "老渠道", provider: "OpenAI", baseUrl: "https://api.openai.com",
-    apiKeyRef: "profile:p1:api-key", keyStorage: "test-memory-vault", hasKey: true, keyHash: "abc",
-    protocol: "openai_chat", defaultModel: "gpt-4o", maxTokens: 1024, timeoutMs: 60000,
-    notes: "n", createdAt: "2024-01-01T00:00:00.000Z", updatedAt: "2024-02-01T00:00:00.000Z",
+    id: "p1",
+    name: "老渠道",
+    provider: "OpenAI",
+    baseUrl: "https://api.openai.com",
+    apiKeyRef: "profile:p1:api-key",
+    keyStorage: "test-memory-vault",
+    hasKey: true,
+    keyHash: "abc",
+    protocol: "openai_chat",
+    defaultModel: "gpt-4o",
+    maxTokens: 1024,
+    timeoutMs: 60000,
+    notes: "n",
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-02-01T00:00:00.000Z",
   };
   const { channel, target } = migrateProfileToChannelAndTarget(profile);
-  assert.equal(channel.id, "p1");                  // 复用 profile.id → apiKeyRef 不变
+  assert.equal(channel.id, "p1"); // 复用 profile.id → apiKeyRef 不变
   assert.equal(channel.apiKeyRef, "profile:p1:api-key");
   assert.equal(channel.keyHash, "abc");
-  assert.deepEqual(channel.models, ["gpt-4o"]);     // defaultModel 进 models 清单
+  assert.deepEqual(channel.models, ["gpt-4o"]); // defaultModel 进 models 清单
   assert.equal(channel.status, "enabled");
   assert.equal(channel.createdAt, "2024-01-01T00:00:00.000Z");
   assert.equal(target.channelId, "p1");

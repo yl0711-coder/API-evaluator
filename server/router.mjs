@@ -18,11 +18,7 @@ function compilePattern(pattern) {
   if (typeof pattern !== "string" || !pattern.startsWith("/")) {
     throw new Error(`路由模板必须是以 "/" 开头的字符串：${String(pattern)}`);
   }
-  const segments = pattern.split("/").map((segment) =>
-    segment.startsWith(":")
-      ? { param: segment.slice(1) }
-      : { literal: segment },
-  );
+  const segments = pattern.split("/").map((segment) => (segment.startsWith(":") ? { param: segment.slice(1) } : { literal: segment }));
   for (const segment of segments) {
     if (segment.param === "") throw new Error(`路由模板的参数缺少名字：${pattern}`);
   }
@@ -117,9 +113,7 @@ export function findShadowedRoutes(routes) {
       const earlier = compiled[j];
       if (later.method !== earlier.method) continue;
       // 用后置规则的「代表路径」（参数段填一个占位值）去试前置规则：命中即说明被遮蔽。
-      const probe = later.segments
-        .map((segment) => (segment.literal !== undefined ? segment.literal : "__probe__"))
-        .join("/");
+      const probe = later.segments.map((segment) => (segment.literal !== undefined ? segment.literal : "__probe__")).join("/");
       if (matchPattern(earlier.segments, probe)) {
         conflicts.push({ shadowed: `${later.method} ${later.pattern}`, by: `${earlier.method} ${earlier.pattern}` });
       }

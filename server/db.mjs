@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS test_requests (
   first_byte_ms INTEGER,
   first_token_ms INTEGER,
   total_ms INTEGER,
+  -- 端到端耗时（ADM-010）：含被重试掉的失败尝试与退避等待。total_ms 只是最后一次尝试。
+  -- 旧库经 migrateSchema 补列，历史行为 NULL——统计侧必须把 NULL 当「未记录」而非 0。
+  end_to_end_ms INTEGER,
   status_code INTEGER,
   success INTEGER,
   normalized_error TEXT,
@@ -60,6 +63,37 @@ CREATE TABLE IF NOT EXISTS test_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_requests_run ON test_requests(run_id);
 CREATE INDEX IF NOT EXISTS idx_requests_profile ON test_requests(profile_id);
+
+-- 任务状态落库（ADM-017）。此前任务只活在内存 Map 里，落定 1 小时被逐出、重启即清空，
+-- 唯一的持久痕迹是 task-events.jsonl，而那里只读最后 300 行——「上周那次准入到底跑没跑」查不到。
+-- 这张表是任务的持久事实来源；JSONL 事件流仍照写（它是逐事件的流水，这张是逐任务的当前态）。
+-- owner_user_id 现在只记录不做隔离（见 task-manager 的 createTask 注释与 ADM-016）；
+-- 列先建好，将来真要隔离时加 WHERE 即可，不必再迁一次表。
+CREATE TABLE IF NOT EXISTS evaluation_tasks (
+  task_id TEXT PRIMARY KEY,
+  type TEXT,
+  status TEXT,
+  owner_user_id TEXT,
+  cancelled_by TEXT,
+  created_at TEXT,
+  started_at TEXT,
+  ended_at TEXT,
+  progress INTEGER,
+  completed_units INTEGER,
+  total_units INTEGER,
+  message TEXT,
+  error TEXT,
+  error_id TEXT,
+  -- 形状摘要，绝不含 key / baseUrl / 提示词正文（同 summarizeTaskPayload 的口径）
+  payload_json TEXT,
+  result_json TEXT,
+  steps_json TEXT,
+  timing_json TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON evaluation_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_created ON evaluation_tasks(created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_owner ON evaluation_tasks(owner_user_id);
 
 CREATE TABLE IF NOT EXISTS test_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,15 +214,27 @@ const openConnections = new Map(); // path -> DatabaseSync 实例（按路径缓
 const dbHealth = {
   requestWriteFailures: 0,
   runWriteFailures: 0,
+  configWriteFailures: 0,
   lastError: null,
   warned: false,
 };
+
+// 配置目录以 SQLite 为主事实源时，写失败不能伪装成“成功后改写 JSON”。调用方应返回 503，
+// 让管理员明确知道配置没有保存；只有运行环境根本不支持 node:sqlite 时才允许走旧 JSON 降级。
+export class PersistentStorageWriteError extends Error {
+  constructor(scope, cause) {
+    super("持久化存储写入失败。");
+    this.name = "PersistentStorageWriteError";
+    this.scope = scope;
+    this.cause = cause;
+  }
+}
 
 function noteDbError(scope, error) {
   dbHealth.lastError = `${scope}: ${error?.message ? String(error.message) : String(error)}`;
   if (!dbHealth.warned) {
     dbHealth.warned = true;
-    console.warn(`[db] SQLite 写入失败，已降级到 JSONL（后续失败仅计数不再刷屏）：${dbHealth.lastError}`);
+    console.warn(`[db] SQLite 操作失败（后续失败仅计数不再刷屏）：${dbHealth.lastError}`);
   }
 }
 
@@ -199,6 +245,7 @@ export function getDbHealth() {
     sqliteAvailable: moduleAvailable === true,
     requestWriteFailures: dbHealth.requestWriteFailures,
     runWriteFailures: dbHealth.runWriteFailures,
+    configWriteFailures: dbHealth.configWriteFailures,
     lastError: dbHealth.lastError,
   };
 }
@@ -218,6 +265,27 @@ export async function isSqliteAvailable() {
   return ensureModule();
 }
 
+async function getConfigDatabase(scope, path) {
+  // 只有“模块根本不可用”这一种状态允许调用方转写 JSON，且这是启动环境能力而非运行中故障。
+  if (!(await ensureModule())) return null;
+  try {
+    const db = await getDatabase(path);
+    if (db) return db;
+    throw new Error("SQLite 数据库不可用。");
+  } catch (error) {
+    dbHealth.configWriteFailures += 1;
+    noteDbError(scope, error);
+    throw new PersistentStorageWriteError(scope, error);
+  }
+}
+
+function configWriteError(scope, error) {
+  if (error instanceof PersistentStorageWriteError) return error;
+  dbHealth.configWriteFailures += 1;
+  noteDbError(scope, error);
+  return new PersistentStorageWriteError(scope, error);
+}
+
 export async function getDatabase(path = defaultDbPath()) {
   if (!(await ensureModule())) return null;
   const existing = openConnections.get(path);
@@ -230,7 +298,7 @@ export async function getDatabase(path = defaultDbPath()) {
   return db;
 }
 
-// 旧库补列（新库 CREATE 已含 run_by；ALTER 对已存在列会抛错，幂等吞掉）。
+// 旧库补列（新库 CREATE 已含这些列；ALTER 对已存在列会抛错，幂等吞掉）。
 function migrateSchema(db) {
   for (const table of ["test_requests", "test_runs"]) {
     try {
@@ -238,6 +306,17 @@ function migrateSchema(db) {
     } catch {
       // 列已存在
     }
+  }
+  // ADM-010：端到端耗时。只在 test_requests 上（test_runs 存的是汇总，没有逐请求耗时）。
+  try {
+    db.exec("ALTER TABLE test_requests ADD COLUMN end_to_end_ms INTEGER");
+  } catch {
+    // 列已存在
+  }
+  try {
+    db.exec("ALTER TABLE evaluation_tasks ADD COLUMN timing_json TEXT");
+  } catch {
+    // column already exists
   }
 }
 
@@ -254,6 +333,16 @@ export function closeDatabase(path = defaultDbPath()) {
 }
 
 const toInt = (value) => {
+  if (value == null) return null; // null/undefined → null (not 0, since Number(null)=0)
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : null;
+};
+// toInt 把 null 变成 0（`Number(null) === 0`），对"未测到"的字段是错的：
+// 落 0 之后统计无法区分「从未测到」与「真的零耗时」。既有列沿用 toInt 不动
+// （改它会连带影响 token 各列，那里 null/0 的差别另有含义，属另一档改动），
+// 新增的可空数值列一律走这个。
+const toIntOrNull = (value) => {
+  if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? Math.round(n) : null;
 };
@@ -273,10 +362,10 @@ export async function recordRequest(record, { path } = {}) {
       INSERT INTO test_requests (
         request_id, run_id, case_id, profile_id, profile_name, profile_role,
         provider, model, protocol, started_at, first_byte_ms, first_token_ms,
-        total_ms, status_code, success, normalized_error, input_tokens, output_tokens,
+        total_ms, end_to_end_ms, status_code, success, normalized_error, input_tokens, output_tokens,
         cache_creation_tokens, cache_read_tokens, reasoning_tokens, token_source,
         output_chars, estimated_tokens, token_audit_flag, raw_json, logged_at, run_by
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     stmt.run(
       record.requestId ?? null,
@@ -292,6 +381,7 @@ export async function recordRequest(record, { path } = {}) {
       toInt(record.firstByteMs),
       toInt(record.firstTokenMs),
       toInt(record.totalMs),
+      toIntOrNull(record.endToEndMs),
       toInt(record.statusCode),
       record.success ? 1 : 0,
       record.normalizedError ?? null,
@@ -355,6 +445,148 @@ export async function recordTestRun(summary, { type = "", path } = {}) {
   }
 }
 
+// —— 任务状态落库（ADM-017）——
+//
+// 任务在生命周期里会被写多次（queued → started → 若干次进度 → 终态），故按 task_id upsert
+// 而非 insert。全部 best-effort：任何异常都吞掉、返回 false，绝不影响正在跑的测试——
+// 落库是可观测性，不是主链路，SQLite 不可用时 JSONL 事件流仍然工作。
+//
+// 刻意【不】在每次进度更新时写：一个 27 用例的任务会推进几十次，每次都 upsert 是无谓的写放大。
+// 调用方只在状态跃迁（建/终态/取消请求）时落库，进度靠内存态 + 轮询即可（见 task-manager）。
+export async function recordEvaluationTask(task, { path } = {}) {
+  try {
+    if (!task?.id) return false;
+    const db = await getDatabase(path);
+    if (!db) return false;
+    const stmt = db.prepare(`
+      INSERT INTO evaluation_tasks (
+        task_id, type, status, owner_user_id, cancelled_by, created_at, started_at, ended_at,
+        progress, completed_units, total_units, message, error, error_id,
+        payload_json, result_json, steps_json, timing_json, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(task_id) DO UPDATE SET
+        status = excluded.status,
+        cancelled_by = excluded.cancelled_by,
+        started_at = COALESCE(excluded.started_at, evaluation_tasks.started_at),
+        ended_at = COALESCE(excluded.ended_at, evaluation_tasks.ended_at),
+        progress = excluded.progress,
+        completed_units = excluded.completed_units,
+        total_units = excluded.total_units,
+        message = excluded.message,
+        error = excluded.error,
+        error_id = excluded.error_id,
+        -- payload 只在建任务时写一次，后续更新不带它（同事件流口径）；用 COALESCE 保住首次那份，
+        -- 否则终态 upsert 会把「再测一次」要用的参数摘要覆盖成 NULL。
+        payload_json = COALESCE(excluded.payload_json, evaluation_tasks.payload_json),
+        result_json = COALESCE(excluded.result_json, evaluation_tasks.result_json),
+        steps_json = COALESCE(excluded.steps_json, evaluation_tasks.steps_json),
+        timing_json = COALESCE(excluded.timing_json, evaluation_tasks.timing_json),
+        updated_at = excluded.updated_at
+    `);
+    stmt.run(
+      task.id,
+      task.type ?? null,
+      task.status ?? null,
+      task.createdBy ?? null,
+      task.cancelledBy ?? null,
+      task.createdAt ?? null,
+      task.startedAt ?? null,
+      task.endedAt ?? null,
+      toInt(task.progress),
+      toInt(task.completedUnits),
+      toInt(task.totalUnits),
+      task.message ?? null,
+      task.error ?? null,
+      task.errorId || null,
+      task.payload ? JSON.stringify(task.payload) : null,
+      task.result ? JSON.stringify(task.result) : null,
+      Array.isArray(task.steps) && task.steps.length ? JSON.stringify(task.steps) : null,
+      task.timing ? JSON.stringify(task.timing) : null,
+      new Date().toISOString(),
+    );
+    return true;
+  } catch (error) {
+    noteDbError("recordEvaluationTask", error);
+    return false;
+  }
+}
+
+// 最近任务列表。刻意【不返回 steps_json】：一屏 30 个任务 × 每个最多 20 步足以把响应撑到几百 KB，
+// 而列表只画聚合状态（同 readRecentTasks 的既有立场）。逐步骤明细走 queryEvaluationTask。
+export async function queryRecentEvaluationTasks(limit = 30, { path } = {}) {
+  const db = await getDatabase(path);
+  if (!db) return null;
+  const rows = db
+    .prepare(`
+      SELECT task_id, type, status, owner_user_id, cancelled_by, created_at, started_at, ended_at,
+             progress, completed_units, total_units, message, error, error_id, payload_json, result_json, timing_json
+      FROM evaluation_tasks ORDER BY created_at DESC, rowid DESC LIMIT ?
+    `)
+    .all(Math.max(1, Math.floor(limit)));
+  return rows.map((row) => taskRowToPublic(row));
+}
+
+export async function queryEvaluationTask(taskId, { path } = {}) {
+  if (!taskId) return null;
+  const db = await getDatabase(path);
+  if (!db) return null;
+  const row = db.prepare("SELECT * FROM evaluation_tasks WHERE task_id = ?").get(String(taskId));
+  return row ? taskRowToPublic(row, { withSteps: true }) : null;
+}
+
+// 库里的列名是 snake_case，前端契约是 camelCase（且任务中心用 taskId 而非 id 作主键字段名，
+// 与事件流折叠出来的对象保持一致——两条数据源必须长得一样，否则前端得分两套渲染）。
+function taskRowToPublic(row, { withSteps = false } = {}) {
+  return {
+    taskId: row.task_id,
+    type: row.type,
+    status: row.status,
+    createdBy: row.owner_user_id ?? null,
+    cancelledBy: row.cancelled_by ?? null,
+    createdAt: row.created_at,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    progress: row.progress ?? 0,
+    completedUnits: row.completed_units ?? 0,
+    totalUnits: row.total_units ?? 0,
+    message: row.message ?? "",
+    error: row.error ?? null,
+    errorId: row.error_id ?? "",
+    payload: safeParse(row.payload_json),
+    result: safeParse(row.result_json),
+    timing: safeParse(row.timing_json),
+    ...(withSteps ? { steps: safeParse(row.steps_json) ?? undefined } : {}),
+    // 落库来源的任务一律不可恢复：进程重启后内存里没有它的 abortController，取消不了、也不会自己推进。
+    recoverable: false,
+    // 事件流那条路径会给 event 字段；这里补一个等价物，前端两条路径同构。
+    event: row.status,
+  };
+}
+
+// 进程启动时把上次残留的 running/queued 任务改判 interrupted。
+// 不做这件事，重启后列表里会永远挂着一批「运行中」——它们不可能再推进（进程都换了），
+// 而前端会对着它们无限轮询。返回被改判的条数，供启动日志与测试断言。
+export async function markInterruptedEvaluationTasks({ path } = {}) {
+  try {
+    const db = await getDatabase(path);
+    if (!db) return 0;
+    const stmt = db.prepare(`
+      UPDATE evaluation_tasks
+      SET status = 'interrupted',
+          message = '程序曾在任务运行中退出，任务已中断，需要重新测试。',
+          ended_at = COALESCE(ended_at, ?),
+          updated_at = ?
+      WHERE status IN ('running', 'queued')
+    `);
+    const now = new Date().toISOString();
+    const info = stmt.run(now, now);
+    return Number(info?.changes ?? 0);
+  } catch (error) {
+    noteDbError("markInterruptedEvaluationTasks", error);
+    return 0;
+  }
+}
+
 // 按 run_id 全量读取逐请求记录（统计严谨需要完整历史，不截断）。
 export async function queryRequestsByRun(runId, { path } = {}) {
   const db = await getDatabase(path);
@@ -404,18 +636,14 @@ export async function countRequests({ path } = {}) {
 export async function queryRecentRequests(limit = 50, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return null;
-  const rows = db
-    .prepare("SELECT raw_json FROM test_requests ORDER BY id DESC LIMIT ?")
-    .all(Math.max(1, Math.floor(limit)));
+  const rows = db.prepare("SELECT raw_json FROM test_requests ORDER BY id DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
   return rows.map((row) => safeParse(row.raw_json)).filter(Boolean);
 }
 
 export async function queryRecentTestRuns(limit = 20, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return null;
-  const rows = db
-    .prepare("SELECT raw_json FROM test_runs ORDER BY id DESC LIMIT ?")
-    .all(Math.max(1, Math.floor(limit)));
+  const rows = db.prepare("SELECT raw_json FROM test_runs ORDER BY id DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
   return rows.map((row) => safeParse(row.raw_json)).filter(Boolean);
 }
 
@@ -423,9 +651,7 @@ export async function queryRecentTestRuns(limit = 20, { path } = {}) {
 export async function queryRunsByProfile(profileId, { path } = {}) {
   const db = await getDatabase(path);
   if (!db) return [];
-  return db
-    .prepare("SELECT * FROM test_runs WHERE profile_id = ? ORDER BY id ASC")
-    .all(profileId);
+  return db.prepare("SELECT * FROM test_runs WHERE profile_id = ? ORDER BY id ASC").all(profileId);
 }
 
 // 同一 profile 的历次运行汇总（解析 raw_json，时间升序），供趋势图/基线回归用。
@@ -531,9 +757,10 @@ export async function loadModelConfigs({ path } = {}) {
 }
 
 export async function saveModelConfigs(profiles, { path } = {}) {
+  const db = await getConfigDatabase("saveModelConfigs", path);
+  // 仅 Node 运行环境完全没有 SQLite 支持时才让上层显式降级 JSON。
+  if (!db) return false;
   try {
-    const db = await getDatabase(path);
-    if (!db) return false;
     const list = Array.isArray(profiles) ? profiles : [];
     const insert = db.prepare(`
       INSERT INTO model_configs
@@ -576,8 +803,7 @@ export async function saveModelConfigs(profiles, { path } = {}) {
       throw error;
     }
   } catch (error) {
-    noteDbError("saveModelConfigs", error);
-    return false;
+    throw configWriteError("saveModelConfigs", error);
   }
 }
 
@@ -595,9 +821,9 @@ export async function loadChannels({ path } = {}) {
 }
 
 export async function saveChannels(channels, { path } = {}) {
+  const db = await getConfigDatabase("saveChannels", path);
+  if (!db) return false;
   try {
-    const db = await getDatabase(path);
-    if (!db) return false;
     const list = Array.isArray(channels) ? channels : [];
     const insert = db.prepare(`
       INSERT INTO channels (id, name, base_url, status, source, newapi_channel_id, created_at, updated_at, raw_json)
@@ -630,8 +856,7 @@ export async function saveChannels(channels, { path } = {}) {
       throw error;
     }
   } catch (error) {
-    noteDbError("saveChannels", error);
-    return false;
+    throw configWriteError("saveChannels", error);
   }
 }
 
@@ -648,9 +873,9 @@ export async function loadModelTargets({ path } = {}) {
 }
 
 export async function saveModelTargets(targets, { path } = {}) {
+  const db = await getConfigDatabase("saveModelTargets", path);
+  if (!db) return false;
   try {
-    const db = await getDatabase(path);
-    if (!db) return false;
     const list = Array.isArray(targets) ? targets : [];
     const insert = db.prepare(`
       INSERT INTO model_targets (id, channel_id, model, created_at, updated_at, raw_json)
@@ -680,8 +905,7 @@ export async function saveModelTargets(targets, { path } = {}) {
       throw error;
     }
   } catch (error) {
-    noteDbError("saveModelTargets", error);
-    return false;
+    throw configWriteError("saveModelTargets", error);
   }
 }
 
@@ -716,6 +940,50 @@ export async function queryRecentReports(limit = 100, { path } = {}) {
   return db.prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT ?").all(Math.max(1, Math.floor(limit)));
 }
 
+// 按报告文件名（不含 .md）批量取当初生成该报告的结构化 summary（test_runs.raw_json）。
+// 用途：模型对比不必再从渲染后的 markdown 表格里反解析数字——那些数字本来就以原生数值存在库里。
+// 见 report-compare.scenarioDataFromSummary 与 B2 的分析。
+//
+// 匹配方式：reports.path_md 存的是绝对路径，这里按「文件名去扩展名」比对，与调用方手里的
+// base name 对齐（调用方是从报告目录 readdir 来的，只有文件名）。
+// 任何一环缺失（无库/无记录/无 raw_json/JSON 坏）→ 该 base 不出现在返回 Map 里，
+// 调用方据此回退到解析 markdown。绝不抛错：对比功能不该因为库的问题而整个挂掉。
+export async function queryReportSummariesByBase(baseNames, { path } = {}) {
+  const out = new Map();
+  const names = [...new Set((baseNames || []).map((n) => String(n)).filter(Boolean))];
+  if (!names.length) return out;
+  try {
+    const db = await getDatabase(path);
+    if (!db) return out;
+    // 一次查全部报告的 (path_md, run_id)，在 JS 侧按 base name 匹配。
+    // 不用 SQL 拼 IN (…)：报告名含中文与特殊字符，且这里量级只有几百行，JS 侧过滤更稳。
+    const wanted = new Set(names);
+    const rows = db.prepare("SELECT path_md, run_id FROM reports WHERE path_md IS NOT NULL AND run_id IS NOT NULL").all();
+    const runIdByBase = new Map();
+    for (const r of rows) {
+      const base = String(r.path_md)
+        .split(/[\\/]/)
+        .pop()
+        .replace(/\.(md|html)$/i, "");
+      if (wanted.has(base)) runIdByBase.set(base, r.run_id);
+    }
+    if (!runIdByBase.size) return out;
+    const stmt = db.prepare("SELECT raw_json FROM test_runs WHERE run_id = ? LIMIT 1");
+    for (const [base, runId] of runIdByBase) {
+      try {
+        const row = stmt.get(runId);
+        if (!row?.raw_json) continue;
+        out.set(base, JSON.parse(row.raw_json));
+      } catch {
+        /* 单条坏掉不影响其余：该 base 缺席 → 调用方回退解析 md */
+      }
+    }
+  } catch (error) {
+    noteDbError("queryReportSummariesByBase", error);
+  }
+  return out;
+}
+
 // 删除单条报告元数据（供报告中心手动删除报告文件用）。文件删除交调用方做，db 只管元数据。
 // SQLite 不可用 → no-op 返回 false；返回是否确有一行被删。
 export async function deleteReport(reportId, { path } = {}) {
@@ -740,9 +1008,7 @@ export async function pruneReports({ retentionDays = 30, maxTotal = 2000, now, p
     const cutoffIso = new Date((now ?? Date.now()) - retentionDays * 24 * 3600 * 1000).toISOString();
     const expired = db.prepare("SELECT * FROM reports WHERE created_at IS NOT NULL AND created_at < ?").all(cutoffIso);
     // 超量清理：按时间倒序跳过最新 maxTotal 条，其余（更旧的）视为超量待删
-    const overflow = db
-      .prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT -1 OFFSET ?")
-      .all(Math.max(0, Math.floor(maxTotal)));
+    const overflow = db.prepare("SELECT * FROM reports ORDER BY created_at DESC LIMIT -1 OFFSET ?").all(Math.max(0, Math.floor(maxTotal)));
     const toDelete = new Map();
     for (const row of [...expired, ...overflow]) toDelete.set(row.report_id, row);
     if (toDelete.size === 0) return [];

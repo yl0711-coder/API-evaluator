@@ -29,6 +29,18 @@ test("parseReportId：多目标 → 无渠道/模型", () => {
   assert.equal(r.model, null);
 });
 
+test("parseReportId：模型对比报告不伪装成单一渠道/模型", () => {
+  const r = parseReportId("渠道A_模型A_vs_渠道B_模型B_compare_20260629_095752_3f2a");
+  assert.deepEqual(r, {
+    isNew: true,
+    type: "compare",
+    date: "20260629",
+    channel: null,
+    model: null,
+    isComparison: true,
+  });
+});
+
 test("parseReportId：老格式不参与筛选", () => {
   assert.deepEqual(parseReportId("admission-20260615-183217-232baef6"), { isNew: false });
   assert.deepEqual(parseReportId("run-20260615-185321-088c8497"), { isNew: false });
@@ -43,7 +55,7 @@ test("parseReportId：AI 分析归母报告解析", () => {
 });
 
 test("aliasMaps：曾用名归并到当前名（筛选 + 下拉）", () => {
-  const aliasMaps = { channel: { "老A": "中转A" }, model: { gpt4: "gpt-4o" } };
+  const aliasMaps = { channel: { 老A: "中转A" }, model: { gpt4: "gpt-4o" } };
   const oldR = parseReportId("老A_gpt4_run_20250101_120000_ab12"); // 改名前落盘
   const newR = parseReportId("中转A_gpt-4o_run_20250201_120000_cd34"); // 改名后
   // 按当前名筛，曾用名的旧报告也命中；不传 aliasMaps 则维持原行为（不命中）。

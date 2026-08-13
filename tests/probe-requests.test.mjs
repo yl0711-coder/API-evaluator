@@ -4,11 +4,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import { buildApiKeyRef, saveProfileApiKey } from "../server/secret-store.mjs";
-import {
-  executeStreamStructureTestRequest,
-  executeTestRequest,
-  executeToolCallTestRequest,
-} from "../server/test-runner.mjs";
+import { executeStreamStructureTestRequest, executeTestRequest, executeToolCallTestRequest } from "../server/test-runner.mjs";
 
 // 三个上游探测共用 runUpstreamProbe 骨架，这里用本地 mock 上游做端到端集成测试，
 // 锁定重构后各分支的字段路由（尤其：非流式 firstTokenMs 恒为 null、流式才捕获真 TTFT）。
@@ -47,7 +43,8 @@ const sendJson = (res, code, obj) => {
 
 test("executeTestRequest：2xx + 输出 → success，usage 提取，非流式 firstTokenMs 恒为 null", async () => {
   await withMockUpstream(
-    (req, res) => sendJson(res, 200, { choices: [{ message: { content: "工作正常。" } }], usage: { prompt_tokens: 11, completion_tokens: 5 } }),
+    (req, res) =>
+      sendJson(res, 200, { choices: [{ message: { content: "工作正常。" } }], usage: { prompt_tokens: 11, completion_tokens: 5 } }),
     async (baseUrl) => {
       const r = await executeTestRequest(await probeProfile(baseUrl), "hi", { writeLog: false });
       assert.equal(r.success, true);
@@ -128,7 +125,13 @@ test("executeTestRequest：模型拒绝自定义 temperature（400）→ 去掉�
 // 拒收时必须摘掉重试，否则「勾了流式」的场景题会被误判失败、压测整轮 0% 成功率。
 test("executeTestRequest(stream)：中转不认 stream_options（400）→ 摘掉后重试成功，同模型后续首发即不带", async () => {
   let rejections = 0; // 携带 stream_options 被拒的次数
-  const sse = [`data: ${JSON.stringify({ choices: [{ delta: { content: "在的" }, finish_reason: "stop" }] })}`, "", "data: [DONE]", "", ""].join("\n");
+  const sse = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "在的" }, finish_reason: "stop" }] })}`,
+    "",
+    "data: [DONE]",
+    "",
+    "",
+  ].join("\n");
   await withMockUpstream(
     (req, res) => {
       let body = "";
@@ -142,7 +145,9 @@ test("executeTestRequest(stream)：中转不认 stream_options（400）→ 摘�
         }
         if (json && Object.prototype.hasOwnProperty.call(json, "stream_options")) {
           rejections += 1;
-          sendJson(res, 400, { error: { message: "Unrecognized request argument supplied: stream_options", type: "invalid_request_error" } });
+          sendJson(res, 400, {
+            error: { message: "Unrecognized request argument supplied: stream_options", type: "invalid_request_error" },
+          });
           return;
         }
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -168,7 +173,13 @@ test("executeTestRequest(stream)：中转不认 stream_options（400）→ 摘�
 // 压测走 noRetry（避免重试吞掉 429/5xx 这些正要测的负载信号）。但「摘掉上游不认的可选参数」
 // 是修我方请求体、零退避，不是负载信号——必须放行，否则压测首批请求全部白白判失败。
 test("executeTestRequest(stream + noRetry)：压测模式下仍放行确定性摘参重试", async () => {
-  const sse = [`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}`, "", "data: [DONE]", "", ""].join("\n");
+  const sse = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}`,
+    "",
+    "data: [DONE]",
+    "",
+    "",
+  ].join("\n");
   await withMockUpstream(
     (req, res) => {
       let body = "";
@@ -228,7 +239,11 @@ test("executeTestRequest：2xx 但空回复 → success=false（空回复归一�
 
 test("executeToolCallTestRequest：拿到 tool_call → success；缺失 → tool_call_missing", async () => {
   await withMockUpstream(
-    (req, res) => sendJson(res, 200, { choices: [{ message: { tool_calls: [{ function: { name: "get_weather", arguments: "{}" } }] } }], usage: { prompt_tokens: 8, completion_tokens: 3 } }),
+    (req, res) =>
+      sendJson(res, 200, {
+        choices: [{ message: { tool_calls: [{ function: { name: "get_weather", arguments: "{}" } }] } }],
+        usage: { prompt_tokens: 8, completion_tokens: 3 },
+      }),
     async (baseUrl) => {
       const r = await executeToolCallTestRequest(await probeProfile(baseUrl), { writeLog: false });
       assert.equal(r.success, true);
@@ -275,8 +290,10 @@ test("executeStreamStructureTestRequest：流式 → 捕获真 TTFT（firstToken
 // keepRawResponse（「在报告中完整显示返回」）：rawError 在采集处就被 summarizeText 砍到 500 字并压平换行，
 // 而空响应/流式异常恰恰只能靠完整响应体排查。用真实遇到过的形状复现：一串空 delta + 末尾 usage 帧。
 const emptyDeltaSse = [
-  ...Array.from({ length: 40 }, (_, i) =>
-    `data: ${JSON.stringify({ id: `msg_${i}`, object: "chat.completion.chunk", choices: [{ delta: { content: "", role: "assistant" }, index: i }], usage: null })}\n`,
+  ...Array.from(
+    { length: 40 },
+    (_, i) =>
+      `data: ${JSON.stringify({ id: `msg_${i}`, object: "chat.completion.chunk", choices: [{ delta: { content: "", role: "assistant" }, index: i }], usage: null })}\n`,
   ),
   `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 143, completion_tokens: 0 } })}\n`,
   "data: [DONE]\n",
@@ -356,7 +373,7 @@ test("断流：保留断开前已收到的半截响应体并标记不完整；�
     (req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "半截" } }] })}\n\n`);
-      res.write("data: {\"choices\":[{\"delta\":{\"content\":\"就断\"");
+      res.write('data: {"choices":[{"delta":{"content":"就断"');
       setTimeout(() => res.destroy(), 20); // 不 end，直接掐断
     },
     async (baseUrl) => {

@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  aggregateUsage,
-  estimateTokenCost,
-  estimateTokenEconomics,
-} from "../server/costing.mjs";
+import { aggregateUsage, estimateTokenCost, estimateTokenEconomics } from "../server/costing.mjs";
 
 test("aggregateUsage sums each token field across records", () => {
   const records = [
@@ -51,10 +47,7 @@ test("estimateTokenCost is unchanged by added cache/reasoning capture", () => {
 });
 
 test("estimateTokenCost returns null when no prices are configured", () => {
-  assert.equal(
-    estimateTokenCost({ inputTokens: 1000, outputTokens: 1000 }),
-    null,
-  );
+  assert.equal(estimateTokenCost({ inputTokens: 1000, outputTokens: 1000 }), null);
 });
 
 test("estimateTokenEconomics computes gross profit and margin", () => {

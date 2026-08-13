@@ -1,22 +1,15 @@
-import {
-  downloadText,
-  escapeHtml,
-  renderMarkdown,
-  toast,
-} from "./client-utils.js";
+import { downloadText, escapeHtml, toast } from "./client-utils.js";
 import { renderAdmissionResult } from "./admission-view.js";
 import { installClientErrorReporter } from "./client-error-reporter.js";
 import { copyText } from "./clipboard.js";
 import { api, cancelRemoteTask } from "./api-client.js";
 import { applyRoleVisibility, ensureAuthenticated, wireUnauthorizedRedirect } from "./auth-gate.js";
 import { createConfirmDialog } from "./confirm-dialog.js";
-import { openReportOverlay } from "./report-overlay.js";
-import { parseReportId, matchesReportFilter, computeDateBounds, reportChannelModelOptions } from "./report-id.js";
 import { createDeveloper } from "./developer.js";
 import { createAutoTestConfig } from "./auto-test-config.js";
+import { createAlertRules } from "./alert-rules.js";
 import { createNotifyConfig } from "./notify-config.js";
 import { createModelCompare } from "./model-compare.js";
-import { MANUAL_MARKDOWN } from "./manual-content.js";
 import {
   confirmExecution,
   estimateAdmissionBatchCost,
@@ -33,24 +26,29 @@ import {
   formatBatchAdmissionResult,
   formatClientLogAnalysisResult,
   formatSupplierEvidenceResult,
-  formatScenarioResult,
-  formatStabilityResult,
 } from "./formatters.js";
-import { renderRequestList, renderTaskEventList, renderTestRunList } from "./history-view.js";
+import { renderRequestList, renderTestRunList } from "./history-view.js";
 import { renderTrendChart } from "../shared/trend-chart.mjs";
 import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "./workflow-guide.js";
-import { buildDemoData } from "./demo-data.js";
 import { requireElement, requireElements } from "./dom-utils.js";
+import { installAppearance } from "./appearance.js";
+import { createManual } from "./manual.js";
+import { createDashboard } from "./dashboard.js";
+import { createSettings } from "./settings.js";
+import { createTestForms } from "./test-forms.js";
+import { createTrend } from "./trend.js";
+import { createClientReplay } from "./client-replay.js";
+import { createLoadTest } from "./load-test.js";
+import { createHighRiskBanner } from "./high-risk-banner.js";
+import { createReportBrowser } from "./report-browser.js";
 import { createKeyModal } from "./key-modal.js";
 import { renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createBatchTargetPicker } from "./batch-target-picker.js";
+import { createTaskCenter } from "./task-center.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
-import {
-  applyPromptPresetToForm,
-  renderPromptPresetOptions,
-} from "./prompt-presets.js";
+import { applyPromptPresetToForm, readStabilityGroups, renderPromptPresetOptions, renderStabilityGroupPicker } from "./prompt-presets.js";
 import { createChannelAdmin } from "./channel-admin.js";
 import { createQuickFailurePanel } from "./quick-failure-panel.js";
 import { createStandardEvalController } from "./standard-eval-controller.js";
@@ -58,15 +56,7 @@ import { renderStabilitySummary as renderStabilitySummaryPanel } from "./stabili
 import { renderScenarioSummary as renderScenarioSummaryPanel } from "./scenario-view.js";
 import { updateEstimateLabels } from "./test-estimates.js";
 import { createTaskFormController, requireSelectedValues } from "./test-form-controller.js";
-import {
-  applyBatchTemplate as applyBatchTemplateToForm,
-  applyStabilityTemplate as applyStabilityTemplateToForm,
-} from "./test-templates.js";
-import {
-  hydrateProjectInfoForm as hydrateProjectInfoFormFields,
-  loadProjectInfo,
-  saveProjectInfo,
-} from "./project-info.js";
+import { hydrateProjectInfoForm as hydrateProjectInfoFormFields, loadProjectInfo, saveProjectInfo } from "./project-info.js";
 
 installClientErrorReporter();
 
@@ -80,21 +70,18 @@ const state = {
   highRiskAlerts: [], // 高危报告提示：未读高危报告清单（来自 /api/high-risk-alerts）
   scenarios: [],
   manualLoaded: false,
-  latestReportCopies: {
-    stability: "",
-    scenario: "",
-  },
   activeTasks: {},
   projectInfo: loadProjectInfo(),
-  latestStandardProfileId: "",
-  demoMode: false,
-  health: null,
 };
+
+// 渠道/模型/Profile 数据变化注册表：模块可自注册 refresh(data) 回调。
+const _onProfileData = [];
+function onProfileData(fn) {
+  _onProfileData.push(fn);
+}
 
 const pages = requireElements(".page");
 const navButtons = requireElements(".nav-button");
-// 设置页「未保存改动」追踪：早声明，避免在启动期（顶层 await 暂停）被 showPage 引用时命中 TDZ。
-let settingsDirty = false;
 let currentPage = "dashboard";
 const projectInfoForm = requireElement("#project-info-form");
 const projectInfoSummary = requireElement("#project-info-summary");
@@ -104,10 +91,6 @@ const modelTargetForm = requireElement("#model-target-form");
 const modelTargetList = requireElement("#model-target-list");
 const modelTargetChannelSelect = requireElement("#model-target-channel");
 const modelTagFilter = requireElement("#model-tag-filter");
-// 高危报告横幅元素：必须在此顶部声明。启动流程（顶层 await 块）会 await loadHighRiskAlerts()→renderHighRiskBanner()，
-// 那时若本 const 仍在文件下方未执行，就处于暂时性死区(TDZ)，会抛「Cannot access 'highRiskBanner' before initialization」
-// 并被启动 try/catch 兜成「连接本地服务失败」。不要把它挪回下面的高危提示代码块里。
-const highRiskBanner = requireElement("#high-risk-banner");
 const channelAdmin = createChannelAdmin({
   state,
   els: { channelForm, channelList, modelTargetForm, modelTargetList, modelTargetChannelSelect, modelTagFilter },
@@ -127,7 +110,31 @@ const developer = createDeveloper({
 const autoTestConfig = createAutoTestConfig({ state, confirm: (opts) => confirmAction(opts) });
 const notifyConfig = createNotifyConfig({ state });
 // 「模型比对」（登录即可用）：依据两个模型各自最近的报告做统计对比，产出对比报告。
-const modelCompare = createModelCompare({ state });
+// confirmAction 在后文声明，闭包取值时已就绪（同 autoTestConfig/alertRules 的写法）。
+const modelCompare = createModelCompare({ state, confirm: (opts) => confirmAction(opts) });
+// 「报警规则」（登录即可用，任意管理员）：自定义阈值报警规则的增删改查。
+const alertRules = createAlertRules({ state, confirm: (opts) => confirmAction(opts) });
+// 「任务中心」（登录即可用）：所有长任务的状态与逐步骤明细。取代报告中心里原先那个
+// 只有一行聚合状态的「最近任务状态」折叠区。confirmAction / showPage 均在后文声明，
+// 闭包取值时已就绪（同上面几个模块的写法）。
+const taskCenter = createTaskCenter({
+  state,
+  confirm: (opts) => confirmAction(opts),
+  // 「再测一次」只回填表单并跳页，不直接开跑——任务是花钱的，最后一下留给用户。
+  // admission-suite 由标准评测页发起（不是准入评测页），故跳 standard-eval。
+  // 锚点是单值的，跨渠道的一组只能填中一个渠道，selectMany 如实返回填中的 id。
+  onRetest: ({ profileIds }) => {
+    showPage("standard-eval");
+    return standardPicker.selectMany(profileIds);
+  },
+});
+// 注：「模型档案」不在这里 —— 它是独立页面（/model-profile/，入口 src/model-profile-page.js），
+// 不属于本 SPA。它的元素不在 index.html 里，若在此 createModelProfile 会因 requireElement
+// 找不到元素而抛错，整个主站白屏。
+// 注册到 _onProfileData（必须在顶层 await 之前）。
+_onProfileData.push((data) => autoTestConfig.refreshTargets(data));
+_onProfileData.push((data) => modelCompare.refreshTargets(data));
+_onProfileData.push((data) => alertRules.refreshTargets(data));
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
 requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
 requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
@@ -142,25 +149,21 @@ const trendChart = requireElement("#trend-chart");
 const trendRegression = requireElement("#trend-regression");
 const trendTable = requireElement("#trend-table");
 const trendAlerts = requireElement("#trend-alerts");
-let trendXMode = "count"; // 趋势图 x 轴：'count'(按轮次) | 'hour'(按小时聚合)
-let trendWindowHours = 0; // 按时间模式的时间范围：0=全部，或 3/6/12/24/48/168 小时
-let trendLastRounds = []; // 最近一次拉到的逐轮数据，切换 x 轴时复用、不重复请求
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
-const standardPromptPreset = requireElement("#standard-prompt-preset");
-const standardPromptHint = requireElement("#standard-prompt-hint");
 const standardEvalSubmit = requireElement("#standard-eval-submit");
 const standardPlainResult = requireElement("#standard-plain-result");
 const standardEvalResult = requireElement("#standard-eval-result");
 const standardNextActions = requireElement("#standard-next-actions");
 const standardEvalProgress = requireElement("#standard-eval-progress");
-const standardTaskProgress = requireElement("#standard-task-progress");
+const standardEvalTaskProgress = requireElement("#standard-eval-task-progress");
 const admissionTestForm = requireElement("#admission-test-form");
 const admissionProfileSelect = requireElement("#admission-profile-select");
 const admissionSubmit = requireElement("#admission-submit");
 const admissionEstimate = requireElement("#admission-estimate");
 const admissionResult = requireElement("#admission-result");
+const admissionProgress = requireElement("#admission-progress");
 const admissionBatchForm = requireElement("#admission-batch-form");
 const admissionBatchProfileSelect = requireElement("#admission-batch-profile-select");
 const admissionBatchSubmit = requireElement("#admission-batch-submit");
@@ -176,6 +179,11 @@ const loadTestProfileSelect = requireElement("#load-test-profile-select");
 const loadTestSubmit = requireElement("#load-test-submit");
 const loadTestSummary = requireElement("#load-test-summary");
 const loadTestEstimate = requireElement("#load-test-estimate");
+const loadTestModeSelect = requireElement("#load-test-mode");
+const loadTestLoadLabel = requireElement("#load-test-load-label");
+const loadTestMaxInFlightField = requireElement("#load-test-maxinflight-field");
+const loadTestBurstField = requireElement("#load-test-burst-field");
+const loadTestIntervalField = requireElement("#load-test-interval-field");
 const batchTestForm = requireElement("#batch-test-form");
 const batchProfileSelect = requireElement("#batch-profile-select");
 const batchSubmit = requireElement("#batch-submit");
@@ -202,30 +210,56 @@ const clientReplayBatch = requireElement("#client-replay-batch");
 // 单选「被测 API」级联选择器(渠道 → 模型),6 个运行页各一个。
 // 模型下拉沿用原 *-profile-select(仍 name="profileId"),所以表单提交与后端不变。
 const admissionCascade = createCascadeTargetPicker(requireElement("#admission-channel-select"), admissionProfileSelect);
-const standardCascade = createCascadeTargetPicker(requireElement("#standard-channel-select"), standardProfileSelect);
 const quickVerifyCascade = createCascadeTargetPicker(requireElement("#quickverify-channel-select"), quickVerifyProfileSelect);
 const stabilityCascade = createCascadeTargetPicker(requireElement("#stability-channel-select"), stabilityProfileSelect);
-const loadTestCascade = createCascadeTargetPicker(requireElement("#load-test-channel-select"), loadTestProfileSelect);
-const trendCascade = createCascadeTargetPicker(requireElement("#trend-channel-select"), trendProfileSelect);
+// 注册到 _onProfileData（必须在顶层 await 之前，确保首次 loadProfiles 能刷到）。
+_onProfileData.push((data) => admissionCascade.refresh(data));
+_onProfileData.push((data) => quickVerifyCascade.refresh(data));
+_onProfileData.push((data) => stabilityCascade.refresh(data));
+const loadTestChannelSelect = requireElement("#load-test-channel-select");
+const trendChannelSelect = requireElement("#trend-channel-select");
 
 // 程序化跳转回填代理:控制器里 `xxxProfileSelect.value = id` 时,写入走级联(同步渠道+模型下拉),
 // 读取仍取模型选中值。传给会做跳转回填的控制器(profile / standard-eval)。
-const quickVerifyProfileTarget = { get value() { return quickVerifyProfileSelect.value; }, set value(v) { quickVerifyCascade.setValue(v); } };
-const stabilityProfileTarget = { get value() { return stabilityProfileSelect.value; }, set value(v) { stabilityCascade.setValue(v); } };
+const quickVerifyProfileTarget = {
+  get value() {
+    return quickVerifyProfileSelect.value;
+  },
+  set value(v) {
+    quickVerifyCascade.setValue(v);
+  },
+};
+const stabilityProfileTarget = {
+  get value() {
+    return stabilityProfileSelect.value;
+  },
+  set value(v) {
+    stabilityCascade.setValue(v);
+  },
+};
 
 // 批量两维度选择器(渠道体检 A / 渠道选优 B),3 个批量页各一个。选中项同步到隐藏的
 // *-profile-select(name=profileIds),所以 updateEstimates / 提交 / 监听器 读法不变。
-const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-batch-picker"), { hiddenSelect: admissionBatchProfileSelect });
+const admissionBatchPicker = createBatchTargetPicker(requireElement("#admission-batch-picker"), {
+  hiddenSelect: admissionBatchProfileSelect,
+});
 const batchPicker = createBatchTargetPicker(requireElement("#batch-picker"), { hiddenSelect: batchProfileSelect });
 const scenarioPicker = createBatchTargetPicker(requireElement("#scenario-picker"), { hiddenSelect: scenarioProfileSelect });
+// 标准评测:固定「一渠道·多模型」维度(不给用户切成「一模型·多渠道」),选中的模型顺序执行标准评测。
+const standardPicker = createBatchTargetPicker(requireElement("#standard-picker"), {
+  hiddenSelect: standardProfileSelect,
+  fixedDim: "A",
+});
+// 注册到 _onProfileData（必须在顶层 await 之前）。
+_onProfileData.push((data) => admissionBatchPicker.refresh(data));
+_onProfileData.push((data) => batchPicker.refresh(data));
+_onProfileData.push((data) => scenarioPicker.refresh(data));
+_onProfileData.push((data) => standardPicker.refresh(data));
 // 「选择测试场景」复用 .batch-picker 勾选样式,真值写回隐藏的 scenarioCaseSelect。
 const scenarioCasePicker = createScenarioCasePicker(requireElement("#scenario-case-picker"), scenarioCaseSelect);
 
-const taskEventList = requireElement("#task-event-list");
-const stabilityTemplate = requireElement("#stability-template");
-const batchTemplate = requireElement("#batch-template");
-const stabilityPromptPreset = requireElement("#stability-prompt-preset");
-const stabilityPromptHint = requireElement("#stability-prompt-hint");
+const stabilityGroupPicker = requireElement("#stability-group-picker");
+const stabilityRequestTotal = requireElement("#stability-request-total");
 const batchPromptPreset = requireElement("#batch-prompt-preset");
 const batchPromptHint = requireElement("#batch-prompt-hint");
 const stabilityEstimate = requireElement("#stability-estimate");
@@ -240,7 +274,6 @@ const rankingList = requireElement("#ranking-list");
 const modelComparisonList = requireElement("#model-comparison-list");
 const handoffSummary = requireElement("#handoff-summary");
 const handoffTemplate = requireElement("#handoff-template");
-const manualContent = requireElement("#manual-content");
 const dashboardEmpty = requireElement("#dashboard-empty");
 const dashboardPopulated = requireElement("#dashboard-populated");
 const statChannels = requireElement("#stat-channels");
@@ -253,7 +286,6 @@ const statTodosChips = requireElement("#stat-todos-chips");
 const dashboardRecent = requireElement("#dashboard-recent");
 const nextAction = requireElement("#next-action");
 const workflowSteps = requireElements(".workflow-step");
-const demoModeBanner = requireElement("#demo-mode-banner");
 const quickFailureActions = requireElement("#quick-failure-actions");
 const keyModal = requireElement("#key-modal");
 const keyModalForm = requireElement("#key-modal-form");
@@ -280,14 +312,13 @@ const quickFailurePanel = createQuickFailurePanel({
   retryQuickTest: () => quickVerifySubmit.click(),
   openProfiles: () => showPage("channels"),
   openStandardEval: (profileId) => {
-    if (profileId) standardCascade.setValue(profileId);
+    if (profileId) standardPicker.selectSingle(profileId);
     showPage("standard-eval");
   },
   openReports: () => showPage("reports"),
   openStabilitySmoke: (profileId) => {
     if (profileId) stabilityCascade.setValue(profileId);
-    stabilityTemplate.value = "smoke";
-    applyStabilityTemplate();
+    applyStabilityGroupPreset({ basic: 3 });
     showPage("stability-test");
   },
 });
@@ -298,68 +329,163 @@ navButtons.forEach((button) => {
   });
 });
 
-// 侧边栏折叠：切换 #app.sidebar-collapsed，并把状态持久化到本机
-const SIDEBAR_COLLAPSED_KEY = "evaluator:sidebar-collapsed";
-const readSidebarCollapsed = () => {
-  try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
-  } catch {
-    return false;
-  }
-};
-const writeSidebarCollapsed = (on) => {
-  try {
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, on ? "1" : "0");
-  } catch {
-    /* 隐私模式：忽略 */
-  }
-};
+// 本机显示偏好（侧边栏折叠 + 更好的光影）：见 src/appearance.js。
+// 启动即应用，无需 showPage 派发——它们是全局外观，不属于任何一页。
+installAppearance();
 
-const appEl = requireElement("#app");
-const sidebarToggle = requireElement("#sidebar-toggle");
-function applySidebarCollapsed(on) {
-  appEl.classList.toggle("sidebar-collapsed", on);
-  sidebarToggle.setAttribute("aria-expanded", String(!on));
-  const label = on ? "展开侧边栏" : "收起侧边栏";
-  sidebarToggle.setAttribute("aria-label", label);
-  sidebarToggle.title = label;
-}
-applySidebarCollapsed(readSidebarCollapsed());
-sidebarToggle.addEventListener("click", () => {
-  const on = !appEl.classList.contains("sidebar-collapsed");
-  applySidebarCollapsed(on);
-  writeSidebarCollapsed(on);
+// 操作手册页（渲染 + 目录 + scrollspy）：见 src/manual.js。懒加载由下方 showPage 派发。
+const manual = createManual({ state });
+
+// 高危报告横幅（顶部红底提示）：见 src/high-risk-banner.js。
+// 三个刷新时机由 app.js 触发：启动后、设置开关变化、测试完成后；另有 60s 低频轮询（见文件末）。
+const highRiskBanner = createHighRiskBanner({ state });
+
+// 「查看报告」<details> 面板（列表 / 筛选 / 分页 / 删除）：见 src/report-browser.js。
+// 它自己接管 toggle 展开事件，故不进 showPage 的懒加载派发。
+// 批量下载与删除按钮的可见性依赖 canConfig，须等认证完成后经 setCanConfig 推入（见下方顶层 await 之后）。
+const reportBrowser = createReportBrowser({ state });
+
+// 仪表盘（渠道健康 / 结论分布 / 待办 / 最近报告 / 工作流引导）：见 src/dashboard.js。
+const dashboard = createDashboard({
+  state,
+  els: {
+    dashboardEmpty,
+    dashboardPopulated,
+    statChannels,
+    statChannelsChips,
+    statChannelsBars,
+    statVerdicts,
+    statVerdictsChips,
+    statTodos,
+    statTodosChips,
+    dashboardRecent,
+    nextAction,
+    workflowSteps,
+  },
+  deps: { escapeHtml, resolveRunnableTargets, buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml, showPage },
 });
 
-// 外观：更好的光影（背景橙色渐变流光）。纯本机显示偏好，存 localStorage、即时生效，
-// 与服务器设置无关（不走「保存设置」流程）。
-const BETTER_LIGHTING_KEY = "evaluator:better-lighting";
-const readBetterLighting = () => {
-  try {
-    return localStorage.getItem(BETTER_LIGHTING_KEY) === "1";
-  } catch {
-    return false;
-  }
-};
-const writeBetterLighting = (on) => {
-  try {
-    localStorage.setItem(BETTER_LIGHTING_KEY, on ? "1" : "0");
-  } catch {
-    /* 隐私模式：忽略 */
-  }
-};
-const betterLightingToggle = requireElement("#set-better-lighting");
-function applyBetterLighting(on) {
-  document.body.classList.toggle("better-lighting", on);
-  betterLightingToggle.checked = on;
-}
-applyBetterLighting(readBetterLighting());
-betterLightingToggle.addEventListener("change", (event) => {
-  // 它在 #settings-form 内，但即时生效、不走「保存设置」：阻止冒泡，
-  // 免得表单的 change 监听把它误标为「设置未保存」。
-  event.stopPropagation();
-  applyBetterLighting(betterLightingToggle.checked);
-  writeBetterLighting(betterLightingToggle.checked);
+// 设置页所需 DOM 元素（requireElement 留在 app.js，通过 els 传入工厂）。
+// 对应的选择器被 selector-contract 测试所追踪——删了这里就会漏掉。
+const settingsForm = requireElement("#settings-form");
+const setAiSpecified = requireElement("#set-ai-specified");
+const setAiChannel = requireElement("#set-ai-channel");
+const setAiModel = requireElement("#set-ai-model");
+const setLivebench = requireElement("#set-livebench");
+const setSafety = requireElement("#set-safety");
+const setHle = requireElement("#set-hle");
+const setHardcoreLogic = requireElement("#set-hardcore-logic");
+const setCodingHard = requireElement("#set-coding-hard");
+const setAutoTag = requireElement("#set-auto-tag");
+const setNewapiBase = requireElement("#set-newapi-base");
+const setNewapiToken = requireElement("#set-newapi-token");
+const setNewapiUserid = requireElement("#set-newapi-userid");
+const setTestCycleDays = requireElement("#set-test-cycle-days");
+const setHighRiskAlert = requireElement("#set-high-risk-alert");
+
+// 设置页（AI 总结 / 题库开关 / new-api 网关 / 高危提示等）：见 src/settings.js。
+const settings = createSettings({
+  state,
+  els: {
+    settingsForm,
+    setAiSpecified,
+    setAiChannel,
+    setAiModel,
+    setLivebench,
+    setSafety,
+    setHle,
+    setHardcoreLogic,
+    setCodingHard,
+    setAutoTag,
+    setNewapiBase,
+    setNewapiToken,
+    setNewapiUserid,
+    setTestCycleDays,
+    setHighRiskAlert,
+  },
+  deps: { api, toast, createCascadeTargetPicker, channelAdmin, highRiskBanner, loadScenarios, onProfileData },
+});
+
+// 趋势图页（逐轮质量/延迟趋势 + 退化检测 + 历史告警）：见 src/trend.js。
+// 模块自管事件监听器（nav 按钮点击 / 选择器切换），app.js 无需持有其返回值。
+createTrend({
+  state,
+  els: {
+    trendChannelSelect,
+    trendProfileSelect,
+    trendXModeSelect,
+    trendWindowSelect,
+    trendWindowField,
+    trendChart,
+    trendRegression,
+    trendTable,
+    trendAlerts,
+  },
+  onProfileData,
+  deps: { api, escapeHtml, renderTrendChart, createCascadeTargetPicker },
+});
+
+// 客户端回放页（日志分析 / 导入 / 回放）：见 src/client-replay.js。
+// 模块自管事件监听器，app.js 无需持有其返回值。
+createClientReplay({
+  state,
+  els: {
+    clientLogForm,
+    clientLogSubmit,
+    clientEvidenceSubmit,
+    clientLogDirectoryImport,
+    clientLogResult,
+    clientLogFile,
+    clientReplayForm,
+    clientReplayProfileSelect,
+    clientReplaySubmit,
+    clientReplayResult,
+    clientReplayExtract,
+    clientReplayBatch,
+  },
+  onProfileData,
+  deps: {
+    api,
+    toast,
+    confirmAction,
+    loadTestRuns,
+    renderDeliveryViews,
+    formatClientLogAnalysisResult,
+    formatSupplierEvidenceResult,
+    renderRunTargetSelectOptions,
+  },
+});
+
+// 压力测试页（闭环/开环 + 负载扫描）：见 src/load-test.js。
+// 模块自管事件监听器 + createTaskFormController，app.js 无需持有其返回值。
+createLoadTest({
+  state,
+  els: {
+    loadTestForm,
+    loadTestProfileSelect,
+    loadTestSubmit,
+    loadTestSummary,
+    loadTestProgress,
+    loadTestEstimate,
+    loadTestModeSelect,
+    loadTestLoadLabel,
+    loadTestMaxInFlightField,
+    loadTestBurstField,
+    loadTestIntervalField,
+    loadTestChannelSelect,
+  },
+  onProfileData,
+  deps: {
+    api,
+    toast,
+    escapeHtml,
+    confirmAction,
+    createTaskFormController,
+    estimateLoadTestCost,
+    confirmExecution,
+    loadResultsBundle,
+    createCascadeTargetPicker,
+  },
 });
 
 document.addEventListener("click", (event) => {
@@ -368,8 +494,6 @@ document.addEventListener("click", (event) => {
   showPage(button.dataset.goPage);
 });
 
-requireElement("#load-demo-data").addEventListener("click", enableDemoMode);
-requireElement("#exit-demo-mode").addEventListener("click", disableDemoMode);
 requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
   reportBrowser.refresh();    // 同时刷新报告文件列表
@@ -377,224 +501,18 @@ requireElement("#reload-requests").addEventListener("click", async () => {
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
 requireElement("#export-support-bundle").addEventListener("click", exportSupportBundle);
+requireElement("#check-disk-usage").addEventListener("click", checkDiskUsage);
 
-// 「查看报告」：列出「评测数据/报告」里的报告文件（每页 10 个，分页 + 新格式按渠道/模型/种类/日期筛选）。
-const reportFilesPanel = requireElement("#report-files-panel");
-const reportFilesList = requireElement("#report-files-list");
-const rfFilterChannel = requireElement("#rf-filter-channel");
-const rfFilterModel = requireElement("#rf-filter-model");
-const rfFilterType = requireElement("#rf-filter-type");
-const rfFilterDateFrom = requireElement("#rf-filter-date-from");
-const rfFilterDateTo = requireElement("#rf-filter-date-to");
-const REPORT_FILTERS = [rfFilterChannel, rfFilterModel, rfFilterType, rfFilterDateFrom, rfFilterDateTo];
-const REPORT_TYPE_LABELS = {
-  admission: "准入评测",
-  "admission-batch": "批量准入",
-  scenario: "场景测试",
-  run: "稳定性测试",
-  compare: "模型对比",
-  autodigest: "自动巡检",
-  load: "压力测试", // runId 前缀 buildReportId("load", ...)
-  "load-test": "压力测试",
-  batch: "批量稳定性",
-  quickverify: "快速验证",
-  supplier: "上游证据包",
-  client: "客户端回放",
-  replay: "客户端回放",
-};
-const REPORT_PAGE_SIZE = 10;
-let reportFiles = []; // 每条已附 parsed = parseReportId(id)
-let reportFilesPage = 0;
-let currentUserCanConfig = false; // 是否超级管理员（role≥100）：仅其可见/可用报告删除按钮（安全另在服务端强制）
-let reportDateMin = ""; // 报告实际日期范围（YYYY-MM-DD），给日期框设 min/max 用
-let reportDateMax = "";
-
-// 令「终止」日历不早于「起始」、「起始」不晚于「终止」（同时夹在报告日期范围内）。
-function syncDateBounds() {
-  const { toMin, fromMax } = computeDateBounds(rfFilterDateFrom.value, rfFilterDateTo.value, reportDateMin, reportDateMax);
-  rfFilterDateTo.min = toMin;
-  rfFilterDateFrom.max = fromMax;
-}
-
-// 展开「全部报告文件」面板时自动加载（已无独立「查看报告」按钮）。
-reportFilesPanel.addEventListener("toggle", () => {
-  if (reportFilesPanel.open) loadReportFiles();
-});
-// 点日期框即弹出原生日历选择器（不必只点小图标）。
-for (const dateInput of [rfFilterDateFrom, rfFilterDateTo]) {
-  dateInput.addEventListener("click", () => {
-    try {
-      dateInput.showPicker?.();
-    } catch {
-      /* 未由用户手势激活 / 不支持 → 忽略，仍可用默认日历图标 */
-    }
-  });
-}
-REPORT_FILTERS.forEach((sel) =>
-  sel.addEventListener("change", () => {
-    // 渠道↔模型联动：重算两下拉可选项（保留仍有效的选中值）。内部亦会 syncDateBounds 收紧日历范围。
-    populateReportFilters();
-    reportFilesPage = 0;
-    renderReportFilesPage();
-  }),
-);
-reportFilesList.addEventListener("click", (event) => {
-  const pager = event.target.closest?.("[data-report-page]");
-  if (pager) {
-    const totalPages = Math.max(1, Math.ceil(filteredReportFiles().length / REPORT_PAGE_SIZE));
-    reportFilesPage =
-      pager.dataset.reportPage === "next"
-        ? Math.min(reportFilesPage + 1, totalPages - 1)
-        : Math.max(reportFilesPage - 1, 0);
-    renderReportFilesPage();
-    return;
-  }
-  const del = event.target.closest?.("[data-report-del]");
-  if (del) {
-    const id = del.dataset.reportDel;
-    if (!confirm(`确认删除报告「${id}」？此操作不可撤销。`)) return;
-    api(`/api/reports/files/${encodeURIComponent(id)}`, { method: "DELETE" })
-      .then(() => loadReportFiles())
-      .catch((error) => alert(`删除失败：${error.message}`));
-    return;
-  }
-  const btn = event.target.closest?.("[data-report-id]");
-  if (btn) openReportOverlay(btn.dataset.reportId, { title: btn.dataset.reportId });
-});
-
-function reportKindLabel(id) {
-  if (/[-_]ai-analysis$/i.test(id)) return "AI 分析";
-  const parsed = parseReportId(id);
-  const token = parsed.isNew ? parsed.type : String(id).split("-")[0];
-  return REPORT_TYPE_LABELS[token] || "报告";
-}
-function formatBytes(bytes) {
-  return bytes >= 1024 ? `${Math.round(bytes / 1024)} KB` : `${bytes} B`;
-}
-function formatReportDate(yyyymmdd) {
-  return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
-}
-// 报告归并映射：{曾用名→当前名}（渠道名、模型名各一份），据当前渠道/模型的 aliases 生成。
-// 让改名前落盘的历史报告（文件名是旧名）在筛选/下拉里归并到当前对象。
-function reportAliasMaps() {
-  const channel = {};
-  for (const c of state.channels || []) {
-    for (const a of Array.isArray(c.aliases) ? c.aliases : []) if (a && c.name) channel[a] = c.name;
-  }
-  const model = {};
-  for (const t of state.modelTargets || []) {
-    for (const a of Array.isArray(t.aliases) ? t.aliases : []) if (a && t.model) model[a] = t.model;
-  }
-  return { channel, model };
-}
-// 任一筛选生效 → 只留 isNew 且四项都匹配；无任何筛选 → 全部（新+老）。老报告不参与筛选。
-function filteredReportFiles() {
-  const filter = {
-    channel: rfFilterChannel.value,
-    model: rfFilterModel.value,
-    type: rfFilterType.value,
-    from: rfFilterDateFrom.value.replace(/-/g, ""), // YYYY-MM-DD → YYYYMMDD
-    to: rfFilterDateTo.value.replace(/-/g, ""),
-  };
-  const aliasMaps = reportAliasMaps();
-  return reportFiles.filter((f) => matchesReportFilter(f.parsed, filter, aliasMaps));
-}
-// 据新格式报告去重值填充四个下拉（保留当前选中值）。
-// 渠道/模型互相联动：渠道选项据「当前所选模型」收窄、模型选项据「当前所选渠道」收窄（见 reportChannelModelOptions）。
-function populateReportFilters() {
-  // 用「当前选中值」做交叉约束，故须在重填（改动 select 内容）之前先读取。
-  const { channels, models } = reportChannelModelOptions(
-    reportFiles.map((f) => f.parsed),
-    { channel: rfFilterChannel.value, model: rfFilterModel.value },
-    reportAliasMaps(),
-  );
-  const types = new Set();
-  const dates = new Set();
-  for (const f of reportFiles) {
-    const p = f.parsed;
-    if (!p.isNew) continue;
-    if (p.type) types.add(p.type);
-    if (p.date) dates.add(p.date);
-  }
-  const fill = (sel, allLabel, items, label = (x) => x) => {
-    const cur = sel.value;
-    sel.innerHTML =
-      `<option value="">${allLabel}</option>` +
-      items.map((x) => `<option value="${escapeHtml(x)}"${x === cur ? " selected" : ""}>${escapeHtml(label(x))}</option>`).join("");
-  };
-  fill(rfFilterChannel, "全部渠道", channels);
-  fill(rfFilterModel, "全部模型", models);
-  fill(rfFilterType, "全部种类", [...types].sort(), (t) => REPORT_TYPE_LABELS[t] || t);
-  // 日期范围用原生日期控件：按报告实际日期范围设 min/max（不填充下拉项）。
-  const ds = [...dates].sort();
-  reportDateMin = ds.length ? formatReportDate(ds[0]) : "";
-  reportDateMax = ds.length ? formatReportDate(ds[ds.length - 1]) : "";
-  syncDateBounds();
-}
-function renderReportFilesPage() {
-  const list = filteredReportFiles();
-  if (!list.length) {
-    reportFilesList.innerHTML = reportFiles.length
-      ? `<p class="muted">没有符合筛选条件的报告。</p>`
-      : `<p class="muted">暂无报告（「评测数据/报告」为空）。</p>`;
-    return;
-  }
-  const totalPages = Math.max(1, Math.ceil(list.length / REPORT_PAGE_SIZE));
-  reportFilesPage = Math.min(Math.max(reportFilesPage, 0), totalPages - 1);
-  const start = reportFilesPage * REPORT_PAGE_SIZE;
-  const rows = list
-    .slice(start, start + REPORT_PAGE_SIZE)
-    .map(
-      (f) => `
-        <div class="row report-file-row">
-          <div><strong>${escapeHtml(reportKindLabel(f.id))}</strong><br /><small>${escapeHtml(f.id)}</small></div>
-          <small>${escapeHtml(new Date(f.mtimeMs).toLocaleString("zh-CN"))}</small>
-          <small>${formatBytes(f.sizeBytes)}</small>
-          <div class="report-file-actions">
-            <button class="secondary" type="button" data-report-id="${escapeHtml(f.id)}">查看</button>
-            ${currentUserCanConfig ? `<button class="danger" type="button" data-report-del="${escapeHtml(f.id)}">删除</button>` : ""}
-          </div>
-        </div>`,
-    )
-    .join("");
-  const pager = `
-    <div class="report-files-pager">
-      <button class="secondary" type="button" data-report-page="prev"${reportFilesPage === 0 ? " disabled" : ""}>上一页</button>
-      <span class="muted">第 ${reportFilesPage + 1} / ${totalPages} 页 · 共 ${list.length} 个</span>
-      <button class="secondary" type="button" data-report-page="next"${reportFilesPage >= totalPages - 1 ? " disabled" : ""}>下一页</button>
-    </div>`;
-  reportFilesList.innerHTML = rows + pager;
-}
-async function loadReportFiles() {
-  reportFilesList.innerHTML = `<p class="muted">加载中…</p>`;
-  try {
-    const files = await api("/api/reports/files");
-    reportFiles = files.map((f) => ({ ...f, parsed: parseReportId(f.id) }));
-    reportFilesPage = 0;
-    populateReportFilters();
-    renderReportFilesPage();
-  } catch (error) {
-    reportFilesList.innerHTML = `<p class="muted">加载报告列表失败：${escapeHtml(error.message)}</p>`;
-  }
-}
 requireElement("#cancel-stability-task").addEventListener("click", () => cancelRemoteTask(state, "stability"));
 requireElement("#cancel-load-test-task").addEventListener("click", () => cancelRemoteTask(state, "loadTest"));
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
+requireElement("#cancel-admission-task").addEventListener("click", () => cancelRemoteTask(state, "admission"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
-requireElement("#cancel-standard-task").addEventListener("click", () => cancelRemoteTask(state, "standard"));
-stabilityTemplate.addEventListener("change", applyStabilityTemplate);
-batchTemplate.addEventListener("change", applyBatchTemplate);
-standardPromptPreset.addEventListener("change", applyStandardPromptPreset);
-stabilityPromptPreset.addEventListener("change", applyStabilityPromptPreset);
+requireElement("#cancel-standard-eval-task").addEventListener("click", () => cancelRemoteTask(state, "standardEval"));
+requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => modelCompare.cancelGapFill());
+stabilityGroupPicker.addEventListener("input", () => updateStabilityRequestTotal());
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
-clientLogForm.addEventListener("submit", analyzeClientLogs);
-clientEvidenceSubmit.addEventListener("click", generateSupplierEvidence);
-clientLogFile.addEventListener("change", importClientLogFile);
-clientLogDirectoryImport.addEventListener("click", importClientLogDirectory);
-clientReplayExtract.addEventListener("click", extractReplayRequestFromLogs);
-clientReplayForm.addEventListener("submit", replayClientRequest);
-clientReplayBatch.addEventListener("click", replayClientRequestsFromLogs);
 // input 事件每敲一个字符就触发，updateEstimates 会重建面板 innerHTML（闪烁、低端机
 // 输入延迟）。去抖 200ms，只在停止输入后渲染一次。
 function debounce(fn, ms = 200) {
@@ -604,18 +522,65 @@ function debounce(fn, ms = 200) {
     timer = setTimeout(() => fn(...args), ms);
   };
 }
-const updateEstimatesDebounced = debounce(updateEstimates, 200);
-stabilityTestForm.addEventListener("input", updateEstimatesDebounced);
-batchTestForm.addEventListener("input", updateEstimatesDebounced);
-scenarioTestForm.addEventListener("input", updateEstimatesDebounced);
-admissionTestForm.addEventListener("input", updateEstimatesDebounced);
-admissionBatchForm.addEventListener("input", updateEstimatesDebounced);
-admissionProfileSelect.addEventListener("change", updateEstimates);
-admissionBatchProfileSelect.addEventListener("change", updateEstimates);
-stabilityProfileSelect.addEventListener("change", updateEstimates);
-batchProfileSelect.addEventListener("change", updateEstimates);
-scenarioProfileSelect.addEventListener("change", updateEstimates);
-scenarioCaseSelect.addEventListener("change", updateEstimates);
+
+const testForms = createTestForms({
+  state,
+  els: {
+    admissionTestForm: admissionTestForm,
+    admissionProfileSelect: admissionProfileSelect,
+    admissionSubmit: admissionSubmit,
+    admissionEstimate: admissionEstimate,
+    admissionResult: admissionResult,
+    admissionProgress: admissionProgress,
+    admissionBatchForm: admissionBatchForm,
+    admissionBatchProfileSelect: admissionBatchProfileSelect,
+    admissionBatchSubmit: admissionBatchSubmit,
+    admissionBatchEstimate: admissionBatchEstimate,
+    admissionBatchProgress: admissionBatchProgress,
+    admissionBatchResult: admissionBatchResult,
+    stabilityTestForm: stabilityTestForm,
+    stabilityProfileSelect: stabilityProfileSelect,
+    stabilitySubmit: stabilitySubmit,
+    stabilitySummary: stabilitySummary,
+    stabilityEstimate: stabilityEstimate,
+    stabilityProgress: stabilityProgress,
+    batchTestForm: batchTestForm,
+    batchProfileSelect: batchProfileSelect,
+    batchSubmit: batchSubmit,
+    batchTestResult: batchTestResult,
+    batchEstimate: batchEstimate,
+    batchProgress: batchProgress,
+    scenarioTestForm: scenarioTestForm,
+    scenarioProfileSelect: scenarioProfileSelect,
+    scenarioCaseSelect: scenarioCaseSelect,
+    scenarioSubmit: scenarioSubmit,
+    scenarioSummary: scenarioSummary,
+    scenarioEstimate: scenarioEstimate,
+    scenarioProgress: scenarioProgress,
+  },
+  deps: {
+    toast,
+    createTaskFormController,
+    requireSelectedValues,
+    confirmAction,
+    confirmExecution,
+    estimateAdmissionCost,
+    estimateAdmissionBatchCost,
+    estimateStabilityCost,
+    readStabilityGroups,
+    estimateBatchCost,
+    estimateScenarioCost,
+    renderAdmissionResult,
+    renderStabilitySummaryPanel,
+    renderScenarioSummaryPanel,
+    formatBatchResult,
+    formatBatchAdmissionResult,
+    updateEstimateLabels,
+    loadResultsBundle,
+    debounce,
+  },
+});
+
 hydrateProjectInfoForm();
 hydratePromptPresetSelects();
 
@@ -659,65 +624,6 @@ function formatQuickVerify(result) {
   return lines.join("\n");
 }
 
-async function updateTrendView(profileId) {
-  if (!profileId) return;
-  trendChart.innerHTML = "加载中...";
-  trendTable.textContent = "加载中...";
-  trendAlerts.textContent = "加载中...";
-  trendRegression.classList.add("hidden");
-  try {
-    const data = await api(`/api/trend?profileId=${encodeURIComponent(profileId)}`);
-    const series = data.series || [];
-    trendLastRounds = data.rounds || [];
-    redrawTrendChart();
-    const reg = data.regression;
-    if (reg && reg.status === "regressed") {
-      trendRegression.classList.remove("hidden");
-      trendRegression.innerHTML = `<strong>⚠️ 疑似退化（${reg.severity}）</strong><br>${(reg.changes || []).map((c) => escapeHtml(c.detail)).join("<br>")}`;
-    } else if (reg && reg.status === "stable") {
-      trendRegression.classList.remove("hidden");
-      trendRegression.textContent = "✅ 与基线一致，未见退化";
-    }
-    trendTable.textContent = series.length
-      ? series
-          .slice()
-          .reverse()
-          .map(
-            (p) =>
-              `${String(p.at || "").replace("T", " ").slice(0, 19)} | ${p.type} | 成功率 ${p.successRate != null ? Math.round(p.successRate * 100) + "%" : "-"} | P95 ${p.p95Ms ?? "-"}ms${p.grade ? " | " + p.grade : ""}${p.cost != null ? " | $" + p.cost : ""}`,
-          )
-          .join("\n")
-      : "暂无历史。";
-    const alerts = data.alerts || [];
-    trendAlerts.textContent = alerts.length
-      ? alerts.map((a) => `${String(a.created_at || "").replace("T", " ").slice(0, 19)} | ${a.severity} | ${a.summary}`).join("\n")
-      : "暂无告警。";
-  } catch (error) {
-    trendChart.textContent = `加载失败：${error.message}`;
-  }
-}
-
-// 用当前 x 轴 / 时间范围重绘（复用最近一次逐轮数据，不重复请求）。时间范围只在按时间模式生效。
-function redrawTrendChart() {
-  trendChart.innerHTML = renderTrendChart(trendLastRounds, trendXMode, {
-    windowHours: trendXMode === "hour" ? trendWindowHours : 0,
-  });
-}
-
-trendProfileSelect.addEventListener("change", () => updateTrendView(trendProfileSelect.value));
-document.querySelector('.nav-button[data-page="trend"]')?.addEventListener("click", () => updateTrendView(trendProfileSelect.value));
-// 切换 x 轴（按轮次 / 按小时）：时间范围选择器仅在「按时间」时显示；切换即重绘。
-trendXModeSelect.addEventListener("change", () => {
-  trendXMode = trendXModeSelect.value === "hour" ? "hour" : "count";
-  trendWindowField.classList.toggle("hidden", trendXMode !== "hour");
-  redrawTrendChart();
-});
-// 切换时间范围（3/6/12/24/48/168 小时或全部）：仅重绘。
-trendWindowSelect.addEventListener("change", () => {
-  trendWindowHours = Number(trendWindowSelect.value) || 0;
-  redrawTrendChart();
-});
-
 quickVerifySubmit.addEventListener("click", async () => {
   const profileId = quickVerifyProfileSelect.value;
   if (!profileId) {
@@ -749,7 +655,7 @@ createStandardEvalController({
   resultElement: standardEvalResult,
   nextActionsElement: standardNextActions,
   progressElement: standardEvalProgress,
-  taskProgressElement: standardTaskProgress,
+  taskProgressElement: standardEvalTaskProgress,
   state,
   estimateCost: estimateStandardCost,
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),
@@ -757,565 +663,32 @@ createStandardEvalController({
   showPage,
   quickProfileSelect: quickVerifyProfileTarget,
   stabilityProfileSelect: stabilityProfileTarget,
-  stabilityTemplate,
-  applyStabilityTemplate,
-  scenarioProfileSelect,
-  updateEstimates,
+  applyStabilityGroupPreset,
+  admissionChannelSelect: admissionCascade,
+  admissionProfileSelect,
+  admissionPackageLevelSelect: requireElement("#admission-package-level"),
+  updateEstimates: testForms.updateEstimates,
+  standardPicker,
 });
-
-let admissionRunning = false;
-admissionTestForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (admissionRunning) return; // 防双击/确认框 await 期间重复提交（重复=重复扣额度）
-  const payload = Object.fromEntries(new FormData(admissionTestForm).entries());
-  payload.modelName = findProfileModelName(payload.profileId);
-  const estimate = estimateAdmissionCost(payload);
-  payload.predicted = estimate; // 跑前预测随 payload 记录，供报告对比
-  admissionRunning = true;
-  const confirmed = await confirmAction(confirmExecution("模型准入评测", estimate));
-  if (!confirmed) {
-    admissionRunning = false;
-    return;
-  }
-
-  admissionSubmit.disabled = true;
-  admissionSubmit.textContent = "准入评测中...";
-  admissionResult.innerHTML = `<p class="muted">正在执行准入评测。请不要关闭窗口。</p>`;
-  try {
-    const result = await api("/api/tests/admission", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    admissionResult.innerHTML = renderAdmissionResult(result);
-    await loadResultsBundle();
-    toast("准入评测完成。");
-  } catch (error) {
-    admissionResult.innerHTML = `<p class="fail">准入评测失败：${escapeHtml(error.message)}</p>`;
-    toast(error.message, true);
-  } finally {
-    admissionRunning = false;
-    admissionSubmit.disabled = false;
-    admissionSubmit.textContent = "开始准入评测";
-  }
-});
-
-createTaskFormController({
-  form: admissionBatchForm,
-  submitButton: admissionBatchSubmit,
-  resultElement: admissionBatchResult,
-  progressElement: admissionBatchProgress,
-  state,
-  slot: "admissionBatch",
-  taskType: "batch-admission",
-  confirmRun: (payload) => confirmAction(confirmExecution("批量准入对比", estimateAdmissionBatchCost(payload))),
-  predict: (payload) => estimateAdmissionBatchCost(payload),
-  preparePayload: (payload) => {
-    const profileIds = requireSelectedValues(admissionBatchProfileSelect, "请至少选择一个被测 API。");
-    return profileIds ? { ...payload, profileIds } : null;
-  },
-  beforeStart: (payload) => {
-    admissionBatchResult.textContent = `正在对 ${payload.profileIds.length} 个 API 执行准入评测。请不要关闭窗口。`;
-  },
-  onSuccess: async (result) => {
-    const copyableSummary = getCopyableReportText(result, formatBatchAdmissionResult(result));
-    admissionBatchResult.textContent = copyableSummary;
-    await loadResultsBundle();
-    toast("批量准入对比完成。");
-  },
-  failurePrefix: "批量准入对比失败",
-  idleButtonText: "开始批量准入对比",
-});
-
-createTaskFormController({
-  form: stabilityTestForm,
-  submitButton: stabilitySubmit,
-  resultElement: stabilitySummary,
-  progressElement: stabilityProgress,
-  state,
-  slot: "stability",
-  taskType: "stability",
-  confirmRun: (payload) => confirmAction(confirmExecution("稳定性测试", estimateStabilityCost(payload))),
-  predict: (payload) => estimateStabilityCost(payload),
-  preparePayload: (payload) => payload,
-  beforeStart: (payload) => {
-    stabilitySummary.innerHTML = `<p class="muted">正在进行 ${payload.rounds} 轮测试。请不要关闭窗口。</p>`;
-    state.latestReportCopies.stability = "";
-  },
-  onSuccess: async (result) => {
-    const copyableSummary = getCopyableReportText(result, formatStabilityResult(result));
-    state.latestReportCopies.stability = copyableSummary;
-    renderStabilitySummary(result);
-    await loadResultsBundle();
-    toast("稳定性测试完成。");
-  },
-  failurePrefix: "稳定性测试失败",
-  idleButtonText: "开始稳定性测试",
-});
-
-// —— 压力测试：闭环/开环 + 负载扫描，走 task-manager 后台 + 进度轮询 + 可取消（仅超管，入口 data-requires-admin）——
-const LOAD_PROFILE_LABEL = { simple: "简单", think: "轻思考", coding: "编程" };
-const loadTestModeSelect = requireElement("#load-test-mode");
-const loadTestLoadsInput = requireElement("#load-test-loads");
-const loadTestLoadLabel = requireElement("#load-test-load-label");
-const loadTestMaxInFlightField = requireElement("#load-test-maxinflight-field");
-const loadTestBurstField = requireElement("#load-test-burst-field");
-const loadTestIntervalField = requireElement("#load-test-interval-field");
-const lms = (v) => (Number.isFinite(v) ? `${(v / 1000).toFixed(2)}s` : "—");
-
-// 负载值文本 → 数字数组（逗号分隔，去空去非法）。多个即为扫描。
-function parseLoads(raw) {
-  return String(raw || "")
-    .split(/[,，\s]+/)
-    .map((x) => Number(x))
-    .filter((n) => Number.isFinite(n) && n > 0);
-}
-// 模式变化：切换负载值标签（并发/速率）、显隐开环在飞上限与闭环测试间隔。
-function syncLoadTestMode() {
-  const open = loadTestModeSelect.value === "open";
-  loadTestLoadLabel.textContent = open ? "负载值（速率 req/s）" : "负载值（并发数，可逗号扫描）";
-  loadTestMaxInFlightField.classList.toggle("hidden", !open); // 在飞上限仅开环
-  loadTestBurstField.classList.toggle("hidden", !open); // 发送周期（突发）仅开环
-  loadTestIntervalField.classList.toggle("hidden", open); // 测试间隔（思考时间）仅闭环
-}
-loadTestModeSelect.addEventListener("change", syncLoadTestMode);
-syncLoadTestMode();
-
-const loadTestErrText = (e) =>
-  `429×${e.http_429 || 0}　5xx×${e.http_5xx || 0}　超时×${e.timeout || 0}　网络×${e.network_error || 0}　发生器受限×${e.gen_saturated || 0}`;
-// 单点结果卡片。
-function renderLoadTestSingle(result) {
-  const L = result.latency || {};
-  const e = result.errors || {};
-  const okRate = result.successRate || 0;
-  const rateCls = okRate >= 0.99 ? "" : "fail";
-  const errBad = (e.http_429 || 0) + (e.http_5xx || 0) + (e.timeout || 0) + (e.gen_saturated || 0) > 0 ? "fail" : "";
-  const modeLabel = result.mode === "open" ? `开环 · 速率 ${result.offered} req/s` : `闭环 · 并发 ${result.offered}`;
-  const sent = result.sentRequests || 0;
-  const notReturned = (e.timeout || 0) + (e.http_5xx || 0) + (e.network_error || 0) + (e.other || 0);
-  const biasNote = notReturned > 0 ? `<small class="fail">⚠️ 另有 ${notReturned} 条（${Math.round(sent ? (notReturned / sent) * 100 : 0)}%）超时/失败未返回、未计入延迟，真实尾延迟更差</small>` : "";
-  loadTestSummary.innerHTML = `
-    <article class="summary-card">
-      <span>吞吐 QPS</span>
-      <strong>${escapeHtml(String(result.qps ?? "—"))} req/s</strong>
-      <small>稳态完成 ${result.sentRequests ?? "—"}（预热 ${result.warmupRequests ?? 0} 不计）</small>
-      ${result.outputTokens > 0 ? `<small>输出吞吐 ${escapeHtml(String(result.tokensPerSecond ?? "—"))} tok/s（单请求均速 ${escapeHtml(String(result.perReqTokensPerSec ?? "—"))} tok/s）</small>` : ""}
-    </article>
-    <article class="summary-card">
-      <span>成功率</span>
-      <strong class="${rateCls}">${Math.round(okRate * 100)}%</strong>
-      <small>成功 ${result.successCount ?? "—"} / ${result.sentRequests ?? "—"}</small>
-    </article>
-    <article class="summary-card">
-      <span>延迟分位（成功）</span>
-      <strong>p95 ${lms(L.p95)}</strong>
-      <small>p50 ${lms(L.p50)}　p90 ${lms(L.p90)}　p99 ${lms(L.p99)}　max ${lms(L.max)}</small>
-      ${biasNote}
-    </article>
-    <article class="summary-card wide-summary">
-      <span>错误构成</span>
-      <strong class="${errBad}">${escapeHtml(loadTestErrText(e))}</strong>
-      <small>${escapeHtml(modeLabel)} · 负载档 ${escapeHtml(result.promptProfile || "-")} · 稳态 ${result.durationSec}s · ramp-up ${result.warmupSec}s</small>
-      <small>HTML 报告：${escapeHtml(result.reportHtmlPath || "-")}</small>
-    </article>
-  `;
-}
-// 扫描结果：曲线表格 + 拐点(D)。
-function renderLoadTestSweep(result) {
-  const unit = result.mode === "open" ? "速率(req/s)" : "并发";
-  const rows = (result.sweep || [])
-    .map((p, i) => {
-      const hit = i === result.knee?.index ? ' class="fail"' : "";
-      return `<tr${hit}><td>${p.offered}</td><td>${p.qps}</td><td>${Math.round((p.successRate || 0) * 100)}%</td><td>${lms(p.latency.p95)}</td><td>${lms(p.latency.p99)}</td><td>${p.errors.http_429}</td><td>${(p.errors.timeout || 0) + (p.errors.http_5xx || 0)}</td><td>${p.genSaturated || 0}</td></tr>`;
-    })
-    .join("");
-  const knee = result.knee || {};
-  const kneePoint = (result.sweep || [])[knee.index] || {};
-  loadTestSummary.innerHTML = `
-    <article class="summary-card wide-summary">
-      <span>饱和拐点（推荐可用容量）</span>
-      <strong>${unit} = ${kneePoint.offered ?? "—"}</strong>
-      <small>${escapeHtml(knee.reason || "")}</small>
-      <small>该点：QPS ${kneePoint.qps ?? "—"}　成功率 ${Math.round((kneePoint.successRate || 0) * 100)}%　p99 ${lms(kneePoint.latency?.p99)}</small>
-      <small>HTML 报告：${escapeHtml(result.reportHtmlPath || "-")}</small>
-    </article>
-    <article class="summary-card wide-summary" style="overflow-x:auto;">
-      <span>负载 → 吞吐 / 尾延迟曲线</span>
-      <table class="mini-table">
-        <thead><tr><th>${unit}</th><th>QPS</th><th>成功率</th><th>p95</th><th>p99</th><th>429</th><th>超时+5xx</th><th>发生器受限</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </article>
-  `;
-}
-// 表单参数变化时更新预估框（选完参数即知这一轮大概发多少请求）。
-function updateLoadTestEstimate() {
-  const raw = Object.fromEntries(new FormData(loadTestForm).entries());
-  const loads = parseLoads(raw.loads);
-  const est = estimateLoadTestCost({ ...raw, loads });
-  const sweepNote = loads.length > 1 ? `扫描 ${loads.length} 个负载点，` : "";
-  loadTestEstimate.textContent = `${sweepNote}预计约发出 ${est.requests} 个真实请求（${LOAD_PROFILE_LABEL[raw.promptProfile] || "简单"}档）。全部真实计费，请谨慎。`;
-}
-loadTestForm.addEventListener("change", updateLoadTestEstimate);
-loadTestForm.addEventListener("input", updateLoadTestEstimate);
-updateLoadTestEstimate();
-
-createTaskFormController({
-  form: loadTestForm,
-  submitButton: loadTestSubmit,
-  resultElement: loadTestSummary,
-  progressElement: loadTestProgress,
-  state,
-  slot: "loadTest",
-  taskType: "load-test",
-  confirmRun: (payload) => confirmAction(confirmExecution("压力测试", estimateLoadTestCost(payload))),
-  predict: (payload) => estimateLoadTestCost(payload),
-  preparePayload: (raw) => {
-    if (!raw.profileId) {
-      toast("请先选择被测渠道与模型。", true);
-      return null;
-    }
-    const loads = parseLoads(raw.loads);
-    if (!loads.length) {
-      toast("请填写负载值（并发数或速率），扫描用逗号分隔多个。", true);
-      return null;
-    }
-    return {
-      target: { profileId: raw.profileId },
-      mode: raw.mode === "open" ? "open" : "closed",
-      loads,
-      promptProfile: raw.promptProfile || "simple",
-      durationSec: Number(raw.durationSec) || 60,
-      warmupSec: Number(raw.warmupSec) || 0,
-      timeoutSec: Number(raw.timeoutSec) || 30,
-      maxInFlight: Number(raw.maxInFlight) || 300,
-      intervalSec: raw.mode === "open" ? 0 : Number(raw.intervalSec) || 0, // 思考时间仅闭环
-      burstPeriodSec: raw.mode === "open" ? Number(raw.burstPeriodSec) || 1 : 1, // 发送周期仅开环
-      stream: raw.streamRequest === "1", // 流式 SSE；开启后报告额外给出 TTFT
-    };
-  },
-  beforeStart: (payload) => {
-    const what = payload.loads.length > 1 ? `扫描 ${payload.loads.length} 个负载点` : `${payload.mode === "open" ? "速率" : "并发"} ${payload.loads[0]}`;
-    loadTestSummary.innerHTML = `<p class="muted">正在压测：${what}，每点稳态 ${payload.durationSec}s。测试期间请不要关闭窗口。</p>`;
-  },
-  onSuccess: async (result) => {
-    if (result.sweep) renderLoadTestSweep(result);
-    else renderLoadTestSingle(result);
-    await loadResultsBundle();
-    toast("压力测试完成。");
-  },
-  failurePrefix: "压力测试失败",
-  idleButtonText: "开始压力测试",
-});
-
-createTaskFormController({
-  form: batchTestForm,
-  submitButton: batchSubmit,
-  resultElement: batchTestResult,
-  progressElement: batchProgress,
-  state,
-  slot: "batch",
-  taskType: "batch-stability",
-  confirmRun: (payload) => confirmAction(confirmExecution("批量并发测试", estimateBatchCost(payload))),
-  predict: (payload) => estimateBatchCost(payload),
-  preparePayload: (payload) => {
-    const profileIds = requireSelectedValues(batchProfileSelect, "请至少选择一个被测 API。");
-    return profileIds ? { ...payload, profileIds } : null;
-  },
-  beforeStart: (payload) => {
-    batchTestResult.textContent = `正在测试 ${payload.profileIds.length} 个 API。测试期间可以等待，不要关闭窗口。`;
-  },
-  onSuccess: async (result) => {
-    const copyableSummary = getCopyableReportText(result, formatBatchResult(result));
-    batchTestResult.textContent = copyableSummary;
-    await loadResultsBundle();
-    toast("批量测试完成。");
-  },
-  failurePrefix: "批量测试失败",
-  idleButtonText: "开始批量测试",
-});
-
-createTaskFormController({
-  form: scenarioTestForm,
-  submitButton: scenarioSubmit,
-  resultElement: scenarioSummary,
-  progressElement: scenarioProgress,
-  state,
-  slot: "scenario",
-  taskType: "scenario",
-  confirmRun: (payload) => confirmAction(confirmExecution("复杂场景测试", estimateScenarioCost(payload, state.scenarios))),
-  predict: (payload) => estimateScenarioCost(payload, state.scenarios),
-  preparePayload: (payload) => {
-    const profileIds = requireSelectedValues(scenarioProfileSelect, "请至少选择一个被测 API。");
-    if (!profileIds) return null;
-    const scenarioIds = requireSelectedValues(scenarioCaseSelect, "请至少选择一个测试场景。");
-    return scenarioIds ? { ...payload, profileIds, scenarioIds } : null;
-  },
-  beforeStart: (payload) => {
-    scenarioSummary.innerHTML = `<p class="muted">正在测试 ${payload.profileIds.length} 个 API、${payload.scenarioIds.length} 个场景。复杂场景耗时较长，请等待。</p>`;
-    state.latestReportCopies.scenario = "";
-  },
-  onSuccess: async (result) => {
-    const copyableSummary = getCopyableReportText(result, formatScenarioResult(result));
-    state.latestReportCopies.scenario = copyableSummary;
-    renderScenarioSummary(result);
-    await loadResultsBundle();
-    toast("场景测试完成。");
-  },
-  failurePrefix: "场景测试失败",
-  idleButtonText: "开始场景测试",
-});
-
-async function analyzeClientLogs(event) {
-  event.preventDefault();
-  const payload = Object.fromEntries(new FormData(clientLogForm).entries());
-  if (!String(payload.logText || "").trim()) {
-    toast("请先粘贴需要分析的客户端日志。", true);
-    return;
-  }
-  clientLogSubmit.disabled = true;
-  clientLogSubmit.textContent = "正在生成报告...";
-  clientLogResult.textContent = "正在解析日志并生成报告。";
-  try {
-    const result = await api("/api/client-logs/analyze", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    clientLogResult.textContent = formatClientLogAnalysisResult(result);
-    await loadTestRuns();
-    renderDeliveryViews();
-    toast("客户端日志分析报告已生成。");
-  } catch (error) {
-    clientLogResult.textContent = `客户端日志分析失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientLogSubmit.disabled = false;
-    clientLogSubmit.textContent = "生成客户端日志分析报告";
-  }
-}
-
-async function generateSupplierEvidence() {
-  const payload = Object.fromEntries(new FormData(clientLogForm).entries());
-  if (!String(payload.logText || "").trim()) {
-    toast("请先粘贴需要整理的客户端日志。", true);
-    return;
-  }
-  clientEvidenceSubmit.disabled = true;
-  clientEvidenceSubmit.textContent = "正在生成证据包...";
-  clientLogResult.textContent = "正在整理给上游排查使用的脱敏证据包。";
-  try {
-    const result = await api("/api/client-logs/supplier-evidence", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    clientLogResult.textContent = formatSupplierEvidenceResult(result);
-    await loadTestRuns();
-    renderDeliveryViews();
-    toast("上游排查证据包已生成。");
-  } catch (error) {
-    clientLogResult.textContent = `生成上游排查证据包失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientEvidenceSubmit.disabled = false;
-    clientEvidenceSubmit.textContent = "生成上游排查证据包";
-  }
-}
-
-async function importClientLogFile() {
-  const file = clientLogFile.files?.[0];
-  if (!file) return;
-  try {
-    const text = await file.text();
-    clientLogForm.elements.sourceName.value ||= file.name;
-    clientLogForm.elements.logText.value = text;
-    clientLogResult.textContent = `已导入 ${file.name}，大小 ${Math.round(file.size / 1024)} KB。确认内容后点击“生成客户端日志分析报告”。`;
-  } catch (error) {
-    clientLogResult.textContent = `读取日志文件失败：${error.message}`;
-    toast("读取日志文件失败。", true);
-  } finally {
-    clientLogFile.value = ""; // 清空，使同一文件改动后可再次选择、重新触发 change 导入
-  }
-}
-
-async function importClientLogDirectory() {
-  const directoryPath = String(clientLogForm.elements.directoryPath.value || "").trim();
-  if (!directoryPath) {
-    toast("请先填写本机日志目录路径。", true);
-    return;
-  }
-  clientLogDirectoryImport.disabled = true;
-  clientLogDirectoryImport.textContent = "正在读取目录...";
-  clientLogResult.textContent = "正在读取本机日志目录。";
-  try {
-    const result = await api("/api/client-logs/import-directory", {
-      method: "POST",
-      body: JSON.stringify({
-        directoryPath,
-        maxFiles: 30,
-      }),
-    });
-    clientLogForm.elements.sourceName.value ||= result.sourceName || "客户端日志目录";
-    clientLogForm.elements.logText.value = result.logText || "";
-    clientLogResult.textContent = [
-      `已读取目录：${result.directoryPath || directoryPath}`,
-      `文件数量：${result.fileCount}`,
-      `读取大小：${Math.round((result.totalBytes || 0) / 1024)} KB`,
-      result.truncated ? "提示：部分文件或内容已按安全上限截断。" : "提示：目录内容已读取完成。",
-      "确认日志内容后，可以生成分析报告或上游排查证据包。",
-    ].join("\n");
-    toast("日志目录读取完成。");
-  } catch (error) {
-    clientLogResult.textContent = `读取日志目录失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientLogDirectoryImport.disabled = false;
-    clientLogDirectoryImport.textContent = "从本机目录读取日志";
-  }
-}
-
-async function extractReplayRequestFromLogs() {
-  const logText = String(clientLogForm.elements.logText.value || "").trim();
-  if (!logText) {
-    toast("请先粘贴或导入客户端日志。", true);
-    return;
-  }
-  clientReplayExtract.disabled = true;
-  clientReplayExtract.textContent = "正在提取...";
-  try {
-    const result = await api("/api/client-logs/replay-candidates", {
-      method: "POST",
-      body: JSON.stringify({
-        sourceName: clientLogForm.elements.sourceName.value,
-        logText,
-      }),
-    });
-    const candidate = result.candidates?.[0];
-    if (!candidate) {
-      clientReplayResult.textContent = "没有找到可回放请求。请确认日志里包含 request.body 或 body 字段。";
-      toast("没有找到可回放请求。", true);
-      return;
-    }
-    clientReplayForm.elements.requestJson.value = candidate.requestJson;
-    clientReplayForm.elements.sourceName.value ||= `${candidate.client || "客户端"} ${candidate.model || ""} 请求回放`.trim();
-    clientReplayResult.textContent = [
-      "已提取第一条可回放请求。",
-      `Request ID：${candidate.requestId || "-"}`,
-      `客户端：${candidate.client || "-"}`,
-      `模型：${candidate.model || "-"}`,
-      `路径：${candidate.path || "-"}`,
-      `候选数量：${result.count}`,
-      "请确认请求内容和成本后，再点击“回放这条请求”。",
-    ].join("\n");
-    toast("已提取可回放请求。");
-  } catch (error) {
-    clientReplayResult.textContent = `提取可回放请求失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientReplayExtract.disabled = false;
-    clientReplayExtract.textContent = "从上方日志提取第一条可回放请求";
-  }
-}
-
-async function replayClientRequest(event) {
-  event.preventDefault();
-  const payload = Object.fromEntries(new FormData(clientReplayForm).entries());
-  if (!payload.profileId) {
-    toast("请先选择回放使用的 API。", true);
-    return;
-  }
-  if (!String(payload.requestJson || "").trim()) {
-    toast("请先粘贴单条请求 JSON。", true);
-    return;
-  }
-  const confirmed = await confirmAction({
-    title: "确认回放真实客户端请求",
-    message: "这会真实调用所选 API，并消耗对应额度。请确认请求内容已经脱敏，且成本可接受。",
-    confirmLabel: "确认回放",
-    cancelLabel: "取消",
-  });
-  if (!confirmed) return;
-
-  clientReplaySubmit.disabled = true;
-  clientReplaySubmit.textContent = "正在回放...";
-  clientReplayResult.textContent = "正在请求 API 并生成回放报告。";
-  try {
-    const result = await api("/api/client-logs/replay", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    clientReplayResult.textContent = formatClientLogAnalysisResult(result);
-    await loadTestRuns();
-    renderDeliveryViews();
-    toast("真实客户端请求回放完成。");
-  } catch (error) {
-    clientReplayResult.textContent = `请求回放失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientReplaySubmit.disabled = false;
-    clientReplaySubmit.textContent = "回放这条请求";
-  }
-}
-
-async function replayClientRequestsFromLogs() {
-  const payload = Object.fromEntries(new FormData(clientReplayForm).entries());
-  const logText = String(clientLogForm.elements.logText.value || "").trim();
-  if (!payload.profileId) {
-    toast("请先选择回放使用的 API。", true);
-    return;
-  }
-  if (!logText) {
-    toast("请先在上方粘贴、导入或读取客户端日志。", true);
-    return;
-  }
-  const maxReplayCount = Math.min(10, Math.max(1, Number.parseInt(String(payload.maxReplayCount || "3"), 10) || 3));
-  const confirmed = await confirmAction({
-    title: "确认批量回放真实客户端请求",
-    message: `这会从上方日志中提取候选请求，并最多真实回放 ${maxReplayCount} 条，会消耗对应额度。建议只用于复现 524、504、Content block not found 等关键问题。`,
-    confirmLabel: "确认批量回放",
-    cancelLabel: "取消",
-  });
-  if (!confirmed) return;
-
-  clientReplayBatch.disabled = true;
-  clientReplayBatch.textContent = "正在批量回放...";
-  clientReplayResult.textContent = "正在提取候选请求并按上限批量回放。";
-  try {
-    const result = await api("/api/client-logs/replay-batch", {
-      method: "POST",
-      body: JSON.stringify({
-        ...payload,
-        sourceName: payload.sourceName || clientLogForm.elements.sourceName.value || "批量真实客户端请求回放",
-        logText,
-        maxReplayCount,
-      }),
-    });
-    clientReplayResult.textContent = [
-      formatClientLogAnalysisResult(result),
-      "",
-      `候选请求数：${result.replayCandidateCount ?? "-"}`,
-      `实际回放数：${result.replayedCount ?? "-"}`,
-      `回放上限：${result.replayLimit ?? maxReplayCount}`,
-    ].join("\n");
-    await loadTestRuns();
-    renderDeliveryViews();
-    toast("批量真实客户端请求回放完成。");
-  } catch (error) {
-    clientReplayResult.textContent = `批量请求回放失败：${error.message}`;
-    toast(error.message, true);
-  } finally {
-    clientReplayBatch.disabled = false;
-    clientReplayBatch.textContent = "批量回放上方日志候选请求";
-  }
-}
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
-currentUserCanConfig = Boolean(authUser?.canConfig); // 报告删除按钮的可见性依据（服务端另有强制鉴权）
+reportBrowser.setCanConfig(authUser?.canConfig); // 报告受限操作的可见性依据（服务端另有强制鉴权）
 applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
 try {
-  await Promise.all([loadHealth(), loadProfiles(), loadScenarios(), loadRequests(), loadTestRuns(), loadTaskEvents(), preloadSettings(), channelAdmin.loadChannels(), channelAdmin.loadModelTargets()]);
-  await loadHighRiskAlerts(); // 启动时按开关拉一次高危报告横幅（此时 state.settings 已就绪）
+  await Promise.all([
+    loadProfiles(),
+    loadScenarios(),
+    loadRequests(),
+    loadTestRuns(),
+    loadTaskEvents(),
+    settings.preload(),
+    channelAdmin.loadChannels(),
+    channelAdmin.loadModelTargets(),
+  ]);
+  await highRiskBanner.load(); // 启动时按开关拉一次高危报告横幅（此时 state.settings 已就绪）
 } catch (error) {
   // 首屏任一加载失败（后端慢启动/异常）会让顶层 await 抛出、整页白屏。
   // 给非技术用户一个可读的兜底，而不是空白。
@@ -1339,10 +712,10 @@ function renderStartupError(error) {
 }
 
 function showPage(page) {
-  // 离开设置页且有未保存改动 → 提示。loadSettings 会在重新进入时重置 dirty（丢弃未保存改动）。
-  if (currentPage === "settings" && page !== "settings" && settingsDirty) {
+  // 离开设置页且有未保存改动 → 提示。settings.load 会在重新进入时重置 dirty（丢弃未保存改动）。
+  if (currentPage === "settings" && page !== "settings" && settings.isDirty()) {
     toast("设置未保存。", true);
-    settingsDirty = false;
+    settings.markClean();
   }
   currentPage = page;
   navButtons.forEach((item) => item.classList.toggle("active", item.dataset.page === page));
@@ -1350,10 +723,10 @@ function showPage(page) {
   // 切换页面后新页面从顶部开始，不保留上一页的滚动进度。
   document.querySelector(".main")?.scrollTo(0, 0);
   if (page === "manual" && !state.manualLoaded) {
-    loadManual();
+    manual.load();
   }
   if (page === "settings") {
-    loadSettings();
+    settings.load();
   }
   // 「测试场景维护」页（原开发者页）：与全站统一风格，保留侧边栏，进入时加载数据。
   if (page === "developer") {
@@ -1362,302 +735,53 @@ function showPage(page) {
   if (page === "auto-test-config") {
     autoTestConfig.load();
   }
+  if (page === "alert-rules") {
+    alertRules.load();
+  }
   if (page === "notify-config") {
     notifyConfig.load();
   }
   if (page === "model-compare") {
     modelCompare.load();
   }
+  // 每次进入都重新拉：任务状态是会自己变的，缓存住只会给用户看过期进度。
+  if (page === "task-center") {
+    taskCenter.load();
+  }
 }
 
 async function loadProfiles() {
-  if (state.demoMode) {
-    renderProfileOptions();
-    renderDashboard();
-    updateEstimates();
-    return;
-  }
   state.profiles = await api("/api/profiles");
   renderProfileOptions();
-  renderDashboard();
-  updateEstimates();
+  dashboard.render();
+  testForms.updateEstimates();
 }
 
 async function loadScenarios() {
   state.scenarios = await api("/api/scenarios");
   renderScenarioOptions();
   channelAdmin.renderTagOptions(); // 场景库就绪后渲染「配置模型」的标签勾选项。
-  updateEstimates();
+  testForms.updateEstimates();
 }
-
-async function loadHealth() {
-  state.health = await api("/api/health");
-}
-
-function loadManual() {
-  manualContent.innerHTML = renderMarkdown(MANUAL_MARKDOWN);
-  buildManualToc();
-  state.manualLoaded = true;
-}
-
-// 渲染后构建右侧「本页目录」并接上滚动高亮（scrollspy）。
-// 不改共享的 renderMarkdown，全部在 manual 页 DOM 上后处理。
-// 右侧目录「大标题」的矢量图标：按标题关键词匹配，stroke 用 currentColor
-// 以跟随目录文字颜色（平时暖白、高亮时变橙）。未匹配到的大标题用兜底井号图标。
-function tocIconFor(title) {
-  const svg = (paths) =>
-    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
-  if (title.includes("快速上手")) {
-    return svg(
-      '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
-    );
-  }
-  if (title.includes("核心概念")) {
-    return svg(
-      '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
-    );
-  }
-  if (title.includes("逐页要点")) {
-    return svg(
-      '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
-    );
-  }
-  return svg('<path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/>');
-}
-
-function buildManualToc() {
-  const toc = document.getElementById("manual-toc");
-  if (!toc) return;
-  const scroller = manualContent.closest(".main");
-  const TOC_SCROLL_OFFSET = 24; // 标题落点距容器顶端的留白
-  // 点击跳转期间锁住 scrollspy，避免平滑滚动过程中中途标题抢走高亮。
-  let spyLocked = false;
-  let spyTimer = 0;
-  // 目录自身是可滚动容器（overflow-y:auto）；高亮项将移出目录视口时把它带回来。
-  const tocScroller = toc.closest(".doc-toc");
-  function keepActiveVisible(link) {
-    if (!tocScroller || !link) return;
-    const pad = 8;
-    const cr = tocScroller.getBoundingClientRect();
-    const lr = link.getBoundingClientRect();
-    if (lr.top < cr.top + pad) {
-      tocScroller.scrollTop += lr.top - cr.top - pad;
-    } else if (lr.bottom > cr.bottom - pad) {
-      tocScroller.scrollTop += lr.bottom - cr.bottom + pad;
-    }
-  }
-  const headings = [...manualContent.querySelectorAll("h2, h3")];
-  let h2 = 0;
-  let h3 = 0;
-  const links = headings.map((el) => {
-    const level = el.tagName === "H2" ? 2 : 3;
-    if (level === 2) {
-      h2 += 1;
-      h3 = 0;
-      el.id = `sec-${h2}`;
-    } else {
-      h3 += 1;
-      el.id = `sec-${h2}-${h3}`;
-    }
-    const a = document.createElement("a");
-    a.href = `#${el.id}`;
-    a.className = "toc-link";
-    a.dataset.level = String(level);
-    a.dataset.target = el.id;
-    if (level === 2) {
-      const ico = document.createElement("span");
-      ico.className = "toc-ico";
-      ico.setAttribute("aria-hidden", "true");
-      ico.innerHTML = tocIconFor(el.textContent);
-      a.append(ico, document.createTextNode(el.textContent));
-    } else {
-      a.textContent = el.textContent;
-    }
-    a.addEventListener("click", (event) => {
-      event.preventDefault();
-      // 直接对真正的滚动容器 .main 做确定性偏移滚动，不依赖 scrollIntoView
-      // 的祖先启发式（#app 设了 overflow:hidden 会干扰其落点计算）。
-      if (scroller) {
-        const top =
-          scroller.scrollTop +
-          el.getBoundingClientRect().top -
-          scroller.getBoundingClientRect().top -
-          TOC_SCROLL_OFFSET;
-        scroller.scrollTo({ top, behavior: "smooth" });
-      } else {
-        el.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-      // 立即把高亮切到被点项，并锁住 scrollspy 直到平滑滚动结束，
-      // 否则中部/下方标题会在滚动过程中把高亮抢到目标下面几项。
-      for (const other of links) other.classList.toggle("is-active", other === a);
-      keepActiveVisible(a);
-      spyLocked = true;
-      clearTimeout(spyTimer);
-      spyTimer = setTimeout(() => {
-        spyLocked = false;
-      }, 700);
-      history.replaceState(null, "", `#${el.id}`);
-    });
-    return a;
-  });
-  toc.replaceChildren(...links);
-
-  // scrollspy：判定带贴视口顶部（顶部 0~20% 区间），让"当前章节"= 刚滚到
-  // 顶部的那个标题，点击跳转与手动滚动都一致。多个标题同时命中时取最靠上的。
-  const byId = new Map(links.map((a) => [a.dataset.target, a]));
-  const observer = new IntersectionObserver(
-    (entries) => {
-      if (spyLocked) return;
-      const hit = entries
-        .filter((e) => e.isIntersecting)
-        .sort((x, y) => x.boundingClientRect.top - y.boundingClientRect.top)[0];
-      if (!hit) return;
-      const active = byId.get(hit.target.id);
-      if (!active) return;
-      for (const a of links) a.classList.toggle("is-active", a === active);
-      keepActiveVisible(active);
-    },
-    { rootMargin: "0px 0px -80% 0px", threshold: 0 },
-  );
-  for (const el of headings) observer.observe(el);
-}
-
-// —— 设置页：AI 总结模型 / 场景题库开关（脱离环境变量，存本机）——
-const settingsForm = requireElement("#settings-form");
-const setAiSpecified = requireElement("#set-ai-specified");
-const setAiChannel = requireElement("#set-ai-channel");
-const setAiModel = requireElement("#set-ai-model");
-const setLivebench = requireElement("#set-livebench");
-const setSafety = requireElement("#set-safety");
-const setHle = requireElement("#set-hle");
-const setHardcoreLogic = requireElement("#set-hardcore-logic");
-const setCodingHard = requireElement("#set-coding-hard");
-const setAutoTag = requireElement("#set-auto-tag");
-const setNewapiBase = requireElement("#set-newapi-base");
-const setNewapiToken = requireElement("#set-newapi-token");
-const setNewapiUserid = requireElement("#set-newapi-userid");
-const setTestCycleDays = requireElement("#set-test-cycle-days");
-const setHighRiskAlert = requireElement("#set-high-risk-alert");
-// 复用「模型管理」那套渠道→模型级联：value 即模型目标 id。
-const settingsAiCascade = createCascadeTargetPicker(setAiChannel, setAiModel);
-
-// 自定义能力标签已迁至「开发者界面」（src/developer.js），设置页不再承载。
-
-// 「指定模型」勾选门控两级下拉：未勾=都禁用（AI 用被测模型）；勾上=渠道可选，模型随级联。
-function applyAiSpecifiedGate() {
-  const on = setAiSpecified.checked;
-  setAiChannel.disabled = !on;
-  if (!on) setAiModel.disabled = true;
-  else if (setAiChannel.value) setAiModel.disabled = false;
-}
-setAiSpecified.addEventListener("change", applyAiSpecifiedGate);
-
-// 启动预载：只把设置塞进 state（供各处读设置开关），不碰下面才声明的 set-* 元素，避免 TDZ。
-// 函数声明会提升，可在上方启动 Promise.all 里调用。
-async function preloadSettings() {
-  try {
-    state.settings = await api("/api/settings");
-  } catch {
-    /* 启动期设置加载失败不阻断首屏；进设置页会再试 */
-  }
-}
-
-async function loadSettings() {
-  try {
-    const s = await api("/api/settings");
-    state.settings = s; // 缓存设置供各处读取开关
-    setLivebench.checked = Boolean(s.enableLivebench);
-    setSafety.checked = Boolean(s.enableSafety);
-    setHle.checked = Boolean(s.enableHle);
-    setHardcoreLogic.checked = Boolean(s.enableHardcoreLogic);
-    setCodingHard.checked = Boolean(s.enableCodingHard);
-    setAutoTag.checked = s.enableAutoTag !== false; // 默认开启
-    setTestCycleDays.value = Number(s.testCycleDays) > 0 ? String(Math.trunc(s.testCycleDays)) : ""; // 0/空 → 空框（占位符 0）
-    setHighRiskAlert.checked = s.enableHighRiskAlert === true;
-    // new-api 网关：网址/用户ID 回填；令牌不回显，按已配置状态切占位符、清空输入值。
-    setNewapiBase.value = s.newapiBaseUrl || "";
-    setNewapiUserid.value = s.newapiUserId || "";
-    setNewapiToken.value = "";
-    setNewapiToken.placeholder = s.newapiImportTokenSet ? "已配置（留空不改）" : "未配置";
-    settingsAiCascade.refresh({ channels: state.channels, modelTargets: state.modelTargets, profiles: state.profiles });
-    settingsAiCascade.setValue(s.aiAnalysisModelTargetId || "", { silent: true });
-    setAiSpecified.checked = Boolean(s.aiAnalysisModelTargetId);
-    applyAiSpecifiedGate();
-    settingsDirty = false; // 刚载入官方值，不算「未保存改动」
-  } catch (error) {
-    toast(`加载设置失败：${error.message}`, true);
-  }
-}
-
-// 用户改动任一设置项（复选框/AI 模型选择等）→ 标记未保存。程序化赋值（loadSettings）不触发 change，故不会误标。
-settingsForm.addEventListener("change", () => {
-  settingsDirty = true;
-});
-
-settingsForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const payload = {
-    aiAnalysisModelTargetId: setAiSpecified.checked ? settingsAiCascade.value || "" : "",
-    enableLivebench: setLivebench.checked,
-    enableSafety: setSafety.checked,
-    enableHle: setHle.checked,
-    enableHardcoreLogic: setHardcoreLogic.checked,
-    enableCodingHard: setCodingHard.checked,
-    enableAutoTag: setAutoTag.checked,
-    testCycleDays: Math.max(0, Math.trunc(Number(setTestCycleDays.value) || 0)),
-    enableHighRiskAlert: setHighRiskAlert.checked,
-    newapiBaseUrl: setNewapiBase.value.trim(),
-    newapiUserId: setNewapiUserid.value.trim(),
-    newapiImportToken: setNewapiToken.value, // 空串→后端保留原令牌
-  };
-  try {
-    const saved = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
-    state.settings = saved; // 即时生效：删除流随即按新开关走
-    settingsDirty = false; // 已保存，清除未保存标记
-    await loadScenarios(); // 题库开关改动后，场景测试选项即时刷新
-    await loadSettings(); // 刷新令牌「已配置」占位符状态
-    channelAdmin.renderTagOptions(); // 自定义标签变化 → 模型表单勾选项即时并入
-    await loadHighRiskAlerts(); // 高危报告提示开关变化 → 即时显示/收起横幅
-    toast("设置已保存。");
-  } catch (error) {
-    toast(`保存设置失败：${error.message}`, true);
-  }
-});
 
 async function loadRequests() {
-  if (state.demoMode) {
-    renderRequests();
-    renderDashboard();
-    renderDeliveryViews();
-    return;
-  }
   state.requests = await api("/api/requests/recent");
   renderRequests();
-  renderDashboard();
+  dashboard.render();
   renderDeliveryViews();
 }
 
 async function loadTestRuns() {
-  if (state.demoMode) {
-    renderTestRuns();
-    renderDashboard();
-    renderDeliveryViews();
-    return;
-  }
   state.testRuns = await api("/api/test-runs/recent");
   renderTestRuns();
-  renderDashboard();
+  dashboard.render();
   renderDeliveryViews();
 }
 
+// state.taskEvents 仍然要拉：交付视图靠它识别「因程序关闭而中断」的任务。
+// 但不再单独渲染成一张表——任务状态现在归「任务中心」页（它自己按需拉取）。
 async function loadTaskEvents() {
-  if (state.demoMode) {
-    renderTaskEvents();
-    renderDeliveryViews();
-    return;
-  }
   state.taskEvents = await api("/api/tasks/recent");
-  renderTaskEvents();
   renderDeliveryViews();
 }
 
@@ -1665,298 +789,29 @@ async function loadTaskEvents() {
 // loadTaskEvents]) 会触发 renderDeliveryViews ×3 / renderDashboard ×2，整页
 // innerHTML 重建多次（抖动、丢滚动位置、打断正在复制的 <pre>）。
 async function loadResultsBundle() {
-  if (!state.demoMode) {
-    const [requests, testRuns, taskEvents] = await Promise.all([
-      api("/api/requests/recent"),
-      api("/api/test-runs/recent"),
-      api("/api/tasks/recent"),
-    ]);
-    state.requests = requests;
-    state.testRuns = testRuns;
-    state.taskEvents = taskEvents;
-  }
+  const [requests, testRuns, taskEvents] = await Promise.all([
+    api("/api/requests/recent"),
+    api("/api/test-runs/recent"),
+    api("/api/tasks/recent"),
+  ]);
+  state.requests = requests;
+  state.testRuns = testRuns;
+  state.taskEvents = taskEvents;
   renderResultsViews();
 }
 
 function renderResultsViews() {
   renderRequests();
   renderTestRuns();
-  renderTaskEvents();
-  renderDashboard();
+  dashboard.render();
   renderDeliveryViews();
-  void loadHighRiskAlerts(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
+  void highRiskBanner.load(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
 }
-
-// —— 高危报告提示：网站顶部红底横幅，逐条列出未读高危报告，点开即消 ——
-// （元素引用 highRiskBanner 已在文件顶部声明，避免启动时的暂时性死区 TDZ，见那里的注释。）
-
-async function loadHighRiskAlerts() {
-  if (!state.settings?.enableHighRiskAlert) {
-    state.highRiskAlerts = [];
-    renderHighRiskBanner();
-    return;
-  }
-  try {
-    const r = await api("/api/high-risk-alerts");
-    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : [];
-  } catch {
-    /* 拉取失败不阻断；下次刷新再试 */
-  }
-  renderHighRiskBanner();
-}
-
-function renderHighRiskBanner() {
-  const alerts = state.settings?.enableHighRiskAlert ? state.highRiskAlerts || [] : [];
-  if (!alerts.length) {
-    highRiskBanner.classList.add("hidden");
-    highRiskBanner.innerHTML = "";
-    return;
-  }
-  const items = alerts
-    .map(
-      (a) =>
-        `<div class="high-risk-banner__item"><span>⚠ ${escapeHtml(a.label || "报告")}：${escapeHtml(a.reason || "高危")}</span><button type="button" data-hazard-open="${escapeHtml(a.reportId)}">查看</button></div>`,
-    )
-    .join("");
-  highRiskBanner.innerHTML =
-    `<div class="high-risk-banner__head"><span>高危报告提示（${alerts.length}）</span><button type="button" data-hazard-ack-all>全部忽略</button></div>` +
-    `<div class="high-risk-banner__list">${items}</div>`;
-  highRiskBanner.classList.remove("hidden");
-}
-
-async function ackHazard(reportId) {
-  try {
-    const r = await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ reportId }) });
-    state.highRiskAlerts = Array.isArray(r?.alerts) ? r.alerts : (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId);
-  } catch {
-    state.highRiskAlerts = (state.highRiskAlerts || []).filter((a) => a.reportId !== reportId); // 本地兜底移除
-  }
-  renderHighRiskBanner();
-}
-
-highRiskBanner.addEventListener("click", async (event) => {
-  const openBtn = event.target.closest?.("[data-hazard-open]");
-  if (openBtn) {
-    const reportId = openBtn.dataset.hazardOpen;
-    openReportOverlay(reportId, { title: reportId }); // 点开即消
-    await ackHazard(reportId);
-    return;
-  }
-  if (event.target.closest?.("[data-hazard-ack-all]")) {
-    try {
-      await api("/api/high-risk-alerts/ack", { method: "POST", body: JSON.stringify({ all: true }) });
-    } catch {
-      /* 忽略：本地也清空 */
-    }
-    state.highRiskAlerts = [];
-    renderHighRiskBanner();
-  }
-});
 
 // 低频轮询：覆盖自动测试后台产生（用户停留在页面时也能冒出来）。内部按开关短路。
-setInterval(() => void loadHighRiskAlerts(), 60_000);
-
-
-function enableDemoMode() {
-  const demoData = buildDemoData();
-  state.demoMode = true;
-  state.profiles = demoData.profiles.map((item) => ({ ...item }));
-  state.requests = demoData.requests.map((item) => ({ ...item }));
-  state.testRuns = demoData.testRuns.map((item) => ({ ...item }));
-  state.taskEvents = demoData.taskEvents.map((item) => ({ ...item }));
-  demoModeBanner.classList.remove("hidden");
-  renderProfileOptions();
-  renderRequests();
-  renderTestRuns();
-  renderTaskEvents();
-  renderDashboard();
-  renderDeliveryViews();
-  showPage("reports");
-  toast("已进入演示模式，不会发起真实请求。");
-}
-
-async function disableDemoMode() {
-  state.demoMode = false;
-  demoModeBanner.classList.add("hidden");
-  await Promise.all([loadProfiles(), loadRequests(), loadTestRuns(), loadTaskEvents()]);
-  showPage("dashboard");
-  toast("已退出演示模式，恢复本机真实数据。");
-}
-
-// 演示模式下统一拦截所有写操作（删除/导出/导入/改 Key 等）。
-// demo 数据 id 是假的，放行会打到后端，假 id 碰撞真实配置时可能误删，违背“不写本机”承诺。
-// 被拦截返回 true（调用方据此 return）。
-function assertNotDemo(actionLabel = "这个操作") {
-  if (state.demoMode) {
-    toast(`演示模式不能${actionLabel}。请退出演示模式后再操作。`, true);
-    return true;
-  }
-  return false;
-}
-
-// 总览用的"可运行测试目标"：统一走 resolveRunnableTargets（单一事实源）。
-function runnableTargets() {
-  return resolveRunnableTargets(state);
-}
-
-function renderDashboard() {
-  const hasProfiles = runnableTargets().length > 0;
-  dashboardEmpty.classList.toggle("hidden", hasProfiles);
-  dashboardPopulated.classList.toggle("hidden", !hasProfiles);
-  renderWorkflowGuide();
-  renderDashboardStatus();
-  renderDashboardRecent();
-}
-
-// recommendation.level → 结论展示（pass/watch/fail）
-function dashVerdict(run) {
-  const level = run?.recommendation?.level;
-  if (level === "pass") return { cls: "good", label: "推荐" };
-  if (level === "watch") return { cls: "warn", label: "观察" };
-  if (level === "fail") return { cls: "bad", label: "不推荐" };
-  return null;
-}
-
-function dashTypeLabel(type) {
-  const map = {
-    admission: "准入评测",
-    "batch-admission": "批量准入",
-    "batch-stability": "批量稳定性",
-    scenario: "场景测试",
-    stability: "稳定性测试",
-    "load-test": "压力测试",
-  };
-  return map[type] || "稳定性测试";
-}
-
-function dashFormatMs(ms) {
-  const n = Number(ms);
-  if (!Number.isFinite(n)) return "";
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`;
-}
-
-function dashRelTime(iso) {
-  if (!iso) return "";
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return "";
-  const diff = Date.now() - t;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  return `${Math.floor(diff / 86_400_000)} 天前`;
-}
-
-function renderDashboardStatus() {
-  const targets = runnableTargets();
-  const runs = state.testRuns || []; // newest-first
-
-  // 渠道健康：每个被测渠道按最近一次有结论的运行聚合；无运行 → 未测
-  const latest = new Map();
-  for (const run of runs) {
-    const id = run.profileId || run.profileName;
-    if (id && !latest.has(id)) latest.set(id, run);
-  }
-  let good = 0;
-  let warn = 0;
-  let bad = 0;
-  let idle = 0;
-  for (const p of targets) {
-    const v = dashVerdict(latest.get(p.id) || latest.get(p.name));
-    if (!v) idle += 1;
-    else if (v.cls === "good") good += 1;
-    else if (v.cls === "warn") warn += 1;
-    else bad += 1;
-  }
-  statChannels.innerHTML = `${targets.length} <em>个测试目标</em>`;
-  // 健康占比条：按 正常/观察/异常/未测 的数量做 flex 比例
-  statChannelsBars.innerHTML = targets.length === 0
-    ? `<i style="flex:1;background:var(--line)"></i>`
-    : [
-        good ? `<i style="flex:${good};background:var(--good)"></i>` : "",
-        warn ? `<i style="flex:${warn};background:var(--accent)"></i>` : "",
-        bad ? `<i style="flex:${bad};background:var(--bad)"></i>` : "",
-        idle ? `<i style="flex:${idle};background:var(--muted)"></i>` : "",
-      ].filter(Boolean).join("");
-  statChannelsChips.innerHTML = targets.length === 0
-    ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无被测渠道</span>`
-    : [
-        good ? `<span class="chip good"><i></i>${good} 正常</span>` : "",
-        warn ? `<span class="chip warn"><i></i>${warn} 需观察</span>` : "",
-        bad ? `<span class="chip bad"><i></i>${bad} 异常</span>` : "",
-        idle ? `<span class="chip idle muted-chip"><i></i>${idle} 未测</span>` : "",
-      ].filter(Boolean).join("");
-
-  // 最近结论：按 recommendation.level 统计
-  let pass = 0;
-  let watchN = 0;
-  let fail = 0;
-  for (const run of runs) {
-    const v = dashVerdict(run);
-    if (v?.cls === "good") pass += 1;
-    else if (v?.cls === "warn") watchN += 1;
-    else if (v?.cls === "bad") fail += 1;
-  }
-  statVerdicts.innerHTML = `${runs.length} <em>份报告</em>`;
-  statVerdictsChips.innerHTML = runs.length === 0
-    ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>还没有报告</span>`
-    : `<span class="chip good"><i></i>推荐 ${pass}</span><span class="chip warn"><i></i>观察 ${watchN}</span><span class="chip bad"><i></i>不推荐 ${fail}</span>`;
-
-  // 待办：疑似计费（tokenAuditFindings 含 high/medium）+ 待复测（最近为观察的渠道）
-  let billing = 0;
-  for (const run of runs) {
-    const findings = run.tokenAuditFindings || [];
-    if (findings.some((f) => f && (f.level === "high" || f.level === "medium"))) billing += 1;
-  }
-  const todoCount = warn + billing;
-  statTodos.innerHTML = `${todoCount} <em>项</em>`;
-  statTodosChips.innerHTML = todoCount === 0
-    ? `<span class="chip muted-chip"><i style="background:var(--muted)"></i>暂无待办</span>`
-    : [
-        warn ? `<span class="chip blue"><i></i>${warn} 待复测</span>` : "",
-        billing ? `<span class="chip bad"><i></i>${billing} 疑似计费异常</span>` : "",
-      ].filter(Boolean).join("");
-}
-
-function renderDashboardRecent() {
-  const runs = (state.testRuns || []).slice(0, 5);
-  if (runs.length === 0) {
-    dashboardRecent.innerHTML = `<p class="muted" style="padding:10px 12px">还没有测试报告。完成一次准入或标准评测后，这里会显示最近结论。</p>`;
-    return;
-  }
-  dashboardRecent.innerHTML = runs.map((run) => {
-    const v = dashVerdict(run);
-    const pill = v
-      ? `<span class="verdict-pill ${v.cls}">${v.label}</span>`
-      : `<span class="verdict-pill idle">—</span>`;
-    const metricBits = [];
-    if (run.successRateText) metricBits.push(escapeHtml(run.successRateText));
-    if (run.p95TotalMs) metricBits.push(`P95 ${dashFormatMs(run.p95TotalMs)}`);
-    return `<div class="rep-row" data-go-page="reports">
-      <div class="who"><b>${escapeHtml(run.profileName || "未命名渠道")}</b><small>${escapeHtml(run.model || "")}</small></div>
-      <div class="kind">${escapeHtml(dashTypeLabel(run.type))}</div>
-      ${pill}
-      <div class="when">${escapeHtml(dashRelTime(run.endedAt || run.startedAt))}</div>
-      <div class="go">›</div>
-    </div>`;
-  }).join("");
-}
-
-function renderWorkflowGuide() {
-  const status = buildWorkflowStatus(state);
-  const next = getNextWorkflowStep(status);
-
-  nextAction.innerHTML = renderNextActionHtml(next);
-  nextAction.querySelector("[data-go-page]").addEventListener("click", () => showPage(next.page));
-
-  workflowSteps.forEach((step) => {
-    const key = step.dataset.step;
-    step.classList.toggle("done", Boolean(status[key]));
-    step.classList.toggle("current", key === next.step);
-  });
-}
+setInterval(() => void highRiskBanner.load(), 60_000);
 
 async function updateProfileKey(profileId) {
-  if (assertNotDemo("保存 Key")) return;
   const apiKey = await keyPrompt.requestApiKey();
   if (!apiKey) {
     return;
@@ -1971,22 +826,7 @@ async function updateProfileKey(profileId) {
 
 function renderProfileOptions() {
   const data = { modelTargets: state.modelTargets, channels: state.channels, profiles: state.profiles };
-  // 单选运行页:级联(渠道 → 模型)
-  admissionCascade.refresh(data);
-  standardCascade.refresh(data);
-  quickVerifyCascade.refresh(data);
-  stabilityCascade.refresh(data);
-  loadTestCascade.refresh(data);
-  trendCascade.refresh(data);
-  // 批量页:两维度选择器(渠道体检 / 渠道选优)
-  admissionBatchPicker.refresh(data);
-  batchPicker.refresh(data);
-  scenarioPicker.refresh(data);
-  // 客户端回放:仍沿用平铺单选列表
-  renderRunTargetSelectOptions({ ...data, selects: [clientReplayProfileSelect] });
-  // 自动测试配置页的渠道→模型级联
-  autoTestConfig.refreshTargets(data);
-  modelCompare.refreshTargets(data);
+  for (const fn of _onProfileData) fn(data);
 }
 
 function renderScenarioOptions() {
@@ -2000,6 +840,7 @@ function renderScenarioOptions() {
   const defaultScenarioId = state.scenarios.some((scenario) => scenario.id === "connectivity-basic")
     ? "connectivity-basic"
     : state.scenarios[0].id;
+  // scenario.id 由场景库（server/scenarios/）定义，不是用户输入——同字段名安全级别，故不转义
   scenarioCaseSelect.innerHTML = state.scenarios
     .map(
       (scenario) =>
@@ -2018,10 +859,6 @@ function renderTestRuns() {
   renderDeliveryViews();
 }
 
-function renderTaskEvents() {
-  renderTaskEventList({ tasks: state.taskEvents, container: taskEventList });
-}
-
 function renderDeliveryViews() {
   renderDeliveryPanels({
     state,
@@ -2032,38 +869,6 @@ function renderDeliveryViews() {
     handoffSummary,
     handoffTemplate,
   });
-}
-
-function renderStabilitySummary(result) {
-  renderStabilitySummaryPanel(stabilitySummary, result);
-}
-
-function renderScenarioSummary(result) {
-  renderScenarioSummaryPanel(scenarioSummary, result);
-}
-
-async function copyReportText(kind) {
-  const text = state.latestReportCopies[kind] || "";
-  if (!text) {
-    toast("当前没有可复制的报告。", true);
-    return;
-  }
-
-  // copyText 失败会抛错：必须接住并提示，否则点击 handler 的 promise 静默拒绝，用户什么都看不到。
-  try {
-    await copyText(text);
-    toast("摘要和报告路径已复制。");
-  } catch (error) {
-    toast(`复制失败：${error.message}`, true);
-  }
-}
-
-function getCopyableReportText(result, fallbackText) {
-  const markdown = String(result?.reportMarkdown || "");
-  if (markdown && !markdown.includes("报告内容已写入本地报告文件")) {
-    return markdown;
-  }
-  return fallbackText;
 }
 
 async function copyHandoffTemplate() {
@@ -2080,40 +885,20 @@ async function copyHandoffTemplate() {
   }
 }
 
-function applyStabilityTemplate() {
-  applyStabilityTemplateToForm({
-    form: stabilityTestForm,
-    template: stabilityTemplate,
-    updateEstimates,
+// 分组选择器：把每个数量框重置为指定值（未列出的预设归零），用于「冒烟」「候选复测」等
+// 快捷入口（原来靠"测试模板"下拉，现在改成直接设置各组数量）。
+function applyStabilityGroupPreset(repeatsByPresetId) {
+  stabilityGroupPicker.querySelectorAll(".stability-group-repeats").forEach((input) => {
+    input.value = String(repeatsByPresetId[input.dataset.presetId] ?? 0);
   });
+  updateStabilityRequestTotal();
+  testForms.updateEstimates();
 }
 
-function applyBatchTemplate() {
-  applyBatchTemplateToForm({
-    form: batchTestForm,
-    template: batchTemplate,
-    updateEstimates,
-  });
-}
-
-function applyStandardPromptPreset() {
-  applyPromptPresetToForm({
-    kind: "standard",
-    form: standardEvalForm,
-    select: standardPromptPreset,
-    hint: standardPromptHint,
-    updateEstimates,
-  });
-}
-
-function applyStabilityPromptPreset() {
-  applyPromptPresetToForm({
-    kind: "stability",
-    form: stabilityTestForm,
-    select: stabilityPromptPreset,
-    hint: stabilityPromptHint,
-    updateEstimates,
-  });
+function updateStabilityRequestTotal() {
+  const groups = readStabilityGroups(stabilityTestForm);
+  const totalRequests = groups.reduce((sum, group) => sum + group.repeats, 0);
+  stabilityRequestTotal.textContent = `共 ${totalRequests} 次请求（${groups.length} 组）`;
 }
 
 function applyBatchPromptPreset() {
@@ -2122,7 +907,7 @@ function applyBatchPromptPreset() {
     form: batchTestForm,
     select: batchPromptPreset,
     hint: batchPromptHint,
-    updateEstimates,
+    updateEstimates: testForms.updateEstimates,
   });
 }
 
@@ -2132,46 +917,10 @@ function hydrateProjectInfoForm() {
 }
 
 function hydratePromptPresetSelects() {
-  standardPromptPreset.innerHTML = renderPromptPresetOptions("standard", "default");
-  stabilityPromptPreset.innerHTML = renderPromptPresetOptions("stability", "basic");
+  stabilityGroupPicker.innerHTML = renderStabilityGroupPicker();
+  updateStabilityRequestTotal();
   batchPromptPreset.innerHTML = renderPromptPresetOptions("batch", "fair-basic");
-  applyStandardPromptPreset();
-  applyStabilityPromptPreset();
   applyBatchPromptPreset();
-}
-
-function updateEstimates() {
-  admissionEstimate.textContent = formatEstimateForAdmission();
-  admissionBatchEstimate.textContent = formatEstimateForAdmissionBatch();
-  updateEstimateLabels({
-    stabilityForm: stabilityTestForm,
-    stabilityEstimate,
-    batchForm: batchTestForm,
-    batchProfileSelect,
-    batchEstimate,
-    scenarioForm: scenarioTestForm,
-    scenarioProfileSelect,
-    scenarioCaseSelect,
-    scenarioEstimate,
-    scenarios: state.scenarios,
-  });
-}
-
-function formatEstimateForAdmission() {
-  const payload = Object.fromEntries(new FormData(admissionTestForm).entries());
-  payload.modelName = findProfileModelName(payload.profileId);
-  return confirmExecution("估算", estimateAdmissionCost(payload)).message;
-}
-
-function formatEstimateForAdmissionBatch() {
-  const payload = Object.fromEntries(new FormData(admissionBatchForm).entries());
-  payload.profileIds = Array.from(admissionBatchProfileSelect.selectedOptions).map((option) => option.value);
-  payload.modelNames = payload.profileIds.map(findProfileModelName);
-  return confirmExecution("估算", estimateAdmissionBatchCost(payload)).message;
-}
-
-function findProfileModelName(profileId) {
-  return state.profiles.find((profile) => profile.id === profileId)?.defaultModel || "";
 }
 
 async function exportSupportBundle() {
@@ -2181,5 +930,16 @@ async function exportSupportBundle() {
     toast("问题包已导出。可以把这个文件发给负责人，里面不包含 API Key。");
   } catch (error) {
     toast(`问题包导出失败：${error.message}`, true);
+  }
+}
+
+// 磁盘空间（评测数据所在分区剩余量，非目录用量）。
+async function checkDiskUsage() {
+  try {
+    const { freeBytes, totalBytes, usedPercent } = await api("/api/reports/disk");
+    const gb = (bytes) => (bytes / 1024 ** 3).toFixed(1);
+    toast(`磁盘剩余 ${gb(freeBytes)} GB / 共 ${gb(totalBytes)} GB（已用 ${usedPercent}%）`);
+  } catch (error) {
+    toast(`磁盘空间查询失败：${error.message}`, true);
   }
 }

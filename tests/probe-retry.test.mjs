@@ -148,6 +148,69 @@ test("400 → 不重试：确定性失败重试只是白烧钱和时间", async 
   );
 });
 
+const readBody = (req) =>
+  new Promise((resolve, reject) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => resolve(raw));
+    req.on("error", reject);
+  });
+
+// 「拒收自定义 temperature」是上一条（400 不重试）的唯一例外：摘掉该参数后重发是有意义的，
+// 因为失败原因已被就地消除。这里连带钉住给用户看的那条留痕 temperatureStripped——
+// 传输层的摘参名单是进程级的、无声生效（见 server/upstream-transport.mjs 的
+// TEMPERATURE_UNSUPPORTED_MODELS），用户在高级设置里手填的温度被摘掉却不留痕，
+// 报告数字就会被读成「我设的那个温度下的表现」，而它其实跑在模型默认温度上。
+test("400 拒收自定义 temperature → 摘掉该参数重试，并如实标记「手填温度未生效」", async () => {
+  const bodies = [];
+  await withMockUpstream(
+    async (req, res) => {
+      bodies.push(JSON.parse(await readBody(req)));
+      if (bodies.length === 1) {
+        return sendJson(res, 400, {
+          error: { message: "Unsupported value: 'temperature' does not support 1 with this model." },
+        });
+      }
+      return sendJson(res, 200, okBody);
+    },
+    async (baseUrl) => {
+      const profile = await probeProfile(baseUrl, { temperatureOverride: 1 });
+      const r = await executeTestRequest(profile, "hi", { writeLog: false });
+      assert.equal(r.success, true, "摘掉 temperature 后应重试并最终成功");
+      assert.equal(r.attempts, 2, "这类 400 应恰好重试一次");
+      assert.equal(bodies[0].temperature, 1, "首发应带用户手填的温度");
+      assert.ok(!("temperature" in bodies[1]), "重发应彻底不带 temperature，而不是悄悄换成别的值");
+      assert.equal(r.temperatureStripped, true, "手填温度被摘必须留痕，界面据此出提示卡");
+    },
+  );
+});
+
+// 反面：没手填温度时摘掉的是工具自己的默认 0.2，属内部自愈。若这也置位，
+// 每个此类模型的每份报告都会挂一条「温度未生效」——提示会退化成人人忽略的噪音。
+test("400 拒收 temperature 但用户没手填 → 摘掉工具默认值属内部自愈，不报「温度未生效」", async () => {
+  const bodies = [];
+  await withMockUpstream(
+    async (req, res) => {
+      bodies.push(JSON.parse(await readBody(req)));
+      if (bodies.length === 1) {
+        return sendJson(res, 400, {
+          error: { message: "Unsupported value: 'temperature' does not support 0.2 with this model." },
+        });
+      }
+      return sendJson(res, 200, okBody);
+    },
+    async (baseUrl) => {
+      const r = await executeTestRequest(await probeProfile(baseUrl), "hi", { writeLog: false });
+      assert.equal(r.success, true);
+      assert.equal(bodies[0].temperature, 0.2, "未手填时发的是工具默认 0.2");
+      assert.ok(!("temperature" in bodies[1]), "同样应摘干净");
+      assert.equal(r.temperatureStripped, false, "摘默认值不该出提示");
+    },
+  );
+});
+
 test("超时 → 止损不重试：重试会让一次卡死的探测拖成 N 倍超时", async () => {
   let hits = 0;
   await withMockUpstream(

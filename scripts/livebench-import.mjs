@@ -34,7 +34,15 @@ const OUT_PATH = fileURLToPath(new URL("../server/scenarios/livebench.mjs", impo
 const CATEGORIES = [
   { name: "math", cn: "数学", scorer: "exact", difficulty: "hard", maxTokens: 4096, answerOnly: true },
   { name: "reasoning", cn: "推理", scorer: "exact", difficulty: "complex", maxTokens: 4096, answerOnly: true },
-  { name: "data_analysis", cn: "数据分析", scorer: "structured", difficulty: "normal", maxTokens: 4096, maxAnswerChars: 4800, jsonOnly: true },
+  {
+    name: "data_analysis",
+    cn: "数据分析",
+    scorer: "structured",
+    difficulty: "normal",
+    maxTokens: 4096,
+    maxAnswerChars: 4800,
+    jsonOnly: true,
+  },
 ];
 
 // data_analysis 三类子任务判分有别：表格重排/连接输出整张表，其 ground truth 把原始 dataframe 行号当顶层键

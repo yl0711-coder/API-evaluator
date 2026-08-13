@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { AUTO_TEST_JOBS_FILE } from "./paths.mjs";
 import { writeJsonAtomic } from "./utils.mjs";
+import { parseCron, cronNextAfter } from "./cron-schedule.mjs";
 
 // 支持的测试种类：均有独立后端 runner 入口（见 auto-test-scheduler 的 kind→runner 映射）。
 export const AUTO_TEST_KINDS = ["quick", "admission", "stability", "scenario"];
@@ -58,9 +59,36 @@ export function __resetWriteChainForTest() {
   writeChain = Promise.resolve();
 }
 
-// 下次运行时刻：从基准时刻（默认现在）推 periodHours 小时（支持小数，最短 0.5 小时）。
-export function computeNextRunAt(periodHours, fromMs = Date.now()) {
-  const hours = Math.max(0.5, Number(periodHours) || 0.5);
+// 下次运行时刻。双模式：
+//   - 数字入参 computeNextRunAt(periodHours, fromMs)：间隔模式，推 periodHours 小时（老调用，保持兼容）。
+//   - 对象入参 computeNextRunAt(job, fromMs)：有 job.cron 走 cron；否则退回 job.periodHours 间隔。
+// cron 没有可执行时刻时返回 null。调用方必须拒绝保存或停用历史坏作业，绝不能静默改成每日执行。
+export function computeNextRunAt(jobOrPeriod, fromMs = Date.now()) {
+  if (jobOrPeriod && typeof jobOrPeriod === "object") {
+    const job = jobOrPeriod;
+    if (job.cron) {
+      const next = nextCronAt(job.cron, fromMs);
+      if (next != null) return new Date(next).toISOString();
+      return null;
+    }
+    return intervalNextRunAt(job.periodHours, fromMs);
+  }
+  return intervalNextRunAt(jobOrPeriod, fromMs);
+}
+
+function nextCronAt(cron, fromMs) {
+  const expressions = String(cron || "")
+    .split(";")
+    .map((item) => item.trim());
+  if (!expressions.length || expressions.some((item) => !item)) return null;
+  return expressions.reduce((earliest, expression) => {
+    const next = cronNextAfter(expression, fromMs);
+    return next != null && (earliest == null || next < earliest) ? next : earliest;
+  }, null);
+}
+
+function intervalNextRunAt(periodHours, fromMs) {
+  const hours = Math.max(0.1, Number(periodHours) || 0.1);
   return new Date(fromMs + hours * 3600 * 1000).toISOString();
 }
 
@@ -69,9 +97,9 @@ export function normalizeJob(raw, existing = null) {
   if (!raw || typeof raw !== "object") return null;
   const id = String(raw.id ?? existing?.id ?? "").trim() || `atj_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const kind = AUTO_TEST_KINDS.includes(raw.kind) ? raw.kind : String(existing?.kind || "quick");
-  // 周期允许小数、最短 0.5 小时；无效/非正 → 默认 24。保留两位小数避免浮点噪声。
+  // 周期允许小数、最短 0.1 小时（6 分钟）；无效/非正 → 默认 24。保留两位小数避免浮点噪声。
   const rawPeriod = Number(raw.periodHours ?? existing?.periodHours);
-  const periodHours = Number.isFinite(rawPeriod) && rawPeriod > 0 ? Math.max(0.5, Math.round(rawPeriod * 100) / 100) : 24;
+  const periodHours = Number.isFinite(rawPeriod) && rawPeriod > 0 ? Math.max(0.1, Math.round(rawPeriod * 100) / 100) : 24;
   const scenarioIds = Array.isArray(raw.scenarioIds)
     ? [...new Set(raw.scenarioIds.map((x) => String(x ?? "").trim()).filter(Boolean))]
     : Array.isArray(existing?.scenarioIds)
@@ -79,12 +107,23 @@ export function normalizeJob(raw, existing = null) {
       : [];
   const rawOptions = raw.options && typeof raw.options === "object" ? raw.options : existing?.options || {};
   const options = normalizeOptions(rawOptions);
+  // cron 表达式（可选）：非空即启用 cron 调度、periodHours 作后备保留。空串=用间隔模式。
+  const cron = String(raw.cron ?? existing?.cron ?? "")
+    .trim()
+    .slice(0, 1200);
+  // `0 HH * * ...` can mean either legacy "once daily" or a fixed HH:00 time.
+  // Keep this UI-only marker so edits retain the chosen mode; scheduling still uses cron only.
+  const cronMode = cron && (raw.cronMode ?? existing?.cronMode) === "fixed" ? "fixed" : "";
   return {
     id,
-    name: String(raw.name ?? existing?.name ?? "").trim().slice(0, 120),
+    name: String(raw.name ?? existing?.name ?? "")
+      .trim()
+      .slice(0, 120),
     targetId: String(raw.targetId ?? existing?.targetId ?? "").trim(),
     kind,
     periodHours,
+    cron,
+    cronMode,
     scenarioIds,
     options,
     enabled: raw.enabled === undefined ? existing?.enabled !== false : Boolean(raw.enabled),
@@ -106,20 +145,49 @@ function clampFailures(v) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// 稳定性「测试文案分组」：{presetId, prompt, repeats}[]，与 test-runner.mjs 的 normalizeStabilityGroups
+// 同一套校验口径（repeats 夹 [1,20]，非法/数量<=0 项丢弃）。预设 id 允许任意字符串（前端自定义预设时也能存），
+// 只做类型强制与截断，不校验是否在已知预设表里——已知预设表随时可能改，作业存储不该耦合它。
+function normalizeStabilityGroupsOption(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((group) => {
+      if (!group || typeof group !== "object") return null;
+      const repeats = Math.floor(Number(group.repeats));
+      if (!Number.isFinite(repeats) || repeats <= 0) return null;
+      return {
+        presetId: typeof group.presetId === "string" && group.presetId ? group.presetId.slice(0, 64) : null,
+        prompt: typeof group.prompt === "string" ? group.prompt.slice(0, 4000) : "",
+        repeats: Math.min(20, Math.max(1, repeats)),
+      };
+    })
+    .filter(Boolean);
+}
+
+// 迁移改造前保存的扁平字段（rounds/promptPresetId/prompt）到单组 groups，供 normalizeOptions 在
+// 没有 groups 时兜底。normalizeJob 每次 load 都会重新 normalize 一遍旧作业，若不迁移，旧作业的
+// 轮数与自定义文案会在这里被悄悄丢弃、退化成运行期默认的 10 轮基础文案——这是数据丢失，不是兼容。
+function migrateLegacyStabilityOptions(raw) {
+  if (!("rounds" in raw) && !("prompt" in raw) && !("promptPresetId" in raw)) return [];
+  const repeats = Math.floor(Number(raw.rounds));
+  const presetId = typeof raw.promptPresetId === "string" && raw.promptPresetId ? raw.promptPresetId.slice(0, 64) : "basic";
+  const prompt = typeof raw.prompt === "string" ? raw.prompt.slice(0, 4000) : "";
+  return [{ presetId, prompt, repeats: Number.isFinite(repeats) && repeats > 0 ? Math.min(20, repeats) : 10 }];
+}
+
 function normalizeOptions(raw) {
   const clampInt = (v, min, max, dflt) => {
     const n = Math.floor(Number(v));
     if (!Number.isFinite(n)) return dflt;
     return Math.min(max, Math.max(min, n));
   };
+  const groups = Array.isArray(raw.groups) ? normalizeStabilityGroupsOption(raw.groups) : migrateLegacyStabilityOptions(raw);
   return {
-    rounds: clampInt(raw.rounds, 1, 100, 10),
     concurrency: clampInt(raw.concurrency, 1, 5, 1),
     repeats: clampInt(raw.repeats, 1, 5, 1),
     packageLevel: ["quick", "standard", "deep"].includes(raw.packageLevel) ? raw.packageLevel : "standard",
-    // 稳定性「测试文案场景」：预设 id + 解析后的文案（空 → runner 用内置默认）。文案截断防超长。
-    promptPresetId: typeof raw.promptPresetId === "string" && raw.promptPresetId ? raw.promptPresetId.slice(0, 64) : "basic",
-    prompt: typeof raw.prompt === "string" ? raw.prompt.slice(0, 4000) : "",
+    // 稳定性「测试文案分组」：多组预设+数量，取代原来的单预设+单轮数（rounds/promptPresetId/prompt）。
+    groups,
   };
 }
 
@@ -128,6 +196,23 @@ export function validateJob(job) {
   if (!job || typeof job !== "object") return "作业必须是对象。";
   if (!job.targetId) return "请选择被测渠道与模型。";
   if (!AUTO_TEST_KINDS.includes(job.kind)) return "测试种类不合法。";
-  if (!(Number.isFinite(job.periodHours) && job.periodHours >= 0.5)) return "测试周期必须是不小于 0.5 的数（小时）。";
+  // 稳定性作业至少要有一个数量>0 的文案分组，否则调度器触发时无题可测。
+  if (job.kind === "stability" && !(job.options?.groups?.length > 0)) return "请至少选择一个测试文案分组（数量框大于 0）。";
+  // cron 模式：校验表达式合法即可，periodHours 只作后备不强校验。
+  if (job.cron) {
+    try {
+      const expressions = job.cron.split(";").map((item) => item.trim());
+      if (expressions.length > 24 || expressions.some((item) => !item)) throw new Error("固定时刻不能为空，且最多支持 24 个。");
+      for (const expression of expressions) parseCron(expression);
+      // 语法合法不等于语义可执行：如 `0 0 30 2 *`。四年窗口同时覆盖闰日，因而不会误拒
+      // “每 2 月 29 日”这类有效规则。保存阶段直接拒绝，避免后续被调度器悄悄改成每日执行。
+      if (nextCronAt(job.cron) == null) return "定时表达式在未来四年内没有可执行时刻，请修改后再保存。";
+    } catch (error) {
+      return `定时表达式不合法：${error.message}`;
+    }
+    return null;
+  }
+  // 间隔模式：要求 periodHours ≥ 0.1（6 分钟）。
+  if (!(Number.isFinite(job.periodHours) && job.periodHours >= 0.1)) return "测试周期必须是不小于 0.1 的数（小时）。";
   return null;
 }

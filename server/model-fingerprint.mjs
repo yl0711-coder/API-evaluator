@@ -2,6 +2,7 @@
 // 模型身份与纯度：从模型名推断家族、构造行为指纹探针、做 token 计费审计与纯度评估，
 // 给出"自述模型 vs 实际表现"是否一致的概率性判断（疑似换模型/降级/灌水，非事实认定）。
 import { formatPercent, sumNullable } from "./utils.mjs";
+import { P95_LATENCY_SLOW_MS } from "./constants.mjs";
 
 export const FINGERPRINT_LIBRARY_VERSION = "2026.06.01";
 
@@ -81,10 +82,7 @@ export function getFingerprintLibraryMetadata(modelName = "") {
     expectedFamily,
     expectedFamilyLabel: familyLabel(expectedFamily || "unknown"),
     supportedFamilies: Object.keys(FAMILY_FINGERPRINT_PROBES),
-    notes: [
-      "指纹题库用于黑盒初筛，不等同于官方模型身份认证。",
-      "题库结论需要结合协议结构、稳定性、Token 审计和人工复核判断。",
-    ],
+    notes: ["指纹题库用于黑盒初筛，不等同于官方模型身份认证。", "题库结论需要结合协议结构、稳定性、Token 审计和人工复核判断。"],
   };
 }
 
@@ -363,7 +361,13 @@ export function buildPurityAssessment({
     addEvidence(evidence, "标称一致性", `模型自述与标称家族一致：${familyLabel(identityCheck.reportedFamily)}。`, "pass");
   } else if (identityCheck?.status === "conflict") {
     score -= 35;
-    addRisk(riskFlags, "identity_conflict", "模型标称冲突", `标称 ${familyLabel(identityCheck.expectedFamily)}，自述 ${familyLabel(identityCheck.reportedFamily)}。`, "high");
+    addRisk(
+      riskFlags,
+      "identity_conflict",
+      "模型标称冲突",
+      `标称 ${familyLabel(identityCheck.expectedFamily)}，自述 ${familyLabel(identityCheck.reportedFamily)}。`,
+      "high",
+    );
   } else if (identityCheck?.status === "unknown") {
     score -= 8;
     addRisk(riskFlags, "identity_unknown", "模型身份无法确认", "模型没有明确给出可验证家族信息，需要后续指纹题复测。", "medium");
@@ -390,7 +394,13 @@ export function buildPurityAssessment({
     addEvidence(evidence, "流式结构", "流式事件结构通过。", "pass");
   } else {
     score -= protocol === "claude_messages" ? 18 : 12;
-    addRisk(riskFlags, "stream_structure_failed", "流式结构失败", "流式事件结构异常，可能导致客户端中断或 Content block not found。", "high");
+    addRisk(
+      riskFlags,
+      "stream_structure_failed",
+      "流式结构失败",
+      "流式事件结构异常，可能导致客户端中断或 Content block not found。",
+      "high",
+    );
   }
 
   const contentBlockErrors = Number(errorCounts.content_block_not_found || 0);
@@ -398,7 +408,13 @@ export function buildPurityAssessment({
   const timeout = Number(errorCounts.timeout || 0);
   if (contentBlockErrors > 0) {
     score -= 25;
-    addRisk(riskFlags, "content_block_not_found", "Claude 流式块异常", `出现 ${contentBlockErrors} 次 Content block not found 相关风险。`, "high");
+    addRisk(
+      riskFlags,
+      "content_block_not_found",
+      "Claude 流式块异常",
+      `出现 ${contentBlockErrors} 次 Content block not found 相关风险。`,
+      "high",
+    );
   }
   if (upstream5xx > 0 || timeout > 0) {
     score -= Math.min(20, (upstream5xx + timeout) * 8);
@@ -412,7 +428,7 @@ export function buildPurityAssessment({
     addEvidence(evidence, "基础可用性", `准入成功率为 ${formatPercent(successRate)}。`, "pass");
   }
 
-  if (p95TotalMs && p95TotalMs > 45000) {
+  if (p95TotalMs && p95TotalMs > P95_LATENCY_SLOW_MS) {
     score -= 10;
     addRisk(riskFlags, "high_tail_latency", "尾部延迟高", `P95 为 ${p95TotalMs} ms，复杂任务可能容易超时。`, "medium");
   }
@@ -513,9 +529,7 @@ export function evaluateFingerprintProbe(testCase, text) {
   const raw = String(text || "");
   const normalized = raw.toLowerCase();
   if (Array.isArray(testCase.expectedSignals)) {
-    const signals = testCase.expectedSignals
-      .filter((signal) => signal.pattern.test(raw))
-      .map((signal) => signal.code);
+    const signals = testCase.expectedSignals.filter((signal) => signal.pattern.test(raw)).map((signal) => signal.code);
     const minSignals = Number.isFinite(Number(testCase.minSignals)) ? Number(testCase.minSignals) : testCase.expectedSignals.length;
     const passed = signals.length >= minSignals;
     return {
@@ -530,10 +544,7 @@ export function evaluateFingerprintProbe(testCase, text) {
   }
   if (testCase.id === "fingerprint_instruction_lock") {
     const compact = raw.replace(/\s+/g, "");
-    const passed =
-      compact.includes('"marker":"NXFP-7429"') &&
-      compact.includes('"answer":"blue-17"') &&
-      compact.includes('"count":3');
+    const passed = compact.includes('"marker":"NXFP-7429"') && compact.includes('"answer":"blue-17"') && compact.includes('"count":3');
     return {
       passed,
       probe: true,

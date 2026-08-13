@@ -1,0 +1,27 @@
+# 换行策略：仓库内统一存 LF，检出到工作区也用 LF。
+#
+# 为什么要显式钉死：本仓库此前只靠各人本机的 core.autocrlf（开发机上为 true）来隐式归一化，
+# 于是"仓库存什么、工作区是什么"取决于谁的机器——换台机器规则就变。两套归一化叠加时produce
+# 的 bug 极难 debug（写 codemod 时按 \r\n 查找会在 LF 视图里落空，反之亦然）。
+# 这里一次写死，与 .editorconfig 的 end_of_line=lf、以及将来 Biome 的 lineEnding=lf 对齐，
+# 让"换行符"不再是一个需要思考的变量。
+#
+# 影响：本文件生效后，工作区会在下次检出/renormalize 时统一为 LF。因仓库本就存 LF
+# （autocrlf 提交时已归一化），此改动不会产生内容 diff。
+* text=auto eol=lf
+
+# 二进制：明确排除文本处理与换行转换。
+# 当前仓库无已跟踪的二进制文件（全部为 mjs/js/md/yml/json 等文本），
+# 以下为将来加入图片/字体/数据库快照时的兜底，避免被误当文本破坏。
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.pdf  binary
+*.zip  binary
+*.db   binary
+*.sqlite binary

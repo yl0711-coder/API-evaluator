@@ -1,43 +1,74 @@
 // server/protocols.mjs
-// 协议适配层：按渠道协议（OpenAI Chat / OpenAI 兼容 / Claude Messages）构造请求，
+// 协议适配层：按渠道协议（OpenAI Chat / OpenAI 兼容 / OpenAI 自定义前缀 / Claude Messages）构造请求，
 // 解析响应与 SSE 流、抽取输出文本 / 工具调用 / usage，并把上游错误归一化为统一错误码。
+
+// 「OpenAI 兼容但路径前缀不是 /v1」的协议：baseUrl 原样 + /chat/completions。
+// 请求体与响应解析与 openai_compatible 完全一致——差别只在 URL 怎么拼，故所有
+// isClaude 之外的分支都共用同一套 body 构造，只有这里分流。
+//
+// 存在的原因：不少厂商的 OpenAI 兼容端点前缀并非 /v1，直连时无法用固定 `${baseUrl}/v1/...` 拼出来：
+//   · 智谱 GLM        https://open.bigmodel.cn/api/paas/v4  → /api/paas/v4/chat/completions
+//   · 阿里 DashScope  https://dashscope.aliyuncs.com/compatible-mode/v1
+//   · Google Gemini   https://generativelanguage.googleapis.com/v1beta/openai
+//   · 火山方舟        https://ark.cn-beijing.volces.com/api/v3
+// 此前这些只能「经中转站测」（中转会把前缀统一包成 /v1）；直连必然 404 → 报告上是一条
+// 并不存在的「渠道不可用」。刻意不在代码里硬编码任何厂商的前缀：用户填平台后台给的完整
+// 兼容端点地址，工具只补最后一段 /chat/completions——多一个厂商不需要改代码。
+export const OPENAI_PATH_PREFIX_PROTOCOL = "openai_path_prefix";
+
+// 各协议的目标 URL。集中一处，四个 builder（普通/流式/工具/token 探针）都走它，
+// 避免此前那样在 6 处各自硬编码字面量、加协议要逐个补。
+export function buildProtocolUrl(protocol, baseUrl) {
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  if (protocol === "claude_messages") return `${base}/v1/messages`;
+  // baseUrl 已含厂商自己的版本前缀，不再补 /v1。
+  if (protocol === OPENAI_PATH_PREFIX_PROTOCOL) return `${base}/chat/completions`;
+  return `${base}/v1/chat/completions`;
+}
+
 export function buildProtocolRequest(profile, prompt) {
   const model = profile.defaultModel;
   const text = prompt.trim() || "请用一句话说明你现在可以正常工作。";
   const baseUrl = profile.baseUrl.replace(/\/+$/, "");
 
   if (profile.protocol === "claude_messages") {
+    const body = {
+      model,
+      max_tokens: Number(profile.maxTokens || 512),
+      // 显式非流式：规范里 stream 默认 false，但部分中转（尤其把 OpenAI 后端包成 Claude 格式的）
+      // 不带该字段时会默认回 SSE，导致按 JSON 解析读不出文本、被误判成 empty_response。
+      stream: false,
+      messages: [{ role: "user", content: text }],
+    };
+    // Claude Messages API 一般不带 temperature（模型自决策），除非用户明确覆盖
+    if (profile.temperatureOverride != null) {
+      body.temperature = profile.temperatureOverride;
+    }
     return {
-      url: `${baseUrl}/v1/messages`,
+      url: buildProtocolUrl(profile.protocol, baseUrl),
       headers: {
         "content-type": "application/json",
         "x-api-key": profile.apiKey,
         "anthropic-version": profile.anthropicVersion || "2023-06-01",
       },
-      body: {
-        model,
-        max_tokens: Number(profile.maxTokens || 512),
-        // 显式非流式：规范里 stream 默认 false，但部分中转（尤其把 OpenAI 后端包成 Claude 格式的）
-        // 不带该字段时会默认回 SSE，导致按 JSON 解析读不出文本、被误判成 empty_response。
-        stream: false,
-        messages: [{ role: "user", content: text }],
-      },
+      body,
     };
   }
 
+  const body = {
+    model,
+    messages: [{ role: "user", content: text }],
+    temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
+    max_tokens: Number(profile.maxTokens || 512),
+    stream: false,
+  };
   return {
-    url: `${baseUrl}/v1/chat/completions`,
+    url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${profile.apiKey}`,
     },
-    body: {
-      model,
-      messages: [{ role: "user", content: text }],
-      temperature: 0.2,
-      max_tokens: Number(profile.maxTokens || 512),
-      stream: false,
-    },
+    body,
   };
 }
 
@@ -48,44 +79,50 @@ export function buildProtocolToolRequest(profile) {
   const prompt = "请调用 get_weather 查询北京天气，只返回工具调用，不要输出自然语言解释。";
 
   if (profile.protocol === "claude_messages") {
+    const body = {
+      model,
+      max_tokens: Number(profile.maxTokens || 512),
+      stream: false, // 同 buildProtocolRequest：不带该字段时部分中转会默认回 SSE。
+      tools: [
+        {
+          name: toolName,
+          description: "Get weather for a city",
+          input_schema: {
+            type: "object",
+            properties: {
+              city: {
+                type: "string",
+                description: "City name",
+              },
+            },
+            required: ["city"],
+          },
+        },
+      ],
+      tool_choice: {
+        type: "tool",
+        name: toolName,
+      },
+      messages: [{ role: "user", content: prompt }],
+    };
+    // 同 buildProtocolRequest：Claude 侧默认不带 temperature（Opus 4.7+ 拒收采样参数），
+    // 只在用户手填时才发。
+    if (profile.temperatureOverride != null) {
+      body.temperature = profile.temperatureOverride;
+    }
     return {
-      url: `${baseUrl}/v1/messages`,
+      url: buildProtocolUrl(profile.protocol, baseUrl),
       headers: {
         "content-type": "application/json",
         "x-api-key": profile.apiKey,
         "anthropic-version": profile.anthropicVersion || "2023-06-01",
       },
-      body: {
-        model,
-        max_tokens: Number(profile.maxTokens || 512),
-        stream: false, // 同 buildProtocolRequest：不带该字段时部分中转会默认回 SSE。
-        tools: [
-          {
-            name: toolName,
-            description: "Get weather for a city",
-            input_schema: {
-              type: "object",
-              properties: {
-                city: {
-                  type: "string",
-                  description: "City name",
-                },
-              },
-              required: ["city"],
-            },
-          },
-        ],
-        tool_choice: {
-          type: "tool",
-          name: toolName,
-        },
-        messages: [{ role: "user", content: prompt }],
-      },
+      body,
     };
   }
 
   return {
-    url: `${baseUrl}/v1/chat/completions`,
+    url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${profile.apiKey}`,
@@ -93,7 +130,10 @@ export function buildProtocolToolRequest(profile) {
     body: {
       model,
       messages: [{ role: "user", content: prompt }],
-      temperature: 0,
+      // 工具调用题默认用 0 求确定性（结构对不对不该受采样影响）。用户手填温度时以手填为准——
+      // 有些模型只接受特定温度（如月之暗面只认 1），硬发 0 会让这一题必然 400，
+      // 报告上就成了一条并不存在的「工具调用不可用」。
+      temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0,
       max_tokens: Number(profile.maxTokens || 512),
       stream: false,
       tools: [
@@ -135,38 +175,44 @@ export function buildProtocolStreamRequest(profile, prompt, { includeUsage = fal
   const baseUrl = profile.baseUrl.replace(/\/+$/, "");
 
   if (profile.protocol === "claude_messages") {
+    const body = {
+      model,
+      max_tokens: Number(profile.maxTokens || 512),
+      stream: true,
+      messages: [{ role: "user", content: text }],
+    };
+    // Claude Messages API 一般不带 temperature（模型自决策），除非用户明确覆盖
+    if (profile.temperatureOverride != null) {
+      body.temperature = profile.temperatureOverride;
+    }
     return {
-      url: `${baseUrl}/v1/messages`,
+      url: buildProtocolUrl(profile.protocol, baseUrl),
       headers: {
         "content-type": "application/json",
         "x-api-key": profile.apiKey,
         "anthropic-version": profile.anthropicVersion || "2023-06-01",
       },
-      body: {
-        model,
-        max_tokens: Number(profile.maxTokens || 512),
-        stream: true,
-        messages: [{ role: "user", content: text }],
-      },
+      body,
     };
   }
 
+  const body = {
+    model,
+    messages: [{ role: "user", content: text }],
+    temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
+    max_tokens: Number(profile.maxTokens || 512),
+    stream: true,
+    // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
+    // coalesceClaudeSse 已做合并。
+    ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
+  };
   return {
-    url: `${baseUrl}/v1/chat/completions`,
+    url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${profile.apiKey}`,
     },
-    body: {
-      model,
-      messages: [{ role: "user", content: text }],
-      temperature: 0.2,
-      max_tokens: Number(profile.maxTokens || 512),
-      stream: true,
-      // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
-      // coalesceClaudeSse 已做合并。
-      ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
-    },
+    body,
   };
 }
 
@@ -353,9 +399,7 @@ export function extractOutputText(protocol, parsed) {
   // 存进报告并拿去打分。按分片取 text，与上面 Claude 分支同口径（thinking/reasoning 不算可见输出）。
   if (Array.isArray(content)) {
     return content
-      .map((item) =>
-        item && typeof item.text === "string" && item.type !== "thinking" && item.type !== "reasoning" ? item.text : "",
-      )
+      .map((item) => (item && typeof item.text === "string" && item.type !== "thinking" && item.type !== "reasoning" ? item.text : ""))
       .filter(Boolean)
       .join("\n")
       .trim();
@@ -417,8 +461,7 @@ export function extractUsage(parsed) {
     inputTokens: usage.prompt_tokens ?? usage.input_tokens ?? null,
     outputTokens: usage.completion_tokens ?? usage.output_tokens ?? null,
     cacheCreationTokens: usage.cache_creation_input_tokens ?? usage.cache_creation_tokens ?? null,
-    cacheReadTokens:
-      usage.cache_read_input_tokens ?? usage.cache_read_tokens ?? promptDetails.cached_tokens ?? null,
+    cacheReadTokens: usage.cache_read_input_tokens ?? usage.cache_read_tokens ?? promptDetails.cached_tokens ?? null,
     reasoningTokens: usage.reasoning_tokens ?? completionDetails.reasoning_tokens ?? null,
   };
 }

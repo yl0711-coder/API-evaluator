@@ -1,0 +1,16 @@
+# 编辑器基础风格兜底：给没装 Biome / 不跑格式化的编辑器用，让新人开箱即符合本仓库既有风格。
+# 这些值不是新定的规矩，而是把仓库里已经 100% 一致的现状（2 空格缩进、UTF-8、LF）写下来。
+# 与 .gitattributes(eol=lf) 保持一致；将来接 Biome 时其 formatter 配置也应与此对齐。
+root = true
+
+[*]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# Markdown 例外：行尾两个空格在 md 里是「换行」语义，不能裁掉。
+[*.md]
+trim_trailing_whitespace = false

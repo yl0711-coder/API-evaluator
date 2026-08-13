@@ -52,7 +52,10 @@ test("client log analyzer summarizes Claude Code proxy failures", () => {
   assert.equal(summary.errorCounts.upstream_timeout_524, 1);
   assert.equal(summary.errorCounts.content_block_not_found, 1);
   assert.equal(summary.successRateText, "33%");
-  assert.equal(summary.riskFlags.some((item) => item.code === "content_block_not_found"), true);
+  assert.equal(
+    summary.riskFlags.some((item) => item.code === "content_block_not_found"),
+    true,
+  );
 
   const markdown = formatClientReplayReport(summary);
   assert.match(markdown, /真实客户端日志分析报告/);
@@ -64,7 +67,7 @@ test("client log analyzer summarizes Claude Code proxy failures", () => {
 test("client log analyzer parses plain nginx and service log lines", () => {
   const logText = [
     'evaluator-nginx  | 10.0.0.5 - - [28/May/2026:04:21:17 +0000] "POST /v1/messages?beta=true HTTP/1.1" 499 0 "-" "claude-cli/2.1.145 (external, cli)" "203.0.113.148"',
-    '[ERR] 2026/05/28 - 16:51:52 | 202605280849474100481818268d9d6ZG6GduKt | channel error (channel #21, status code: 524): The origin web server did not return a complete response within the 120-second Proxy Read Timeout window.',
+    "[ERR] 2026/05/28 - 16:51:52 | 202605280849474100481818268d9d6ZG6GduKt | channel error (channel #21, status code: 524): The origin web server did not return a complete response within the 120-second Proxy Read Timeout window.",
   ].join("\n");
 
   const records = extractClientLogRecords({ logText });

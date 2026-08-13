@@ -73,7 +73,10 @@ test("IPv6 解析失败一律 fail-closed（P1-1 回归）", () => {
 
 test("assertPublicTarget 拦住 IPv6 字面量绕过（P1-1 端到端回归）", async () => {
   // 审查复现用的两条：过去这两条会被直接放行，通向云元数据 / 本机回环
-  await assert.rejects(() => assertPublicTarget("http://[::ffff:a9fe:a9fe]/latest/meta-data/iam/security-credentials/"), EgressBlockedError);
+  await assert.rejects(
+    () => assertPublicTarget("http://[::ffff:a9fe:a9fe]/latest/meta-data/iam/security-credentials/"),
+    EgressBlockedError,
+  );
   await assert.rejects(() => assertPublicTarget("http://[::ffff:7f00:1]/"), EgressBlockedError);
   await assert.rejects(() => assertPublicTarget("http://[::ffff:127.0.0.1]/"), EgressBlockedError);
   await assert.rejects(() => assertPublicTarget("http://[64:ff9b::a9fe:a9fe]/"), EgressBlockedError);

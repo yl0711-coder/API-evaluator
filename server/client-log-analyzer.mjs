@@ -6,12 +6,7 @@ import { formatPercent, mean, percentile, redactSensitiveText, safeJson, summari
 
 const MAX_RECORDS = 2000;
 const MAX_REPLAY_CANDIDATES = 20;
-const REPLAY_SAFE_HEADERS = new Set([
-  "accept",
-  "anthropic-beta",
-  "anthropic-version",
-  "content-type",
-]);
+const REPLAY_SAFE_HEADERS = new Set(["accept", "anthropic-beta", "anthropic-version", "content-type"]);
 
 export function extractClientLogRecords(payload = {}) {
   if (Array.isArray(payload.records)) {
@@ -21,7 +16,10 @@ export function extractClientLogRecords(payload = {}) {
   const text = String(payload.logText || payload.rawText || "").trim();
   if (!text) return [];
 
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
   const parsed = [];
   for (const line of lines.slice(0, MAX_RECORDS)) {
     const json = safeJson(line);
@@ -47,8 +45,19 @@ export function analyzeClientLogs(records = [], options = {}) {
   const errorCounts = countErrors(failures);
   const successCount = normalizedRecords.length - failures.length;
   const successRate = normalizedRecords.length ? successCount / normalizedRecords.length : 0;
-  const startedAt = normalizedRecords.map((record) => record.startedAt).filter(Boolean).sort()[0] || options.startedAt || null;
-  const endedAt = normalizedRecords.map((record) => record.endedAt || record.startedAt).filter(Boolean).sort().at(-1) || null;
+  const startedAt =
+    normalizedRecords
+      .map((record) => record.startedAt)
+      .filter(Boolean)
+      .sort()[0] ||
+    options.startedAt ||
+    null;
+  const endedAt =
+    normalizedRecords
+      .map((record) => record.endedAt || record.startedAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null;
   const p95DurationMs = percentile(durations, 0.95);
 
   return {
@@ -90,8 +99,17 @@ export function buildSupplierEvidence(records = [], options = {}) {
   const failures = normalizedRecords.filter((record) => !record.success);
   const sourceName = String(options.sourceName || "客户端代理日志");
   const providerName = String(options.providerName || options.supplierName || "上游服务商");
-  const startedAt = normalizedRecords.map((record) => record.startedAt).filter(Boolean).sort()[0] || null;
-  const endedAt = normalizedRecords.map((record) => record.endedAt || record.startedAt).filter(Boolean).sort().at(-1) || null;
+  const startedAt =
+    normalizedRecords
+      .map((record) => record.startedAt)
+      .filter(Boolean)
+      .sort()[0] || null;
+  const endedAt =
+    normalizedRecords
+      .map((record) => record.endedAt || record.startedAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null;
   const targetRecords = failures.length ? failures : normalizedRecords;
   const evidenceRecords = targetRecords.slice(0, 50).map((record) => buildSupplierEvidenceRecord(record));
   const errorCounts = countErrors(failures);
@@ -99,10 +117,7 @@ export function buildSupplierEvidence(records = [], options = {}) {
   const modelCounts = countBy(normalizedRecords, (record) => record.model || "unknown");
   const pathCounts = countBy(normalizedRecords, (record) => record.path || "unknown");
   const upstreamIds = unique(
-    evidenceRecords.flatMap((record) => [
-      ...(record.upstreamTraceIds || []),
-      ...(record.upstreamRequestIds || []),
-    ]),
+    evidenceRecords.flatMap((record) => [...(record.upstreamTraceIds || []), ...(record.upstreamRequestIds || [])]),
   );
 
   return {
@@ -145,19 +160,9 @@ export function normalizeClientLogRecord(record = {}, index = 0) {
   const responseHeaders = lowerCaseKeys(record.responseHeaders || response.headers || {});
   const body = record.body || record.requestBody || request.body || {};
   const responseBody = record.responseBody || response.body || "";
-  const statusCode = toNullableNumber(
-    record.statusCode ?? record.status ?? response.statusCode ?? response.status ?? record.httpStatus,
-  );
+  const statusCode = toNullableNumber(record.statusCode ?? record.status ?? response.statusCode ?? response.status ?? record.httpStatus);
   const rawError = redactSensitiveText(
-    stringifyFirst(
-      record.rawError,
-      record.error,
-      record.errorText,
-      response.error,
-      responseBody?.error,
-      responseBody,
-      record.message,
-    ),
+    stringifyFirst(record.rawError, record.error, record.errorText, response.error, responseBody?.error, responseBody, record.message),
   );
   const success = inferSuccess(record, statusCode, rawError);
   const normalizedError = success ? "" : classifyClientError({ statusCode, rawError, record });
@@ -314,7 +319,12 @@ function parsePlainLogLine(line) {
     return {
       requestId,
       rawError: line,
-      statusCode: Number(line.match(/status code:\s*(\d{3})|status_code=(\d{3})/)?.[1] || line.match(/status code:\s*(\d{3})|status_code=(\d{3})/)?.[2] || 0) || null,
+      statusCode:
+        Number(
+          line.match(/status code:\s*(\d{3})|status_code=(\d{3})/)?.[1] ||
+            line.match(/status code:\s*(\d{3})|status_code=(\d{3})/)?.[2] ||
+            0,
+        ) || null,
     };
   }
   return null;

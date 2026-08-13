@@ -6,13 +6,7 @@ import test from "node:test";
 import { recipientList, buildTestMailBody, sendMail, resolveTransportOptions } from "../server/mailer.mjs";
 
 test("recipientList：逗号/分号/换行/空格混合分隔，trim+去空+去重", () => {
-  assert.deepEqual(recipientList("a@x.com, b@x.com;c@x.com\nd@x.com  e@x.com"), [
-    "a@x.com",
-    "b@x.com",
-    "c@x.com",
-    "d@x.com",
-    "e@x.com",
-  ]);
+  assert.deepEqual(recipientList("a@x.com, b@x.com;c@x.com\nd@x.com  e@x.com"), ["a@x.com", "b@x.com", "c@x.com", "d@x.com", "e@x.com"]);
   assert.deepEqual(recipientList("a@x.com, a@x.com"), ["a@x.com"], "去重");
   assert.deepEqual(recipientList(""), []);
   assert.deepEqual(recipientList(null), []);
@@ -28,12 +22,13 @@ test("sendMail：收件人为空直接抛错，不调用 transportFactory", asyn
   let called = false;
   await assert.rejects(
     () =>
-      sendMail(
-        { smtpHost: "smtp.example.com", smtpPort: 465, recipients: "" },
-        "subject",
-        "body",
-        { transportFactory: async () => ({ sendMail: async () => { called = true; } }) },
-      ),
+      sendMail({ smtpHost: "smtp.example.com", smtpPort: 465, recipients: "" }, "subject", "body", {
+        transportFactory: async () => ({
+          sendMail: async () => {
+            called = true;
+          },
+        }),
+      }),
     /收件人为空/,
   );
   assert.equal(called, false);

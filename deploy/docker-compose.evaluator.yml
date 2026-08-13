@@ -2,7 +2,33 @@
 # 要点：不映射宿主端口（仅在 docker 网络内暴露给反向代理）、mem/cpu 安全带、独立网络、/data 卷。
 # 启动（先在构建机/CI 构建镜像，再运行）：
 #   docker compose --env-file .env.evaluator -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
+x-evaluator-image: &evaluator-image api-evaluator:0.7.9
+
 services:
+  # v0.7.0 之前的镜像以 root 运行，已有 evaluator-data 卷及其 SQLite/配置/报告文件通常属于 0:0。
+  # 新镜像改用 node(1000:1000)；先用一次性、无网络的最小迁移容器修正这个卷的属主，成功后才启动主服务。
+  # 它不挂 docker.sock、不挂其他卷，执行完即退出；新装空卷同样安全。
+  data-permissions:
+    image: *evaluator-image
+    container_name: api-evaluator-data-permissions
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R 1000:1000 /data"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    volumes:
+      - evaluator_data:/data
+    mem_limit: 64m
+
   evaluator:
     # build 段供构建机 / CI 用。在资源紧张的小机上建议在别处构建
     #   （docker build -> docker save -> scp -> docker load），再 `up -d --no-build` 运行：
@@ -10,12 +36,12 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: api-evaluator:0.6.2
+    image: *evaluator-image
     container_name: api-evaluator
     restart: unless-stopped
-    # autoheal 看门狗据此标签认领本容器：健康检查判 unhealthy 时自动 restart（compose 自身不会因 unhealthy 重启）。
-    labels:
-      - "autoheal=true"
+    depends_on:
+      data-permissions:
+        condition: service_completed_successfully
     # 不映射宿主端口：只经反向代理在 docker 网络内访问，缩小暴露面
     expose:
       - "5180"
@@ -28,12 +54,12 @@ services:
     volumes:
       - evaluator_data:/data
     # 资源安全带：cgroup 硬限制——超限只会本容器被 OOM kill，不会拖垮宿主或同机其它服务。
-    # 这是小机（如 2 vCPU / 2 GB）上的保守起步值（评测本身轻，几百 MB 足够）；压测取峰值后再定死。
+    # 这是 1 vCPU / 1 GB 主机的保守起步值；压测取峰值后再定死。
     # 小机另可设 EVALUATOR_MAX_CONCURRENT_TASKS=2 / EVALUATOR_OFFLINE_TOKENIZER=off（见 README）。
-    mem_limit: 512m
-    cpus: "0.75"
-    # 健康检查同时校验 HTTP 存活与调度器活性：autoTest.stale=true（心跳超时=定时器僵死）也判 unhealthy，
-    # 使「进程活着但自动测试停摆」这类静默故障可被 autoheal 感知并重启。start_period 覆盖首个 tick + 对账。
+    mem_limit: 768m
+    cpus: "0.90"
+    # 健康检查同时校验 HTTP 存活与调度器活性：autoTest.stale=true（心跳超时=定时器僵死）也判 unhealthy。
+    # 宿主机侧的 systemd timer 会据此重启固定容器，见 deploy/api-evaluator-health-recovery.*。
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5180/api/health').then(async r=>{const j=await r.json().catch(()=>({}));process.exit(r.ok&&!(j.autoTest&&j.autoTest.stale)?0:1)}).catch(()=>process.exit(1))"]
       interval: 30s
@@ -47,27 +73,6 @@ services:
         max-file: "3"
     networks:
       - evaluator_net
-
-  # 看门狗：compose（非 Swarm）的 restart 策略只对「进程退出」生效，不会因 unhealthy 重启。
-  # autoheal 监听 docker 事件，把带 autoheal=true 标签且转为 unhealthy 的容器 restart 掉——
-  # 这才补上「进程活着但健康检查失败（含调度器僵死）」这一层的自动恢复。只读挂载 docker.sock。
-  autoheal:
-    image: willfarrell/autoheal:1.2.0
-    container_name: api-evaluator-autoheal
-    restart: unless-stopped
-    environment:
-      AUTOHEAL_CONTAINER_LABEL: autoheal # 只认领带 autoheal=true 的容器，不误伤同机其它服务
-      AUTOHEAL_INTERVAL: "15" # 每 15s 巡检一次容器健康状态
-      AUTOHEAL_START_PERIOD: "40" # 与被测容器 start_period 对齐，启动期不误杀
-      DOCKER_SOCK: /var/run/docker.sock
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    mem_limit: 64m
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
 
 # 独立 docker 网络。把你的反向代理加入本网络（或把本服务接入反代所在网络），
 # 才能用容器名 evaluator:5180 反代。

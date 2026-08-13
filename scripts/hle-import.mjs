@@ -36,14 +36,14 @@ const PAGE_SIZE = 100;
 
 // HLE category → 中文名 / id 短码。覆盖镜像里出现的 8 类；未知类回退 other。
 const CATEGORY_META = {
-  "Math": { cn: "数学", slug: "math" },
-  "Physics": { cn: "物理", slug: "physics" },
-  "Chemistry": { cn: "化学", slug: "chemistry" },
+  Math: { cn: "数学", slug: "math" },
+  Physics: { cn: "物理", slug: "physics" },
+  Chemistry: { cn: "化学", slug: "chemistry" },
   "Biology/Medicine": { cn: "生物医学", slug: "biology" },
   "Computer Science/AI": { cn: "计算机", slug: "cs" },
-  "Engineering": { cn: "工程", slug: "engineering" },
+  Engineering: { cn: "工程", slug: "engineering" },
   "Humanities/Social Science": { cn: "人文社科", slug: "humanities" },
-  "Other": { cn: "其他", slug: "other" },
+  Other: { cn: "其他", slug: "other" },
 };
 const catMeta = (c) => CATEGORY_META[c] || { cn: String(c || "其他"), slug: "other" };
 
@@ -57,11 +57,12 @@ const ANSWER_DISCIPLINE =
   "Reason briefly (a few sentences at most) so your output is not cut off, then put ONLY " +
   "your final answer (no extra words) inside <solution></solution> tags. " +
   "The <solution> block must be the last thing you output.";
-const ANSWER_SUFFIX = "\n\n---\n" + ANSWER_DISCIPLINE;
 
 // 有效数字位数：去符号/小数点/前导零后剩余数字位数（对本题库的数值答案足够）。
 function countSigFigs(mantissa) {
-  const d = String(mantissa).replace(/[+\-.]/g, "").replace(/^0+/, "");
+  const d = String(mantissa)
+    .replace(/[+\-.]/g, "")
+    .replace(/^0+/, "");
   return Math.max(1, d.length);
 }
 
@@ -83,6 +84,34 @@ function numericFormatHint(expected) {
 function answerSuffix(expected) {
   const hint = numericFormatHint(expected);
   return "\n\n---\n" + (hint ? hint + "\n" : "") + ANSWER_DISCIPLINE;
+}
+
+// 「可接受答案形式」覆盖表：HLE 源 id → 额外可接受的等价写法（会与镜像原答案合并成数组）。
+// 为什么需要：exact 判分器是字符串归一化匹配，看不见数学等价。镜像给的 ground truth 只有一种写法，
+// 模型写出代数等价但形式不同的答案（如加法交换 `-X + d` vs `d - X`）会被判错 —— 方向是假阴性，
+// 而 HLE 的用途正是档位降级判别（声称高档却在硬题崩），假阴性等于凭空制造「崩」的证据、污染判别信号。
+// 键用 HLE 源 id（row.id）而非场景 id：后者含跨类别序号，会随 --offset/--count 变动；前者是镜像里的稳定主键。
+// 只增不减：这里列的是「除镜像原答案之外也算对」的形式，原答案永远保留在数组首位。
+// 局限（诚实标注）：这是人工枚举，不是等价性判定，枚举不完。真正的治本方案是数值抽样等价判定
+// （解析成表达式 → 自由变量代入多组随机值 → 全部相等才算等价），当前刻意未做，见 CHANGELOG。
+const ANSWER_ALIASES = {
+  // 物理·反对称化 gamma 矩阵比例因子：-(d-2k)^2 + d  ==  d - (d-2k)^2（加法交换律）。
+  // 覆盖 LaTeX 定界符有无、`^2` 与 `^{2}` 两种指数写法、以及 (d-2k) 与 (2k-d) 两种等价平方底数。
+  "66b727d367968fa27f2dddda": [
+    "\\(d - (d - 2k)^2\\)",
+    "\\(d - (d - 2k)^{2}\\)",
+    "\\(-((d - 2k)^{2}) + d\\)",
+    "\\(d - (2k - d)^2\\)",
+    "\\(-((2k - d)^2) + d\\)",
+  ],
+};
+
+// 把镜像原答案与覆盖表里的等价写法合并：无覆盖则保持字符串（不无谓地把单答案包成数组）。
+function expectedFor(row) {
+  const base = String(row.answer).trim();
+  const aliases = ANSWER_ALIASES[String(row.id || "")] || [];
+  if (!aliases.length) return base;
+  return [base, ...aliases.filter((a) => a !== base)];
 }
 
 function parseArgs(argv) {
@@ -181,7 +210,9 @@ function toScenario(row, ordinal, canaryRef) {
     maxTokens: 4096, // 运行时统一强制 4096，仅作记录
     prompt: String(row.question).trim() + (mc ? MC_SUFFIX : answerSuffix(row.answer)),
     scorer: "exact",
-    expected: String(row.answer).trim(),
+    // 可为字符串或「可接受形式」数组（见 ANSWER_ALIASES）；scoreExactAnswer 两者都吃。
+    // 注意 answerSuffix 仍用 row.answer 原值推导数值格式提示，不受别名影响。
+    expected: expectedFor(row),
     source: `${DATASET} · ${row.raw_subject || row.category || "-"} · ${row.id || "-"}`,
     canaryRef,
   };
@@ -196,6 +227,7 @@ function renderFile(scenarios, meta) {
     `// 来源：${DATASET}（HLE 文本镜像，社区再上传、非官方；时效/完整性以镜像为准）。`,
     `// 覆盖类别：${meta.categories}。仅纳入单选(multipleChoice)与短答(exactMatch ≤${MAX_ANSWER_CHARS}字符)。`,
     "// 判分：scorer=exact（答案抽取 <solution> + 归一化精确匹配，复用 benchmark-scorers）。不引入 LLM 裁判。",
+    "// expected 为数组的题：镜像原答案在首位，其后是脚本内 ANSWER_ALIASES 表列出的等价写法（任一命中即算对）。",
     "// 用途：跨学科专家级客观能力探针，主攻档位降级判别（声称高档却在硬题崩）。默认关闭，",
     "//      由 设置→场景测试题库「加入 HLE」(settings.enableHle) 开启（见 server/scenarios/index.mjs）。",
     "// 刷新：重跑 scripts/hle-import.mjs（可 --offset 换批 / --count 调量）。HLE 镜像 MIT 许可。",

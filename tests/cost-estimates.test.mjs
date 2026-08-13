@@ -36,6 +36,25 @@ test("estimateStabilityCost：缺 rounds 时按默认 10 估", () => {
   assert.equal(e.requests, 10);
 });
 
+test("estimateStabilityCost：有 groups 时按各组 repeats 求和，忽略 rounds", () => {
+  const e = estimateStabilityCost({
+    rounds: 999,
+    groups: [
+      { presetId: "basic", repeats: 3 },
+      { presetId: "coding", repeats: 3 },
+      { presetId: "custom", repeats: 1 },
+    ],
+  });
+  assert.equal(e.requests, 7);
+  assert.equal(e.lowTokens, 7 * 80);
+  assert.equal(e.highTokens, 7 * 200);
+});
+
+test("estimateStabilityCost：空 groups 数组回落到 rounds", () => {
+  const e = estimateStabilityCost({ rounds: 5, groups: [] });
+  assert.equal(e.requests, 5);
+});
+
 // ---- AI 分析加价（横切所有带 payload 的估算） ----
 test("勾选 AI 分析：额外 +1 请求、token +[800,1800]（稳定性为例）", () => {
   const base = estimateStabilityCost({ rounds: 10 });
@@ -114,17 +133,33 @@ test("estimateAdmissionBatchCost：多渠道逐个累加请求数（单渠道内
 });
 
 // ---- 标准评测 ----
-test("estimateStandardCost：请求数 = 1(快检) + 轮数 + 场景数", () => {
-  const e = estimateStandardCost({ rounds: 3 }, 2);
-  assert.equal(e.requests, 6); // 1+3+2
-  assert.equal(e.risk, "低"); // rounds<10
+test("estimateStandardCost：单模型 = 6(快速测试/quick-verify) + 9(3组预设文案×3轮稳定性) + 标准准入(11)", () => {
+  const e = estimateStandardCost({ modelNames: ["demo-model"] });
+  const admission = estimateAdmissionCost({ packageLevel: "standard", modelName: "demo-model" });
+  assert.equal(e.requests, 6 + 9 + admission.requests);
+  assert.equal(e.risk, "中"); // 26 次请求 ≥ 24 门槛
 });
 
-test("estimateStandardCost：勾选 AI 分析（有场景→2次分析）把低风险抬升为中", () => {
-  const e = estimateStandardCost({ rounds: 3, useAiReportAnalysis: "1" }, 2);
-  assert.equal(e.requests, 8); // 6 + 2 次分析
-  assert.equal(e.highTokens, 2400 + 2 * 1800); // 基础 high 2400 + 2×1800
-  assert.equal(e.risk, "中"); // 2×1800=3600 ≥3000 → upgradeRisk 低→中
+test("estimateStandardCost：多模型请求数按模型数线性叠加（顺序执行、不并发不影响预估）", () => {
+  const one = estimateStandardCost({ modelNames: ["m1"] });
+  const two = estimateStandardCost({ modelNames: ["m1", "m2"] });
+  assert.equal(two.requests, one.requests * 2);
+});
+
+test("estimateStandardCost：勾选「这是 Claude 渠道」额外加 4 个模型的快速准入(5 次/个)", () => {
+  const without = estimateStandardCost({ modelNames: ["m1"] });
+  const withClaude = estimateStandardCost({ modelNames: ["m1"], isClaudeChannel: "1" });
+  assert.equal(withClaude.requests, without.requests + 4 * 5);
+});
+
+test("estimateStandardCost：勾选 AI 分析按「模型数×2」累加（稳定性+标准准入各触发一次），claude 探测不触发", () => {
+  const withoutClaude = estimateStandardCost({ modelNames: ["m1", "m2"], useAiReportAnalysis: "1" });
+  assert.equal(withoutClaude.requests, estimateStandardCost({ modelNames: ["m1", "m2"] }).requests + 2 * 2);
+
+  // 勾选 claude 渠道后，AI 分析次数不应额外增加（4 个 tier probe 探测调用没有 useAiReportAnalysis）。
+  const withClaude = estimateStandardCost({ modelNames: ["m1", "m2"], useAiReportAnalysis: "1", isClaudeChannel: "1" });
+  const withClaudeNoAi = estimateStandardCost({ modelNames: ["m1", "m2"], isClaudeChannel: "1" });
+  assert.equal(withClaude.requests, withClaudeNoAi.requests + 2 * 2);
 });
 
 // ---- 压测（闭环/开环请求数模型不同） ----
@@ -141,6 +176,72 @@ test("estimateLoadTestCost：扫描多负载点时请求数对各点求和，且
   assert.equal(e.requests, 600 + 1200);
   const tiny = estimateLoadTestCost({ mode: "open", loads: [0], durationSec: 1, burstPeriodSec: 1 });
   assert.ok(tiny.requests >= 1, "请求数下限为 1，不会显示 0 次");
+});
+
+// max_tokens 现在由用户填写决定（不再被负载档锁死，见 server/load-test.mjs），预估必须跟着走。
+// 但【两种工作负载模型的缩放规律不同】，这是本组测试的要点：
+//   开环固定速率：请求数由速率决定、与每请求耗时无关 → 总 token 随 max_tokens 线性增长；
+//   闭环固定并发：请求数 = 并发 × 时长 / 每请求耗时，而每请求耗时随输出上限一起变长 →
+//     调大 max_tokens 时「单请求更贵但发得更少」，总量远非线性。
+// 若只放大单请求 token 而不同步拉长假设耗时，闭环会拿「短输出的请求数」乘「长输出的单请求
+// token」，把花费高报数倍（简单档填 640 实测约 8×）——那会让用户以为跑不起而放弃，
+// 或反过来不信任预估框。
+test("estimateLoadTestCost：开环下 max_tokens 放大 → token 预估线性放大（请求数由速率决定，不受影响）", () => {
+  const base = estimateLoadTestCost({ mode: "open", loads: [10], durationSec: 60, burstPeriodSec: 1, promptProfile: "simple" });
+  // simple 档默认 64，手填 640 = 10 倍
+  const scaled = estimateLoadTestCost({
+    mode: "open",
+    loads: [10],
+    durationSec: 60,
+    burstPeriodSec: 1,
+    promptProfile: "simple",
+    maxTokens: 640,
+  });
+  assert.equal(scaled.requests, base.requests, "开环请求数由速率×时长决定，与 max_tokens 无关");
+  assert.equal(scaled.lowTokens, base.lowTokens * 10, "开环 token 两端都随上限线性放大");
+  assert.equal(scaled.highTokens, base.highTokens * 10);
+});
+
+test("estimateLoadTestCost：闭环下 max_tokens 放大 → 请求数同比变少，总 token 不得按线性高报", () => {
+  const base = estimateLoadTestCost({ mode: "closed", loads: [10], durationSec: 60, promptProfile: "simple" });
+  const scaled = estimateLoadTestCost({ mode: "closed", loads: [10], durationSec: 60, promptProfile: "simple", maxTokens: 640 });
+  assert.ok(
+    scaled.requests < base.requests / 5,
+    `每请求输出上限×10 后耗时大增，同样时长发得远少于基线（基线 ${base.requests}，实测 ${scaled.requests}）`,
+  );
+  // 关键防回归：曾经的实现把 token 直接×10 又不改请求数 → 高位 320000。真实量级在 4-5 万。
+  assert.ok(
+    scaled.highTokens < base.highTokens * 2,
+    `闭环总 token 受吞吐上限约束，不该按 max_tokens 线性放大（基线 ${base.highTokens}，实测 ${scaled.highTokens}）`,
+  );
+  assert.ok(scaled.highTokens > base.highTokens, "但仍应比基线高：固定开销被摊薄，单位时间产出更多 token");
+  assert.ok(scaled.lowTokens > base.lowTokens, "低位同样只增不减，否则读起来像「上限调大反而更便宜」");
+});
+
+test("estimateLoadTestCost：闭环放大 max_tokens 不得让成本等级反而降一档", () => {
+  // 闭环放大后请求数变少，若直接用它定级，会出现「调大上限 → 实际更贵 → 警示反而变轻」。
+  const base = estimateLoadTestCost({ mode: "closed", loads: [30], durationSec: 120, promptProfile: "simple" });
+  const scaled = estimateLoadTestCost({ mode: "closed", loads: [30], durationSec: 120, promptProfile: "simple", maxTokens: 4096 });
+  const order = { 低: 0, 中: 1, 中高: 2, 高: 3 };
+  assert.ok(order[scaled.risk] >= order[base.risk], `成本等级只增不减（基线 ${base.risk}，实测 ${scaled.risk}）`);
+});
+
+test("estimateLoadTestCost：手填 max_tokens 小于或等于档位默认值时不倒扣（下限保持基线）", () => {
+  const base = estimateLoadTestCost({ mode: "closed", loads: [10], durationSec: 60, promptProfile: "simple" });
+  const smaller = estimateLoadTestCost({ mode: "closed", loads: [10], durationSec: 60, promptProfile: "simple", maxTokens: 10 });
+  // 输出长度主要由 prompt 决定，max_tokens 只是上限：填小不代表模型就会少写，往下砍会低报花费。
+  assert.equal(smaller.requests, base.requests, "不倒扣：请求数与基线一致");
+  assert.equal(smaller.lowTokens, base.lowTokens, "填的值低于档位默认时不应把预估往下砍");
+  assert.equal(smaller.highTokens, base.highTokens);
+});
+
+test("estimateLoadTestCost：未填 max_tokens 时逐位等于放开该字段之前（防回归）", () => {
+  // tokenScale=1 这条路径必须与「max_tokens 被档位锁死」时代的数字完全一致，
+  // 否则等于顺手改了所有老用户看到的预估。
+  const e = estimateLoadTestCost({ mode: "closed", loads: [10], durationSec: 60, promptProfile: "simple" });
+  assert.equal(e.requests, 400); // round(10×60 / 1.5)
+  assert.equal(e.lowTokens, 400 * 30);
+  assert.equal(e.highTokens, 400 * 80);
 });
 
 // ---- 成文与确认框 ----

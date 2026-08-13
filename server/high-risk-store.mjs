@@ -26,6 +26,17 @@ const TYPE_LABEL = {
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 const pct = (v) => `${Math.round(Number(v) * 100)}%`;
 
+// 拼出"渠道+模型"标识：profileName 对迁移后的渠道已是「渠道名 / 模型名」（见 channel-model.mjs
+// resolveTestTarget），对老 profile 只是渠道名。model 已包含在其中就直接用 profileName，
+// 否则补上模型名，确保横幅里渠道名不会被单独的 model 字段挤掉。
+function whoLabel(profileName, model) {
+  const name = String(profileName || "");
+  const m = String(model || "");
+  if (!name) return m;
+  if (!m || name.includes(m)) return name;
+  return `${name} / ${m}`;
+}
+
 // result 无统一 type 字段：admission/scenario/batch-admission/quick-verify 有 type；
 // 批量稳定性只有 batchId（批量准入既有 type 又有 batchId，故先看 type）；单渠道稳定性两者皆无。
 function testTypeOf(result) {
@@ -79,7 +90,7 @@ export function collectHighRiskReports(result) {
   if (Array.isArray(result.reports) && result.reports.length) {
     const digestByProfile = new Map((result.profileDigest || []).map((d) => [d.profileId, d]));
     for (const rep of result.reports) {
-      push(rep.reportHtmlPath, rep.model || rep.profileName || "", riskReasonReport(rep, type, digestByProfile));
+      push(rep.reportHtmlPath, whoLabel(rep.profileName, rep.model), riskReasonReport(rep, type, digestByProfile));
     }
     return out;
   }
@@ -93,7 +104,7 @@ export function collectHighRiskReports(result) {
   } else {
     reason = riskReasonSingle(result, type);
   }
-  push(result.reportHtmlPath, result.model || result.profileName || "", reason);
+  push(result.reportHtmlPath, whoLabel(result.profileName, result.model), reason);
   return out;
 }
 

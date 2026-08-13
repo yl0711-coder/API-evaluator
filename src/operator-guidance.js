@@ -1,3 +1,13 @@
+// 判定阈值一律从 shared/thresholds.mjs 取，前端不得自带第二套（ADM-011）。
+// 后端同样引用那个文件（经 server/constants.mjs 再导出），所以改一处即全局一致。
+import {
+  P95_LATENCY_OK_MS,
+  P95_LATENCY_SLOW_MS,
+  PRESCREEN_SUCCESS_RATE_FAIL,
+  PRESCREEN_SUCCESS_RATE_OK,
+  isDeliverableGrade,
+} from "../shared/thresholds.mjs";
+
 export const PROFILE_TEMPLATES = {
   relay_openai_compatible: {
     label: "AI 中转站 / OpenAI 兼容",
@@ -40,14 +50,15 @@ export const PROFILE_TEMPLATES = {
     notes: "推理模型响应可能更慢，复杂测试建议把超时调到 120000ms。直连可用标准 /v1 路径。",
   },
   gemini_openai_compatible: {
-    label: "Gemini / OpenAI 兼容",
+    label: "Gemini / 直连",
     provider: "Google",
-    protocol: "openai_compatible",
-    baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
+    protocol: "openai_path_prefix",
+    baseUrlPlaceholder: "https://generativelanguage.googleapis.com/v1beta/openai",
     modelPlaceholder: "gemini-2.5-pro / gemini-2.5-flash",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "经中转站测最省心。直连 Google 需用其 OpenAI 兼容端点（/v1beta/openai），路径与标准 /v1 不同。",
+    notes:
+      "Google 的 OpenAI 兼容前缀是 /v1beta/openai（不是 /v1），故协议选「自定义路径前缀」。若你经中转站接入，改选「OpenAI Compatible」并只填网关根地址。",
   },
   kimi_openai_compatible: {
     label: "Kimi (Moonshot) / OpenAI 兼容",
@@ -60,34 +71,37 @@ export const PROFILE_TEMPLATES = {
     notes: "Moonshot 直连可用标准 /v1 路径；经中转站同样适用。",
   },
   doubao_openai_compatible: {
-    label: "豆包 (火山方舟) / OpenAI 兼容",
+    label: "豆包 (火山方舟) / 直连",
     provider: "ByteDance",
-    protocol: "openai_compatible",
-    baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
+    protocol: "openai_path_prefix",
+    baseUrlPlaceholder: "https://ark.cn-beijing.volces.com/api/v3",
     modelPlaceholder: "doubao-seed-1-6 / doubao-pro（或接入点 ep-...）",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "经中转站测最省心。火山方舟直连路径为 /api/v3，与标准 /v1 不同。",
+    notes:
+      "火山方舟直连前缀是 /api/v3（不是 /v1），故协议选「自定义路径前缀」。模型名可填接入点 ID（ep-...）。若你经中转站接入，改选「OpenAI Compatible」并只填网关根地址。",
   },
   glm_openai_compatible: {
-    label: "GLM (智谱) / OpenAI 兼容",
+    label: "GLM (智谱) / 直连",
     provider: "Zhipu",
-    protocol: "openai_compatible",
-    baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
+    protocol: "openai_path_prefix",
+    baseUrlPlaceholder: "https://open.bigmodel.cn/api/paas/v4",
     modelPlaceholder: "glm-4.6 / glm-4-plus",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "经中转站测最省心。智谱直连路径为 /api/paas/v4，与标准 /v1 不同。",
+    notes:
+      "智谱直连前缀是 /api/paas/v4（不是 /v1），故协议选「自定义路径前缀」，Base URL 要填到 v4 那一层。国际站用 https://api.z.ai/api/paas/v4。若你经中转站接入，改选「OpenAI Compatible」并只填网关根地址。",
   },
   qwen_openai_compatible: {
-    label: "通义千问 Qwen / OpenAI 兼容",
+    label: "通义千问 Qwen / 直连",
     provider: "Alibaba",
-    protocol: "openai_compatible",
-    baseUrlPlaceholder: "https://api.example.com（建议经中转站）",
+    protocol: "openai_path_prefix",
+    baseUrlPlaceholder: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     modelPlaceholder: "qwen-max / qwen-plus / qwen3-...",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "经中转站测最省心。阿里 DashScope 直连用其 OpenAI 兼容端点（/compatible-mode/v1），路径与标准 /v1 不同。",
+    notes:
+      "阿里 DashScope 的兼容前缀是 /compatible-mode/v1（不是 /v1），故协议选「自定义路径前缀」。若你经中转站接入，改选「OpenAI Compatible」并只填网关根地址。",
   },
   grok_openai_compatible: {
     label: "Grok (xAI) / OpenAI 兼容",
@@ -97,7 +111,8 @@ export const PROFILE_TEMPLATES = {
     modelPlaceholder: "grok-4 / grok-3",
     maxTokens: "1024",
     timeoutMs: "300000",
-    notes: "xAI 直连可用标准 /v1 路径；经中转站同样适用。其余少见模型（Mistral / Llama / 文心 / 混元 / MiniMax 等）直接用最上面的通用「AI 中转站 / OpenAI 兼容」即可。",
+    notes:
+      "xAI 直连可用标准 /v1 路径；经中转站同样适用。其余少见模型（Mistral / Llama / 文心 / 混元 / MiniMax 等）直接用最上面的通用「AI 中转站 / OpenAI 兼容」即可。",
   },
 };
 
@@ -110,7 +125,11 @@ const ERROR_ADVICES = {
   model_not_found: {
     title: "模型不可用",
     cause: "模型名写错，或当前渠道没有开通这个模型。",
-    actions: ["复制平台后台展示的模型名，不要凭记忆填写。", "如果是中转站，确认该渠道是否支持这个模型。", "用默认短 Prompt 重新跑快速测试。"],
+    actions: [
+      "复制平台后台展示的模型名，不要凭记忆填写。",
+      "如果是中转站，确认该渠道是否支持这个模型。",
+      "用默认短 Prompt 重新跑快速测试。",
+    ],
   },
   rate_limited: {
     title: "触发限流",
@@ -125,7 +144,11 @@ const ERROR_ADVICES = {
   network_error: {
     title: "本地网络错误",
     cause: "本机网络、VPN、DNS、代理或 Base URL 有问题。",
-    actions: ["先确认浏览器和代理能正常访问网页。", "检查 Base URL 是否填成基础地址。", "如果只有本工具失败，把错误截图和配置名称发给负责人。"],
+    actions: [
+      "先确认浏览器和代理能正常访问网页。",
+      "检查 Base URL 是否填成基础地址。",
+      "如果只有本工具失败，把错误截图和配置名称发给负责人。",
+    ],
   },
   upstream_5xx: {
     title: "上游服务错误",
@@ -135,7 +158,11 @@ const ERROR_ADVICES = {
   content_block_not_found: {
     title: "内容块缺失",
     cause: "常见于 Claude/OpenAI 协议转换不完整，平台显示 done 但客户端无法解析内容。",
-    actions: ["优先检查协议：中转站多数选 OpenAI Compatible，Claude 原生才选 Claude Messages。", "查看平台日志里的请求转换方式。", "换一个同模型渠道快速测试，判断是不是单渠道转换问题。"],
+    actions: [
+      "优先检查协议：中转站多数选 OpenAI Compatible，Claude 原生才选 Claude Messages。",
+      "查看平台日志里的请求转换方式。",
+      "换一个同模型渠道快速测试，判断是不是单渠道转换问题。",
+    ],
   },
   empty_response: {
     title: "空响应",
@@ -208,13 +235,30 @@ export function validateProfileConfig(payload) {
       });
     }
 
-    if (/\/v1\/(messages|chat\/completions)\/?$/i.test(parsedUrl.pathname)) {
+    // 「自定义路径前缀」协议下，带路径是【必须】的（baseUrl 要填到版本号那一层），
+    // 故那条「带了额外路径」的提醒不适用——照发会把唯一正确的填法说成可疑。
+    // 但 /chat/completions 结尾仍是填过头（工具会再补一次），照样拦。
+    const isPathPrefix = protocol === "openai_path_prefix";
+    if (isPathPrefix && /\/chat\/completions\/?$/i.test(parsedUrl.pathname)) {
+      issues.push({
+        level: "blocker",
+        title: "Base URL 填得太完整了",
+        detail: "当前协议只需填到版本前缀那一层（如 https://open.bigmodel.cn/api/paas/v4），工具会自动补 /chat/completions。",
+      });
+    } else if (!isPathPrefix && /\/v1\/(messages|chat\/completions)\/?$/i.test(parsedUrl.pathname)) {
       issues.push({
         level: "blocker",
         title: "Base URL 填得太完整了",
         detail: "这里只填基础地址。不要带 /v1/messages 或 /v1/chat/completions，工具会按协议自动拼接。",
       });
-    } else if (parsedUrl.pathname && parsedUrl.pathname !== "/") {
+    } else if (isPathPrefix && (!parsedUrl.pathname || parsedUrl.pathname === "/")) {
+      issues.push({
+        level: "warning",
+        title: "Base URL 缺少路径前缀",
+        detail:
+          "选了「自定义路径前缀」却只填了域名。要填平台后台给的完整兼容端点前缀（如 /api/paas/v4）；若上游本就是标准 /v1，请改选「OpenAI Compatible」。",
+      });
+    } else if (!isPathPrefix && parsedUrl.pathname && parsedUrl.pathname !== "/") {
       issues.push({
         level: "warning",
         title: "Base URL 带了额外路径",
@@ -282,11 +326,13 @@ export function normalizeErrorKey(errorLike) {
   if (ERROR_ADVICES[text]) return text;
   if (text.includes("content block not found")) return "content_block_not_found";
   if (text.includes("auth") || text.includes("401") || text.includes("403") || text.includes("unauthorized")) return "auth_failed";
-  if (text.includes("model") && (text.includes("not found") || text.includes("invalid") || text.includes("unknown"))) return "model_not_found";
+  if (text.includes("model") && (text.includes("not found") || text.includes("invalid") || text.includes("unknown")))
+    return "model_not_found";
   if (text.includes("rate") || text.includes("429") || text.includes("quota")) return "rate_limited";
   if (text.includes("timeout") || text.includes("aborted")) return "timeout";
   if (text.includes("network") || text.includes("fetch failed") || text.includes("dns") || text.includes("tls")) return "network_error";
-  if (text.includes("5xx") || text.includes("500") || text.includes("502") || text.includes("503") || text.includes("504")) return "upstream_5xx";
+  if (text.includes("5xx") || text.includes("500") || text.includes("502") || text.includes("503") || text.includes("504"))
+    return "upstream_5xx";
   if (text.includes("empty")) return "empty_response";
   if (text.includes("invalid") || text.includes("json")) return "invalid_response";
   return "unknown_error";
@@ -305,92 +351,127 @@ export function buildErrorAdviceText(errorLike) {
   ].join("\n");
 }
 
-export function buildStandardNextStepAdvice({ quick, stability, scenario }) {
-  if (!quick?.success) {
-    return [
-      "快速测试没有通过，先不要继续消耗 token。",
-      "下一步：回到 API 配置，检查 Base URL、协议、模型名和 Key，然后重新跑快速测试。",
-    ];
-  }
+// 标准评测单模型初筛判定（修 ADM-011）。
+//
+// 这里只有【一份】判定阶梯。此前 buildStandardNextStepAdvice 与 buildStandardOperatorSummary
+// 各自抄了一套逐条相同的 if-else，还各自硬编码 `p95 > 30000`、`0.95`、`0.9`、`["A","B"]`——
+// 两处必须同步修改，实际上从来没同步过。更糟的是那个 30000 与服务端的 15s/45s 三档冲突：
+// 同一份稳定性数据，准入报告按 15s 判「有条件通过」，标准评测页的人话结论按 30s 判「初筛通过」。
+// 现在阈值统一来自 shared/thresholds.mjs，两个调用方只负责措辞、不再各自判定。
+//
+// 与服务端的分工（别把这里当准入结论）：
+//   · 服务端 admission-policy / aggregateSuite 是【唯一】权威准入结论，四态、含硬门槛。
+//   · 这里给的是「下一步该干什么」的初筛建议，口径刻意宽于准入门槛（准入要 9/9 全成功）。
+//   · 因此本函数说 pass、服务端说 accepted_with_conditions 是正常的，不是矛盾——
+//     前者答「值不值得继续花钱」，后者答「能不能开放给业务」。
+//   · 展示上以服务端结论为准：标准评测页的「人话结论」卡片走 renderStandardConclusion
+//     （读服务端 conclusion），本函数只驱动下方的建议文案与按钮。
+//
+// admission.grade 沿用准入评测的 A-F/X 等级；A/B 视为可交付（DELIVERABLE_GRADES）。
+function classifyStandardOutcome({ quick, stability, admission }) {
+  if (!quick?.success) return { code: "quick_failed" };
 
   const successRate = Number(stability?.successRate ?? 0);
   const p95 = Number(stability?.p95TotalMs ?? 0);
-  const scenarioScores = scenario?.results?.map((item) => Number(item.avgQualityScore)).filter(Number.isFinite) || [];
-  const avgScore = scenarioScores.length ? scenarioScores.reduce((sum, value) => sum + value, 0) / scenarioScores.length : null;
+  const grade = admission?.grade || null;
 
-  if (successRate >= 0.95 && (!p95 || p95 <= 30000) && (avgScore === null || avgScore >= 70)) {
-    return [
-      "初筛结果可用，可以进入更正式的复测。",
-      "下一步：先复制交付模板给负责人；如果负责人要求更稳妥，再跑 10 轮稳定性或基础全量场景包。",
-    ];
+  // p95 为 0/缺失表示「没测到延迟」，不能当成快——故用 `!p95 ||` 放行而不是判它小于阈值。
+  if (successRate >= PRESCREEN_SUCCESS_RATE_OK && (!p95 || p95 <= P95_LATENCY_OK_MS) && (grade === null || isDeliverableGrade(grade))) {
+    return { code: "pass" };
   }
 
-  if (successRate < 0.9) {
-    return [
-      "稳定性不足，暂时不建议作为候选渠道。",
-      "下一步：去报告中心查看失败类型；如果是限流或上游 5xx，间隔一段时间后用 3 轮复测。",
-    ];
-  }
+  if (successRate < PRESCREEN_SUCCESS_RATE_FAIL) return { code: "low_success_rate" };
 
-  if (p95 > 30000) {
-    return [
-      "能跑通，但响应偏慢。",
-      "下一步：确认业务是否能接受等待时间；如不能接受，换低延迟渠道或降低复杂任务输入长度。",
-    ];
-  }
+  // >45s 与服务端 evaluateStability 的 NOT_PASSED 对齐（此前前端一律只降级为「偏慢」，
+  // 于是一条服务端判不通过的渠道在人话面板上仍显示「能用」）。
+  if (p95 > P95_LATENCY_SLOW_MS) return { code: "too_slow" };
+  if (p95 > P95_LATENCY_OK_MS) return { code: "slow_conditional" };
 
-  return [
-    "结果需要人工复核。",
-    "下一步：查看报告中心的错误诊断和输出摘要，再决定是否扩大轮数。",
-  ];
+  if (grade && !isDeliverableGrade(grade)) return { code: "grade_not_deliverable", grade };
+
+  return { code: "needs_review" };
 }
 
-export function buildStandardOperatorSummary({ quick, stability, scenario }) {
-  if (!quick?.success) {
-    return {
-      level: "fail",
-      title: "这条 API 现在还不能进入正式测试",
-      detail: "快速测试已经失败，继续跑稳定性或场景测试只会浪费额度。先修配置，再复测。",
-    };
+export function buildStandardNextStepAdvice({ quick, stability, admission }) {
+  const { code, grade } = classifyStandardOutcome({ quick, stability, admission });
+  switch (code) {
+    case "quick_failed":
+      return ["快速测试没有通过，先不要继续消耗 token。", "下一步：回到 API 配置，检查 Base URL、协议、模型名和 Key，然后重新跑快速测试。"];
+    case "pass":
+      return ["初筛结果可用，可以进入更正式的复测。", "下一步：先复制交付模板给负责人；如果负责人要求更稳妥，再跑 30 轮稳定性或深度准入。"];
+    case "low_success_rate":
+      return ["稳定性不足，暂时不建议作为候选渠道。", "下一步：去报告中心查看失败类型；如果是限流或上游 5xx，间隔一段时间后用 3 轮复测。"];
+    case "too_slow":
+      return [
+        `响应过慢，P95 已超过 ${P95_LATENCY_SLOW_MS} ms 上限。`,
+        "下一步：这条渠道在准入口径下也判不通过；先确认是否限流或路由绕远，再决定换渠道。",
+      ];
+    case "slow_conditional":
+      return [
+        `能跑通，但响应偏慢（P95 超过 ${P95_LATENCY_OK_MS} ms）。`,
+        "下一步：确认业务是否能接受等待时间；如不能接受，换低延迟渠道或降低复杂任务输入长度。",
+      ];
+    case "grade_not_deliverable":
+      return [
+        `标准准入等级为 ${grade}，暂不建议直接开放。`,
+        "下一步：查看准入报告里的分项结果，确认是结构化输出、工具调用还是标称一致性出了问题。",
+      ];
+    default:
+      return ["结果需要人工复核。", "下一步：查看报告中心的错误诊断和输出摘要，再决定是否扩大轮数。"];
   }
-
-  const successRate = Number(stability?.successRate ?? 0);
-  const p95 = Number(stability?.p95TotalMs ?? 0);
-  const scenarioScores = scenario?.results?.map((item) => Number(item.avgQualityScore)).filter(Number.isFinite) || [];
-  const avgScore = scenarioScores.length ? scenarioScores.reduce((sum, value) => sum + value, 0) / scenarioScores.length : null;
-
-  if (successRate >= 0.95 && (!p95 || p95 <= 30000) && (avgScore === null || avgScore >= 70)) {
-    return {
-      level: "pass",
-      title: "初筛通过，值得进入下一轮复测",
-      detail: "这条 API 基本可用。可以先复制交付模板给负责人；如果要更稳妥，再跑 10 轮稳定性或完整场景包。",
-    };
-  }
-
-  if (successRate < 0.9) {
-    return {
-      level: "fail",
-      title: "稳定性不够，暂时不建议推荐",
-      detail: "失败比例偏高。先看报告中心里的错误类型，再决定是修配置、降低并发，还是换渠道。",
-    };
-  }
-
-  if (p95 > 30000) {
-    return {
-      level: "watch",
-      title: "能用，但速度偏慢",
-      detail: "如果业务能接受等待，可以继续观察；如果需要低延迟，不建议优先推荐这条渠道。",
-    };
-  }
-
-  return {
-    level: "watch",
-    title: "结果需要人工复核",
-    detail: "基础测试没有明显阻断，但结论还不够强。建议查看报告明细后再扩大测试。",
-  };
 }
 
-export function buildStandardActionPlan({ quick, stability, scenario }) {
+// 与 buildStandardNextStepAdvice 共用 classifyStandardOutcome，两者不会再漂移。
+// level 只有 pass / watch / fail 三档，供 CSS 卡片配色（`${level}-card`）与按钮方案使用。
+export function buildStandardOperatorSummary({ quick, stability, admission }) {
+  const { code, grade } = classifyStandardOutcome({ quick, stability, admission });
+  switch (code) {
+    case "quick_failed":
+      return {
+        level: "fail",
+        title: "这条 API 现在还不能进入正式测试",
+        detail: "快速测试已经失败，继续跑稳定性或准入评测只会浪费额度。先修配置，再复测。",
+      };
+    case "pass":
+      return {
+        level: "pass",
+        title: "初筛通过，值得进入下一轮复测",
+        detail: "这条 API 基本可用。可以先复制交付模板给负责人；如果要更稳妥，再跑 30 轮稳定性或深度准入。",
+      };
+    case "low_success_rate":
+      return {
+        level: "fail",
+        title: "稳定性不够，暂时不建议推荐",
+        detail: "失败比例偏高。先看报告中心里的错误类型，再决定是修配置、降低并发，还是换渠道。",
+      };
+    case "too_slow":
+      return {
+        level: "fail",
+        title: "响应过慢，不建议开放",
+        detail: `P95 超过 ${P95_LATENCY_SLOW_MS} ms 上限，准入口径下同样判不通过。先确认是否限流或路由绕远，再决定换渠道。`,
+      };
+    case "slow_conditional":
+      return {
+        level: "watch",
+        title: "能用，但速度偏慢",
+        detail: `P95 超过 ${P95_LATENCY_OK_MS} ms。如果业务能接受等待，可以继续观察；如果需要低延迟，不建议优先推荐这条渠道。`,
+      };
+    case "grade_not_deliverable":
+      return {
+        level: "fail",
+        title: `标准准入等级为 ${grade}，暂不建议开放`,
+        detail: "快速测试和稳定性都正常，但标准准入没有达到可交付水平。查看准入报告的分项结果再决定。",
+      };
+    default:
+      return {
+        level: "watch",
+        title: "结果需要人工复核",
+        detail: "基础测试没有明显阻断，但结论还不够强。建议查看报告明细后再扩大测试。",
+      };
+  }
+}
+
+export function buildStandardActionPlan({ quick, stability, admission }) {
   if (!quick?.success) {
     return [
       { label: "回 API 配置检查", action: "profile-config", kind: "primary" },
@@ -398,12 +479,12 @@ export function buildStandardActionPlan({ quick, stability, scenario }) {
     ];
   }
 
-  const summary = buildStandardOperatorSummary({ quick, stability, scenario });
+  const summary = buildStandardOperatorSummary({ quick, stability, admission });
   if (summary.level === "pass") {
     return [
       { label: "复制交付模板", action: "handoff", kind: "primary" },
-      { label: "跑 10 轮稳定性", action: "stability-basic", kind: "secondary" },
-      { label: "跑基础全量场景", action: "scenario-basic", kind: "secondary" },
+      { label: "跑 30 轮稳定性", action: "stability-candidate", kind: "secondary" },
+      { label: "跑深度准入", action: "admission-deep", kind: "secondary" },
     ];
   }
 

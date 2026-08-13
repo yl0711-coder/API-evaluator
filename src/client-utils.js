@@ -10,8 +10,8 @@ export function formatPercent(value) {
   return Number.isFinite(Number(value)) ? `${Math.round(Number(value) * 100)}%` : "-";
 }
 
-export function downloadText(filename, text) {
-  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+export function downloadText(filename, text, mimeType = "application/json") {
+  const blob = new Blob([text], { type: `${mimeType};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -152,10 +152,30 @@ export function toast(message, error = false) {
 // `import { escapeHtml } from "./client-utils.js"` 不变。
 export { escapeHtml };
 
+/**
+ * 标签模板：自动对插值做 HTML 转义。
+ *
+ * 用法：html`<b>${userName}</b>` —— userName 中的 `<` `>` `&` 等自动转义。
+ *
+ * **不要**在插值是刻意 HTML 片段（pill 徽章、链接、按钮等硬编码标签）时使用
+ * ——html 会把它们转义成可见文本。这类场景在代码里有注释标注"刻意不转义"。
+ * 对应文件：batch-target-picker.js、channel-admin.js、auto-test-config.js、
+ * developer.js、history-view.js、scenario-view.js、dashboard.js 等。
+ */
+export function html(strings, ...values) {
+  return strings.reduce((out, s, i) => {
+    const v = values[i];
+    const escaped = v === undefined || v === null ? "" : escapeHtml(String(v));
+    return out + s + escaped;
+  }, "");
+}
+
 // 协议代码 -> 中文展示名。渠道/模型/profile 各处共用，避免多份分支漂移。
 export function protocolLabel(protocol) {
   if (protocol === "claude_messages") return "Claude Messages";
   if (protocol === "openai_chat") return "OpenAI Chat";
   if (protocol === "openai_compatible") return "OpenAI 兼容";
+  // baseUrl 已含厂商自己的版本前缀（智谱 /api/paas/v4 等），不再补 /v1。
+  if (protocol === "openai_path_prefix") return "OpenAI 兼容 · 自定义前缀";
   return protocol || "-";
 }

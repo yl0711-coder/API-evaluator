@@ -5,16 +5,12 @@ import { performance } from "node:perf_hooks";
 import { classifyClientError, normalizeClientLogRecord } from "./client-log-analyzer.mjs";
 import { readProfileApiKey } from "./secret-store.mjs";
 import { readBoundedResponseText } from "./test-runner.mjs";
+import { buildProtocolUrl } from "./protocols.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
 import { redactSensitiveText, safeJson, summarizeText } from "./utils.mjs";
 
 const MAX_REPLAY_RESPONSE_BYTES = 2 * 1024 * 1024;
-const SAFE_HEADER_NAMES = new Set([
-  "accept",
-  "anthropic-beta",
-  "anthropic-version",
-  "content-type",
-]);
+const SAFE_HEADER_NAMES = new Set(["accept", "anthropic-beta", "anthropic-version", "content-type"]);
 
 export async function runClientReplay(profile, replayPayload = {}) {
   const apiKey = await readProfileApiKey(profile);
@@ -117,16 +113,36 @@ export async function runClientReplay(profile, replayPayload = {}) {
 export function buildReplayRequest(profile, replayPayload = {}, apiKey = "[api-key]") {
   const request = normalizeReplayInput(replayPayload);
   const baseUrl = String(profile.baseUrl || "").replace(/\/+$/, "");
-  const path = normalizeReplayPath(request.path || request.url || inferDefaultPath(profile));
+  const path = normalizeReplayPath(request.path || request.url || inferDefaultPath(profile), profile);
   const body = normalizeReplayBody(request.body || request.requestBody || replayPayload.body, profile);
   const headers = buildReplayHeaders(profile, request.headers, apiKey);
   return {
     method: String(request.method || "POST").toUpperCase(),
-    url: `${baseUrl}${path}`,
+    url: joinReplayUrl(baseUrl, path),
     path,
     headers,
     body,
   };
+}
+
+// baseUrl + 捕获到的 path 拼绝对 URL。
+//
+// 原来是直接 `${baseUrl}${path}`，隐含假设「baseUrl 只有 origin、没有路径」。openai_path_prefix
+// 渠道打破了这个假设：baseUrl 含 /api/paas/v4，而客户端日志里的 path 是【从根算起】的完整
+// pathname（也含 /api/paas/v4），直接相接会得到 /api/paas/v4/api/paas/v4/chat/completions。
+// 规则：path 已经带上了 baseUrl 的前缀就不再重复（按 origin 拼），否则保持原样把前缀补上。
+// 于是 origin-only 的老渠道行为逐字不变，带网关前缀的老渠道（如 .../gw）也不变。
+function joinReplayUrl(baseUrl, path) {
+  let parsed;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return `${baseUrl}${path}`; // baseUrl 非法：保持原行为，交由后续 assertPublicTarget/fetch 报错
+  }
+  const prefix = parsed.pathname.replace(/\/+$/, "");
+  if (!prefix) return `${parsed.origin}${path}`;
+  if (path === prefix || path.startsWith(`${prefix}/`)) return `${parsed.origin}${path}`;
+  return `${parsed.origin}${prefix}${path}`;
 }
 
 export function normalizeReplayInput(payload = {}) {
@@ -166,9 +182,9 @@ function normalizeReplayBody(body, profile) {
   };
 }
 
-function normalizeReplayPath(value) {
+function normalizeReplayPath(value, profile = null) {
   const text = String(value || "");
-  if (!text) return "/v1/chat/completions";
+  if (!text) return profile ? inferDefaultPath(profile) : "/v1/chat/completions";
   try {
     return new URL(text).pathname;
   } catch {
@@ -177,6 +193,10 @@ function normalizeReplayPath(value) {
   }
 }
 
+// 回放没带原始 path 时的兜底路径。必须与 protocols.buildProtocolUrl 同源：
+// 此处独立拼 `/v1/...` 曾导致 openai_path_prefix 渠道（baseUrl 已含 /api/paas/v4 这类版本前缀）
+// 被拼成 `/api/paas/v4/v1/chat/completions` → 404，即测试主链路已修掉、却在回放链路复现的同一个 bug。
+// buildProtocolUrl 收的是 baseUrl、返回绝对 URL；这里只要 path 部分，故用同一函数解出 pathname。
 function inferDefaultPath(profile) {
-  return profile.protocol === "claude_messages" ? "/v1/messages" : "/v1/chat/completions";
+  return new URL(buildProtocolUrl(profile.protocol, "https://placeholder.invalid")).pathname;
 }

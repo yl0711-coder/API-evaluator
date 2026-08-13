@@ -1,0 +1,13 @@
+[Unit]
+Description=Check API-evaluator Docker health every 30 seconds
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+AccuracySec=5s
+RandomizedDelaySec=5s
+Persistent=true
+Unit=api-evaluator-health-recovery.service
+
+[Install]
+WantedBy=timers.target

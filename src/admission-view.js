@@ -1,5 +1,5 @@
 import { escapeHtml, renderMarkdown } from "./client-utils.js";
-import { recommendationClass } from "./formatters.js";
+import { recommendationClass, temperatureStrippedNotice } from "./formatters.js";
 
 const GRADE_TEXT = {
   A: "优秀，可进入后续测试",
@@ -23,6 +23,7 @@ export function renderAdmissionResult(result) {
 
   return `
     <div class="admission-result">
+      ${temperatureStrippedNotice(result.temperatureStrippedCount, result.requestCount)}
       <article class="admission-hero ${recommendationClass(level)}-card">
         <div>
           <span>准入等级</span>
@@ -190,16 +191,40 @@ function tokenizerFpView(result) {
   const fp = result?.tokenizerFingerprint; // Claude：基线拟合
   if (fp) {
     if (!fp.applicable) return { cls: "warn", text: "不适用", detail: fp.reason || "未核验。" };
-    if (fp.status === "consistent") return { cls: "ok", text: "一致", detail: `按 ${fp.baselineModel} 基线，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（n=${fp.n ?? 0}）。` };
-    if (fp.status === "mismatch") return { cls: "fail", text: "疑似冒牌", detail: `与 ${fp.baselineModel} 分词不一致，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}。` };
-    return { cls: "warn", text: "需复核", detail: `按 ${fp.baselineModel} 基线，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（n=${fp.n ?? 0}）。` };
+    if (fp.status === "consistent")
+      return {
+        cls: "ok",
+        text: "一致",
+        detail: `按 ${fp.baselineModel} 基线，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（n=${fp.n ?? 0}）。`,
+      };
+    if (fp.status === "mismatch")
+      return {
+        cls: "fail",
+        text: "疑似冒牌",
+        detail: `与 ${fp.baselineModel} 分词不一致，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}。`,
+      };
+    return {
+      cls: "warn",
+      text: "需复核",
+      detail: `按 ${fp.baselineModel} 基线，slope=${fp.slope ?? "-"} / R²=${fp.r2 ?? "-"}（n=${fp.n ?? 0}）。`,
+    };
   }
   const abs = result?.absoluteTokenAudit; // OpenAI：官方离线精确分词
   if (abs && abs.applicable) {
     const familyMismatch = (abs.flags || []).some((f) => f.code === "tokenizer_family_mismatch");
-    if (familyMismatch) return { cls: "fail", text: "疑似冒牌", detail: `与官方 ${abs.encoding} 精确分词不成线性（R²=${abs.r2 ?? "-"}），疑似底层非该家族。` };
-    if (abs.status === "consistent") return { cls: "ok", text: "一致", detail: `按官方 ${abs.encoding} 精确分词，slope=${abs.slope ?? "-"} / R²=${abs.r2 ?? "-"}。` };
-    return { cls: "warn", text: "需复核", detail: `按官方 ${abs.encoding} 精确分词，计费倍率 slope=${abs.slope ?? "-"} / R²=${abs.r2 ?? "-"}。` };
+    if (familyMismatch)
+      return {
+        cls: "fail",
+        text: "疑似冒牌",
+        detail: `与官方 ${abs.encoding} 精确分词不成线性（R²=${abs.r2 ?? "-"}），疑似底层非该家族。`,
+      };
+    if (abs.status === "consistent")
+      return { cls: "ok", text: "一致", detail: `按官方 ${abs.encoding} 精确分词，slope=${abs.slope ?? "-"} / R²=${abs.r2 ?? "-"}。` };
+    return {
+      cls: "warn",
+      text: "需复核",
+      detail: `按官方 ${abs.encoding} 精确分词，计费倍率 slope=${abs.slope ?? "-"} / R²=${abs.r2 ?? "-"}。`,
+    };
   }
   if (abs && !abs.applicable) return { cls: "warn", text: "不适用", detail: abs.note || "无可用离线分词器（仅 OpenAI 系支持绝对判定）。" };
   return { cls: "warn", text: "不适用", detail: "仅对声称 Claude / OpenAI 家族的模型做分词核验。" };
