@@ -6,6 +6,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-08-13
+
+### Added
+- **评测性能诊断（新增 `server/performance.mjs`）** — `/api/health` 增加 `performance`：事件循环延迟
+  （p50/p99/max，`monitorEventLoopDelay`）、进程 CPU 占比与内存、执行槽位状态，以及最近 200 次上游请求的
+  滚动窗口（重试次数、退避总等待、429/5xx/超时/网络错误分类计数、平均端到端耗时）。任务中心页读取展示。
+  该端点在免登录白名单内（容器健康检查需调用），故采样字段在入口处即收窄，只含聚合计数与耗时，
+  不含 URL、模型名、渠道名或任何凭据。
+- **模型管理按渠道折叠** — 每个渠道一个原生 `<details>`，默认全收起，渠道多时不必一路下滚。展开状态存
+  内存 Set：删模型、移除标签、切标签筛选触发整块重渲染后不会把已展开的组收回去；刷新页面回到默认全收起，
+  不落 localStorage。
+
+### Changed
+- **并发默认值改按 1 vCPU / 1 GB 主机取值** — `EVALUATOR_MAX_CONCURRENT_TASKS` 4→2、
+  `EVALUATOR_AUTO_TEST_CONCURRENCY` 2→1（给手动评测预留至少一个总槽位）；Compose 的
+  `mem_limit` 512m→768m、`cpus` 0.75→0.90。二者仍共用 0.7.9 引入的同一个平台级执行闸，
+  子额度不能叠加突破总上限。
+
+### Fixed
+- **限流器 key 内存无上界** — 旧实现仅在 `buckets.size > maxKeys` 时惰性清扫，清扫后仍照常新建桶；
+  当所有桶都未过期（大量一次性 key，如伪造来源）时清扫扫不掉任何东西，Map 仍会继续增长。改为满容量且
+  最早桶尚未到期时直接拒绝新 key 并给出 `retryAfterMs`，同时维护 `earliestResetAt` 避免每次 check
+  都全量扫描。代价是达到上限时新来源会被拒（fail-closed），换取内存有确定上界。
+- **报告中心刷新按钮不刷新报告列表** — `#reload-requests` 此前只重载 resultsBundle，「全部报告文件」
+  面板保持旧内容，用户以为刷过了。`report-browser.js` 导出 `refresh`，由刷新按钮一并调用。
+
+### Notes
+- 本版**不含**「模型档案」独立页（`/model-profile/`）。功能可用但视觉与交互尚需在真实浏览器中确认
+  （衬线字体回退、自绘下拉三角位置、940px 纸面宽度在宽屏上的观感），故以 `92f6efb` 整体撤下，
+  三个提交已逐字 cherry-pick 到 `feat/model-profile` 继续打磨，回归方式为 `git revert 92f6efb`。
+  一并撤下的还有该分支夹带的「总览空状态出口不足」修复：**非超管在尚无模型目标时仍会困在总览页**
+  （只有带 `data-requires-admin` 的「配置第一个渠道」与「操作手册」两个出口），此缺陷在本版中仍存在，
+  下一轮随档案页一起回来。
+- 部署侧需手动步骤：健康自愈已由 compose 内的 autoheal 容器改为宿主 systemd timer
+  （不再把 docker.sock 挂进任何容器）。仅拉取镜像不会生效，须按 README「Health recovery on systemd
+  hosts」安装 `deploy/api-evaluator-health-recovery.*` 并 `systemctl enable --now`，否则
+  「进程存活但调度器僵死」这类静默故障没有自动恢复兜底。
+
 ## [0.7.9] - 2026-08-11
 
 ### Fixed
@@ -677,7 +715,8 @@ Initial open-source release.
 ### Fixed
 - Concurrency-queue slot leak on the task-manager cancel path.
 
-[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.9...dev
+[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.10...dev
+[0.7.10]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.6...v0.7.8
 [0.7.5]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.4...v0.7.5
