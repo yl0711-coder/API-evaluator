@@ -7,6 +7,8 @@ import { formatLastTested, isRetestDue } from "./model-test-status.js";
 export function createChannelAdmin({ state, els, onChange }) {
   // 「按标签筛选」当前选中的标签：""=全部、NO_TAG_FILTER=无标签、其它=该标签。
   let tagFilter = "";
+  // 模型管理里手动展开过的渠道名。默认全收起，刷新页面即清空（不落 localStorage）。
+  const openChannelGroups = new Set();
   async function loadChannels() {
     state.channels = await api("/api/channels");
     renderChannelList();
@@ -126,15 +128,26 @@ export function createChannelAdmin({ state, els, onChange }) {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(target);
     }
+    // 每个渠道一个 <details>：默认收起，渠道多时不必长滚。展开状态只存在内存里
+    // （openChannelGroups），增删模型触发重渲染后保留，刷新页面回到默认全收起。
     els.modelTargetList.innerHTML = [...groups.entries()]
       .map(
         ([channelName, targets]) => `
-        <div class="model-group">
-          <div class="model-group-head"><b>${escapeHtml(channelName)}</b><span>${targets.length} 个模型</span></div>
+        <details class="model-group"${openChannelGroups.has(channelName) ? " open" : ""} data-channel-group="${escapeHtml(channelName)}">
+          <summary class="model-group-head"><b>${escapeHtml(channelName)}</b><span>${targets.length} 个模型</span></summary>
           <div class="model-group-grid">${targets.map(modelTargetRow).join("")}</div>
-        </div>`,
+        </details>`,
       )
       .join("");
+    // toggle 是 <details> 的原生事件（用户点开/收起时浏览器自触发）。记下展开的渠道，
+    // 纯粹为了让上面 innerHTML 的整块重渲染（删模型、移除标签、切标签筛选都会触发）
+    // 之后不把用户刚点开的组收回去。监听器不会叠加：innerHTML 已连旧元素一起销毁。
+    els.modelTargetList.querySelectorAll("[data-channel-group]").forEach((d) => {
+      d.addEventListener("toggle", () => {
+        if (d.open) openChannelGroups.add(d.dataset.channelGroup);
+        else openChannelGroups.delete(d.dataset.channelGroup);
+      });
+    });
     els.modelTargetList
       .querySelectorAll("[data-del-target]")
       .forEach((b) => b.addEventListener("click", () => deleteModelTarget(b.dataset.delTarget)));

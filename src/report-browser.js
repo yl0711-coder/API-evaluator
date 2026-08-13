@@ -320,5 +320,5 @@ export function createReportBrowser({ state }) {
     currentUserCanConfig = Boolean(canConfig);
   }
 
-  return { setCanConfig };
+  return { setCanConfig, refresh: loadReportFiles }; // refresh 暴露给 app.js 的刷新按钮调用
 }
