@@ -761,6 +761,10 @@ function handleHealth(req, res) {
       autoTestConcurrency: autoTestScheduler.getStatus().maxConcurrent,
     },
     invalidEnvVars: invalidEnvVars(),
+    // 进程诊断快照。**目前这是它唯一的出口，前端没有任何页面展示这些指标**（src/ 下无一处读
+    // /api/health）——要看只能手动 curl 本端点。日后做看板前先读 server/performance.mjs
+    // 文件头：四个指标各有口径限制（累计值/采样区间不定/按条数滚动/尝试数≠请求数），
+    // 直接搬上页面会被当成实时 SLA 读。届时也该换成需登录的数据源，而不是继续用这个免登录端点。
     performance: createProcessPerformanceSnapshot({ limiter: executionLimiter, scheduler: autoTestScheduler }),
   });
 }

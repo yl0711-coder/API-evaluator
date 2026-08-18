@@ -10,6 +10,28 @@
 // （attempts / statusCode / normalizedError / endToEndMs / retryWaitMs），
 // 哪怕调用方传进来一整个 record，也不要把其余字段带进 upstreamWindow 之外的输出。
 // 需要带标识的排障数据请走 /api/support-bundle（仅超管）。
+//
+// ── 现状：本模块的产出【没有任何前端展示入口】，日后再做 ───────────────────────
+// createProcessPerformanceSnapshot 的唯一生产调用点是 server.mjs 的 handleHealth，
+// 也就是说这些指标只出现在 /api/health 的 JSON 里；要看得手动
+// `curl -s http://127.0.0.1:5180/api/health | jq .performance`。
+// src/ 下没有一处读取 /api/health 或 eventLoop / cpuPercent / p99Ms 等字段
+// （任务中心页只读 /api/tasks/*，其「排队/执行/收尾」耗时来自单任务 timing，与本模块无关）。
+//
+// 补前端展示时请连带解决下面四条口径限制，否则页面上的数字会被当成实时 SLA 读（见
+// 「18-v0.7.10 性能诊断与上线风险说明.md」R-05，P2）——现在没界面反而使误读风险低，
+// 一旦上了看板就必须在 UI 上标注清楚，或改成固定窗口采样：
+//   1. eventLoop 的 p50/p99/max 是**进程启动后的累计值**（enable() 后从不 reset），
+//      一次历史卡顿会永久留在 max 里，不代表"当前"。
+//   2. cpu.percentSinceLastSample 的采样区间 =「上次有人调 health」到本次，
+//      而 Docker healthcheck、人工刷新都在调 → 区间长度不固定，两个数字之间不可比。
+//   3. upstream 是**最近 200 条**、按条数滚动不按时间：高峰可能只覆盖几分钟，
+//      低峰可能横跨数天，故「429 有 N 次」脱离窗口时长无法解读。
+//   4. upstream.requests 数的是**上游尝试次数**（429 重试一次计两次），不等于用户请求数，
+//      当 QPS 用会系统性偏高。
+// 另：上看板前先落实 R-01（反代层限源 /api/health）。当前无前端消费，摘掉或改挂到
+// 需登录端点都是零成本的；有了页面之后就得先给它换一个需登录的数据源。
+// ──────────────────────────────────────────────────────────────────────────────
 import { monitorEventLoopDelay } from "node:perf_hooks";
 
 const eventLoop = monitorEventLoopDelay({ resolution: 20 });
@@ -66,6 +88,8 @@ export function recordUpstreamTiming(sample) {
   if (upstreamWindow.length > UPSTREAM_WINDOW_SIZE) upstreamWindow.splice(0, upstreamWindow.length - UPSTREAM_WINDOW_SIZE);
 }
 
+// 唯一生产调用点：server.mjs 的 handleHealth。下面四个字段目前**只有接口输出、没有前端展示**，
+// 日后补看板时先读文件头那段口径限制（累计值 / 采样区间不定 / 按条数滚动 / 尝试数≠请求数）。
 export function createProcessPerformanceSnapshot({ limiter, scheduler } = {}) {
   const cpu = process.cpuUsage(cpuStart);
   const now = process.hrtime.bigint();
