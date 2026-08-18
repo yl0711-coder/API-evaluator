@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-08-18
+
 ### Fixed
 - **场景运行的 `test_runs.profile_id` 恒为 NULL，趋势页从来看不到场景数据** — `buildScenarioSummary` 是多模型
   聚合体、顶层无 `profileId`，而 `runScenarioTest` 写单模型报告时未补，于是 `queryProfileRunSummaries` 的
@@ -21,12 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   只跑非「基础」组的场景运行无逐轮可回填、两个指标皆 null，一旦成为末点就让前端横幅整体消失。改为取
   「最近一个报出可比指标的点」判定。
 
+### Notes
+- `.env.evaluator.example` 更正 `EVALUATOR_OPEN_REPORT` 的注释：示例值是 `1`，即**默认开**，原注释写「默认关」
+  与紧邻的示例值自相矛盾。
+- 性能诊断的四个指标（事件循环延迟 / CPU 占比 / 上游滚动窗口 / 槽位）**仍然只有 `/api/health` 一个出口，
+  没有前端展示入口**。日后补看板前先读 `server/performance.mjs` 文件头曾记录的四条口径限制——累计值、
+  采样区间不定、按条数滚动、尝试数≠请求数——直接搬上页面会被当成实时 SLA 读；届时也该换成需登录的数据源，
+  而不是继续用这个免登录端点。
+- 本版**仍不含**「模型档案」独立页（`/model-profile/`），亦未修复 0.7.10 记录的「总览空状态出口不足」
+  （非超管在尚无模型目标时仍会困在总览页）。
+
 ## [0.7.10] - 2026-08-13
 
 ### Added
 - **评测性能诊断（新增 `server/performance.mjs`）** — `/api/health` 增加 `performance`：事件循环延迟
   （p50/p99/max，`monitorEventLoopDelay`）、进程 CPU 占比与内存、执行槽位状态，以及最近 200 次上游请求的
-  滚动窗口（重试次数、退避总等待、429/5xx/超时/网络错误分类计数、平均端到端耗时）。任务中心页读取展示。
+  滚动窗口（重试次数、退避总等待、429/5xx/超时/网络错误分类计数、平均端到端耗时）。**目前只有接口输出，
+  界面上没有任何展示入口**——要看得自己 `curl /api/health`；前端无任何代码读取这些字段。
   该端点在免登录白名单内（容器健康检查需调用），故采样字段在入口处即收窄，只含聚合计数与耗时，
   不含 URL、模型名、渠道名或任何凭据。
 - **模型管理按渠道折叠** — 每个渠道一个原生 `<details>`，默认全收起，渠道多时不必一路下滚。展开状态存
@@ -730,7 +743,8 @@ Initial open-source release.
 ### Fixed
 - Concurrency-queue slot leak on the task-manager cancel path.
 
-[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.10...dev
+[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.11...dev
+[0.7.11]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.10...v0.7.11
 [0.7.10]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.6...v0.7.8
