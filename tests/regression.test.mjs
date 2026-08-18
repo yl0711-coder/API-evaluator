@@ -10,6 +10,7 @@ import {
   buildBaseline,
   detectRegression,
   collectBasicScenarioCaseIds,
+  hasComparableMetric,
   summarizeRoundStats,
   BASIC_SCENARIO_GROUP,
 } from "../server/regression.mjs";
@@ -201,6 +202,196 @@ test("regression_alerts 往返 + queryProfileRunSummaries", async () => {
     const alerts = await db.queryRegressionAlerts({ profileId: "p1" });
     assert.equal(alerts.length, 1);
     assert.equal(alerts[0].severity, "high");
+  } finally {
+    delete process.env.EVALUATOR_DATA_DIR;
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// 让场景点进入 series 后暴露的一个既有隐患：detectRegression 原先按「changes 为空 → stable」推结论，
+// 于是「一个指标都没报出来」与「所有指标都正常」得到同一个结论——把「无从判断」说成「未见退化」。
+// 触发场景：场景运行只跑了非「基础」组，trend-service 无逐轮可回填 → 该点成功率/P95 皆 null。
+test("detectRegression：本次无任何可比指标 → incomparable，绝不谎称 stable", () => {
+  const prior = [
+    toTrendPoint(run({ runId: "a", type: "scenario", successRate: 0.9, p95TotalMs: 1000 })),
+    toTrendPoint(run({ runId: "b", type: "scenario", successRate: 0.9, p95TotalMs: 1000 })),
+  ];
+  // 成功率/P95/等级全缺（grade 显式为 null，run() 默认即 null）
+  const naked = toTrendPoint({ runId: "c", type: "scenario", endedAt: new Date().toISOString() });
+  assert.equal(naked.successRate, null);
+  assert.equal(naked.p95Ms, null);
+  const v = detectRegression({ current: naked, history: [...prior, naked] });
+  assert.equal(v.status, "incomparable");
+  assert.equal(v.severity, "none");
+  assert.deepEqual(v.changes, []);
+  assert.match(v.verdict, /未报出可比指标/);
+
+  // 仍要能判出真实退化（新分支不能把正常判定吞掉）
+  const dropped = toTrendPoint(run({ runId: "d", type: "scenario", successRate: 0.5, p95TotalMs: 1000 }));
+  assert.equal(detectRegression({ current: dropped, history: [...prior, dropped] }).status, "regressed");
+  // 只报出 P95（无成功率）也算可比
+  const onlyP95 = toTrendPoint({ runId: "e", type: "scenario", p95TotalMs: 9000, endedAt: new Date().toISOString() });
+  const v3 = detectRegression({ current: onlyP95, history: [...prior, onlyP95] });
+  assert.equal(v3.status, "regressed");
+  assert.deepEqual(
+    v3.changes.map((c) => c.metric),
+    ["p95"],
+  );
+});
+
+// hasComparableMetric 的核心陷阱：不能用 Number.isFinite(Number(v)) 判「有没有报出来」，
+// 因为 Number(null)===0、Number("")===0 都是有限值 —— 那样 null 会被当成「报出了 0」通过。
+test("hasComparableMetric：null/undefined/'' 视为未报出；0 与 0% 是真实数值", () => {
+  assert.equal(hasComparableMetric({ successRate: null, p95Ms: null, grade: null }), false);
+  assert.equal(hasComparableMetric({}), false);
+  assert.equal(hasComparableMetric(null), false);
+  assert.equal(hasComparableMetric({ successRate: null, p95Ms: "", grade: "" }), false);
+  // 成功率 0（全失败）是真实观测，必须可比 —— 这正是最该判退化的情形
+  assert.equal(hasComparableMetric({ successRate: 0, p95Ms: null }), true);
+  assert.equal(hasComparableMetric({ successRate: null, p95Ms: 0 }), true);
+  assert.equal(hasComparableMetric({ successRate: null, p95Ms: null, grade: "F" }), true);
+});
+
+// 修复场景 profile_id 后的关键安全属性：历史里突然多出的 scenario 点不得改变 stability 的基线。
+// buildBaseline 按 type 过滤，故两类各自成基线；否则老渠道会因"多出一批点"被误判退化。
+test("场景点进入历史后不污染 stability 基线（基线按 type 隔离）", () => {
+  const stabilityHistory = [
+    run({ runId: "s1", type: "stability", successRate: 0.98, p95TotalMs: 2000 }),
+    run({ runId: "s2", type: "stability", successRate: 0.97, p95TotalMs: 2100 }),
+  ].map(toTrendPoint);
+  const before = buildBaseline(stabilityHistory, { type: "stability" });
+
+  // 混入两个成功率低得多的场景点（若不按 type 隔离，中位数会被拉低 → 后续 stability 判定失真）
+  const withScenario = [
+    ...stabilityHistory,
+    toTrendPoint(run({ runId: "c1", type: "scenario", successRate: 0.6, p95TotalMs: 9000 })),
+    toTrendPoint(run({ runId: "c2", type: "scenario", successRate: 0.55, p95TotalMs: 9500 })),
+  ];
+  const after = buildBaseline(withScenario, { type: "stability" });
+  assert.deepEqual(after, before, "stability 基线不受新增场景点影响");
+
+  // 且当前是 stability 运行时，判定仍走 stability 基线 → 不因场景点误报退化
+  const verdict = detectRegression({
+    current: toTrendPoint(run({ runId: "s3", type: "stability", successRate: 0.97, p95TotalMs: 2050 })),
+    history: withScenario,
+  });
+  assert.equal(verdict.status, "stable");
+  // 场景点自成基线（n=2），互不干扰
+  assert.equal(buildBaseline(withScenario, { type: "scenario" }).n, 2);
+});
+
+// 回归护栏：场景运行必须带 profile_id 才能进「稳定性趋势」页。
+// 历史缺陷（2026-08-12 发现）：buildScenarioSummary 是多模型聚合体、顶层无 profileId，
+// runScenarioTest 写单模型报告时未补，导致 test_runs.profile_id 恒 NULL →
+// queryProfileRunSummaries 的 WHERE profile_id=? 永远查不到场景运行 →
+// buildProfileTrend 拿不到 scenario summary → 趋势页里从来没有场景数据。
+test("场景运行带 profileId 时，buildProfileTrend 能取到场景点并回填基础场景成功率", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "trend-scenario-"));
+  process.env.EVALUATOR_DATA_DIR = dataDir;
+  try {
+    const stamp = Date.now();
+    const db = await import(`../server/db.mjs?case=${stamp}`);
+    if (!(await db.isSqliteAvailable())) return;
+    const { buildProfileTrend } = await import(`../server/trend-service.mjs?case=${stamp}`);
+
+    // 一次场景运行：两个「基础」组场景 + 一个非基础场景（后者不该进趋势）。
+    await db.recordTestRun(
+      {
+        runId: "scene-1",
+        type: "scenario",
+        profileId: "p1",
+        profileName: "渠道A",
+        startedAt: "2026-08-10T10:00:00Z",
+        endedAt: "2026-08-10T10:05:00Z",
+        scenarios: [
+          { id: "basic-a", group: BASIC_SCENARIO_GROUP },
+          { id: "basic-b", group: BASIC_SCENARIO_GROUP },
+          { id: "other-c", group: "编程" },
+        ],
+      },
+      { type: "scenario" },
+    );
+    // 逐轮明细：基础组 2 成 1 败（成功率 2/3），非基础组那轮必须被丢弃。
+    const req = (over) => ({
+      runId: "scene-1",
+      profileId: "p1",
+      totalMs: 1000,
+      success: true,
+      startedAt: "2026-08-10T10:01:00Z",
+      ...over,
+    });
+    await db.recordRequest(req({ requestId: "q1", caseId: "basic-a", totalMs: 1000, success: true }));
+    await db.recordRequest(req({ requestId: "q2", caseId: "basic-a", totalMs: 2000, success: true }));
+    await db.recordRequest(req({ requestId: "q3", caseId: "basic-b", totalMs: 3000, success: false }));
+    await db.recordRequest(req({ requestId: "q4", caseId: "other-c", totalMs: 9000, success: false }));
+
+    const { series, rounds } = await buildProfileTrend("p1");
+    const scenePt = series.find((p) => p.runId === "scene-1");
+    assert.ok(scenePt, "场景运行必须出现在趋势 series 里（profile_id 已入库）");
+    assert.equal(scenePt.type, "scenario");
+    assert.equal(scenePt.successRate, 2 / 3, "成功率按「基础」组逐轮现算回填");
+    // 逐轮只保留基础组的 3 轮，非基础组的 other-c 被丢弃。
+    assert.equal(rounds.length, 3, "只有「基础」组轮次进图");
+    assert.ok(!rounds.some((r) => r.ms === 9000), "非基础组轮次不进图");
+  } finally {
+    delete process.env.EVALUATOR_DATA_DIR;
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  }
+});
+
+// 场景点入库带出的第二个隐患：buildProfileTrend 原先无条件拿 series 末点当 current。
+// 只跑非「基础」组的场景运行无逐轮可回填 → 该点无任何指标；它一旦成为末点，就会把该 profile
+// 原本正常的 stability 判定挤掉（前端只在 regressed/stable 时显示横幅，其余静默隐藏）。
+// 修法：取「最近一个报出可比指标的点」判定。无指标的运行不携带退化信息，跳过它才与入库前一致。
+test("无指标的场景运行成为最新点时，不挤掉该 profile 原有的退化判定", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "trend-latest-"));
+  process.env.EVALUATOR_DATA_DIR = dataDir;
+  try {
+    const stamp = `${Date.now()}-latest`;
+    const db = await import(`../server/db.mjs?case=${stamp}`);
+    if (!(await db.isSqliteAvailable())) return;
+    const { buildProfileTrend } = await import(`../server/trend-service.mjs?case=${stamp}`);
+
+    // 三次正常 stability（基线充足且一致）→ 应判 stable
+    for (const [i, sr] of [
+      [1, 0.98],
+      [2, 0.97],
+      [3, 0.97],
+    ]) {
+      await db.recordTestRun(
+        {
+          runId: `stab-${i}`,
+          type: "stability",
+          profileId: "p1",
+          successRate: sr,
+          startedAt: `2026-08-0${i}T10:00:00Z`,
+          endedAt: `2026-08-0${i}T10:05:00Z`,
+        },
+        { type: "stability" },
+      );
+    }
+    const before = await buildProfileTrend("p1");
+    assert.equal(before.regression?.status, "stable", "前置条件：三次一致的 stability → stable");
+
+    // 再来一次「只跑非基础组」的场景运行：无逐轮可回填 → 该点成功率/P95 皆 null，且时间最晚。
+    await db.recordTestRun(
+      {
+        runId: "scene-nonbasic",
+        type: "scenario",
+        profileId: "p1",
+        startedAt: "2026-08-04T10:00:00Z",
+        endedAt: "2026-08-04T10:05:00Z",
+        scenarios: [{ id: "hard-1", group: "编程硬核" }],
+      },
+      { type: "scenario" },
+    );
+
+    const after = await buildProfileTrend("p1");
+    // 该点确实进了 series（修复的初衷：场景数据要可见），但不该抢走判定。
+    const last = after.series[after.series.length - 1];
+    assert.equal(last.runId, "scene-nonbasic", "无指标的场景点仍在 series 里（表格可见）");
+    assert.equal(last.successRate, null);
+    assert.equal(after.regression?.status, "stable", "判定仍取最近一个可比点，横幅不消失");
   } finally {
     delete process.env.EVALUATOR_DATA_DIR;
     await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});

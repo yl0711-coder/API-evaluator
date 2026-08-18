@@ -3,7 +3,13 @@
 // 逐轮 rounds（稳定性运行全轮 + 基础场景运行仅基础轮，融合、按时间升序）。
 // 供 /api/trend 端点与「自动测试巡检报告」共用，避免两处拼装逻辑漂移。
 import { queryProfileRunSummaries, queryRoundSeriesByRunIds } from "./db.mjs";
-import { buildTrendSeries, collectBasicScenarioCaseIds, detectRegression, summarizeRoundStats } from "./regression.mjs";
+import {
+  buildTrendSeries,
+  collectBasicScenarioCaseIds,
+  detectRegression,
+  hasComparableMetric,
+  summarizeRoundStats,
+} from "./regression.mjs";
 
 export async function buildProfileTrend(profileId, { limit = 200 } = {}) {
   const history = await queryProfileRunSummaries(profileId, { limit });
@@ -37,7 +43,10 @@ export async function buildProfileTrend(profileId, { limit = 200 } = {}) {
     }
   }
   // 回归判定：此刻 series 里的基础场景点已带 successRate（按 type 分组自成基线，不碰稳定性）。
-  const latest = series[series.length - 1] || null;
+  // 取「最近一个报出了可比指标的点」而非单纯的末点：只跑非「基础」组的场景运行无逐轮可回填，
+  // 其点成功率/P95 皆为 null，若拿它当 current，本profile 原本正常的判定会被挤掉（横幅消失）。
+  // 无指标的运行不携带任何退化信息，跳过它继续看前一个，才与「场景数据入库前」的结论一致。
+  const latest = [...series].reverse().find(hasComparableMetric) || series[series.length - 1] || null;
   const regression = latest ? detectRegression({ current: latest, history: series }) : null;
   // 图表逐轮数据：稳定性运行（全轮）+ 基础场景运行（仅基础轮），融合、按时间排序。
   const rounds = [];

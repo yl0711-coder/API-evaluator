@@ -8,6 +8,16 @@
 import { percentile } from "./utils.mjs";
 
 const isNum = (v) => Number.isFinite(Number(v));
+// 判「确实报出了数值」：null/undefined/"" 都算没报出。
+// 不能用 isNum——Number(null)===0、Number("")===0 都是有限值，会把「缺失」当成 0 通过。
+const hasNum = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
+
+// 该趋势点是否报出了至少一个可与基线比对的指标。两处共用：
+//   detectRegression 用它拦「无指标却判 stable」的虚假保证；
+//   trend-service 用它挑「最近一个可判定的点」，避免无指标的运行挤掉既有结论。
+export function hasComparableMetric(point) {
+  return hasNum(point?.successRate) || hasNum(point?.p95Ms) || Boolean(point?.grade);
+}
 
 // 场景测试的「基础」分组名（= DEFAULT_SCENARIO_GROUPS[0]，见 server/settings-store.mjs）。
 export const BASIC_SCENARIO_GROUP = "基础";
@@ -111,6 +121,19 @@ export function detectRegression({ current, history = [] } = {}) {
         prior.filter((p) => p.type === cur.type).length === 0
           ? "首次记录，已建立趋势基线。"
           : "同类历史样本不足（需 ≥2 次），暂不判定回归。",
+    };
+  }
+
+  // 本次运行一个可比指标都没报出来（成功率/P95/等级全缺）时，绝不能落到下面的
+  // 「changes 为空 → stable」——那会把「无从判断」说成「与基线一致，未见退化」，是虚假保证。
+  // 触发场景：场景运行只跑了非「基础」组，trend-service 无逐轮可回填 → 该点两个指标皆 null。
+  if (!hasComparableMetric(cur)) {
+    return {
+      status: "incomparable",
+      severity: "none",
+      baseline,
+      changes: [],
+      verdict: "本次运行未报出可比指标（成功率 / P95 / 等级），无法与基线比对。",
     };
   }
 
