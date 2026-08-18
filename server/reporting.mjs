@@ -1001,6 +1001,7 @@ export function formatRegression(regression) {
   if (!regression) return "未评估（历史不足或未启用）";
   if (regression.status === "baseline") return "首次记录，已建立趋势基线";
   if (regression.status === "insufficient") return "同类历史样本不足，暂不判定回归";
+  if (regression.status === "incomparable") return "本次未报出可比指标，无法判定回归";
   if (regression.status === "stable") return `稳定：${regression.verdict}`;
   const changes = (regression.changes || []).map((c) => c.detail).join("；");
   return `${regression.verdict} 退化项：${changes}`;

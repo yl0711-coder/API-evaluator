@@ -13,6 +13,7 @@ import {
   importRequestsFromJsonl,
   isSqliteAvailable,
   queryLastTestedByProfile,
+  queryProfileRunSummaries,
   queryRecentReports,
   queryRecentRequests,
   queryRecentTestRuns,
@@ -231,6 +232,118 @@ test("queryRecentTestRuns and queryRunsByProfile read back runs", async () => {
     assert.equal(p1Runs.length, 2); // 重测信度可用：同 profile 的历次运行
     assert.equal(p1Runs[0].run_id, "r1");
     assert.equal(p1Runs[1].run_id, "r2");
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// 根因护栏：summary 顶层缺 profileId → profile_id 写成 NULL → 按 profile 查趋势查不到。
+// 这是 2026-08-12 发现的场景测试趋势缺失的成因；runScenarioTest 已在写库前显式补顶层 profileId。
+test("recordTestRun：summary 顶层无 profileId 时 profile_id 落 NULL，按 profile 查不到（故写库前必须补）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "null-profile.db");
+  try {
+    // 模拟 buildScenarioSummary 的形状：profileId 只在 results[]/profileDigest[] 里，顶层没有。
+    await recordTestRun(
+      {
+        runId: "scene-noprofile",
+        type: "scenario",
+        successRate: 0.9,
+        endedAt: "2026-08-10T10:00:00Z",
+        profileDigest: [{ profileId: "p1", profileName: "渠道A" }],
+        results: [{ profileId: "p1", profileName: "渠道A" }],
+      },
+      { type: "scenario", path },
+    );
+    const db = await getDatabase(path);
+    const row = db.prepare("SELECT profile_id FROM test_runs WHERE run_id = ?").get("scene-noprofile");
+    assert.equal(row.profile_id, null, "顶层没有 profileId → 列为 NULL（嵌套里的不会被自动提取）");
+    assert.equal((await queryProfileRunSummaries("p1", { path })).length, 0, "故按 profile 查趋势拿不到这条");
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("开库迁移：回填历史 NULL 的 profile_id（单模型行补齐、聚合行保持 NULL、幂等）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "backfill.db");
+  try {
+    // 先造出「老库」的样子：三条 profile_id 为 NULL 的场景行。
+    const db = await getDatabase(path);
+    const insert = db.prepare("INSERT INTO test_runs (run_id, type, profile_id, raw_json) VALUES (?,?,NULL,?)");
+    // ① 单模型：results[] 里唯一 profileId → 应回填
+    insert.run("old-single", "scenario", JSON.stringify({ runId: "old-single", results: [{ profileId: "p1", profileName: "渠道A" }] }));
+    // ② 多模型聚合：两个不同 profileId → 不归属，保持 NULL
+    insert.run("old-agg", "scenario", JSON.stringify({ runId: "old-agg", results: [{ profileId: "p1" }, { profileId: "p2" }] }));
+    // ③ 只有 profileDigest（results 被剥空）→ 走兜底来源回填
+    insert.run(
+      "old-digest",
+      "scenario",
+      JSON.stringify({ runId: "old-digest", profileDigest: [{ profileId: "p3", profileName: "渠道C" }] }),
+    );
+    // ④ 单模型的 batch-stability：profile_id 同样是 NULL，但那是**按设计**的聚合行。
+    // 绝不能认领——否则它会作为最新点进趋势 series，把该 type 的回归判定从 stable 打回
+    // baseline（顶层无 successRate），凭空改变既有渠道的退化结论。故回填严格限定 scenario。
+    insert.run(
+      "old-batch",
+      "batch-stability",
+      JSON.stringify({ batchId: "old-batch", profileCount: 1, results: [{ profileId: "p9", profileName: "渠道Z" }] }),
+    );
+    closeDatabase(path);
+
+    // 重新开库 → migrateSchema 触发回填
+    const reopened = await getDatabase(path);
+    const get = (runId) => reopened.prepare("SELECT profile_id, profile_name FROM test_runs WHERE run_id = ?").get(runId);
+    assert.equal(get("old-single").profile_id, "p1", "单模型行按 results[0].profileId 回填");
+    assert.equal(get("old-single").profile_name, "渠道A", "顺带补 profile_name");
+    assert.equal(get("old-agg").profile_id, null, "多模型聚合行不归属任一 profile，保持 NULL");
+    assert.equal(get("old-digest").profile_id, "p3", "results 缺失时用 profileDigest 兜底");
+    assert.equal(get("old-batch").profile_id, null, "非 scenario 的聚合行绝不认领（否则改变既有退化判定）");
+    assert.equal((await queryProfileRunSummaries("p9", { path })).length, 0, "batch 行不该因回填出现在按模型的趋势里");
+
+    // 回填后即可按 profile 查到历史（这正是趋势页需要的）
+    assert.equal((await queryProfileRunSummaries("p1", { path })).length, 1);
+    assert.equal((await queryProfileRunSummaries("p3", { path })).length, 1);
+
+    // 幂等：再开一次不报错、结果不变（第二次回填的候选集为空）
+    closeDatabase(path);
+    const again = await getDatabase(path);
+    assert.equal(again.prepare("SELECT profile_id FROM test_runs WHERE run_id = ?").get("old-single").profile_id, "p1");
+    assert.equal(again.prepare("SELECT profile_id FROM test_runs WHERE run_id = ?").get("old-agg").profile_id, null);
+  } finally {
+    closeDatabase(path);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("queryProfileRunSummaries：按 profile_id 查询历史运行（场景/稳定性测试均可查到）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "evaluator-db-"));
+  const path = join(dir, "profile-summaries.db");
+  try {
+    // 写入两条 stability + 一条 scenario，前两条同 profileId
+    await recordTestRun(
+      { runId: "stab-1", profileId: "p1", profileName: "甲", type: "stability", successRate: 0.95, endedAt: "2026-08-01T10:00:00Z" },
+      { type: "stability", path },
+    );
+    await recordTestRun(
+      { runId: "scene-1", profileId: "p1", profileName: "甲", type: "scenario", successRate: 0.88, endedAt: "2026-08-02T10:00:00Z" },
+      { type: "scenario", path },
+    );
+    await recordTestRun(
+      { runId: "stab-2", profileId: "p2", profileName: "乙", type: "stability", successRate: 0.92, endedAt: "2026-08-03T10:00:00Z" },
+      { type: "stability", path },
+    );
+
+    const p1Summaries = await queryProfileRunSummaries("p1", { path });
+    assert.equal(p1Summaries.length, 2, "p1 应返回 2 条（1 稳定性 + 1 场景）");
+    assert.ok(p1Summaries.some((s) => s.runId === "stab-1" && s.type === "stability"));
+    assert.ok(p1Summaries.some((s) => s.runId === "scene-1" && s.type === "scenario"));
+
+    const p2Summaries = await queryProfileRunSummaries("p2", { path });
+    assert.equal(p2Summaries.length, 1, "p2 应返回 1 条");
+    assert.equal(p2Summaries[0].runId, "stab-2");
   } finally {
     closeDatabase(path);
     await rm(dir, { recursive: true, force: true });

@@ -318,6 +318,45 @@ function migrateSchema(db) {
   } catch {
     // column already exists
   }
+  // 补列必须先于回填：回填读 raw_json 写 profile_id，与上面的 ALTER 无依赖，
+  // 但放在最后可保证任何新增补列都已就位。
+  backfillRunProfileIds(db);
+}
+
+// 历史回填：场景运行曾因 summary 顶层无 profileId 而把 test_runs.profile_id 写成 NULL
+// （写入侧已在 runScenarioTest 补齐，但老行仍是 NULL），导致按模型查趋势拿不到场景历史。
+// raw_json 里保留了 results[].profileId / profileDigest[].profileId，据此原地补列。
+//
+// 严格限定 type='scenario'：batch-stability / batch-admission 的 profile_id 同样是 NULL，
+// 但那是**按设计**的聚合行（顶层无 successRate）。若把只含一个模型的批量行也认领过来，
+// 它会作为最新点进入趋势 series，把该 type 的回归判定从 stable 打回 baseline——
+// 即凭空改变既有渠道的退化结论。已实测复现，故不碰非场景行。
+// 只回填唯一 profileId 的行；多模型场景聚合行无从归属，保持 NULL 更诚实。
+// 幂等（WHERE profile_id IS NULL）、best-effort（失败不阻塞开库）。
+function backfillRunProfileIds(db) {
+  try {
+    const rows = db
+      .prepare("SELECT id, raw_json FROM test_runs WHERE profile_id IS NULL AND raw_json IS NOT NULL AND type = 'scenario'")
+      .all();
+    if (!rows.length) return;
+    const update = db.prepare("UPDATE test_runs SET profile_id = ?, profile_name = COALESCE(profile_name, ?) WHERE id = ?");
+    let filled = 0;
+    for (const row of rows) {
+      const parsed = safeParse(row.raw_json);
+      if (!parsed) continue;
+      // 候选来源按可靠性排序；两者都是「每模型一条」的数组。
+      const list = Array.isArray(parsed.results) && parsed.results.length ? parsed.results : parsed.profileDigest;
+      if (!Array.isArray(list)) continue;
+      const ids = [...new Set(list.map((item) => item?.profileId).filter(Boolean))];
+      if (ids.length !== 1) continue; // 0 个无从判断；>1 个是聚合行，不归属
+      const owner = list.find((item) => item?.profileId === ids[0]);
+      update.run(ids[0], owner?.profileName ?? null, row.id);
+      filled += 1;
+    }
+    if (filled) console.warn(`[db] 回填 test_runs.profile_id：${filled}/${rows.length} 行（场景运行历史趋势修复）`);
+  } catch (error) {
+    noteDbError("backfillRunProfileIds", error);
+  }
 }
 
 export function closeDatabase(path = defaultDbPath()) {

@@ -1470,6 +1470,10 @@ export async function runScenarioTest(body, taskContext = {}) {
       startedAt,
       endedAt,
     });
+    // 补上 profileId 到顶层：buildScenarioSummary 是多模型聚合体，顶层无此字段；
+    // 但此处是单模型报告，需要 profileId 写入 test_runs.profile_id 以供趋势查询。
+    one.profileId = profileResult.profileId;
+    one.profileName = profileResult.profileName;
     one = await attachRunArtifacts(perId, one, { profileResults: [profileResult] });
     one.predictedConsumption = normalizePredicted(body.predicted);
     const aiAnalysis = await maybeBuildAiAnalysis({
