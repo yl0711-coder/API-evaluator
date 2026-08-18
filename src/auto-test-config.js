@@ -9,7 +9,7 @@ import { createCascadeTargetPicker } from "./target-picker.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
 import { renderStabilityGroupPicker, readStabilityGroups } from "./prompt-presets.js";
 import { openReportOverlay } from "./report-overlay.js";
-import { buildCron, describeSchedule, parseScheduleFromCron } from "./cron-ui.js";
+import { buildCron, describeSchedule, parseScheduleFromJob } from "./cron-ui.js";
 
 const KIND_LABEL = {
   quick: "快速测试",
@@ -48,6 +48,11 @@ export function createAutoTestConfig({ state, confirm }) {
   const cronFreqSelect = requireElement("#atc-cron-freq");
   const cronOnceLabel = requireElement("#atc-cron-once");
   const cronOnceHour = requireElement("#atc-cron-once-hour");
+  const cronFixedTimes = requireElement("#atc-cron-fixed-times");
+  const cronFixedHour = requireElement("#atc-cron-fixed-hour");
+  const cronFixedMinute = requireElement("#atc-cron-fixed-minute");
+  const cronFixedAdd = requireElement("#atc-cron-fixed-add");
+  const cronFixedTimeList = requireElement("#atc-cron-fixed-time-list");
   const cronPreview = requireElement("#atc-cron-preview");
   const cronDowChecks = [0, 1, 2, 3, 4, 5, 6].map((d) => requireElement(`#atc-dow-${d}`));
   const enabledInput = requireElement("#atc-enabled");
@@ -108,9 +113,60 @@ export function createAutoTestConfig({ state, confirm }) {
   }
 
   // 小时下拉（0-23）填充：起/止/每天几点 三处共用。
-  for (const sel of [cronStartHour, cronEndHour, cronOnceHour]) {
+  for (const sel of [cronStartHour, cronEndHour, cronOnceHour, cronFixedHour]) {
     sel.innerHTML = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, "0")}:00</option>`).join("");
   }
+  cronFixedMinute.innerHTML = Array.from({ length: 60 }, (_, m) => `<option value="${m}">${String(m).padStart(2, "0")} 分</option>`).join(
+    "",
+  );
+  let fixedTimes = [];
+  function normalizeFixedTimes(times) {
+    return [
+      ...new Map(
+        (Array.isArray(times) ? times : [])
+          .map((time) => ({ hour: Number(time.hour), minute: Number(time.minute) }))
+          .filter(
+            (time) =>
+              Number.isInteger(time.hour) &&
+              time.hour >= 0 &&
+              time.hour <= 23 &&
+              Number.isInteger(time.minute) &&
+              time.minute >= 0 &&
+              time.minute <= 59,
+          )
+          .map((time) => [`${time.hour}:${time.minute}`, time]),
+      ).values(),
+    ].sort((a, b) => a.hour - b.hour || a.minute - b.minute);
+  }
+  function renderFixedTimes() {
+    cronFixedTimeList.innerHTML = "";
+    for (const time of fixedTimes) {
+      const row = document.createElement("div");
+      row.className = "atc-fixed-time-row";
+      row.innerHTML = `<span>${String(time.hour).padStart(2, "0")}:${String(time.minute).padStart(2, "0")}</span>`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "secondary";
+      remove.textContent = "移除";
+      remove.addEventListener("click", () => {
+        fixedTimes = fixedTimes.filter((item) => item.hour !== time.hour || item.minute !== time.minute);
+        renderFixedTimes();
+        syncCronBuilder();
+      });
+      row.append(remove);
+      cronFixedTimeList.append(row);
+    }
+  }
+  cronFixedAdd.addEventListener("click", () => {
+    const next = { hour: Number(cronFixedHour.value), minute: Number(cronFixedMinute.value) };
+    if (fixedTimes.some((time) => time.hour === next.hour && time.minute === next.minute)) {
+      toast("该固定时刻已添加。", true);
+      return;
+    }
+    fixedTimes = normalizeFixedTimes([...fixedTimes, next]);
+    renderFixedTimes();
+    syncCronBuilder();
+  });
 
   // 调度方式切换：间隔 / cron 二选一，显隐对应输入。
   // 用 .hidden class（styles.css 里 display:none !important）而非 hidden 属性：
@@ -135,29 +191,41 @@ export function createAutoTestConfig({ state, confirm }) {
       endHour: Number(cronEndHour.value),
       freq: cronFreqSelect.value,
       onceHour: Number(cronOnceHour.value),
+      fixedTimes,
     };
   }
 
   // 下拉 → 隐藏 cron input + 预览；并按选项显隐自定义展开 / 每天一次钟点。
   function syncCronBuilder() {
     const isOnce = cronFreqSelect.value === "once";
+    const isFixed = cronFreqSelect.value === "fixed";
     // 同上：.atc-weekday-picker / .atc-hours-picker 带 CSS display:flex，须用 .hidden class 才压得住。
     cronDaysCustom.classList.toggle("hidden", cronDaysSelect.value !== "custom");
     // 每天一次时时段无意义（只需钟点）：隐藏时段，显示「每天几点」。
-    cronPeriodLabel.classList.toggle("hidden", isOnce);
-    cronHoursCustom.classList.toggle("hidden", isOnce || cronPeriodSelect.value !== "custom");
+    cronPeriodLabel.classList.toggle("hidden", isOnce || isFixed);
+    cronHoursCustom.classList.toggle("hidden", isOnce || isFixed || cronPeriodSelect.value !== "custom");
     cronOnceLabel.classList.toggle("hidden", !isOnce);
+    cronFixedTimes.classList.toggle("hidden", !isFixed);
     const sel = readCronSelection();
     cronInput.value = buildCron(sel);
     cronPreview.textContent = `${describeSchedule(sel)}（${cronInput.value}）`;
   }
-  for (const el of [cronDaysSelect, cronPeriodSelect, cronFreqSelect, cronStartHour, cronEndHour, cronOnceHour, ...cronDowChecks]) {
+  for (const el of [
+    cronDaysSelect,
+    cronPeriodSelect,
+    cronFreqSelect,
+    cronStartHour,
+    cronEndHour,
+    cronOnceHour,
+    cronFixedMinute,
+    ...cronDowChecks,
+  ]) {
     el.addEventListener("change", syncCronBuilder);
   }
 
   // 反解析既有作业的 cron → 回填下拉。认不得的（旧手写/外部）→ 尽量回填 + 提示核对，绝不丢数据。
-  function applyCronToBuilder(cron) {
-    const s = parseScheduleFromCron(cron);
+  function applyCronToBuilder(cron, cronMode = "") {
+    const s = parseScheduleFromJob(cron, cronMode);
     cronDaysSelect.value = s.days;
     for (const c of cronDowChecks) c.checked = s.daysCustom.includes(Number(c.value));
     cronPeriodSelect.value = s.period;
@@ -165,7 +233,11 @@ export function createAutoTestConfig({ state, confirm }) {
     cronEndHour.value = String(s.endHour);
     cronFreqSelect.value = s.freq;
     cronOnceHour.value = String(s.onceHour);
+    fixedTimes = normalizeFixedTimes(s.fixedTimes || (s.fixedHours || []).map((hour) => ({ hour, minute: s.fixedMinute || 0 })));
+    renderFixedTimes();
     if (!s.matched) toast(`原定时「${cron}」较特殊，已按最接近的选项回填，请核对。`, true);
+    // 无 cronMode 的老作业：parseScheduleFromJob 原样返回，故 s.freq 就是反解析结果。
+    else if (!cronMode && s.freq === "once") toast("历史整点单次定时无法区分“每天一次”和“固定时刻”，已按“每天一次”回填，请核对。", true);
   }
 
   // 按测试种类显隐对应选项区（种类为空 → 全部隐藏，满足“选定后再显示”）。
@@ -213,6 +285,8 @@ export function createAutoTestConfig({ state, confirm }) {
     cronEndHour.value = "23";
     cronOnceHour.value = "9";
     for (const c of cronDowChecks) c.checked = false;
+    fixedTimes = [];
+    renderFixedTimes();
     syncScheduleMode();
     enabledInput.checked = true;
     concurrencySelect.value = "1";
@@ -240,6 +314,7 @@ export function createAutoTestConfig({ state, confirm }) {
       kind: kindSelect.value,
       // 调度：cron 模式带表达式（periodHours 留兜底值），间隔模式清空 cron。
       cron: isCron ? cronInput.value.trim() : "",
+      cronMode: isCron && cronFreqSelect.value === "fixed" ? "fixed" : "",
       periodHours: Math.max(0.1, Number(periodInput.value) || 0.1),
       scenarioIds: kindSelect.value === "scenario" ? selectedScenarioIds() : [],
       options: {
@@ -260,6 +335,14 @@ export function createAutoTestConfig({ state, confirm }) {
     }
     if (!body.targetId) {
       toast("请选择被测渠道与模型。", true);
+      return;
+    }
+    // 固定时刻先于「cron 为空」判：一个时刻都没加时 buildCron 返回空串，
+    // 若顺序反了会被上面那条截走，弹出「请检查星期/时段/频率选择」这种指错方向的提示。
+    // 读闭包里的 fixedTimes 而非 body：collect() 不带这个字段（它不属于作业载荷），
+    // 早先误写成 body.fixedHours?.length 时恒为真，固定时刻作业根本存不下来。
+    if (scheduleModeSelect.value === "cron" && cronFreqSelect.value === "fixed" && !fixedTimes.length) {
+      toast("请至少添加一个固定运行时刻。", true);
       return;
     }
     if (scheduleModeSelect.value === "cron" && !body.cron) {
@@ -288,7 +371,7 @@ export function createAutoTestConfig({ state, confirm }) {
     // 有 cron → cron 模式；否则间隔模式。
     scheduleModeSelect.value = job.cron ? "cron" : "interval";
     periodInput.value = String(job.periodHours || 24);
-    if (job.cron) applyCronToBuilder(job.cron);
+    if (job.cron) applyCronToBuilder(job.cron, job.cronMode);
     syncScheduleMode();
     enabledInput.checked = job.enabled !== false;
     const o = job.options || {};
@@ -392,6 +475,12 @@ export function createAutoTestConfig({ state, confirm }) {
     const card = document.createElement("div");
     card.className = "atc-job-card";
     const statusText = job.lastStatus ? STATUS_LABEL[job.lastStatus] || job.lastStatus : "尚未运行";
+    const parsedSchedule = job.cron ? parseScheduleFromJob(job.cron, job.cronMode) : null;
+    const scheduleText = job.cron
+      ? parsedSchedule?.matched
+        ? describeSchedule(parsedSchedule)
+        : job.cron
+      : `每 ${Number(job.periodHours)} 小时`;
     // reportLink 和 targetWarn 是硬编码 HTML，不是用户数据——刻意不转义
     const reportLink =
       job.lastReportId && job.lastStatus === "success"
@@ -403,7 +492,7 @@ export function createAutoTestConfig({ state, confirm }) {
       <div class="atc-job-head">
         <b>${escapeHtml(job.name || KIND_LABEL[job.kind] || job.kind)}</b>
         <span class="pill">${escapeHtml(KIND_LABEL[job.kind] || job.kind)}</span>
-        <span class="pill">${job.cron ? `定时 ${escapeHtml(job.cron)}` : `每 ${Number(job.periodHours)} 小时`}</span>
+        <span class="pill">${escapeHtml(scheduleText)}</span>
         <span class="pill ${job.enabled ? "" : "muted"}">${job.enabled ? "已启用" : "已停用"}</span>${targetWarn}
       </div>
       <div class="atc-job-meta">

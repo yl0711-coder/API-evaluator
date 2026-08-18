@@ -23,8 +23,13 @@ import { assertTaskNotCancelled, updateTaskProgress } from "./task-manager.mjs";
 import { CODING_SCENARIOS } from "./scenarios/coding.mjs";
 import { estimateTokens } from "./tokenizer-fingerprint.mjs";
 
-// 三档负载 profile（文档 §3.4）：max_tokens 同时控内存(响应体不膨胀)与成本(输出封顶)。
-const LOAD_PROFILES = {
+// 三档负载 profile（文档 §3.4）：仅决定探针文案；base 后附带的探针编号见 dispatch()。
+// max_tokens 的默认值也在这里，但只作为「用户没填时」的兜底——见下方 runLoadTest：
+// 有 payload.maxTokens 时以用户填的为准，不再被档位锁死。不同压测目标需要的输出上限差异很大
+// （一句话连通 vs 长编程输出），锁死会让用户测不出自己真实场景的组合（如「高并发但要长输出」）。
+// 导出仅供 tests/load-test.test.mjs 的常量同步测试使用：前端 src/cost-estimates.js 必须复制一份
+// 同样的 maxTokens 默认值来算预估（前端不能 import server/），两边漂移会让预估框静默算错。
+export const LOAD_PROFILES = {
   simple: { label: "简单", maxTokens: 64, base: "你好，请用一句话说明你现在能正常工作。" },
   think: {
     label: "轻思考",

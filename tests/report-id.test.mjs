@@ -29,6 +29,18 @@ test("parseReportId：多目标 → 无渠道/模型", () => {
   assert.equal(r.model, null);
 });
 
+test("parseReportId：模型对比报告不伪装成单一渠道/模型", () => {
+  const r = parseReportId("渠道A_模型A_vs_渠道B_模型B_compare_20260629_095752_3f2a");
+  assert.deepEqual(r, {
+    isNew: true,
+    type: "compare",
+    date: "20260629",
+    channel: null,
+    model: null,
+    isComparison: true,
+  });
+});
+
 test("parseReportId：老格式不参与筛选", () => {
   assert.deepEqual(parseReportId("admission-20260615-183217-232baef6"), { isNew: false });
   assert.deepEqual(parseReportId("run-20260615-185321-088c8497"), { isNew: false });

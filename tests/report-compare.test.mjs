@@ -20,6 +20,7 @@ import {
   commonScenarioNames,
   exclusiveScenarioNames,
   formatCompareReportMarkdown,
+  buildComparisonView,
   pickRecentReports,
   buildCompareAnalysisPrompt,
   interpolateLoadPoint,
@@ -873,7 +874,198 @@ function mkFullAgg(overrides = {}) {
   };
 }
 
-test("computeOverallScore：三维皆有数据 → 手算效应量与合成分一致", () => {
+test("buildComparisonView：摘要行按指标方向给出胜方，缺失压测不伪造结论", () => {
+  const a = mkFullAgg({
+    label: "模型 A",
+    stability: { succ: 9, total: 10, rate: 0.9 },
+    latency: { samples: [], rounds: [], stats: { p95TotalMs: 800 } },
+    scenarioPass: { succ: 3, total: 3, rate: 1 },
+    quality: { mean: 88, n: 1 },
+    scenarios: [
+      {
+        name: "场景甲",
+        tier: "中等",
+        quality: 88,
+        rate: 1,
+        succ: 3,
+        total: 3,
+        avgMs: 900,
+        outputTokens: 800,
+        outputTokenReportedCount: 2,
+        outputTokenTotalCount: 3,
+        cacheReadTokens: 200,
+        cacheReadTokenReportedCount: 3,
+        cacheReadTokenTotalCount: 3,
+        firstTokenSamples: [180, 220],
+        firstTokenSampleCount: 2,
+        p50FirstTokenMs: 180,
+        issue: "",
+      },
+    ],
+  });
+  const b = mkFullAgg({
+    label: "模型 B",
+    stability: { succ: 8, total: 10, rate: 0.8 },
+    latency: { samples: [], rounds: [], stats: { p95TotalMs: 1200 } },
+    scenarioPass: { succ: 2, total: 3, rate: 2 / 3 },
+    quality: { mean: 70, n: 1 },
+    scenarios: [
+      {
+        name: "场景甲",
+        tier: "中等",
+        quality: 70,
+        rate: 2 / 3,
+        succ: 2,
+        total: 3,
+        avgMs: 1100,
+        outputTokens: 900,
+        outputTokenReportedCount: 3,
+        outputTokenTotalCount: 3,
+        cacheReadTokens: 300,
+        cacheReadTokenReportedCount: 1,
+        cacheReadTokenTotalCount: 3,
+        firstTokenSamples: [280, 320],
+        firstTokenSampleCount: 2,
+        p50FirstTokenMs: 280,
+        issue: "超时",
+      },
+    ],
+  });
+  const view = buildComparisonView(buildComparison(a, b));
+  const row = (id) => view.summary.find((item) => item.id === id);
+  assert.equal(view.subjects.a.label, "模型 A");
+  assert.equal(row("stability-rate").winner, "a");
+  assert.equal(row("p95-latency").winner, "a", "延迟更低的一方胜出");
+  assert.equal(row("p50-first-token").valueA, 180);
+  assert.equal(row("p50-first-token").valueB, 280);
+  assert.equal(row("p50-first-token").winner, "a", "首 Token 延迟更低的一方胜出");
+  assert.equal(row("scenario-output-tokens").valueA, 800);
+  assert.equal(row("scenario-output-tokens").valueB, 900);
+  assert.deepEqual(row("scenario-output-tokens").coverageA, { reportedCount: 2, totalCount: 3 });
+  assert.deepEqual(row("scenario-cache-read-tokens").coverageB, { reportedCount: 1, totalCount: 3 });
+  assert.equal(row("scenario-output-tokens").winner, null, "Token 消耗只作信息展示，不判优劣");
+  assert.equal(row("scenario-cache-read-tokens").valueA, 200);
+  assert.equal(row("scenario-cache-read-tokens").valueB, 300);
+  assert.equal(row("scenario-cache-read-tokens").winner, null, "缓存命中量只作信息展示，不判优劣");
+  assert.equal(row("load-goodput").status, "insufficient", "未测压测不伪造成零容量");
+  assert.equal(view.scenarios[0].winner, "a");
+  assert.equal(view.scenarios[0].a.outputTokens, 800);
+  assert.equal(view.scenarios[0].a.outputTokenReportedCount, 2);
+  assert.equal(view.scenarios[0].a.outputTokenTotalCount, 3);
+  assert.equal(view.scenarios[0].a.cacheReadTokens, 200);
+  assert.equal(view.scenarios[0].b.issue, "超时");
+});
+
+test("buildComparisonView：首 Token 延迟只池化双方都有流式样本的共有场景", () => {
+  const a = mkFullAgg({
+    scenarios: [
+      {
+        name: "共同流式场景",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [100, 200, 300],
+        firstTokenSampleCount: 3,
+        p50FirstTokenMs: 200,
+      },
+      {
+        name: "A 单边流式场景",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [1],
+        firstTokenSampleCount: 1,
+        p50FirstTokenMs: 1,
+      },
+    ],
+  });
+  const b = mkFullAgg({
+    scenarios: [
+      {
+        name: "共同流式场景",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [400, 500, 600],
+        firstTokenSampleCount: 3,
+        p50FirstTokenMs: 500,
+      },
+      {
+        name: "A 单边流式场景",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [],
+        firstTokenSampleCount: 0,
+        p50FirstTokenMs: null,
+      },
+    ],
+  });
+
+  const view = buildComparisonView(buildComparison(a, b));
+  const row = view.summary.find((item) => item.id === "p50-first-token");
+  assert.equal(row.valueA, 200);
+  assert.equal(row.valueB, 500);
+  assert.equal(row.winner, "a");
+  assert.match(row.detail, /1 个/);
+});
+
+test("buildComparisonView：一侧没有流式样本时首 Token 延迟标为数据不足", () => {
+  const a = mkFullAgg({
+    scenarios: [
+      {
+        name: "共同场景",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [100],
+        firstTokenSampleCount: 1,
+        p50FirstTokenMs: 100,
+      },
+    ],
+  });
+  const b = mkFullAgg({
+    scenarios: [
+      { name: "共同场景", quality: 80, rate: 1, succ: 1, total: 1, firstTokenSamples: [], firstTokenSampleCount: 0, p50FirstTokenMs: null },
+    ],
+  });
+
+  const row = buildComparisonView(buildComparison(a, b)).summary.find((item) => item.id === "p50-first-token");
+  assert.equal(row.status, "insufficient");
+  assert.equal(row.valueA, null);
+  assert.equal(row.valueB, null);
+});
+
+test("buildComparisonView：平均质量分只比较共有且双方都有质量分的场景", () => {
+  const a = mkFullAgg({
+    label: "模型 A",
+    quality: { mean: 75, n: 2 },
+    scenarios: [
+      { name: "共有场景", tier: "中等", quality: 50, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" },
+      { name: "A 独有场景", tier: "中等", quality: 100, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" },
+    ],
+  });
+  const b = mkFullAgg({
+    label: "模型 B",
+    quality: { mean: 70, n: 1 },
+    scenarios: [{ name: "共有场景", tier: "中等", quality: 70, rate: 1, succ: 1, total: 1, avgMs: 100, issue: "" }],
+  });
+
+  const cmp = buildComparison(a, b);
+  const qualityRow = buildComparisonView(cmp).summary.find((item) => item.id === "scenario-quality");
+  assert.equal(cmp.a.quality.mean, 75, "既有报告的全量质量分不被页面投影改写");
+  assert.equal(qualityRow.valueA, 50);
+  assert.equal(qualityRow.valueB, 70);
+  assert.equal(qualityRow.winner, "b", "独有场景不得改变共有场景质量分的胜方");
+  assert.match(qualityRow.detail, /1 个/);
+});
+
+test("computeOverallScore：首 Token 缺失时，其他维度按新权重归一化", () => {
   const a = mkFullAgg({
     label: "A",
     stability: { succ: 9, total: 10 },
@@ -896,18 +1088,19 @@ test("computeOverallScore：三维皆有数据 → 手算效应量与合成分�
   assert.equal(os.dims.quality.effect, null, "配对样本 n=1 时质量维度样本不足，不参与合成");
   // 压测：goodput A=10*1=10，B=2.5*1=2.5，比值4倍 → tanh(ln4/ln4)=tanh(1)。
   assert.ok(Math.abs(os.dims.load.effect - Math.tanh(1)) < 1e-6, "压测效应量=tanh(ln(10/2.5)/ln4)=tanh(1)");
-  // 权重按比例重新归一化到 availability+load（quality 缺失）。
-  const wSum = 0.35 + 0.35;
-  assert.ok(Math.abs(os.dims.availability.weight - 0.35 / wSum) < 1e-6);
-  assert.ok(Math.abs(os.dims.load.weight - 0.35 / wSum) < 1e-6);
+  // 权重按比例重新归一化到 availability+load（quality 与首 Token 缺失）。
+  const wSum = 0.3 + 0.3;
+  assert.ok(Math.abs(os.dims.availability.weight - 0.3 / wSum) < 1e-6);
+  assert.ok(Math.abs(os.dims.load.weight - 0.3 / wSum) < 1e-6);
   assert.equal(os.dims.quality.weight, 0);
-  const expectedE = (0.35 * (hStab / 2) + 0.35 * Math.tanh(1)) / wSum;
+  assert.equal(os.dims.firstToken.weight, 0);
+  const expectedE = (0.3 * (hStab / 2) + 0.3 * Math.tanh(1)) / wSum;
   assert.ok(Math.abs(os.effect - expectedE) < 1e-6);
   assert.equal(os.scoreA, Math.round(50 + 50 * expectedE));
   assert.equal(os.scoreA + os.scoreB, 100, "两分数之和恒为100");
 });
 
-test("computeOverallScore：压测数据双方均缺失 → load 维度为 null，权重归一化到可用性+质量", () => {
+test("computeOverallScore：压测与首 Token 数据均缺失 → 权重归一化到可用性+质量", () => {
   const a = mkFullAgg({
     label: "A",
     stability: { succ: 9, total: 10 },
@@ -928,11 +1121,158 @@ test("computeOverallScore：压测数据双方均缺失 → load 维度为 null�
   const os = computeOverallScore(cmp);
   assert.equal(os.dims.load.effect, null, "双方都没有压测数据，load 维度不参与");
   assert.equal(os.dims.load.weight, 0);
-  const wSum = 0.35 + 0.3;
-  assert.ok(Math.abs(os.dims.availability.weight - 0.35 / wSum) < 1e-6);
+  assert.equal(os.dims.firstToken.effect, null);
+  assert.equal(os.dims.firstToken.weight, 0);
+  const wSum = 0.3 + 0.3;
+  assert.ok(Math.abs(os.dims.availability.weight - 0.3 / wSum) < 1e-6);
   assert.ok(Math.abs(os.dims.quality.weight - 0.3 / wSum) < 1e-6);
   assert.ok(Math.abs(os.dims.availability.weight + os.dims.quality.weight - 1) < 1e-6, "剩余权重之和为1");
   assert.equal(os.scoreA + os.scoreB, 100);
+});
+
+test("computeOverallScore：首 Token 延迟以 10% 权重参与综合相对分", () => {
+  const a = mkFullAgg({
+    scenarios: [
+      {
+        name: "流式场景 1",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [100, 110],
+        firstTokenSampleCount: 2,
+        p50FirstTokenMs: 100,
+      },
+      {
+        name: "流式场景 2",
+        quality: 70,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [120],
+        firstTokenSampleCount: 1,
+        p50FirstTokenMs: 120,
+      },
+    ],
+  });
+  const b = mkFullAgg({
+    scenarios: [
+      {
+        name: "流式场景 1",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [400, 410],
+        firstTokenSampleCount: 2,
+        p50FirstTokenMs: 400,
+      },
+      {
+        name: "流式场景 2",
+        quality: 70,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [420],
+        firstTokenSampleCount: 1,
+        p50FirstTokenMs: 420,
+      },
+    ],
+  });
+
+  const os = computeOverallScore(buildComparison(a, b));
+  const firstTokenEffect = Math.tanh(Math.log(410 / 110) / Math.log(4));
+  const firstTokenWeight = 0.1 / (0.3 + 0.3 + 0.1);
+  assert.equal(os.dims.firstToken.weight, firstTokenWeight, "可用性、质量与首 Token 三个可用维度按 30:30:10 归一化");
+  assert.ok(Math.abs(os.dims.firstToken.effect - firstTokenEffect) < 1e-6);
+  assert.ok(Math.abs(os.effect - firstTokenEffect * firstTokenWeight) < 1e-6);
+  assert.ok(os.scoreA > 50, "A 的首 Token 更低，应抬高综合相对分");
+});
+
+test("computeOverallScore：首 Token 样本门槛不足时不参与综合相对分", () => {
+  const a = mkFullAgg({
+    scenarios: [
+      {
+        name: "流式场景 1",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [100, 110],
+        firstTokenSampleCount: 2,
+        p50FirstTokenMs: 100,
+      },
+      {
+        name: "流式场景 2",
+        quality: 70,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [],
+        firstTokenSampleCount: 0,
+        p50FirstTokenMs: null,
+      },
+    ],
+  });
+  const b = mkFullAgg({
+    scenarios: [
+      {
+        name: "流式场景 1",
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [400, 410],
+        firstTokenSampleCount: 2,
+        p50FirstTokenMs: 400,
+      },
+      {
+        name: "流式场景 2",
+        quality: 70,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [],
+        firstTokenSampleCount: 0,
+        p50FirstTokenMs: null,
+      },
+    ],
+  });
+
+  const os = computeOverallScore(buildComparison(a, b));
+  assert.equal(os.dims.firstToken.effect, null);
+  assert.equal(os.dims.firstToken.weight, 0);
+});
+
+test("首 Token 回退到各场景 P50 时：仅展示估算值，不参与综合相对分", () => {
+  // 两侧都没有原始流式样本（报告只从 Markdown 表格解析出 P50），但共有场景数与
+  // 每侧计数都达标 —— 回退路径必须只展示、不进入 10% 权重的综合分。
+  const mkSide = (p50s) =>
+    mkFullAgg({
+      scenarios: p50s.map((p50, i) => ({
+        name: `流式场景 ${i + 1}`,
+        quality: 80,
+        rate: 1,
+        succ: 1,
+        total: 1,
+        firstTokenSamples: [],
+        firstTokenSampleCount: 0,
+        p50FirstTokenMs: p50,
+      })),
+    });
+  const a = mkSide([100, 200, 300]);
+  const b = mkSide([400, 500, 600]);
+
+  const cmp = buildComparison(a, b);
+  const row = buildComparisonView(cmp).summary.find((item) => item.id === "p50-first-token");
+  assert.equal(row.valueA, 200, "展示各场景 P50 的中位数");
+  assert.equal(row.valueB, 500);
+  assert.match(row.detail, /估算/, "文案须说明这是估算值");
+  assert.match(row.detail, /不计入综合分/, "文案须说明不进入综合分");
+
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.firstToken.effect, null, "回退路径不产生效应量");
+  assert.equal(os.dims.firstToken.weight, 0, "回退路径权重归零，摊给其余维度");
 });
 
 test("computeOverallScore：压测一方 goodput=0（基准点即不健康）、另一方>0 → 效应量为满值±1，非 NaN/Infinity", () => {
@@ -983,6 +1323,52 @@ test("computeOverallScore：三维皆样本不足 → 整体返回 null，不编
   assert.equal(os.effect, null);
 });
 
+test("computeOverallScore：压测点存在但 successRate 解析失败（如表头漂移）→ load 维度不参与，不得当0参与合成", () => {
+  // 复现的真实缺陷：表头从"成功率"漂移成"成功比例"等变体时，parseLoadReport 解析不到该列，
+  // successRate 落为 null；simpleKnee 的 unhealthy() 判断用 Number.isFinite 守卫，null 不算不健康，
+  // 于是被误判为"健康"一路选到推荐点，goodputOf 却在 `qps * successRate` 上因 JS 的 `x*null=0`
+  // 悄悄把它算成 0——和"从未压测"一样是把"解析失败"冒充成"测量到 0%"。
+  const a = mkFullAgg({
+    label: "A(表头漂移)",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: null, http429: 0 }],
+  });
+  const b = mkFullAgg({
+    label: "B(压测健康)",
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.load.effect, null, "一方数据解析失败、另一方正常 → load 维度不参与合成");
+  assert.equal(os.dims.load.weight, 0);
+
+  const cmp2 = buildComparison(b, a);
+  const os2 = computeOverallScore(cmp2);
+  assert.equal(os2.dims.load.effect, null);
+});
+
+test("computeOverallScore：某维度效应量意外为 NaN 时不得污染合成分（NaN != null 陷阱）", () => {
+  // computeOverallScore 用于判断维度是否参与合成的守卫必须用 Number.isFinite，不能只判 == null：
+  // JS 里 `NaN != null` 为 true，仅判 == null 会让 NaN 漏网，进而让 scoreA/scoreB 变成 NaN。
+  const a = mkFullAgg({
+    label: "A",
+    stability: { succ: 9, total: 10 },
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const b = mkFullAgg({
+    label: "B",
+    stability: { succ: 7, total: 10 },
+    loadPoints: [{ mode: "closed", offered: 10, qps: 5, successRate: 1, http429: 0 }],
+  });
+  const cmp = buildComparison(a, b);
+  cmp.pairedQuality = { n: 5, cliff: { delta: Number.NaN } }; // 模拟质量维度效应量意外为 NaN
+  const os = computeOverallScore(cmp);
+  assert.equal(os.dims.quality.effect, null, "质量维度传入非法值时应保持 null（未被 NaN 污染）");
+  assert.equal(os.dims.quality.weight, 0, "NaN 效应量不得参与权重归一化");
+  assert.ok(Number.isFinite(os.scoreA), "scoreA 不得被 NaN 污染");
+  assert.ok(Number.isFinite(os.scoreB), "scoreB 不得被 NaN 污染");
+  assert.equal(os.scoreA + os.scoreB, 100);
+});
+
 test("formatCompareReportMarkdown：综合评分小节渲染——有分数时显示表格，数据不足时给出说明", () => {
   const a = mkFullAgg({
     label: "A",
@@ -998,7 +1384,8 @@ test("formatCompareReportMarkdown：综合评分小节渲染——有分数时�
   const md = formatCompareReportMarkdown(cmp, { generatedAt: "2026-07-28T00:00:00Z" });
   assert.match(md, /## 综合评分（相对分，A \+ B = 100）/);
   assert.match(md, /对象A：\d+ 分　对象B：\d+ 分/);
-  assert.match(md, /压力测试 \| 35%（未参与：样本不足） \| - \| - \|/);
+  assert.match(md, /压力测试 \| 30%（未参与：样本不足） \| - \| - \|/);
+  assert.match(md, /首 Token 延迟 \| 10%（未参与：样本不足） \| - \| - \|/);
   // 综合评分小节必须在结论速览之后、第1节之前。
   const idxOverview = md.indexOf("## 结论速览");
   const idxScore = md.indexOf("## 综合评分");

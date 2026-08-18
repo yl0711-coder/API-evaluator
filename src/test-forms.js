@@ -3,9 +3,7 @@
 // 采用零外部耦合模式——所有依赖通过 deps 注入，DOM 元素通过 els 传入。
 export function createTestForms({ state, els, deps }) {
   const {
-    api,
     toast,
-    escapeHtml,
     createTaskFormController,
     requireSelectedValues,
     confirmAction,
@@ -26,41 +24,33 @@ export function createTestForms({ state, els, deps }) {
     debounce,
   } = deps;
 
-  // ── 准入（单 API）── 独立 submit handler，不走 createTaskFormController ──
-  let admissionRunning = false;
-  els.admissionTestForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (admissionRunning) return; // 防双击/确认框 await 期间重复提交（重复=重复扣额度）
-    const payload = Object.fromEntries(new FormData(els.admissionTestForm).entries());
-    payload.modelName = findProfileModelName(payload.profileId);
-    const estimate = estimateAdmissionCost(payload);
-    payload.predicted = estimate; // 跑前预测随 payload 记录，供报告对比
-    admissionRunning = true;
-    const confirmed = await confirmAction(confirmExecution("模型准入评测", estimate));
-    if (!confirmed) {
-      admissionRunning = false;
-      return;
-    }
-
-    els.admissionSubmit.disabled = true;
-    els.admissionSubmit.textContent = "准入评测中...";
-    els.admissionResult.innerHTML = `<p class="muted">正在执行准入评测。请不要关闭窗口。</p>`;
-    try {
-      const result = await api("/api/tests/admission", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+  // ── 准入（单 API）──
+  // 走异步任务（createTaskFormController）而不是同步 /api/tests/admission：standard 档 11-12 条
+  // 用例串行、每条最长 300s，一个 HTTP 请求能挂十几分钟。线上反代（nginx 默认 proxy_read_timeout
+  // 60s）会先掐断连接，前端只看到"工具暂时连接不上本地服务"，而后端仍在跑、额度照扣，
+  // 用户按提示重开再点一次就是双花。异步化同时把它纳入 task-manager 的全局并发闸
+  // （EVALUATOR_MAX_CONCURRENT_TASKS），并且刷新/关页面后回来还能取到结果。
+  createTaskFormController({
+    form: els.admissionTestForm,
+    submitButton: els.admissionSubmit,
+    resultElement: els.admissionResult,
+    progressElement: els.admissionProgress,
+    state,
+    slot: "admission",
+    taskType: "admission",
+    confirmRun: (payload) => confirmAction(confirmExecution("模型准入评测", estimateAdmissionCost(payload))),
+    predict: (payload) => estimateAdmissionCost(payload),
+    preparePayload: (payload) => ({ ...payload, modelName: findProfileModelName(payload.profileId) }),
+    beforeStart: () => {
+      els.admissionResult.innerHTML = `<p class="muted">正在执行准入评测。可以离开本页，回来还能看到结果。</p>`;
+    },
+    onSuccess: async (result) => {
       els.admissionResult.innerHTML = renderAdmissionResult(result);
       await loadResultsBundle();
       toast("准入评测完成。");
-    } catch (error) {
-      els.admissionResult.innerHTML = `<p class="fail">准入评测失败：${escapeHtml(error.message)}</p>`;
-      toast(error.message, true);
-    } finally {
-      admissionRunning = false;
-      els.admissionSubmit.disabled = false;
-      els.admissionSubmit.textContent = "开始准入评测";
-    }
+    },
+    failurePrefix: "准入评测失败",
+    idleButtonText: "开始准入评测",
   });
 
   // ── 批量准入对比 ──

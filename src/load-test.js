@@ -151,6 +151,7 @@ export function createLoadTest({ state, els, onProfileData, deps }) {
         mode: raw.mode === "open" ? "open" : "closed",
         loads,
         promptProfile: raw.promptProfile || "simple",
+        maxTokens: raw.maxTokens ? Number(raw.maxTokens) : undefined, // 留空则服务端按负载档默认值兜底
         durationSec: Number(raw.durationSec) || 60,
         warmupSec: Number(raw.warmupSec) || 0,
         timeoutSec: Number(raw.timeoutSec) || 30,

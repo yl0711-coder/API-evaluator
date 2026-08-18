@@ -62,23 +62,29 @@ export function __resetWriteChainForTest() {
 // 下次运行时刻。双模式：
 //   - 数字入参 computeNextRunAt(periodHours, fromMs)：间隔模式，推 periodHours 小时（老调用，保持兼容）。
 //   - 对象入参 computeNextRunAt(job, fromMs)：有 job.cron 走 cron；否则退回 job.periodHours 间隔。
-// cron 366 天内无匹配（见下方分支注释：真实可构造，非纯理论）时回退成 24h 间隔，绝不返回 null 卡死调度。
+// cron 没有可执行时刻时返回 null。调用方必须拒绝保存或停用历史坏作业，绝不能静默改成每日执行。
 export function computeNextRunAt(jobOrPeriod, fromMs = Date.now()) {
   if (jobOrPeriod && typeof jobOrPeriod === "object") {
     const job = jobOrPeriod;
     if (job.cron) {
-      const next = cronNextAfter(job.cron, fromMs);
+      const next = nextCronAt(job.cron, fromMs);
       if (next != null) return new Date(next).toISOString();
-      // cron 解析【语法】合法但 366 天内无匹配日期时才会落到这里——不是"不该发生"的兜底，
-      // 而是真实可构造的输入（如 `0 0 30 2 *`：2 月没有 30 号，永远不会命中）。validateJob 只查
-      // parseCron 是否抛错，不检查语义上"是否存在任何匹配日期"，故这类表达式会通过校验，
-      // 然后在这里悄悄退回每天固定时间跑一次，用户毫无提示地得到一个跟预期完全不同的调度。
-      // 已知问题（暂不修）：改进方向是 validateJob 里试算一次 cronNextAfter，无匹配就直接拒绝保存。
-      return new Date(fromMs + 24 * 3600 * 1000).toISOString();
+      return null;
     }
     return intervalNextRunAt(job.periodHours, fromMs);
   }
   return intervalNextRunAt(jobOrPeriod, fromMs);
+}
+
+function nextCronAt(cron, fromMs) {
+  const expressions = String(cron || "")
+    .split(";")
+    .map((item) => item.trim());
+  if (!expressions.length || expressions.some((item) => !item)) return null;
+  return expressions.reduce((earliest, expression) => {
+    const next = cronNextAfter(expression, fromMs);
+    return next != null && (earliest == null || next < earliest) ? next : earliest;
+  }, null);
 }
 
 function intervalNextRunAt(periodHours, fromMs) {
@@ -104,7 +110,10 @@ export function normalizeJob(raw, existing = null) {
   // cron 表达式（可选）：非空即启用 cron 调度、periodHours 作后备保留。空串=用间隔模式。
   const cron = String(raw.cron ?? existing?.cron ?? "")
     .trim()
-    .slice(0, 120);
+    .slice(0, 1200);
+  // `0 HH * * ...` can mean either legacy "once daily" or a fixed HH:00 time.
+  // Keep this UI-only marker so edits retain the chosen mode; scheduling still uses cron only.
+  const cronMode = cron && (raw.cronMode ?? existing?.cronMode) === "fixed" ? "fixed" : "";
   return {
     id,
     name: String(raw.name ?? existing?.name ?? "")
@@ -114,6 +123,7 @@ export function normalizeJob(raw, existing = null) {
     kind,
     periodHours,
     cron,
+    cronMode,
     scenarioIds,
     options,
     enabled: raw.enabled === undefined ? existing?.enabled !== false : Boolean(raw.enabled),
@@ -191,7 +201,12 @@ export function validateJob(job) {
   // cron 模式：校验表达式合法即可，periodHours 只作后备不强校验。
   if (job.cron) {
     try {
-      parseCron(job.cron);
+      const expressions = job.cron.split(";").map((item) => item.trim());
+      if (expressions.length > 24 || expressions.some((item) => !item)) throw new Error("固定时刻不能为空，且最多支持 24 个。");
+      for (const expression of expressions) parseCron(expression);
+      // 语法合法不等于语义可执行：如 `0 0 30 2 *`。四年窗口同时覆盖闰日，因而不会误拒
+      // “每 2 月 29 日”这类有效规则。保存阶段直接拒绝，避免后续被调度器悄悄改成每日执行。
+      if (nextCronAt(job.cron) == null) return "定时表达式在未来四年内没有可执行时刻，请修改后再保存。";
     } catch (error) {
       return `定时表达式不合法：${error.message}`;
     }

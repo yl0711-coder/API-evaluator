@@ -10,8 +10,8 @@ export function formatPercent(value) {
   return Number.isFinite(Number(value)) ? `${Math.round(Number(value) * 100)}%` : "-";
 }
 
-export function downloadText(filename, text) {
-  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+export function downloadText(filename, text, mimeType = "application/json") {
+  const blob = new Blob([text], { type: `${mimeType};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -175,5 +175,7 @@ export function protocolLabel(protocol) {
   if (protocol === "claude_messages") return "Claude Messages";
   if (protocol === "openai_chat") return "OpenAI Chat";
   if (protocol === "openai_compatible") return "OpenAI 兼容";
+  // baseUrl 已含厂商自己的版本前缀（智谱 /api/paas/v4 等），不再补 /v1。
+  if (protocol === "openai_path_prefix") return "OpenAI 兼容 · 自定义前缀";
   return protocol || "-";
 }

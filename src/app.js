@@ -27,7 +27,7 @@ import {
   formatClientLogAnalysisResult,
   formatSupplierEvidenceResult,
 } from "./formatters.js";
-import { renderRequestList, renderTaskEventList, renderTestRunList } from "./history-view.js";
+import { renderRequestList, renderTestRunList } from "./history-view.js";
 import { renderTrendChart } from "../shared/trend-chart.mjs";
 import { buildWorkflowStatus, getNextWorkflowStep, renderNextActionHtml } from "./workflow-guide.js";
 import { requireElement, requireElements } from "./dom-utils.js";
@@ -46,6 +46,7 @@ import { renderRunTargetSelectOptions } from "./profile-view.js";
 import { resolveRunnableTargets } from "./runnable-targets.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import { createBatchTargetPicker } from "./batch-target-picker.js";
+import { createTaskCenter } from "./task-center.js";
 import { createScenarioCasePicker } from "./scenario-case-picker.js";
 import { applyPromptPresetToForm, readStabilityGroups, renderPromptPresetOptions, renderStabilityGroupPicker } from "./prompt-presets.js";
 import { createChannelAdmin } from "./channel-admin.js";
@@ -113,6 +114,20 @@ const notifyConfig = createNotifyConfig({ state });
 const modelCompare = createModelCompare({ state, confirm: (opts) => confirmAction(opts) });
 // 「报警规则」（登录即可用，任意管理员）：自定义阈值报警规则的增删改查。
 const alertRules = createAlertRules({ state, confirm: (opts) => confirmAction(opts) });
+// 「任务中心」（登录即可用）：所有长任务的状态与逐步骤明细。取代报告中心里原先那个
+// 只有一行聚合状态的「最近任务状态」折叠区。confirmAction / showPage 均在后文声明，
+// 闭包取值时已就绪（同上面几个模块的写法）。
+const taskCenter = createTaskCenter({
+  state,
+  confirm: (opts) => confirmAction(opts),
+  // 「再测一次」只回填表单并跳页，不直接开跑——任务是花钱的，最后一下留给用户。
+  // admission-suite 由标准评测页发起（不是准入评测页），故跳 standard-eval。
+  // 锚点是单值的，跨渠道的一组只能填中一个渠道，selectMany 如实返回填中的 id。
+  onRetest: ({ profileIds }) => {
+    showPage("standard-eval");
+    return standardPicker.selectMany(profileIds);
+  },
+});
 // 注册到 _onProfileData（必须在顶层 await 之前）。
 _onProfileData.push((data) => autoTestConfig.refreshTargets(data));
 _onProfileData.push((data) => modelCompare.refreshTargets(data));
@@ -139,11 +154,13 @@ const standardPlainResult = requireElement("#standard-plain-result");
 const standardEvalResult = requireElement("#standard-eval-result");
 const standardNextActions = requireElement("#standard-next-actions");
 const standardEvalProgress = requireElement("#standard-eval-progress");
+const standardEvalTaskProgress = requireElement("#standard-eval-task-progress");
 const admissionTestForm = requireElement("#admission-test-form");
 const admissionProfileSelect = requireElement("#admission-profile-select");
 const admissionSubmit = requireElement("#admission-submit");
 const admissionEstimate = requireElement("#admission-estimate");
 const admissionResult = requireElement("#admission-result");
+const admissionProgress = requireElement("#admission-progress");
 const admissionBatchForm = requireElement("#admission-batch-form");
 const admissionBatchProfileSelect = requireElement("#admission-batch-profile-select");
 const admissionBatchSubmit = requireElement("#admission-batch-submit");
@@ -238,7 +255,6 @@ _onProfileData.push((data) => standardPicker.refresh(data));
 // 「选择测试场景」复用 .batch-picker 勾选样式,真值写回隐藏的 scenarioCaseSelect。
 const scenarioCasePicker = createScenarioCasePicker(requireElement("#scenario-case-picker"), scenarioCaseSelect);
 
-const taskEventList = requireElement("#task-event-list");
 const stabilityGroupPicker = requireElement("#stability-group-picker");
 const stabilityRequestTotal = requireElement("#stability-request-total");
 const batchPromptPreset = requireElement("#batch-prompt-preset");
@@ -323,7 +339,7 @@ const highRiskBanner = createHighRiskBanner({ state });
 
 // 「查看报告」<details> 面板（列表 / 筛选 / 分页 / 删除）：见 src/report-browser.js。
 // 它自己接管 toggle 展开事件，故不进 showPage 的懒加载派发。
-// 删除按钮的可见性依赖 canConfig，须等认证完成后经 setCanConfig 推入（见下方顶层 await 之后）。
+// 批量下载与删除按钮的可见性依赖 canConfig，须等认证完成后经 setCanConfig 推入（见下方顶层 await 之后）。
 const reportBrowser = createReportBrowser({ state });
 
 // 仪表盘（渠道健康 / 结论分布 / 待办 / 最近报告 / 工作流引导）：见 src/dashboard.js。
@@ -477,6 +493,7 @@ document.addEventListener("click", (event) => {
 
 requireElement("#reload-requests").addEventListener("click", async () => {
   await loadResultsBundle();
+  reportBrowser.refresh(); // 同时刷新报告文件列表
 });
 requireElement("#copy-handoff-template").addEventListener("click", copyHandoffTemplate);
 requireElement("#refresh-handoff-template").addEventListener("click", renderDeliveryViews);
@@ -487,10 +504,10 @@ requireElement("#cancel-stability-task").addEventListener("click", () => cancelR
 requireElement("#cancel-load-test-task").addEventListener("click", () => cancelRemoteTask(state, "loadTest"));
 requireElement("#cancel-batch-task").addEventListener("click", () => cancelRemoteTask(state, "batch"));
 requireElement("#cancel-admission-batch-task").addEventListener("click", () => cancelRemoteTask(state, "admissionBatch"));
+requireElement("#cancel-admission-task").addEventListener("click", () => cancelRemoteTask(state, "admission"));
 requireElement("#cancel-scenario-task").addEventListener("click", () => cancelRemoteTask(state, "scenario"));
-// 「补齐单方场景」逐个真实调用付费 API，只能取消当前这一条（循环下一条仍会照常发起）；
-// 与其它任务槽同一套 cancelRemoteTask，用于让用户能真正打断当前在跑的那次请求。
-requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => cancelRemoteTask(state, "mc-gap-fill"));
+requireElement("#cancel-standard-eval-task").addEventListener("click", () => cancelRemoteTask(state, "standardEval"));
+requireElement("#cancel-mc-gap-fill-task").addEventListener("click", () => modelCompare.cancelGapFill());
 stabilityGroupPicker.addEventListener("input", () => updateStabilityRequestTotal());
 batchPromptPreset.addEventListener("change", applyBatchPromptPreset);
 // input 事件每敲一个字符就触发，updateEstimates 会重建面板 innerHTML（闪烁、低端机
@@ -511,6 +528,7 @@ const testForms = createTestForms({
     admissionSubmit: admissionSubmit,
     admissionEstimate: admissionEstimate,
     admissionResult: admissionResult,
+    admissionProgress: admissionProgress,
     admissionBatchForm: admissionBatchForm,
     admissionBatchProfileSelect: admissionBatchProfileSelect,
     admissionBatchSubmit: admissionBatchSubmit,
@@ -538,9 +556,7 @@ const testForms = createTestForms({
     scenarioProgress: scenarioProgress,
   },
   deps: {
-    api,
     toast,
-    escapeHtml,
     createTaskFormController,
     requireSelectedValues,
     confirmAction,
@@ -636,6 +652,7 @@ createStandardEvalController({
   resultElement: standardEvalResult,
   nextActionsElement: standardNextActions,
   progressElement: standardEvalProgress,
+  taskProgressElement: standardEvalTaskProgress,
   state,
   estimateCost: estimateStandardCost,
   confirmRun: (title, estimate) => confirmAction(confirmExecution(title, estimate)),
@@ -653,7 +670,7 @@ createStandardEvalController({
 
 // 进入主界面前先确保已登录（未登录显示登录闸门并阻塞）
 const authUser = await ensureAuthenticated();
-reportBrowser.setCanConfig(authUser?.canConfig); // 报告删除按钮的可见性依据（服务端另有强制鉴权）
+reportBrowser.setCanConfig(authUser?.canConfig); // 报告受限操作的可见性依据（服务端另有强制鉴权）
 applyRoleVisibility(authUser);
 wireUnauthorizedRedirect();
 
@@ -724,6 +741,10 @@ function showPage(page) {
   if (page === "model-compare") {
     modelCompare.load();
   }
+  // 每次进入都重新拉：任务状态是会自己变的，缓存住只会给用户看过期进度。
+  if (page === "task-center") {
+    taskCenter.load();
+  }
 }
 
 async function loadProfiles() {
@@ -754,9 +775,10 @@ async function loadTestRuns() {
   renderDeliveryViews();
 }
 
+// state.taskEvents 仍然要拉：交付视图靠它识别「因程序关闭而中断」的任务。
+// 但不再单独渲染成一张表——任务状态现在归「任务中心」页（它自己按需拉取）。
 async function loadTaskEvents() {
   state.taskEvents = await api("/api/tasks/recent");
-  renderTaskEvents();
   renderDeliveryViews();
 }
 
@@ -778,7 +800,6 @@ async function loadResultsBundle() {
 function renderResultsViews() {
   renderRequests();
   renderTestRuns();
-  renderTaskEvents();
   dashboard.render();
   renderDeliveryViews();
   void highRiskBanner.load(); // 测试完成等触发刷新时，顺带刷新高危报告横幅
@@ -833,10 +854,6 @@ function renderRequests() {
 function renderTestRuns() {
   renderTestRunList({ runs: state.testRuns, container: testRunList });
   renderDeliveryViews();
-}
-
-function renderTaskEvents() {
-  renderTaskEventList({ tasks: state.taskEvents, container: taskEventList });
 }
 
 function renderDeliveryViews() {

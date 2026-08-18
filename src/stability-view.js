@@ -1,11 +1,12 @@
 import { escapeHtml } from "./client-utils.js";
-import { recommendationClass } from "./formatters.js";
+import { recommendationClass, temperatureStrippedNotice } from "./formatters.js";
 
 export function renderStabilitySummary(container, result) {
   const levelClass = recommendationClass(result.recommendation?.level);
   const groups = Array.isArray(result.groups) ? result.groups : [];
 
   container.innerHTML = `
+    ${temperatureStrippedNotice(result.temperatureStrippedCount, result.rounds)}
     <article class="summary-card">
       <span>成功率</span>
       <strong class="${levelClass}">${escapeHtml(result.successRateText)}</strong>

@@ -62,3 +62,242 @@ test("runAdmissionTest：渠道不存在时报错，而不是静默通过", asyn
   await channelStore.saveChannels([]);
   await assert.rejects(() => runAdmissionTest({ channelId: "missing-channel", model: "m" }), /没有找到被测 API 配置/);
 });
+
+// 高级设置里的温度：必须真的发到上游每一道准入用例上（工具题、流式题也不例外）。
+// 存在这个开关的理由是有些模型只接受特定温度（如月之暗面只认 1），不给对值整轮准入都会 400。
+async function collectAdmissionBodies(over) {
+  const bodies = [];
+  return withMockUpstream(
+    (req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        // 流式用例要 SSE 才判通过，但这里只关心「发出去的请求体带没带温度」，
+        // 200 + 非流式响应足够：用例判失败不影响本断言。
+        sendJson(res, 200, { choices: [{ message: { content: "admission ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } });
+      });
+    },
+    async (baseUrl) => {
+      const channel = await channelStore.attachChannelKey(
+        { id: "ch-temp-1", name: "温度渠道", provider: "Anthropic", baseUrl, protocol: "openai_chat", status: "enabled" },
+        "sk-mock",
+      );
+      await channelStore.saveChannels([channel]);
+      await runAdmissionTest({ channelId: "ch-temp-1", packageLevel: "quick", ...over });
+      return bodies;
+    },
+  );
+}
+
+test("runAdmissionTest：高级设置的温度会带到每一道准入用例", async () => {
+  const bodies = await collectAdmissionBodies({ model: "gpt-4o-mini", temperature: "1" });
+  assert.ok(bodies.length >= 5, `快速准入应至少发 5 次请求，实际 ${bodies.length}`);
+  for (const [i, body] of bodies.entries()) {
+    assert.equal(body.temperature, 1, `第 ${i + 1} 次请求应带温度 1`);
+  }
+});
+
+test("runAdmissionTest：温度留空则不覆盖，各用例走各自的默认（普通 0.2、工具题 0）", async () => {
+  const bodies = await collectAdmissionBodies({ model: "gpt-4o-mini", temperature: "" });
+  for (const body of bodies) {
+    // 工具调用题默认用 0 求确定性，其余用例走 OpenAI 协议默认 0.2。
+    assert.equal(body.temperature, body.tools ? 0 : 0.2);
+  }
+});
+
+test("runAdmissionTest：温度非法时直接报错，不烧额度跑完再说", async () => {
+  const channel = await channelStore.attachChannelKey(
+    {
+      id: "ch-temp-bad",
+      name: "校验渠道",
+      provider: "Anthropic",
+      baseUrl: "http://127.0.0.1:1",
+      protocol: "openai_chat",
+      status: "enabled",
+    },
+    "sk-mock",
+  );
+  await channelStore.saveChannels([channel]);
+  await assert.rejects(
+    () => runAdmissionTest({ channelId: "ch-temp-bad", model: "gpt-4o-mini", temperature: "9" }),
+    /温度必须是 0-2 之间的数字/,
+  );
+});
+
+// 档位判别题刻意不吃用户手填的温度：它的结论来自「在线通过率 vs 离线参考分布」的似然比比较，
+// 而离线校准默认不发 temperature。换了采样温度就不是同条件对比，会得出一个基于错基线的
+// 「疑似降级」结论——那是对上游的误控告，比少覆盖一处严重得多。
+test("runAdmissionTest：档位判别题不带手填温度，其余用例照带（对齐离线校准条件）", async () => {
+  const { loadTierContext, buildTierProbeCases } = await import("../server/tier-admission.mjs");
+  const model = "claude-sonnet-4-5";
+  const tierContext = loadTierContext(model);
+  assert.ok(tierContext, "仓库内置的档位参考应覆盖 sonnet 档，否则本用例测不到东西");
+  const tierPrompts = new Set(buildTierProbeCases(tierContext.reference).map((c) => c.prompt));
+  assert.ok(tierPrompts.size > 0);
+
+  const bodies = await collectAdmissionBodies({ model, packageLevel: "standard", temperature: "1" });
+  const promptOf = (body) => {
+    const last = body.messages?.[body.messages.length - 1];
+    return typeof last?.content === "string" ? last.content : "";
+  };
+  const tierBodies = bodies.filter((b) => tierPrompts.has(promptOf(b)));
+  const otherBodies = bodies.filter((b) => !tierPrompts.has(promptOf(b)));
+
+  assert.ok(tierBodies.length > 0, "standard 包 + Claude 应追加档位判别题");
+  for (const body of tierBodies) {
+    // 回到工具默认采样（本渠道走 openai_chat → 0.2），即本功能上线前档位题一直在用的条件。
+    assert.equal(body.temperature, 0.2, "档位判别题不该吃用户手填的温度");
+  }
+  assert.ok(
+    otherBodies.some((b) => b.temperature === 1),
+    "其余用例仍应带上用户手填的温度",
+  );
+});
+
+// 回归：准入摘要必须给出【双口径】成功率。此前准入侧只把 attempts 用于计费求和，
+// 双口径只有稳定性/压测路径有（server/summaries.mjs），准入报告因此只有「重试后最终成功率」
+// 一个数——一个靠重试才成功的渠道，和一次就成的长得一模一样，而这恰恰是准入决策要看的差。
+// 这里让上游第一次返回 429（retry-after: 0，重试瞬时发生，不拖慢用例）、之后全部 200：
+// 最终成功率应为 100%，但首次成功率必须 < 100% 且能指出有 1 次是靠重试救回来的。
+test("runAdmissionTest：首次成功率与重试后成功率分开统计", async () => {
+  let upstreamCalls = 0;
+  await withMockUpstream(
+    (req, res) => {
+      upstreamCalls += 1;
+      if (upstreamCalls === 1) {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "0" });
+        res.end(JSON.stringify({ error: { message: "rate limited" } }));
+        return;
+      }
+      sendJson(res, 200, { choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } });
+    },
+    async (baseUrl) => {
+      const channel = await channelStore.attachChannelKey(
+        {
+          id: "ch-attempts-1",
+          name: "重试统计渠道",
+          provider: "Anthropic",
+          baseUrl,
+          protocol: "openai_chat",
+          status: "enabled",
+        },
+        "sk-mock",
+      );
+      await channelStore.saveChannels([channel]);
+
+      const result = await runAdmissionTest({ channelId: "ch-attempts-1", model: "claude-opus-4-8", packageLevel: "quick" });
+
+      assert.notEqual(result.firstAttemptSuccessRate, null, "记录带 attempts 时不应退化为「未能统计」");
+      // 关键是【两个口径拉开差距】，不是绝对值：这个朴素 mock 不满足流式/工具调用用例，
+      // 本来就有几条过不了（既有用例也只断言 successRate > 0）。
+      assert.ok(
+        result.firstAttemptSuccessRate < result.successRate,
+        `首次成功率应低于重试后成功率，实际 ${result.firstAttemptSuccessRate} vs ${result.successRate}`,
+      );
+      assert.equal(result.recoveredCount, 1, `应指出恰有 1 次靠重试救回，实际 ${result.recoveredCount}`);
+    },
+  );
+});
+
+// 回归：手填的温度被上游拒收、传输层就地摘掉之后，准入报告必须留痕。
+// 稳定性/场景两条路径都会把它聚合成 temperatureStrippedCount 并渲染提示卡（server/summaries.mjs +
+// src/{stability,scenario}-view.js），准入侧同样有温度入口（高级设置）却漏了这一层：记录层
+// requests.jsonl 每行都带 temperatureStripped=true，汇总里却没有这个数、页面上也没有提示。
+// 后果正是加这个温度开关时要避免的那件事——用户把报告分数读成「我设的那个温度下的表现」，
+// 实际全程跑的是模型默认温度，且毫无痕迹。
+test("runAdmissionTest：手填温度被上游拒收摘掉时，准入汇总与页面都要留痕", async () => {
+  let rejected = 0;
+  const result = await withMockUpstream(
+    (req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        const body = JSON.parse(raw || "{}");
+        if (body.temperature !== undefined) {
+          // 模拟「只接受默认温度」的模型（月之暗面 10132 / o 系那一类）的 400 文案。
+          rejected += 1;
+          sendJson(res, 400, { error: { message: "Unsupported value: 'temperature' does not support 1 with this model." } });
+          return;
+        }
+        sendJson(res, 200, { choices: [{ message: { content: "admission ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } });
+      });
+    },
+    async (baseUrl) => {
+      const channel = await channelStore.attachChannelKey(
+        { id: "ch-temp-stripped", name: "拒收温度渠道", provider: "Moonshot", baseUrl, protocol: "openai_chat", status: "enabled" },
+        "sk-mock",
+      );
+      await channelStore.saveChannels([channel]);
+      // 模型名带唯一后缀：摘参记忆是进程级的（TEMPERATURE_UNSUPPORTED_MODELS 按 baseUrl|model 记），
+      // 复用别的用例的模型名会让首发请求就不带温度，rejected 归零、本用例测不到东西。
+      return runAdmissionTest({
+        channelId: "ch-temp-stripped",
+        model: "probe-temp-reject-model",
+        packageLevel: "quick",
+        temperature: "1",
+      });
+    },
+  );
+
+  assert.ok(rejected > 0, "上游应至少拒收过一次温度参数，否则本用例没测到摘参路径");
+  assert.ok(
+    Number(result.temperatureStrippedCount) > 0,
+    `准入汇总应带 temperatureStrippedCount（实际 ${JSON.stringify(result.temperatureStrippedCount)}）——` +
+      `否则报告分数来自模型默认温度而非用户所填的值，且无任何痕迹`,
+  );
+
+  // 汇总里有数 ≠ 用户看得到。准入页此前根本没 import 这张提示卡，光断言字段会漏掉渲染那一层。
+  const { renderAdmissionResult } = await import("../src/admission-view.js");
+  const html = renderAdmissionResult(result);
+  assert.match(
+    html,
+    /温度/,
+    `准入结果页应出现「温度被摘掉」提示，实际未渲染（temperatureStrippedCount=${result.temperatureStrippedCount}）`,
+  );
+});
+
+// 回归：取消必须在【每轮用例开头】检查。此前只有在飞的那个请求被 abort，循环照样往下走——
+// 剩余用例的 fetch 因 signal 已 abort 而瞬间 reject，几秒内刷完全部用例、写一堆 status=0 的
+// 垃圾请求记录，任务最后还显示 27/27 99%。真实渠道上复现过：standard 档 Claude 模型共 27 条
+// 用例，点取消后 2 秒内多写了 24 行。这里用计数式 mock 上游锁死「取消后不再发请求」。
+test("runAdmissionTest：取消后立刻停止，不再向上游发请求", async () => {
+  let upstreamCalls = 0;
+  const taskContext = { task: { status: "running", cancelRequested: false } };
+
+  await withMockUpstream(
+    (req, res) => {
+      upstreamCalls += 1;
+      // 第 2 个请求落地后请求取消：模拟用户在跑到一半时点「取消当前任务」。
+      if (upstreamCalls === 2) taskContext.task.cancelRequested = true;
+      sendJson(res, 200, { choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } });
+    },
+    async (baseUrl) => {
+      const channel = await channelStore.attachChannelKey(
+        {
+          id: "ch-cancel-1",
+          name: "取消验证渠道",
+          provider: "Anthropic",
+          baseUrl,
+          protocol: "openai_chat",
+          status: "enabled",
+        },
+        "sk-mock",
+      );
+      await channelStore.saveChannels([channel]);
+
+      await assert.rejects(
+        () => runAdmissionTest({ channelId: "ch-cancel-1", model: "claude-opus-4-8", packageLevel: "quick" }, taskContext),
+        (error) => error.name === "TaskCancelledError",
+        "取消应以 TaskCancelledError 中断，而不是把剩余用例跑完",
+      );
+
+      // quick 档用例数远多于 2；若循环没在每轮开头检查取消，这里会等于总用例数。
+      assert.equal(upstreamCalls, 2, `取消后不应再有上游请求，实际发出 ${upstreamCalls} 个`);
+    },
+  );
+});

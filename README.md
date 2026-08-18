@@ -101,17 +101,60 @@ persisted config and reports. A `docker-compose` file and a Caddy reverse-proxy 
 
 ```bash
 # Build once on a build host / CI:
-docker build -t api-evaluator:0.7.0 .
+docker build -t api-evaluator:0.7.10 .
 # Then on the server (image loaded/pulled), run without rebuilding:
 docker compose --env-file .env.evaluator \
   -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
 ```
 
-**Resource isolation** — the compose file caps the container (`mem_limit: 512m`, `cpus: "0.75"`) so
+### Health recovery on systemd hosts
+
+The compose deployment intentionally does **not** mount the Docker socket into any container. Docker's socket API
+is privileged even when the mount is read-only. Instead, install the supplied host-side systemd timer: it checks
+only the fixed `api-evaluator` container and restarts it only when Docker reports its health as `unhealthy`.
+
+```bash
+# Stop the legacy socket-owning watcher during an upgrade, if it exists.
+docker rm -f api-evaluator-autoheal 2>/dev/null || true
+
+# Run the updated compose deployment first, so Docker owns the healthcheck.
+docker compose --env-file .env.evaluator \
+  -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
+
+# Copy recovery assets to a host location that application containers cannot write.
+sudo install -d -o root -g root -m 0755 /usr/local/lib/api-evaluator
+sudo install -o root -g root -m 0755 deploy/api-evaluator-health-recovery.sh \
+  /usr/local/lib/api-evaluator/api-evaluator-health-recovery.sh
+sudo install -o root -g root -m 0644 deploy/api-evaluator-health-recovery.service \
+  /etc/systemd/system/api-evaluator-health-recovery.service
+sudo install -o root -g root -m 0644 deploy/api-evaluator-health-recovery.timer \
+  /etc/systemd/system/api-evaluator-health-recovery.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now api-evaluator-health-recovery.timer
+```
+
+Check the timer with `systemctl list-timers api-evaluator-health-recovery.timer` and recovery attempts with
+`journalctl -u api-evaluator-health-recovery.service`. For Kubernetes, Nomad, or another orchestrator, use its
+native health-recovery controller instead of installing this timer.
+
+**Resource isolation** — the compose file caps the container (`mem_limit: 768m`, `cpus: "0.90"`) so
 it can be co-located with another service without starving it: on overrun only this container is
-OOM-killed, not the host. On a very small host (e.g. 2 vCPU / 2 GB) set
-`EVALUATOR_MAX_CONCURRENT_TASKS=2`; if memory is tight, set `EVALUATOR_OFFLINE_TOKENIZER=off` (drops
+OOM-killed, not the host. These defaults target a 1 vCPU / 1 GB host, with
+`EVALUATOR_MAX_CONCURRENT_TASKS=2`（异步任务、同步测试和自动作业共用的总额度）; if memory is tight, set `EVALUATOR_OFFLINE_TOKENIZER=off` (drops
 the ~70–90 MB tokenizer and falls back to the cross-channel baseline).
+
+### Performance diagnosis and tuning
+
+`GET /api/health` includes a `performance` snapshot with process CPU and memory, event-loop delay,
+global execution slots (`active` and `queued`), automatic-test status, and rolling upstream counts for
+timeouts, 429s, 5xx responses, network errors, retries, and end-to-end latency. Task API responses and
+the task center expose `timing.queueWaitMs`, `timing.executionMs`, `timing.finalizeMs`, and
+`timing.totalMs` for completed, failed, and cancelled tasks.
+
+Tune in this order: inspect queue depth, event-loop delay, CPU, and memory; then inspect upstream
+timeouts, retries, and rate limits. Increase `EVALUATOR_MAX_CONCURRENT_TASKS` only when CPU is not
+saturated and upstream requests are not being limited. Keep model comparisons, bulk report exports,
+and maintenance work low priority so they do not compete with evaluations.
 
 ## Configuration
 

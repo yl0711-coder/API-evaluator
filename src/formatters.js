@@ -8,10 +8,31 @@ export function recommendationClass(level) {
   );
 }
 
+// 「手填的温度被摘掉了」提示卡。传输层遇到拒收自定义 temperature 的模型会就地删掉该参数并记住，
+// 之后同模型请求首发就不带（见 server/upstream-transport.mjs）——这对工具自己的默认 0.2 是无声自愈，
+// 但用户在高级设置里手填过温度时必须说明：本轮实际跑的是模型默认温度，不是所填的值。
+// count 为 0 / 缺失（老报告没有该字段）时不出卡。
+export function temperatureStrippedNotice(count, total) {
+  const stripped = Number(count) || 0;
+  if (stripped <= 0) return "";
+  // 插值前一律走 Number()，不把调用方原值直接写进 HTML（分母来自汇总字段，仍按不可信处理）。
+  const denominator = Number(total) || 0;
+  const scope = denominator > 0 ? `${stripped}/${denominator} 次请求` : `${stripped} 次请求`;
+  return `
+    <article class="summary-card wide-summary">
+      <span class="warn">温度设置未生效</span>
+      <strong class="warn">${scope}的温度参数被上游拒收，已自动去掉后重试</strong>
+      <small>该模型只接受它自己的默认温度。这部分请求实际跑的是模型默认值，不是你在高级设置里填的温度，看数字时请留意。</small>
+    </article>
+  `;
+}
+
 export function formatTaskType(type) {
   return (
     {
       stability: "稳定性测试",
+      admission: "准入评测",
+      "admission-suite": "标准准入评测",
       "batch-admission": "批量准入评测",
       "batch-stability": "批量稳定性测试",
       scenario: "场景测试",

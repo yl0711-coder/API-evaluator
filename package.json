@@ -1,6 +1,6 @@
 {
   "name": "api-evaluator",
-  "version": "0.7.0",
+  "version": "0.7.10",
   "private": false,
   "description": "Self-hosted evaluation platform for any OpenAI-compatible / Claude-compatible API gateway or relay: connectivity, stability, scenario and admission tests with cost estimates and exportable reports.",
   "license": "MIT",
@@ -24,15 +24,17 @@
     "benchmark",
     "model-testing"
   ],
-  "packageManager": "pnpm@11.2.2",
+  "packageManager": "pnpm@11.18.0",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:server": "node server.mjs",
     "start": "node server.mjs",
     "build": "vite build",
     "check": "node --check server.mjs",
+    "check:text": "node scripts/check-text-source.mjs",
     "lint": "biome ci .",
     "format": "biome format --write .",
+    "test:e2e": "playwright test",
     "compare:eval": "node scripts/compare-eval-reports.mjs",
     "check:egress": "node scripts/check-egress-mitigation.mjs",
     "test": "node --test tests/*.test.mjs",
@@ -43,6 +45,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.4",
+    "@playwright/test": "1.55.0",
     "vite": "^7.2.4"
   },
   "dependencies": {

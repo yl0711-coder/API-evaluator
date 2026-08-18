@@ -38,6 +38,7 @@
         <div class="nav-group">
           <span>总结与交付</span>
           <button class="nav-button" type="button" data-page="reports">报告中心</button>
+          <button class="nav-button" type="button" data-page="task-center">任务中心</button>
           <button class="nav-button" type="button" data-page="handoff">测试交付</button>
           <button class="nav-button" type="button" data-page="trend">稳定性趋势</button>
         </div>
@@ -160,6 +161,16 @@
               </select>
               <small class="field-hint">新渠道首次建议选标准准入。快速准入用于低成本复核，深度准入会多做轻量长上下文。</small>
             </label>
+            <details class="wide advanced-settings">
+              <summary>高级设置</summary>
+              <div class="form-grid advanced-settings-body">
+                <label>
+                  温度
+                  <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                  <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。准入评测含标称一致性与指纹类判别，改温度会让这些结论与历史记录不同条件、可比性下降，建议只在上游强制要求时才填。其中「档位降级判别」题为保持与离线基线同条件，不使用此处填的温度。</small>
+                </label>
+              </div>
+            </details>
             <label class="wide checkbox-option">
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
@@ -169,6 +180,12 @@
             </label>
             <button id="admission-submit" class="primary wide" type="submit">开始准入评测</button>
           </form>
+
+          <div id="admission-progress" class="progress-panel hidden">
+            <div class="progress-bar"><span></span></div>
+            <p class="muted">等待任务开始。</p>
+            <button id="cancel-admission-task" class="secondary" type="button">取消当前任务</button>
+          </div>
 
           <div class="panel">
             <h3>执行前预估</h3>
@@ -193,6 +210,11 @@
                 同时测试 API 数
                 <input type="number" name="maxParallelProfiles" value="1" min="1" max="3" />
                 <small class="field-hint">准入评测会真实消耗额度。默认 1 个一个跑，避免并发过高影响判断。</small>
+              </label>
+              <label>
+                温度
+                <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                <small class="field-hint">对本批所有 API 生效。部分模型只接受特定值（如月之暗面只认 1）。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数；Claude Opus 4.7 及更新的模型拒收该参数，填值可能整批报 400。</small>
               </label>
               <label class="wide checkbox-option">
                 <input name="useAiReportAnalysis" type="checkbox" value="1" />
@@ -279,6 +301,11 @@
 
           <div class="panel">
             <h3>标准评测进度</h3>
+            <div id="standard-eval-task-progress" class="progress-panel hidden">
+              <div class="progress-bar"><span></span></div>
+              <p class="muted">等待任务开始。</p>
+              <button id="cancel-standard-eval-task" class="secondary" type="button">取消当前任务</button>
+            </div>
             <div id="standard-eval-progress" class="standard-flow"></div>
           </div>
 
@@ -323,7 +350,9 @@
                     <option value="openai_compatible">OpenAI Compatible</option>
                     <option value="openai_chat">OpenAI Chat Completions</option>
                     <option value="claude_messages">Claude Messages</option>
-                  </select></label>
+                    <option value="openai_path_prefix">OpenAI 兼容 · 自定义路径前缀</option>
+                  </select>
+                  <small class="field-hint">中转站一般选第一项。直连「兼容端点前缀不是 /v1」的厂商选最后一项，并把 Base URL 填到版本号那一层：智谱 <code>https://open.bigmodel.cn/api/paas/v4</code>、通义 <code>.../compatible-mode/v1</code>、Gemini <code>.../v1beta/openai</code>、火山方舟 <code>.../api/v3</code>。</small></label>
                 <label>供应商<input name="provider" autocomplete="off" placeholder="OpenAI / Anthropic / DeepSeek" /></label>
                 <label class="wide">模型清单<input name="models" autocomplete="off" placeholder="gpt-4o, gpt-4o-mini, o3（逗号分隔）" />
                   <small class="field-hint">该渠道支持的模型，逗号分隔；在“模型管理”里选其一建测试目标。</small></label>
@@ -484,20 +513,30 @@
               被测模型
               <select name="profileId" id="stability-profile-select" disabled></select>
             </label>
-            <label>
-              并发数
-              <select name="concurrency">
-                <option value="1" selected>1：顺序测试，最稳妥</option>
-                <option value="2">2：轻并发</option>
-                <option value="3">3：观察网关波动</option>
-              </select>
-            </label>
             <p id="stability-request-total" class="field-hint">共 0 次请求（0 组）</p>
             <label class="wide">
               测试文案分组（每个场景一个数量框，0 表示不选该组；每组默认测 3 遍，自定义默认 1 遍）
               <div id="stability-group-picker" class="stability-group-picker"></div>
               <small class="field-hint">选中多个场景会在同一份报告里分组统计；也可以只加大同一个场景的数量做重复测试。</small>
             </label>
+            <details class="wide advanced-settings">
+              <summary>高级设置</summary>
+              <div class="form-grid advanced-settings-body">
+                <label>
+                  并发数
+                  <select name="concurrency">
+                    <option value="1" selected>1：顺序测试，最稳妥</option>
+                    <option value="2">2：轻并发</option>
+                    <option value="3">3：观察网关波动</option>
+                  </select>
+                </label>
+                <label>
+                  温度
+                  <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                  <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。</small>
+                </label>
+              </div>
+            </details>
             <label class="wide checkbox-option">
               <input name="useAiReportAnalysis" type="checkbox" value="1" />
               <span>
@@ -633,6 +672,11 @@
                   超时毫秒
                   <input name="timeoutMs" type="number" min="1000" max="600000" placeholder="留空 = 按模型配置" />
                   <small class="field-hint">仅本次运行生效；留空按模型配置里的超时。</small>
+                </label>
+                <label>
+                  温度
+                  <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                  <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。</small>
                 </label>
                 <label>
                   每个场景重复次数
@@ -869,11 +913,6 @@
               <button id="client-replay-batch" class="secondary wide" type="button">批量回放上方日志候选请求</button>
             </form>
             <pre id="client-replay-result" class="result-box report-box">回放会真实请求 API，请确认成本和内容后再执行。</pre>
-          </details>
-          <details class="panel collapsible-panel">
-            <summary>最近任务状态</summary>
-            <p class="muted">用于判断上次测试是否完成、失败、取消或因程序关闭而中断。</p>
-            <div id="task-event-list" class="table"></div>
           </details>
           <details class="panel collapsible-panel">
             <summary>最近请求记录</summary>
@@ -1241,12 +1280,21 @@
                   <option value="h6">每 6 小时</option>
                   <option value="h12">每 12 小时</option>
                   <option value="once">每天一次</option>
+                  <option value="fixed">固定时刻（可多选）</option>
                 </select>
               </label>
               <label id="atc-cron-once" class="hidden">
                 每天几点
                 <select id="atc-cron-once-hour"></select>
               </label>
+              <div id="atc-cron-fixed-times" class="atc-fixed-times hidden">
+                <div class="atc-fixed-time-controls">
+                  <label>小时<select id="atc-cron-fixed-hour"></select></label>
+                  <label>分钟<select id="atc-cron-fixed-minute"></select></label>
+                  <button type="button" id="atc-cron-fixed-add" class="secondary">添加时刻</button>
+                </div>
+                <div id="atc-cron-fixed-time-list" class="atc-fixed-time-list"></div>
+              </div>
               <small class="field-hint atc-cron-preview-line">
                 <span id="atc-cron-preview">每天全天，每小时一次</span>
               </small>
@@ -1444,10 +1492,15 @@
             <label>
               负载档
               <select name="promptProfile">
-                <option value="simple" selected>简单：一句话连通（max_tokens 64）</option>
-                <option value="think">轻思考：小推理题（max_tokens 256）</option>
-                <option value="coding">编程：代码排错（max_tokens 800）</option>
+                <option value="simple" selected>简单：一句话连通</option>
+                <option value="think">轻思考：小推理题</option>
+                <option value="coding">编程：代码排错</option>
               </select>
+            </label>
+            <label>
+              max_tokens
+              <input name="maxTokens" type="number" min="1" max="4096" placeholder="留空 = 按负载档默认" />
+              <small class="field-hint">单次响应最大 token 数，同时控制内存与成本。留空则按负载档默认（简单 64 / 轻思考 256 / 编程 800）；填了则不论选哪个负载档都按此值。</small>
             </label>
             <label>
               请求方式
@@ -1556,6 +1609,44 @@
 
         </section>
 
+        <section class="page" id="task-center" hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">交付 · 任务</span>任务中心</h2>
+              <p class="section-desc">查看所有长任务（准入、标准评测、稳定性、场景、压测）的状态与逐步骤明细：哪一步在跑、哪一步没通过、是失败还是因程序关闭而中断。点任意一行展开明细。</p>
+            </div>
+            <div class="action-row">
+              <button type="button" id="tc-refresh" class="secondary">刷新</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
+              <label class="inline-field">
+                只看
+                <select id="tc-filter-status">
+                  <option value="">全部状态</option>
+                  <option value="running">运行中</option>
+                  <option value="completed">已完成</option>
+                  <option value="failed">失败</option>
+                  <option value="cancelled">已取消</option>
+                  <option value="interrupted">已中断</option>
+                </select>
+              </label>
+              <label class="inline-field">
+                类型
+                <select id="tc-filter-type">
+                  <option value="">全部类型</option>
+                </select>
+              </label>
+              <span class="field-hint" id="tc-hint">任务记录来自事件日志，仅保留最近一批；更早的任务不再可查。</span>
+            </div>
+          </div>
+
+          <div id="tc-list" class="table"></div>
+          <div id="tc-detail" class="panel hidden"></div>
+        </section>
+
         <section class="page" id="model-compare" hidden>
           <div class="section-header">
             <div>
@@ -1589,13 +1680,58 @@
               <div id="mc-scenarios" class="mc-scenarios hidden"></div>
               <div id="mc-gap-fill" class="hidden" style="margin-top:10px">
                 <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
-                  <button type="button" id="mc-fill-gaps" class="secondary">补齐单方场景</button>
+                  <button type="button" id="mc-fill-gaps" class="secondary">补齐选中场景</button>
                   <span class="field-hint" id="mc-gap-hint"></span>
                 </div>
+                <div class="mc-scenarios" data-mc-gap-choices></div>
+                <details class="advanced-settings" data-mc-gap-options>
+                  <summary>高级设置</summary>
+                  <div class="form-grid advanced-settings-body">
+                    <label>
+                      最大输出
+                      <input data-mc-gap-max-tokens type="number" min="1" max="32768" placeholder="留空 = 场景默认 4096" />
+                      <small class="field-hint">仅本次补齐生效，最高 32768。</small>
+                    </label>
+                    <label>
+                      超时毫秒
+                      <input data-mc-gap-timeout-ms type="number" min="1000" max="600000" placeholder="留空 = 按模型配置" />
+                      <small class="field-hint">留空则按目标模型的超时配置。</small>
+                    </label>
+                    <label>
+                      温度
+                      <input data-mc-gap-temperature type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
+                      <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。</small>
+                    </label>
+                    <label>
+                      每个场景重复次数
+                      <select data-mc-gap-repeats>
+                        <option value="1" selected>1 次：快速筛查</option>
+                        <option value="2">2 次：观察波动</option>
+                        <option value="3">3 次：更稳妥</option>
+                      </select>
+                    </label>
+                    <label>
+                      单 API 请求并发
+                      <select data-mc-gap-request-concurrency>
+                        <option value="1" selected>1：顺序请求</option>
+                        <option value="2">2：并发重复</option>
+                      </select>
+                      <small class="field-hint">仅在重复次数大于 1 时提高同一场景的并发。</small>
+                    </label>
+                    <label class="wide checkbox-option">
+                      <input data-mc-gap-full-response type="checkbox" value="1" />
+                      <span>在报告中完整显示返回</span>
+                    </label>
+                    <label class="wide checkbox-option">
+                      <input data-mc-gap-stream-request type="checkbox" value="1" />
+                      <span>发送流式请求（SSE）</span>
+                    </label>
+                  </div>
+                </details>
                 <div id="mc-gap-progress" class="progress-panel hidden">
                   <div class="progress-bar"><span></span></div>
                   <p class="muted">等待开始。</p>
-                  <button id="cancel-mc-gap-fill-task" class="secondary" type="button">取消当前场景</button>
+                  <button id="cancel-mc-gap-fill-task" class="secondary" type="button">取消本次补齐</button>
                 </div>
               </div>
             </div>
@@ -1610,6 +1746,29 @@
               <button type="submit" id="mc-generate" class="primary">生成对比报告</button>
             </div>
             <div id="mc-result" class="wide"></div>
+          </form>
+
+          <form id="mcm-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3>多模型比对（并排）</h3>
+              <p class="section-desc">选一个基准模型，再从「曾经和它比对过的模型」里勾选若干个，把它们相对<strong>同一个基准</strong>的表现并排成一张表。可比对模型来自真实比对记录（曾与基准生成过对比报告的模型）。只在本页展示，不生成报告文件。</p>
+            </div>
+            <label class="wide">
+              基准模型（第一列）
+              <select id="mcm-base-channel"></select>
+              <select id="mcm-base-model" disabled></select>
+            </label>
+            <div class="wide">
+              <div class="action-row" style="justify-content:flex-start;flex-wrap:wrap;gap:10px;align-items:center">
+                <button type="button" id="mcm-load-peers" class="secondary">加载可比对模型</button>
+                <span class="field-hint" id="mcm-peer-hint">选好基准模型后，加载曾与它比对过的模型清单，勾选要并排的（默认不选，最多 6 个）。</span>
+              </div>
+              <div id="mcm-peers" class="mc-scenarios hidden"></div>
+            </div>
+            <div class="wide action-row">
+              <button type="submit" id="mcm-generate" class="primary">生成并排对比表</button>
+            </div>
+            <div id="mcm-result" class="wide"></div>
           </form>
         </section>
 

@@ -1,5 +1,5 @@
 import { escapeHtml, renderMarkdown } from "./client-utils.js";
-import { recommendationClass } from "./formatters.js";
+import { recommendationClass, temperatureStrippedNotice } from "./formatters.js";
 
 const GRADE_TEXT = {
   A: "优秀，可进入后续测试",
@@ -23,6 +23,7 @@ export function renderAdmissionResult(result) {
 
   return `
     <div class="admission-result">
+      ${temperatureStrippedNotice(result.temperatureStrippedCount, result.requestCount)}
       <article class="admission-hero ${recommendationClass(level)}-card">
         <div>
           <span>准入等级</span>

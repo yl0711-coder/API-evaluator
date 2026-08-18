@@ -1,5 +1,5 @@
 import { escapeHtml, toast } from "./client-utils.js";
-import { api } from "./api-client.js";
+import { cancelRemoteTask, runRemoteTask } from "./api-client.js";
 import {
   buildErrorAdviceText,
   buildStandardActionPlan,
@@ -8,26 +8,53 @@ import {
 } from "./operator-guidance.js";
 import { getPromptPreset } from "./prompt-presets.js";
 
-// 标准评测新流程（2026-07 改造）：
-//   ① 选择渠道后可多选模型，每个模型顺序（不并发）跑 快速测试(/api/tests/quick-verify，与「高级
-//      测试 · 快速测试」页同一个接口) -> 稳定性（3 组预设文案各 3 遍，共 9 轮：基础稳定性 +
-//      结构化输出 + 编程场景）-> 标准准入（取代原场景测试）。
-//   ② 勾选“这是 Claude 渠道”时，额外对 4 个固定新档位模型（claude-opus-4-6/4-7/4-8、claude-sonnet-4-6）
-//      各跑一次快速准入——这些模型很可能还没在“模型管理”里登记，故用 channelId+model 的临时目标（不落库）。
-// 不再走 /api/tasks 异步任务：三步都是同步接口，前端顺序 await 即可，进度按「模型 × 步骤」分组展示。
+// 标准评测新流程（2026-08 改造：改回后台异步任务）：
+//   ① 选择渠道后可多选模型，每个模型顺序（不并发）跑 快速测试 -> 稳定性（3 组预设文案各 3 遍，
+//      共 9 轮）-> 标准准入。
+//   ② 勾选"这是 Claude 渠道"时，额外对 4 个固定新档位模型各跑一次快速准入——这些模型很可能还没在
+//      "模型管理"里登记，故用 channelId+model 的临时目标（不落库）。
+//
+// 【为什么改回 /api/tasks】v0.7.3 曾把三步改成前端顺序 await 三个同步接口。那样做有三个问题：
+//   ① 关页面 / 刷新 / 断线 = 结果全丢，但请求已发出、额度已扣；
+//   ② 同步端点【不占】task-manager 的全局并发槽，多人同时点会直接压满宿主与目标渠道；
+//   ③ 9 轮稳定性 + 11~12 次准入塞在一个 HTTP 请求里，任何代理超时都会让前端报失败而后端仍在跑、
+//      仍在计费——这正是 runRemoteTask 容忍 5 次轮询失败所要防的双花，而同步路径享受不到。
+// 现在前端只提交"测哪些模型"，执行顺序、跳过策略、达标判定全部由服务端
+// （server/admission-suite.mjs + server/admission-policy.mjs）决定，前端按轮询到的
+// task.steps 重绘「模型 × 步骤」网格。
 const STANDARD_STABILITY_PRESET_IDS = ["basic", "structured-json", "coding"];
 const STANDARD_STABILITY_REPEATS_PER_GROUP = 3;
 const STANDARD_STABILITY_TOTAL_ROUNDS = STANDARD_STABILITY_PRESET_IDS.length * STANDARD_STABILITY_REPEATS_PER_GROUP;
 const CLAUDE_TIER_PROBE_MODELS = ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-4-6"];
 
 // 标准评测固定用 3 组预设文案（基础稳定性 + 结构化输出 + 编程场景），各测
-// STANDARD_STABILITY_REPEATS_PER_GROUP 遍，共 STANDARD_STABILITY_TOTAL_ROUNDS 轮——
-// 覆盖比单一基础文案更全面的能力面，同时复用「稳定性测试」页已有的分组批测机制。
+// STANDARD_STABILITY_REPEATS_PER_GROUP 遍，共 STANDARD_STABILITY_TOTAL_ROUNDS 轮。
+// 文案随 payload 一起提交给后端：预设文本在 src/prompt-presets.js，而后端【不得】import src/
+// （生产镜像不打包 src/，见 tests/no-backend-src-import.test.mjs）。这与「稳定性测试」页调
+// /api/tests/stability 的既有契约一致，不是新增的信任边界。
 function buildStandardStabilityGroups() {
   return STANDARD_STABILITY_PRESET_IDS.map((presetId) => {
     const preset = getPromptPreset("stability", presetId);
     return { presetId, prompt: preset.prompt, repeats: STANDARD_STABILITY_REPEATS_PER_GROUP };
   });
+}
+
+function newSubmitNonce() {
+  // crypto.randomUUID 在非安全上下文（例如通过 http 访问局域网/Docker 部署）可能不存在。
+  // 这个键只需在单个页面会话内唯一，退化到 getRandomValues / Math.random 完全够用。
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// 导出仅为可测（本文件无 DOM 测试底座）：「何时复用 nonce、何时换新」这层判定就是防双花的全部，
+// 值得单独锁住。签名相同 → 视为同一次提交的重试，沿用旧 key；签名变了 → 用户改了要测什么，必须换新
+// key，否则会被服务端当成重试而拿回上一次的旧任务。
+export function nextSubmitNonce(pending, signature) {
+  if (pending && pending.signature === signature) return pending;
+  return { signature, key: `standard-eval:${newSubmitNonce()}` };
 }
 
 export function createStandardEvalController({
@@ -37,6 +64,7 @@ export function createStandardEvalController({
   resultElement,
   nextActionsElement,
   progressElement,
+  taskProgressElement,
   state,
   estimateCost,
   confirmRun,
@@ -52,6 +80,14 @@ export function createStandardEvalController({
   standardPicker,
 }) {
   let running = false;
+  // 「同一次提交」的幂等 nonce，只堵一种双花：POST /api/tasks 已经到达后端、任务建好并开始真实
+  // 计费，但响应在回程丢了（网络抖动 / 代理 502 / 后端重启瞬间），前端报「失败」，用户再点一次。
+  // 带同一个 key 重试会拿回原任务，而不是再跑一遍（服务端见 server/task-manager.mjs 的 taskDedupKey）。
+  // 生命周期刻意做得很窄：
+  //   · 创建成功即作废（onCreated）——此后再点，是用户明知任务已存在还要重跑，理应放行；
+  //   · 表单选择变了就换新 nonce——否则改完模型再提交会被当成重试，拿回上一次的旧任务；
+  //   · 刷新页面 / 另开标签页都不共享它，那两类双花本次不覆盖（取舍见服务端注释）。
+  let pendingSubmit = null; // { signature, key }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (running) return; // 防双击/确认框 await 期间重复提交（最贵流程，重复=重复扣额度）
@@ -64,6 +100,9 @@ export function createStandardEvalController({
       return;
     }
     const modelNames = profileIds.map((id) => findModelNameByTargetId(state, id));
+    // groups 不入签名：buildStandardStabilityGroups() 由模块常量算出，与表单无关。
+    const submitSignature = JSON.stringify([profileIds, modelNames, isClaudeChannel, useAiReportAnalysis]);
+    pendingSubmit = nextSubmitNonce(pendingSubmit, submitSignature);
     running = true;
     const estimate = estimateCost({ modelNames, isClaudeChannel: isClaudeChannel ? "1" : "", useAiReportAnalysis });
     if (!(await confirmRun("标准评测", estimate))) {
@@ -76,26 +115,49 @@ export function createStandardEvalController({
     renderStandardPlainPending(
       plainResultElement,
       "正在评测",
-      "工具会依次对每个选中模型跑快速测试、稳定性和标准准入。请等待评测完成，不要关闭窗口。",
+      "工具会依次对每个选中模型跑快速测试、稳定性和标准准入。评测在后台运行，可以随时来这个页面查看进度。",
       "watch",
     );
-    resultElement.textContent = "标准评测开始。请不要关闭窗口。";
+    resultElement.textContent = "标准评测已提交到后台任务队列。";
     clearStandardNextActions(nextActionsElement);
 
-    const modelTargets = profileIds.map((id, index) => ({ profileId: id, modelName: modelNames[index] }));
-    const steps = buildStepPlan(modelTargets, { isClaudeChannel, claudeChannelId: channelId });
-    renderStandardSteps(progressElement, steps);
+    // 网格【不再】由前端预排：步骤计划归服务端所有（server/admission-suite.mjs 的 buildSuitePlan），
+    // 前端预排一份只会在两边口径漂移时显示一份假计划。首次轮询（≤900ms）就会画出真计划。
+    renderStandardStepsPlaceholder(progressElement);
 
-    // runStandardEvaluation 内部逐组 try/catch，单个模型失败不会向外抛——多选模型时一个渠道/Key
-    // 有问题不该拖累其它模型继续测。这里的 catch 只兜真正意外的异常（如渲染逻辑本身出错）。
     try {
-      const perModelResults = await runStandardEvaluation({ steps, progressElement, useAiReportAnalysis });
+      const result = await runRemoteTask(
+        state,
+        "standardEval",
+        "admission-suite",
+        {
+          profileIds,
+          modelNames,
+          groups: buildStandardStabilityGroups(),
+          claudeChannelId: isClaudeChannel ? channelId : "",
+          tierProbeModels: isClaudeChannel ? CLAUDE_TIER_PROBE_MODELS : [],
+          useAiReportAnalysis,
+          idempotencyKey: pendingSubmit.key,
+        },
+        taskProgressElement,
+        {
+          // 任务已确认建好，重试窗口就此关闭：再点一次是主动重跑，应当拿到新任务。
+          onCreated: () => {
+            pendingSubmit = null;
+          },
+          onProgress: (task) => renderStandardStepsFromTask(progressElement, task),
+        },
+      );
+
+      const perModelResults = result?.models || [];
+      // 「人话结论」直接用服务端 aggregateSuite 的整体结论——它覆盖【全部】必选模型。
+      // 旧代码用 perModelResults.find(...) 取第一个模型的结论冒充整体结论，2 个模型只要
+      // 第一个过就整体显示通过（ADM-006）。判定口径只保留服务端一处，前端不再自己算。
+      renderStandardConclusion(plainResultElement, result);
+      resultElement.textContent = formatStandardResult(result);
       const primary = perModelResults.find((item) => !item.isTierProbe) || perModelResults[0];
-      const standardResultText = formatStandardResult(perModelResults);
-      renderStandardPlainResult({ ...primary, plainResultElement });
-      resultElement.textContent = standardResultText;
       renderStandardNextActions({
-        ...primary,
+        ...adaptModelResult(primary),
         profileId: primary?.profileId,
         nextActionsElement,
         runAction: (action, profileId) =>
@@ -150,33 +212,8 @@ export function createStandardEvalController({
   });
 }
 
-// 步骤计划：每个选中模型一组 {quick, stability, admission}；勾选 claude 时再各追加一个
-// 「Claude 新档位快速准入」步骤（isTierProbe=true，target 为 {channelId, model} 临时目标）。
-function buildStepPlan(modelTargets, { isClaudeChannel, claudeChannelId }) {
-  const groups = modelTargets.map((target) => ({
-    key: target.profileId,
-    label: target.modelName || target.profileId,
-    profileId: target.profileId,
-    isTierProbe: false,
-    steps: [
-      { name: "quick", label: "快速测试" },
-      { name: "stability", label: `稳定性测试（3 组 × 3 轮 = ${STANDARD_STABILITY_TOTAL_ROUNDS} 轮）` },
-      { name: "admission", label: "标准准入" },
-    ],
-  }));
-  if (isClaudeChannel && claudeChannelId) {
-    for (const model of CLAUDE_TIER_PROBE_MODELS) {
-      groups.push({
-        key: `tier:${model}`,
-        label: `${model}（新档位探测）`,
-        isTierProbe: true,
-        channelId: claudeChannelId,
-        model,
-        steps: [{ name: "admission-quick", label: "快速准入" }],
-      });
-    }
-  }
-  return groups;
+export function cancelStandardEval(state) {
+  return cancelRemoteTask(state, "standardEval");
 }
 
 // /api/tests/quick-verify（高级测试里的“快速测试”页调的同一个接口）返回的是一整套快检汇总
@@ -197,121 +234,16 @@ export function normalizeQuickVerifyResult(result) {
   };
 }
 
-// 顺序跑完每一组（模型 / Claude 档位探测）。一个模型内部三步是串行的严格前置关系
-// （快速测试没过就不跑稳定性/准入——继续跑只会白烧 token）；但一个模型的失败不应该
-// 挡住其它模型继续测——多选模型时，个别模型 Key 有问题不该拖累整批，所以组间用
-// try/catch 各自捕获错误，绝不把单组异常向外抛出中断整个循环。
-async function runStandardEvaluation({ steps, progressElement, useAiReportAnalysis }) {
-  const results = [];
-  for (const group of steps) {
-    if (group.isTierProbe) {
-      results.push(await runTierProbeGroup(group, progressElement));
-      continue;
-    }
-    results.push(await runModelGroup(group, progressElement, useAiReportAnalysis));
-  }
-  return results;
-}
-
-async function runTierProbeGroup(group, progressElement) {
-  setStandardStep(progressElement, group.key, "admission-quick", "running", "正在执行快速准入探测。");
-  try {
-    const admission = await api("/api/tests/admission", {
-      method: "POST",
-      body: JSON.stringify({ channelId: group.channelId, model: group.model, packageLevel: "quick" }),
-    });
-    setStandardStep(
-      progressElement,
-      group.key,
-      "admission-quick",
-      "done",
-      `快速准入完成：${admission.grade ? `等级 ${admission.grade}` : "已出结果"}，成功率 ${admission.successRateText || "-"}。`,
-    );
-    return { isTierProbe: true, model: group.model, admission };
-  } catch (error) {
-    setStandardStep(progressElement, group.key, "admission-quick", "failed", error.message || "快速准入探测失败。");
-    return { isTierProbe: true, model: group.model, admission: null, error };
-  }
-}
-
-async function runModelGroup(group, progressElement, useAiReportAnalysis) {
-  const { profileId, label, key } = group;
-  setStandardStep(progressElement, key, "quick", "running", "正在确认 API 是否能正常请求。");
-  let quickVerify;
-  try {
-    quickVerify = await api("/api/tests/quick-verify", { method: "POST", body: JSON.stringify({ profileId }) });
-  } catch (error) {
-    setStandardStep(progressElement, key, "quick", "failed", error.message || "快速测试失败。");
-    setStandardStep(progressElement, key, "stability", "skipped", "已跳过：快速测试未完成。");
-    setStandardStep(progressElement, key, "admission", "skipped", "已跳过：快速测试未完成。");
-    const quick = { success: false, normalizedError: error.normalizedError || error.message };
-    return { isTierProbe: false, profileId, profileName: label, quick, stability: null, admission: null, error };
-  }
-  const quick = normalizeQuickVerifyResult(quickVerify);
-  setStandardStep(
-    progressElement,
-    key,
-    "quick",
-    quick.success ? "done" : "failed",
-    quick.success ? "快速测试成功。" : quick.normalizedError || "快速测试失败。",
-  );
-  if (!quick.success) {
-    setStandardStep(progressElement, key, "stability", "skipped", "已跳过：快速测试未通过。");
-    setStandardStep(progressElement, key, "admission", "skipped", "已跳过：快速测试未通过。");
-    return { isTierProbe: false, profileId, profileName: label, quick, stability: null, admission: null };
-  }
-
-  setStandardStep(
-    progressElement,
-    key,
-    "stability",
-    "running",
-    `正在执行稳定性测试（3 组预设文案，共 ${STANDARD_STABILITY_TOTAL_ROUNDS} 轮）。`,
-  );
-  let stability;
-  try {
-    stability = await api("/api/tests/stability", {
-      method: "POST",
-      body: JSON.stringify({
-        profileId,
-        concurrency: "1",
-        groups: buildStandardStabilityGroups(),
-        useAiReportAnalysis,
-      }),
-    });
-  } catch (error) {
-    setStandardStep(progressElement, key, "stability", "failed", error.message || "稳定性测试失败。");
-    setStandardStep(progressElement, key, "admission", "skipped", "已跳过：稳定性测试未完成。");
-    return { isTierProbe: false, profileId, profileName: label, quick, stability: null, admission: null, error };
-  }
-  setStandardStep(
-    progressElement,
-    key,
-    "stability",
-    "done",
-    `稳定性测试完成：成功率 ${stability.successRateText || "-"}，慢请求参考 ${stability.p95TotalMs ?? "-"} ms。`,
-  );
-
-  setStandardStep(progressElement, key, "admission", "running", "正在执行标准准入评测。");
-  let admission;
-  try {
-    admission = await api("/api/tests/admission", {
-      method: "POST",
-      body: JSON.stringify({ profileId, packageLevel: "standard", useAiReportAnalysis }),
-    });
-  } catch (error) {
-    setStandardStep(progressElement, key, "admission", "failed", error.message || "标准准入评测失败。");
-    return { isTierProbe: false, profileId, profileName: label, quick, stability, admission: null, error };
-  }
-  setStandardStep(
-    progressElement,
-    key,
-    "admission",
-    "done",
-    `标准准入完成：等级 ${admission.grade || "-"}，综合分 ${admission.score ?? "-"}。`,
-  );
-
-  return { isTierProbe: false, profileId, profileName: label, quick, stability, admission };
+// 把服务端 models[] 里的一条整成「下一步建议」那套函数期望的形状。
+// 注意任务快照里的 quick 已经被 stripHeavy 去掉了 cases[]（每 900ms 轮询一次，不能塞原始响应体），
+// 所以 normalizeQuickVerifyResult 会走 successRate 兜底分支——这正是它保留兜底的原因。
+function adaptModelResult(model) {
+  if (!model) return { quick: null, stability: null, admission: null };
+  return {
+    quick: model.quick ? normalizeQuickVerifyResult(model.quick) : { success: false, normalizedError: model.error || "快速测试未完成。" },
+    stability: model.stability || null,
+    admission: model.admission || null,
+  };
 }
 
 function findModelNameByTargetId(state, targetId) {
@@ -327,12 +259,45 @@ function renderStandardPlainPending(plainResultElement, title, detail, level) {
   `;
 }
 
-function renderStandardPlainResult({ quick, stability, admission, plainResultElement }) {
-  const summary = buildStandardOperatorSummary({ quick, stability, admission });
-  renderStandardPlainPending(plainResultElement, summary.title, summary.detail, summary.level);
+// 四态结论（server/admission-policy.mjs 的 CONCLUSION）→ 人话卡片。
+// 这里【只做展示映射】，不重新判定：判定口径全在服务端一处，前端再算一遍必然漂移。
+// indeterminate 单列一档：它表示"我们没测成"（平台/网络问题），与"测了没过"是两回事，
+// 混成失败会让用户去改一个本来没问题的渠道配置。
+const CONCLUSION_CARDS = {
+  accepted: { level: "pass", title: "全部被测模型通过标准准入" },
+  accepted_with_conditions: { level: "watch", title: "有条件通过，需人工复核后再开放" },
+  rejected: { level: "fail", title: "未通过标准准入，暂不建议开放" },
+  indeterminate: { level: "watch", title: "结论不确定：本次没有测完" },
+};
+
+function renderStandardConclusion(plainResultElement, result) {
+  const card = CONCLUSION_CARDS[result?.conclusion] || CONCLUSION_CARDS.indeterminate;
+  const reasons = Array.isArray(result?.conclusionReasons) ? result.conclusionReasons.filter(Boolean) : [];
+  const detail = reasons.length ? reasons.join(" ") : "详见下方分模型明细与报告中心。";
+  renderStandardPlainPending(plainResultElement, card.title, detail, card.level);
 }
 
-function renderStandardSteps(progressElement, groups) {
+// 任务刚创建时还没有 steps 快照（可能正在排队）。先占位，等第一次轮询拿到服务端计划再画真网格。
+function renderStandardStepsPlaceholder(progressElement) {
+  progressElement.innerHTML = `<p class="muted">任务已提交，正在等待执行计划…</p>`;
+}
+
+// 每次轮询都按 task.steps 重绘网格。服务端是计划与状态的唯一权威：刷新页面、换台机器打开，
+// 看到的进度都一样——这正是改回异步任务要拿到的东西。
+function renderStandardStepsFromTask(progressElement, task) {
+  const steps = Array.isArray(task?.steps) ? task.steps : [];
+  if (!steps.length) return; // 保留占位符，别把已经画好的网格擦成空白
+  const groups = [];
+  const byKey = new Map();
+  for (const step of steps) {
+    let group = byKey.get(step.groupKey);
+    if (!group) {
+      group = { key: step.groupKey, label: step.groupLabel, steps: [] };
+      byKey.set(step.groupKey, group);
+      groups.push(group);
+    }
+    group.steps.push(step);
+  }
   progressElement.innerHTML = groups
     .map(
       (group) => `
@@ -342,10 +307,10 @@ function renderStandardSteps(progressElement, groups) {
           ${group.steps
             .map(
               (step) => `
-              <article class="flow-step" data-standard-step="${escapeHtml(step.name)}">
+              <article class="flow-step ${stepStatusClass(step)}" data-standard-step="${escapeHtml(step.stepName)}">
                 <span></span>
-                <strong>${escapeHtml(step.label)}</strong>
-                <small>等待开始。</small>
+                <strong>${escapeHtml(step.stepLabel)}</strong>
+                <small>${escapeHtml(step.summary || "等待开始。")}</small>
               </article>`,
             )
             .join("")}
@@ -355,17 +320,17 @@ function renderStandardSteps(progressElement, groups) {
     .join("");
 }
 
-function setStandardStep(progressElement, groupKey, stepName, status, message) {
-  const group = progressElement.querySelector(`[data-standard-group="${cssEscape(groupKey)}"]`);
-  const step = group?.querySelector(`[data-standard-step="${stepName}"]`);
-  if (!step) return;
-  step.classList.remove("running", "done", "failed", "skipped");
-  step.classList.add(status);
-  step.querySelector("small").textContent = message;
-}
-
-function cssEscape(value) {
-  return String(value).replace(/["\\]/g, "\\$&");
+// executionStatus（跑没跑完）与 verdict（达没达标）是两个正交字段，样式必须同时看两者：
+// 只看 executionStatus 会把"跑完了但没通过"画成绿勾（v0.7.3 的原始 bug）；
+// 只看 verdict 会把"平台自己出错"和"渠道不达标"画成同一种失败，误导用户去改配置。
+function stepStatusClass(step) {
+  if (step.executionStatus === "running") return "running";
+  if (step.executionStatus === "skipped") return "skipped";
+  if (step.executionStatus === "failed" || step.executionStatus === "cancelled") return "failed";
+  if (step.executionStatus !== "completed") return "";
+  if (step.verdict === "not_passed") return "failed";
+  if (step.verdict === "warning" || step.verdict === "indeterminate") return "warn";
+  return "done";
 }
 
 function clearStandardNextActions(nextActionsElement) {
@@ -435,13 +400,25 @@ function runStandardNextAction({
   showPage(action === "handoff" ? "handoff" : "reports");
 }
 
-function formatStandardResult(perModelResults) {
-  const lines = ["# 标准评测结果", ""];
+// result 是服务端 admission-suite 的返回：{conclusion, conclusionReasons, steps[], models[], reports[]}。
+// models[].quick/stability/admission 都经过 stripHeavy（去掉了 cases/records/reportMarkdown），
+// 这里只用汇总字段，不要指望能拿到逐条明细——那些在报告里。
+function formatStandardResult(result) {
+  const perModelResults = result?.models || [];
+  const card = CONCLUSION_CARDS[result?.conclusion] || CONCLUSION_CARDS.indeterminate;
+  const lines = [
+    "# 标准评测结果",
+    "",
+    `- 整体结论：${card.title}（${result?.conclusion || "indeterminate"}）`,
+    `- 判定口径版本：${result?.policyVersion || "-"}`,
+    ...(result?.conclusionReasons?.length ? result.conclusionReasons.map((reason) => `- ${reason}`) : []),
+    "",
+  ];
   for (const item of perModelResults) {
     if (item.isTierProbe) {
       lines.push(`## Claude 新档位快速准入：${item.model}`, "");
       if (item.error) {
-        lines.push(`- 结果：失败（${item.error.message || "-"}）`, "");
+        lines.push(`- 结果：失败（${item.error}）`, "");
         continue;
       }
       lines.push(
@@ -452,10 +429,12 @@ function formatStandardResult(perModelResults) {
       );
       continue;
     }
-    const { profileName, quick, stability, admission, error } = item;
-    lines.push(`## ${profileName}`, "", "### 快速测试", "");
+    const { profileName, stability, admission, error } = item;
+    const quick = item.quick ? normalizeQuickVerifyResult(item.quick) : null;
+    lines.push(`## ${profileName}`, "", `- 本模型结论：${item.conclusion || "-"}`, ...(item.reasons || []).map((r) => `- ${r}`), "");
+    lines.push("### 快速测试", "");
     if (!quick) {
-      lines.push(`- 结果：失败（${error?.message || "-"}）`, "");
+      lines.push(`- 结果：失败（${error || "-"}）`, "");
       continue;
     }
     lines.push(
@@ -469,7 +448,7 @@ function formatStandardResult(perModelResults) {
       lines.push(
         `### 稳定性测试（3 组 × 3 轮 = ${STANDARD_STABILITY_TOTAL_ROUNDS} 轮）`,
         "",
-        `- 已跳过（${error?.message || "快速测试未通过"}）`,
+        `- 已跳过（${error || "快速测试未通过"}）`,
         "",
       );
       continue;
@@ -485,7 +464,7 @@ function formatStandardResult(perModelResults) {
       "",
     );
     if (!admission) {
-      lines.push("### 标准准入", "", `- 已跳过或失败（${error?.message || "-"}）`, "");
+      lines.push("### 标准准入", "", `- 已跳过或失败（${error || "-"}）`, "");
       continue;
     }
     lines.push(

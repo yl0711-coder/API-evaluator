@@ -209,12 +209,32 @@ test("normalizeJob：cron 字段规范化（trim + 截断），缺省空串", ()
   assert.equal(kept.cron, "0 0 * * *");
 });
 
+test("normalizeJob：固定时刻模式标记保留，避免 HH:00 与每天一次编辑回填歧义", () => {
+  const fixed = normalizeJob({ targetId: "t", kind: "quick", cron: "0 1 * * 1-5", cronMode: "fixed" });
+  assert.equal(fixed.cronMode, "fixed");
+  const changedToOnce = normalizeJob({ targetId: "t", kind: "quick", cron: "0 1 * * 1-5", cronMode: "" }, fixed);
+  assert.equal(changedToOnce.cronMode, "");
+});
+
 test("validateJob：cron 合法 → null；非法 → 可读错误；有 cron 时不强校验 periodHours", () => {
   assert.equal(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "0 9-18 * * 1-5" })), null, "合法 cron");
   // 有 cron 时即使 periodHours 缺省也 OK（cron 优先）
   assert.equal(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "0 */12 * * 6,0" })), null);
+  assert.equal(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "30 1 * * 1-5;45 5 * * 1-5" })), null);
   assert.match(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "60 * * * *" })), /定时表达式不合法/, "分钟越界");
   assert.match(validateJob(normalizeJob({ targetId: "t", kind: "quick", cron: "0 9 * *" })), /定时表达式不合法/, "字段不足");
+});
+
+test("validateJob：语法合法但永不触发的 cron 必须拒绝，不能回退为每日执行", () => {
+  const impossible = normalizeJob({ targetId: "t", kind: "quick", cron: "0 0 30 2 *" });
+  assert.match(validateJob(impossible), /未来四年内没有可执行时刻/);
+  assert.equal(computeNextRunAt(impossible, Date.UTC(2026, 0, 1)), null, "不得伪造 24 小时后的 nextRunAt");
+});
+
+test("validateJob：闰日 cron 在四年窗口内有效，不被误判为无执行时刻", () => {
+  const leapDay = normalizeJob({ targetId: "t", kind: "quick", cron: "0 0 29 2 *" });
+  assert.equal(validateJob(leapDay), null);
+  assert.equal(computeNextRunAt(leapDay, Date.UTC(2026, 0, 1)), "2028-02-28T16:00:00.000Z");
 });
 
 test("computeNextRunAt：对象入参 + cron → 按 cron 算下次（北京时间）", () => {
@@ -222,6 +242,12 @@ test("computeNextRunAt：对象入参 + cron → 按 cron 算下次（北京时�
   const from = Date.UTC(2026, 0, 5, 1, 30); // 北京 2026-01-05(周一) 09:30
   const job = { cron: "0 9-18 * * 1-5", periodHours: 24 };
   assert.equal(computeNextRunAt(job, from), "2026-01-05T02:00:00.000Z", "北京 10:00");
+});
+
+test("computeNextRunAt：多个固定时刻取最早的下一次", () => {
+  const from = Date.UTC(2026, 0, 5, 17, 31); // 北京时间周二 01:31
+  const job = { cron: "30 1 * * 1-5;45 5 * * 1-5", periodHours: 24 };
+  assert.equal(computeNextRunAt(job, from), "2026-01-05T21:45:00.000Z"); // 北京时间周二 05:45
 });
 
 test("computeNextRunAt：对象入参无 cron → 退回 periodHours 间隔", () => {
