@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **评测性能诊断（新增 `server/performance.mjs`）** — `/api/health` 增加 `performance`：事件循环延迟
   （p50/p99/max，`monitorEventLoopDelay`）、进程 CPU 占比与内存、执行槽位状态，以及最近 200 次上游请求的
-  滚动窗口（重试次数、退避总等待、429/5xx/超时/网络错误分类计数、平均端到端耗时）。任务中心页读取展示。
+  滚动窗口（重试次数、退避总等待、429/5xx/超时/网络错误分类计数、平均端到端耗时）。**目前只有接口输出，
+  界面上没有任何展示入口**——要看得自己 `curl /api/health`；前端无任何代码读取这些字段。
   该端点在免登录白名单内（容器健康检查需调用），故采样字段在入口处即收窄，只含聚合计数与耗时，
   不含 URL、模型名、渠道名或任何凭据。
 - **模型管理按渠道折叠** — 每个渠道一个原生 `<details>`，默认全收起，渠道多时不必一路下滚。展开状态存
