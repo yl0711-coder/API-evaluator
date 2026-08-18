@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **场景运行的 `test_runs.profile_id` 恒为 NULL，趋势页从来看不到场景数据** — `buildScenarioSummary` 是多模型
+  聚合体、顶层无 `profileId`，而 `runScenarioTest` 写单模型报告时未补，于是 `queryProfileRunSummaries` 的
+  `WHERE profile_id = ?` 永远匹配不到场景运行。写入侧在 `runScenarioTest` 补齐顶层 `profileId`/`profileName`；
+  历史行由开库迁移 `backfillRunProfileIds` 从 `raw_json` 的 `results[]` / `profileDigest[]` 原地回填，
+  幂等（`WHERE profile_id IS NULL`）、best-effort（失败不阻塞开库）。回填**严格限定 `type='scenario'`**：
+  `batch-stability` / `batch-admission` 的 NULL 是按设计的聚合行，认领它们会让其作为最新点进入趋势 series，
+  把该 type 的回归判定从 stable 打回 baseline，凭空改变既有渠道的退化结论；多模型场景聚合行也保持 NULL。
+- **回归判定把「无从判断」说成「未见退化」** — `detectRegression` 原按「changes 为空 → stable」推结论，故
+  「一个指标都没报出来」与「所有指标都正常」得到同一个判定，是虚假保证。新增 `incomparable` 状态与
+  `hasComparableMetric()`（注意不能用 `Number.isFinite(Number(v))`：`Number(null) === 0` 会把缺失当成报出了 0）。
+- **无指标的场景运行会挤掉该渠道原有的退化判定** — `buildProfileTrend` 原先无条件取 series 末点当 current；
+  只跑非「基础」组的场景运行无逐轮可回填、两个指标皆 null，一旦成为末点就让前端横幅整体消失。改为取
+  「最近一个报出可比指标的点」判定。
+
 ## [0.7.10] - 2026-08-13
 
 ### Added
