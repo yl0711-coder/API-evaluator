@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS evaluation_tasks (
   payload_json TEXT,
   result_json TEXT,
   steps_json TEXT,
+  timing_json TEXT,
   updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON evaluation_tasks(status);
@@ -312,6 +313,50 @@ function migrateSchema(db) {
   } catch {
     // 列已存在
   }
+  try {
+    db.exec("ALTER TABLE evaluation_tasks ADD COLUMN timing_json TEXT");
+  } catch {
+    // column already exists
+  }
+  // 补列必须先于回填：回填读 raw_json 写 profile_id，与上面的 ALTER 无依赖，
+  // 但放在最后可保证任何新增补列都已就位。
+  backfillRunProfileIds(db);
+}
+
+// 历史回填：场景运行曾因 summary 顶层无 profileId 而把 test_runs.profile_id 写成 NULL
+// （写入侧已在 runScenarioTest 补齐，但老行仍是 NULL），导致按模型查趋势拿不到场景历史。
+// raw_json 里保留了 results[].profileId / profileDigest[].profileId，据此原地补列。
+//
+// 严格限定 type='scenario'：batch-stability / batch-admission 的 profile_id 同样是 NULL，
+// 但那是**按设计**的聚合行（顶层无 successRate）。若把只含一个模型的批量行也认领过来，
+// 它会作为最新点进入趋势 series，把该 type 的回归判定从 stable 打回 baseline——
+// 即凭空改变既有渠道的退化结论。已实测复现，故不碰非场景行。
+// 只回填唯一 profileId 的行；多模型场景聚合行无从归属，保持 NULL 更诚实。
+// 幂等（WHERE profile_id IS NULL）、best-effort（失败不阻塞开库）。
+function backfillRunProfileIds(db) {
+  try {
+    const rows = db
+      .prepare("SELECT id, raw_json FROM test_runs WHERE profile_id IS NULL AND raw_json IS NOT NULL AND type = 'scenario'")
+      .all();
+    if (!rows.length) return;
+    const update = db.prepare("UPDATE test_runs SET profile_id = ?, profile_name = COALESCE(profile_name, ?) WHERE id = ?");
+    let filled = 0;
+    for (const row of rows) {
+      const parsed = safeParse(row.raw_json);
+      if (!parsed) continue;
+      // 候选来源按可靠性排序；两者都是「每模型一条」的数组。
+      const list = Array.isArray(parsed.results) && parsed.results.length ? parsed.results : parsed.profileDigest;
+      if (!Array.isArray(list)) continue;
+      const ids = [...new Set(list.map((item) => item?.profileId).filter(Boolean))];
+      if (ids.length !== 1) continue; // 0 个无从判断；>1 个是聚合行，不归属
+      const owner = list.find((item) => item?.profileId === ids[0]);
+      update.run(ids[0], owner?.profileName ?? null, row.id);
+      filled += 1;
+    }
+    if (filled) console.warn(`[db] 回填 test_runs.profile_id：${filled}/${rows.length} 行（场景运行历史趋势修复）`);
+  } catch (error) {
+    noteDbError("backfillRunProfileIds", error);
+  }
 }
 
 export function closeDatabase(path = defaultDbPath()) {
@@ -456,8 +501,8 @@ export async function recordEvaluationTask(task, { path } = {}) {
       INSERT INTO evaluation_tasks (
         task_id, type, status, owner_user_id, cancelled_by, created_at, started_at, ended_at,
         progress, completed_units, total_units, message, error, error_id,
-        payload_json, result_json, steps_json, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        payload_json, result_json, steps_json, timing_json, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(task_id) DO UPDATE SET
         status = excluded.status,
         cancelled_by = excluded.cancelled_by,
@@ -474,6 +519,7 @@ export async function recordEvaluationTask(task, { path } = {}) {
         payload_json = COALESCE(excluded.payload_json, evaluation_tasks.payload_json),
         result_json = COALESCE(excluded.result_json, evaluation_tasks.result_json),
         steps_json = COALESCE(excluded.steps_json, evaluation_tasks.steps_json),
+        timing_json = COALESCE(excluded.timing_json, evaluation_tasks.timing_json),
         updated_at = excluded.updated_at
     `);
     stmt.run(
@@ -494,6 +540,7 @@ export async function recordEvaluationTask(task, { path } = {}) {
       task.payload ? JSON.stringify(task.payload) : null,
       task.result ? JSON.stringify(task.result) : null,
       Array.isArray(task.steps) && task.steps.length ? JSON.stringify(task.steps) : null,
+      task.timing ? JSON.stringify(task.timing) : null,
       new Date().toISOString(),
     );
     return true;
@@ -511,7 +558,7 @@ export async function queryRecentEvaluationTasks(limit = 30, { path } = {}) {
   const rows = db
     .prepare(`
       SELECT task_id, type, status, owner_user_id, cancelled_by, created_at, started_at, ended_at,
-             progress, completed_units, total_units, message, error, error_id, payload_json, result_json
+             progress, completed_units, total_units, message, error, error_id, payload_json, result_json, timing_json
       FROM evaluation_tasks ORDER BY created_at DESC, rowid DESC LIMIT ?
     `)
     .all(Math.max(1, Math.floor(limit)));
@@ -546,6 +593,7 @@ function taskRowToPublic(row, { withSteps = false } = {}) {
     errorId: row.error_id ?? "",
     payload: safeParse(row.payload_json),
     result: safeParse(row.result_json),
+    timing: safeParse(row.timing_json),
     ...(withSteps ? { steps: safeParse(row.steps_json) ?? undefined } : {}),
     // 落库来源的任务一律不可恢复：进程重启后内存里没有它的 abortController，取消不了、也不会自己推进。
     recoverable: false,

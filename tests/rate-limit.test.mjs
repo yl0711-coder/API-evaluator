@@ -41,3 +41,18 @@ test("过期桶会被惰性清理，key 数不无界增长", () => {
   }
   assert.ok(rl.size() <= 6, `活跃 key 应被清理到上限附近，实际 ${rl.size()}`);
 });
+
+test("未过期唯一 key 达到 maxKeys 后拒绝新 key", () => {
+  let t = 0;
+  const rl = createRateLimiter({ windowMs: 100, max: 1, now: () => t, maxKeys: 1 });
+  assert.equal(rl.check("ip-a").allowed, true);
+
+  const denied = rl.check("ip-b");
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.retryAfterMs, 100);
+  assert.equal(rl.size(), 1);
+
+  t = 100;
+  assert.equal(rl.check("ip-b").allowed, true, "过期后新 key 可以进入");
+  assert.equal(rl.size(), 1);
+});

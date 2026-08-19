@@ -6,6 +6,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-08-18
+
+### Fixed
+- **场景运行的 `test_runs.profile_id` 恒为 NULL，趋势页从来看不到场景数据** — `buildScenarioSummary` 是多模型
+  聚合体、顶层无 `profileId`，而 `runScenarioTest` 写单模型报告时未补，于是 `queryProfileRunSummaries` 的
+  `WHERE profile_id = ?` 永远匹配不到场景运行。写入侧在 `runScenarioTest` 补齐顶层 `profileId`/`profileName`；
+  历史行由开库迁移 `backfillRunProfileIds` 从 `raw_json` 的 `results[]` / `profileDigest[]` 原地回填，
+  幂等（`WHERE profile_id IS NULL`）、best-effort（失败不阻塞开库）。回填**严格限定 `type='scenario'`**：
+  `batch-stability` / `batch-admission` 的 NULL 是按设计的聚合行，认领它们会让其作为最新点进入趋势 series，
+  把该 type 的回归判定从 stable 打回 baseline，凭空改变既有渠道的退化结论；多模型场景聚合行也保持 NULL。
+- **回归判定把「无从判断」说成「未见退化」** — `detectRegression` 原按「changes 为空 → stable」推结论，故
+  「一个指标都没报出来」与「所有指标都正常」得到同一个判定，是虚假保证。新增 `incomparable` 状态与
+  `hasComparableMetric()`（注意不能用 `Number.isFinite(Number(v))`：`Number(null) === 0` 会把缺失当成报出了 0）。
+- **无指标的场景运行会挤掉该渠道原有的退化判定** — `buildProfileTrend` 原先无条件取 series 末点当 current；
+  只跑非「基础」组的场景运行无逐轮可回填、两个指标皆 null，一旦成为末点就让前端横幅整体消失。改为取
+  「最近一个报出可比指标的点」判定。
+
+### Notes
+- `.env.evaluator.example` 更正 `EVALUATOR_OPEN_REPORT` 的注释：示例值是 `1`，即**默认开**，原注释写「默认关」
+  与紧邻的示例值自相矛盾。
+- 性能诊断的四个指标（事件循环延迟 / CPU 占比 / 上游滚动窗口 / 槽位）**仍然只有 `/api/health` 一个出口，
+  没有前端展示入口**。日后补看板前先读 `server/performance.mjs` 文件头曾记录的四条口径限制——累计值、
+  采样区间不定、按条数滚动、尝试数≠请求数——直接搬上页面会被当成实时 SLA 读；届时也该换成需登录的数据源，
+  而不是继续用这个免登录端点。
+- 本版**仍不含**「模型档案」独立页（`/model-profile/`），亦未修复 0.7.10 记录的「总览空状态出口不足」
+  （非超管在尚无模型目标时仍会困在总览页）。
+
+## [0.7.10] - 2026-08-13
+
+### Added
+- **评测性能诊断（新增 `server/performance.mjs`）** — `/api/health` 增加 `performance`：事件循环延迟
+  （p50/p99/max，`monitorEventLoopDelay`）、进程 CPU 占比与内存、执行槽位状态，以及最近 200 次上游请求的
+  滚动窗口（重试次数、退避总等待、429/5xx/超时/网络错误分类计数、平均端到端耗时）。**目前只有接口输出，
+  界面上没有任何展示入口**——要看得自己 `curl /api/health`；前端无任何代码读取这些字段。
+  该端点在免登录白名单内（容器健康检查需调用），故采样字段在入口处即收窄，只含聚合计数与耗时，
+  不含 URL、模型名、渠道名或任何凭据。
+- **模型管理按渠道折叠** — 每个渠道一个原生 `<details>`，默认全收起，渠道多时不必一路下滚。展开状态存
+  内存 Set：删模型、移除标签、切标签筛选触发整块重渲染后不会把已展开的组收回去；刷新页面回到默认全收起，
+  不落 localStorage。
+
+### Changed
+- **并发默认值改按 1 vCPU / 1 GB 主机取值** — `EVALUATOR_MAX_CONCURRENT_TASKS` 4→2、
+  `EVALUATOR_AUTO_TEST_CONCURRENCY` 2→1（给手动评测预留至少一个总槽位）；Compose 的
+  `mem_limit` 512m→768m、`cpus` 0.75→0.90。二者仍共用 0.7.9 引入的同一个平台级执行闸，
+  子额度不能叠加突破总上限。
+
+### Fixed
+- **限流器 key 内存无上界** — 旧实现仅在 `buckets.size > maxKeys` 时惰性清扫，清扫后仍照常新建桶；
+  当所有桶都未过期（大量一次性 key，如伪造来源）时清扫扫不掉任何东西，Map 仍会继续增长。改为满容量且
+  最早桶尚未到期时直接拒绝新 key 并给出 `retryAfterMs`，同时维护 `earliestResetAt` 避免每次 check
+  都全量扫描。代价是达到上限时新来源会被拒（fail-closed），换取内存有确定上界。
+- **报告中心刷新按钮不刷新报告列表** — `#reload-requests` 此前只重载 resultsBundle，「全部报告文件」
+  面板保持旧内容，用户以为刷过了。`report-browser.js` 导出 `refresh`，由刷新按钮一并调用。
+
+### Notes
+- 本版**不含**「模型档案」独立页（`/model-profile/`）。功能可用但视觉与交互尚需在真实浏览器中确认
+  （衬线字体回退、自绘下拉三角位置、940px 纸面宽度在宽屏上的观感），故以 `92f6efb` 整体撤下，
+  三个提交已逐字 cherry-pick 到 `feat/model-profile` 继续打磨，回归方式为 `git revert 92f6efb`。
+  一并撤下的还有该分支夹带的「总览空状态出口不足」修复：**非超管在尚无模型目标时仍会困在总览页**
+  （只有带 `data-requires-admin` 的「配置第一个渠道」与「操作手册」两个出口），此缺陷在本版中仍存在，
+  下一轮随档案页一起回来。
+- 部署侧需手动步骤：健康自愈已由 compose 内的 autoheal 容器改为宿主 systemd timer
+  （不再把 docker.sock 挂进任何容器）。仅拉取镜像不会生效，须按 README「Health recovery on systemd
+  hosts」安装 `deploy/api-evaluator-health-recovery.*` 并 `systemctl enable --now`，否则
+  「进程存活但调度器僵死」这类静默故障没有自动恢复兜底。
+
 ## [0.7.9] - 2026-08-11
 
 ### Fixed
@@ -677,7 +743,9 @@ Initial open-source release.
 ### Fixed
 - Concurrency-queue slot leak on the task-manager cancel path.
 
-[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.9...dev
+[Unreleased]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.11...dev
+[0.7.11]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.10...v0.7.11
+[0.7.10]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.6...v0.7.8
 [0.7.5]: https://github.com/yl0711-coder/API-evaluator/compare/v0.7.4...v0.7.5

@@ -171,6 +171,7 @@ export function createTaskCenter({ state, confirm, onRetest }) {
         <span>开始：${escapeHtml(formatDateTime(task.startedAt || task.createdAt))}</span>
         <span>结束：${escapeHtml(task.endedAt ? formatDateTime(task.endedAt) : "—")}</span>
         <span>进度：${Number(task.progress ?? 0)}%（${Number(task.completedUnits ?? 0)}/${escapeHtml(String(task.totalUnits ?? "-"))} 步）</span>
+        ${renderTimingMeta(task.timing)}
         ${renderActorMeta(task)}
       </div>
       ${task.status === "interrupted" ? '<p class="fail">程序曾在任务运行中退出，这个任务已中断，结果不完整，需要重新测试。</p>' : ""}
@@ -186,6 +187,12 @@ export function createTaskCenter({ state, confirm, onRetest }) {
     if (task.createdBy) parts.push(`<span>发起：${escapeHtml(task.createdBy)}</span>`);
     if (task.cancelledBy) parts.push(`<span>取消：${escapeHtml(task.cancelledBy)}</span>`);
     return parts.join("");
+  }
+
+  function renderTimingMeta(timing) {
+    if (!timing || typeof timing !== "object") return "";
+    const format = (value) => (Number.isFinite(Number(value)) ? `${Math.round(Number(value) / 100) / 10}s` : "—");
+    return `<span>排队：${format(timing.queueWaitMs)}</span><span>执行：${format(timing.executionMs)}</span><span>收尾：${format(timing.finalizeMs)}</span><span>总计：${format(timing.totalMs)}</span>`;
   }
 
   // 复用标准评测那套「模型 × 步骤」网格的类名（.flow-model-group / .standard-flow / .flow-step），

@@ -53,6 +53,9 @@ test("task manager records completed tasks without leaking full payloads", async
     await waitForFileMatch(taskEventsFile, /"event":"completed"/);
 
     assert.equal(task.progress, 100);
+    assert.ok(task.timing.executionMs >= 0);
+    assert.ok(task.timing.finalizeMs >= 0);
+    assert.ok(task.timing.totalMs >= task.timing.executionMs);
     assert.equal(task.result.runId, "run-ok");
     assert.equal(task.result.reportMarkdown, "报告内容已写入本地报告文件，请在报告中心查看。");
 
@@ -96,6 +99,7 @@ test("满槽时第二个任务进入排队(queued)，带位置与 ETA，前一�
     releaseA();
     await waitFor(() => b.status === "completed");
     assert.equal(b.status, "completed");
+    assert.ok(b.timing.queueWaitMs >= 0, "排队任务完成后应记录等待时间");
   } finally {
     delete process.env.EVALUATOR_MAX_CONCURRENT_TASKS;
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
@@ -124,6 +128,9 @@ test("task manager cancels running tasks through the task context", async () => 
     await waitForFileMatch(taskEventsFile, /"event":"cancelled"/);
 
     assert.equal(task.cancelRequested, true);
+    assert.ok(task.timing.executionMs >= 0);
+    assert.ok(task.timing.finalizeMs >= 0);
+    assert.ok(task.timing.totalMs >= 0);
     assert.equal(task.message, "任务已取消。");
 
     const raw = await readFile(taskEventsFile, "utf8");

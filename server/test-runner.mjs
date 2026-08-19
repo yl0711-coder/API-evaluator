@@ -1470,6 +1470,10 @@ export async function runScenarioTest(body, taskContext = {}) {
       startedAt,
       endedAt,
     });
+    // 补上 profileId 到顶层：buildScenarioSummary 是多模型聚合体，顶层无此字段；
+    // 但此处是单模型报告，需要 profileId 写入 test_runs.profile_id 以供趋势查询。
+    one.profileId = profileResult.profileId;
+    one.profileName = profileResult.profileName;
     one = await attachRunArtifacts(perId, one, { profileResults: [profileResult] });
     one.predictedConsumption = normalizePredicted(body.predicted);
     const aiAnalysis = await maybeBuildAiAnalysis({
@@ -1864,6 +1868,9 @@ async function finalizeTestRecord({
   rawResponse = "",
   rawResponsePartial = false,
   normalizedError,
+  retryWaitMs = 0,
+  attemptStatuses = [],
+  attemptErrors = [],
   toolCall = null,
   streamValidation = null,
   temperatureStripped = false,
@@ -1893,11 +1900,14 @@ async function finalizeTestRecord({
     firstByteMs,
     firstTokenMs,
     totalMs,
+    retryWaitMs,
     // 端到端耗时（ADM-010）：含被重试掉的失败尝试与退避等待，故 endToEndMs >= totalMs。
     // totalMs 的语义【刻意保持不变】——趋势图与回归判定的延迟序列按 total_ms 取点
     // （server/db.mjs），改它的含义会让历史数据不可比。新口径一律走这个新字段。
     // null 表示没测到（一次请求都没发出，如 Key 缺失 / egress 阻断）。
     endToEndMs,
+    attemptStatuses,
+    attemptErrors,
     statusCode,
     statusText, // 上游返回的原因短语（reason phrase），供压测报告逐码展示
     success: successOverride ?? Boolean(statusCode && statusCode >= 200 && statusCode < 300 && responseText),
