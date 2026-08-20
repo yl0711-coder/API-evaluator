@@ -26,6 +26,20 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// CSV 单元格：一律加引号并转义内引号；文本以 = + - @ 开头时前置单引号，
+// 使 Excel / WPS 不把它当公式求值（CSV 注入）。
+// 所有 CSV 导出都必须走这里——这条转义是安全相关的，不能有第二份实现各自漂移。
+export function csvCell(value) {
+  const text = String(value ?? "");
+  const safeText = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replace(/"/g, '""')}"`;
+}
+
+// 行数组 → CSV 文本。行分隔用 CRLF：Excel 对 LF-only 的多行单元格解析不稳。
+export function toCsvText(rows) {
+  return (rows || []).map((row) => (row || []).map(csvCell).join(",")).join("\r\n");
+}
+
 export function average(values) {
   const clean = values.filter((value) => Number.isFinite(Number(value))).map(Number);
   if (!clean.length) return null;

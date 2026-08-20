@@ -146,6 +146,8 @@ const trendChart = requireElement("#trend-chart");
 const trendRegression = requireElement("#trend-regression");
 const trendTable = requireElement("#trend-table");
 const trendAlerts = requireElement("#trend-alerts");
+const trendExportSeries = requireElement("#trend-export-series");
+const trendExportRounds = requireElement("#trend-export-rounds");
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
@@ -526,6 +528,8 @@ createTrend({
     trendRegression,
     trendTable,
     trendAlerts,
+    trendExportSeries,
+    trendExportRounds,
   },
   onProfileData,
   deps: { api, escapeHtml, renderTrendChart, createCascadeTargetPicker },
