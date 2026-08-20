@@ -1718,6 +1718,10 @@ button.quiet-action {
   padding: 24px;
   background: rgba(var(--bg-rgb), 0.72);
   backdrop-filter: blur(8px);
+  /* 内容比视口高时整体可滚动。原先只有 place-items:center，超高的框会上下各裁掉一截且
+     滚不动（内容多的框——如导入弹窗——首当其冲）。 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-card {
@@ -1729,11 +1733,37 @@ button.quiet-action {
   background: var(--panel-strong);
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.38);
   padding: 24px;
+  /* 高度跟着内容走，但不超过视口（减去 .modal 的 24px 上下内边距）；超了自己滚，
+     卡片本身不再被拉满屏。min-height:auto 是必需的：grid item 默认 min-height:auto
+     会无视 max-height 撑开，导致这条形同虚设。 */
+  max-height: calc(100vh - 48px);
+  min-height: auto;
+  overflow-y: auto;
+  /* 滚动时给圆角留白，避免首尾内容贴着 24px 圆角被切 */
+  scrollbar-gutter: stable;
 }
 
 .modal-card h3 {
   margin: 6px 0 0;
   font-size: 26px;
+}
+
+/* 弹窗里的折叠说明：.helper-details 是为页面正文写的（自带 max-width:1180px 与
+   margin-bottom:18px），直接放进 gap:16px 的卡片网格会宽度失据、底部多出一截空白，
+   且内部 .section-desc 没有内边距会贴着边框。这里只做容器适配，不动原规则。 */
+.modal-card .helper-details {
+  max-width: none;
+  margin: 0;
+}
+
+.modal-card .helper-details > summary {
+  padding: 11px 14px;
+  font-size: 14px;
+}
+
+.modal-card .helper-details > .section-desc {
+  margin: 0;
+  padding: 12px 14px 14px;
 }
 
 .confirm-card {
@@ -4546,6 +4576,20 @@ body.better-lighting::after {
   body.better-lighting::after {
     animation: none;
   }
+}
+
+/* 有模态框打开时暂停这道背景流光。
+   卡顿根因：.modal 的 backdrop-filter: blur(8px) 是一层全屏毛玻璃，它每帧都要重新采样
+   身后的像素；而这道流光是 16s infinite 的 transform 动画，等于每帧都在改动被采样的内容。
+   两者叠加 → 全屏模糊持续重算，弹窗一开就明显掉帧（越大的屏越明显）。
+   动画本身是背景装饰，弹窗期间被毛玻璃糊住基本看不见，停掉零视觉损失。
+   :has() 在 Chrome 105+/Safari 15.4+/Firefox 121+ 支持；不支持的浏览器只是照旧卡，
+   不影响功能（渐进增强）。
+   两种覆盖层的显隐机制不同：.modal 常驻 DOM、靠 .hidden 切换；.report-overlay 是
+   openReportOverlay 动态建、关闭即移除（从不带 .hidden），故按「存在即打开」判断。 */
+body.better-lighting:has(.modal:not(.hidden))::after,
+body.better-lighting:has(.report-overlay)::after {
+  animation-play-state: paused;
 }
 
 /* 模型比对：两列对象横向对照，较优结果以克制的绿色强调。 */

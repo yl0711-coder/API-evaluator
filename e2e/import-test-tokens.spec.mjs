@@ -63,7 +63,7 @@ test("按钮在渠道管理页可见，点击弹出导入框", async ({ page }) 
   await expect(page.locator("#token-import-token")).toHaveAttribute("type", "password");
 });
 
-test("弹窗可用取消 / 点遮罩 / Esc 三种方式关闭，且关闭后清空令牌", async ({ page }) => {
+test("弹窗可用取消 / Esc 关闭，且关闭后清空令牌", async ({ page }) => {
   await openChannelsPage(page);
   const modal = page.locator("#token-import-modal");
 
@@ -79,12 +79,24 @@ test("弹窗可用取消 / 点遮罩 / Esc 三种方式关闭，且关闭后清�
   await expect(modal).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(modal).toBeHidden();
+});
 
-  // 点遮罩（模态框自身，非卡片内部）
+// 本框要手填三项凭据（个人令牌还得去 new-api 后台翻），误点空白就全作废、令牌还会被清空。
+// 故刻意【不】做「点遮罩即关」——这条把「不关」钉住，防止日后有人为了跟其它弹窗一致而加回来。
+test("点遮罩不关闭弹窗，已填内容不丢（防误触）", async ({ page }) => {
+  await openChannelsPage(page);
+  const modal = page.locator("#token-import-modal");
+
   await page.locator("#import-test-tokens").click();
+  await page.locator("#token-import-base").fill("https://relay.example.com");
+  await page.locator("#token-import-token").fill("tok-secret");
   await expect(modal).toBeVisible();
+
+  // 点模态框自身的左上角（遮罩区，非卡片内部）
   await modal.click({ position: { x: 5, y: 5 } });
-  await expect(modal).toBeHidden();
+  await expect(modal).toBeVisible("点遮罩不该关闭本框——填了一半的凭据会全部作废");
+  await expect(page.locator("#token-import-token")).toHaveValue("tok-secret", "已填的令牌不得被清空");
+  await expect(page.locator("#token-import-base")).toHaveValue("https://relay.example.com");
 });
 
 test("三项填全后提交，把凭据原样发给后端并提示导入结果", async ({ page }) => {

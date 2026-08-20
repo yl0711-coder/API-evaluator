@@ -1852,7 +1852,8 @@
             <div>
               <p class="eyebrow">批量导入</p>
               <h3 id="token-import-modal-title">从 new-api 上游渠道导入测试分组</h3>
-              <p class="section-desc">读取你名下**名称含「测试」**的令牌，每个令牌建一个渠道（Key 自动填入），再按令牌所属分组把该分组下的模型建成测试模型。三项凭据只用于本次导入，不会保存。</p>
+              <!-- 原文写的是 Markdown 的 **加粗**，HTML 里会原样显示星号，改用 <strong>。 -->
+              <p class="section-desc">读取你名下<strong>名称含「测试」</strong>的令牌，每个令牌建一个渠道（Key 自动填入），再按令牌所属分组把该分组下的模型建成测试模型。</p>
             </div>
             <label>
               new-api 网址
@@ -1862,13 +1863,18 @@
             <label>
               个人令牌
               <input id="token-import-token" name="token" type="password" autocomplete="off" placeholder="new-api 个人设置里的系统访问令牌" required />
+              <small class="field-hint">三项凭据只用于本次导入，不会保存。</small>
             </label>
             <label>
               用户ID
               <input id="token-import-userid" name="userId" type="text" inputmode="numeric" autocomplete="off" placeholder="1" required />
               <small class="field-hint">必须与上面令牌所属的用户一致，否则 new-api 报「用户 ID 不匹配」。在 new-api 个人设置页可看到。</small>
             </label>
-            <p class="section-desc">协议按模型名推断：分组内 claude 占多数则用 Claude Messages，否则 OpenAI Compatible。由于这些渠道走 new-api 的 /v1 中继（对外通常是 OpenAI 兼容协议），若测试报 404 请把渠道协议改为 OpenAI Compatible。</p>
+            <!-- 协议推断说明折叠：属于「出问题再看」的排错信息，展开着会把三个输入项挤下去。 -->
+            <details class="helper-details">
+              <summary>协议是怎么定的？测试报 404 怎么办</summary>
+              <p class="section-desc">协议按模型名推断：分组内 claude 占多数则用 Claude Messages，否则 OpenAI Compatible。由于这些渠道走 new-api 的 /v1 中继（对外通常是 OpenAI 兼容协议），若测试报 404 请把渠道协议改为 OpenAI Compatible。</p>
+            </details>
             <div class="action-row split-actions">
               <button id="token-import-cancel" class="secondary" type="button">取消</button>
               <button id="token-import-submit" class="primary" type="submit">开始导入</button>

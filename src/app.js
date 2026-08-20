@@ -320,9 +320,10 @@ requireElement("#import-test-tokens").addEventListener("click", () => {
   tokenImportBase.focus();
 });
 requireElement("#token-import-cancel").addEventListener("click", closeTokenImportModal);
-tokenImportModal.addEventListener("click", (event) => {
-  if (event.target === tokenImportModal) closeTokenImportModal();
-});
+// 刻意【不】做「点遮罩即关」：本框要手填三项凭据（个人令牌还得去 new-api 后台翻），
+// 误点空白就全部作废、令牌还会被 closeTokenImportModal 清空，代价远大于少一种关闭方式。
+// 关闭途径保留取消按钮与 Esc（Esc 有按键意图、不会误触）。key-modal/confirm-modal 仍保留
+// 点遮罩关闭——那两个是即答即走的小框，填的内容丢了也不心疼，不必强求一致。
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !tokenImportModal.classList.contains("hidden")) closeTokenImportModal();
 });
