@@ -1716,8 +1716,17 @@ button.quiet-action {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(var(--bg-rgb), 0.72);
-  backdrop-filter: blur(8px);
+  /* 底色比原来更深（0.72 → 0.86）：这是移除 backdrop-filter 的视觉补偿，
+     靠压暗背景维持「焦点在弹窗」的层次，代替原先的磨砂质感。 */
+  background: rgba(var(--bg-rgb), 0.86);
+  /* 刻意【不】用 backdrop-filter。实测（1920x1080，开框 12~14 次取中位）：
+       有 blur(8px)：new-api 框 p50 107ms、sub2api 框 p50 138ms
+       移除后：      两者均 p50 33ms
+     即这一项占开框耗时的 70~75%，表现为「点下去要等 100ms+ 才出现」的顿感。
+     成本不在卷积半径而在「为全屏建一个需采样背景像素的合成层」本身——实测
+     8px/4px/2px 分别 107/123/129ms，调小半径无效，只有彻底移除才回到 33ms。
+     与之前停掉背景流光动画（见文件末 better-lighting 处）是两件事：那个治的是
+     开着框时的持续掉帧，这个治的是开框瞬间的延迟。 */
   /* 内容比视口高时整体可滚动。原先只有 place-items:center，超高的框会上下各裁掉一截且
      滚不动（内容多的框——如导入弹窗——首当其冲）。 */
   overflow-y: auto;
@@ -4055,8 +4064,11 @@ textarea:focus {
 .report-overlay__backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(var(--bg-rgb), 0.62);
-  backdrop-filter: blur(3px);
+  /* 底色加深（0.62 → 0.8）补偿移除毛玻璃后的层次感，同 .modal 的处理。 */
+  background: rgba(var(--bg-rgb), 0.8);
+  /* 同 .modal：不用 backdrop-filter。实测（1920x1080，开层 10 次取中位）
+     blur(3px) 时 p50 72.7ms、移除后 33.3ms——半径小到 3px 也照样翻倍，
+     再次印证成本在「全屏采样背景的合成层」本身而非卷积半径。 */
 }
 .report-overlay__panel {
   position: relative;
@@ -4578,12 +4590,13 @@ body.better-lighting::after {
   }
 }
 
-/* 有模态框打开时暂停这道背景流光。
-   卡顿根因：.modal 的 backdrop-filter: blur(8px) 是一层全屏毛玻璃，它每帧都要重新采样
-   身后的像素；而这道流光是 16s infinite 的 transform 动画，等于每帧都在改动被采样的内容。
-   两者叠加 → 全屏模糊持续重算，弹窗一开就明显掉帧（越大的屏越明显）。
-   动画本身是背景装饰，弹窗期间被毛玻璃糊住基本看不见，停掉零视觉损失。
-   :has() 在 Chrome 105+/Safari 15.4+/Firefox 121+ 支持；不支持的浏览器只是照旧卡，
+/* 有覆盖层打开时暂停这道背景流光（16s infinite 的 transform 动画）。
+   覆盖层打开时它被压暗的遮罩挡住基本看不见（.modal 0.86、报告浮层 0.8），继续跑纯属
+   白烧合成开销——整页仅此一个常驻动画，停掉零视觉损失。
+   历史：这条最初是为了解决「毛玻璃每帧重采样 × 流光每帧改动被采样内容」的叠加掉帧。
+   两处 backdrop-filter 现已移除（见 .modal 与 .report-overlay__backdrop 处的实测记录），
+   那个叠加不再存在，但省掉无谓重绘这一层价值仍在，故保留。
+   :has() 在 Chrome 105+/Safari 15.4+/Firefox 121+ 支持；不支持的浏览器只是照旧多耗一点，
    不影响功能（渐进增强）。
    两种覆盖层的显隐机制不同：.modal 常驻 DOM、靠 .hidden 切换；.report-overlay 是
    openReportOverlay 动态建、关闭即移除（从不带 .hidden），故按「存在即打开」判断。 */
