@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **稳定性趋势页可导出 CSV**（页头两个按钮，纯前端、不加端点）——供拿趋势数据自己做数据分析。
+  刻意分成两份表，因为分析粒度不同，硬塞进一张会得到一堆空列：
+  - **历次运行**（`series`，每次运行一行）：成功率 / P95 / 评分 / 等级 / 总 Token / 成本，看跨时间的趋势与掉级；
+  - **逐轮请求**（`rounds`，每个请求一行）：耗时 / 成败 / 归一化错误类型，看延迟分布与失败时刻。
+  - 两份表用**运行ID**列关联，可在 Excel / pandas 里 join。渠道与模型写进**每一行**（而不是表头之上的说明行），
+    于是多个模型各导一份后能直接首尾相接成一张大表——说明行会让 `read_csv` / Power Query 直接解析失败。
+  - 数值列给**原始数值**（成功率是 0-1 的小数而非 `"80.0%"` 字符串），分析侧不必反解析；
+    **缺测指标留空而不是 0**（`Number(null) === 0`，写成 0 等于编造「成功率 0%」），而真实测到的 0 原样导出。
+  - 导出的是当前所选模型的**全部历史**，不受图上横轴/时间范围影响；带 UTF-8 BOM，Excel 打开中文不乱码。
+  - 新增 `src/trend-export.js`（纯函数、可单测）+ `tests/trend-export.test.mjs`；
+    `csvCell` / `toCsvText` 从 `src/model-compare.js` 抽到 `src/client-utils.js` 共用——防 CSV 注入那条转义是
+    安全相关的，不该有两份各自漂移的实现。
 - **「从 new-api 上游渠道导入测试分组」**（渠道管理页新按钮 + `POST /api/channels/import-test-tokens`）——
   填 new-api 网址 + **调用者自己的**个人令牌 + 用户ID，读出其名下所有**名称含「测试」**的令牌，
   每个令牌建一个渠道（Key 自动取明文填入），再按令牌所属分组把该分组下的模型建成模型目标，导完可直接跑测试。

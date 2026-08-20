@@ -287,6 +287,8 @@
   "#trend-alerts",
   "#trend-channel-select",
   "#trend-chart",
+  "#trend-export-rounds",
+  "#trend-export-series",
   "#trend-profile-select",
   "#trend-regression",
   "#trend-table",

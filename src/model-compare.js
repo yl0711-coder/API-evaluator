@@ -2,7 +2,7 @@
 // 「模型比对」（高级测试栏，登录即可用）：选「所用模型」(A) 与「要对比的模型」(B)，
 // 依据两者在报告中心各自最近的报告（1 稳定性 + 1 准入 + 每场景最新一份）做统计对比。
 // 后端 POST /api/reports/compare 产出并落盘一份「模型对比报告」，前端用浮层查看 + 可下载 md。
-import { escapeHtml, toast, downloadText, formatNumber } from "./client-utils.js";
+import { escapeHtml, toast, downloadText, formatNumber, toCsvText } from "./client-utils.js";
 import { api, cancelRemoteTask, runRemoteTask } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
@@ -10,11 +10,8 @@ import { openReportOverlay } from "./report-overlay.js";
 import { buildGapFillTaskPayload, runGapFillQueue, summarizeGapFillEstimates } from "./model-compare-gap-fill.js";
 import { buildComparisonXlsx } from "./model-compare-excel.js";
 
-function csvCell(value) {
-  const text = String(value ?? "");
-  const safeText = /^[=+\-@]/.test(text) ? `'${text}` : text;
-  return `"${safeText.replace(/"/g, '""')}"`;
-}
+// 单元格转义 / 行拼装已抽到 client-utils.js（csvCell / toCsvText），与稳定性趋势页的导出共用一份
+// ——防 CSV 注入那条规则是安全相关的，不该有两份各自漂移的实现。
 
 function csvNumber(value) {
   return Number.isFinite(value) ? value : "";
@@ -115,7 +112,7 @@ export function buildComparisonCsv(comparison) {
       b.issue || "",
     ]);
   }
-  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  return toCsvText(rows);
 }
 
 // —— 单元格格式化（两列表格与 N 列表格共用）——
@@ -193,7 +190,7 @@ export function buildMultiComparisonCsv(comparison) {
     const values = (row.values || []).map((v) => (Number.isFinite(v?.quality) ? v.quality : ""));
     rows.push(["逐场景（质量分）", row.name || "", row.tier || "", ...values, "分", ""]);
   }
-  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  return toCsvText(rows);
 }
 
 export function createModelCompare({ state, confirm }) {
