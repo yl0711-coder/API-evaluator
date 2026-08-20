@@ -417,7 +417,22 @@ export async function readBoundedResponseText(response, maxBytes, controller, { 
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      // P2-5：reader.read() 对 AbortSignal 免疫（响应头已到、流挂起时 controller.abort() 不会中止读取，
+      // 导致超时后请求挂到 timeoutMs 耗尽才抛 AbortError，实测延迟从该有的 15s 延到 5 分钟）。
+      // 原因：fetch 的 signal 只作用于网络层；响应体 ReadableStream 的 reader.read() 是独立 API，
+      // 不继承父 signal。解法：Promise.race 竞赛「实际读取」与「abort 信号转 Promise」，
+      // 信号先到时主动抛 AbortError 中止循环，finally 释放 reader。
+      const readPromise = reader.read();
+      const abortPromise = new Promise((_, reject) => {
+        if (controller.signal.aborted) {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        } else {
+          controller.signal.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        }
+      });
+      const { done, value } = await Promise.race([readPromise, abortPromise]);
       if (done) {
         break;
       }
