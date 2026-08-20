@@ -111,6 +111,31 @@ test("normalizeChannel：手动渠道不会凭空长出 new-api 溯源字段的�
   assert.equal(ch.newapiTokenId, null);
   assert.equal(ch.newapiTokenGroup, null);
   assert.equal(ch.newapiChannelId, null);
+  assert.equal(ch.sub2apiKeyId, null);
+  assert.equal(ch.sub2apiGroupId, null);
+  assert.equal(ch.sub2apiGroupName, null);
+});
+
+// 同上一条的道理：sub2api 的溯源字段也必须在白名单里，否则用户编辑过渠道后凭空消失。
+test("normalizeChannel：编辑「导入 sub2api 测试分组」渠道时保留溯源字段", () => {
+  const existing = {
+    id: "sub2api-key-abc12345-7",
+    name: "测试-7",
+    baseUrl: "https://relay.test",
+    protocol: "claude_messages",
+    models: ["claude-opus-4"],
+    source: "sub2api",
+    sub2apiKeyId: 7,
+    sub2apiGroupId: 3,
+    sub2apiGroupName: "Claude 组",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const ch = normalizeChannel({ id: existing.id, name: "测试-7 改名", protocol: "openai_compatible" }, existing);
+  assert.equal(ch.source, "sub2api");
+  assert.equal(ch.sub2apiKeyId, 7, "溯源字段不能被编辑操作抹掉");
+  assert.equal(ch.sub2apiGroupId, 3);
+  assert.equal(ch.sub2apiGroupName, "Claude 组");
+  assert.equal(ch.protocol, "openai_compatible", "协议改动要生效（中继报 404 时的常见修法）");
 });
 
 test("normalizeModelTarget：必填 channelId + model", () => {

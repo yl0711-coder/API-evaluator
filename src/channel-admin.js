@@ -44,15 +44,19 @@ export function createChannelAdmin({ state, els, onChange }) {
       : channel.status === "disabled"
         ? `<span class="chan-pill bad">已禁用</span>`
         : `<span class="chan-pill good">启用</span>`;
-    // 两种 new-api 来源要能分辨：newapi=导自其渠道表（直连上游厂商）；
-    // newapi-token=导自其令牌（指回 new-api 的 /v1 中继）。漏掉后者会让它看起来像手动建的渠道。
+    // 三种导入来源要能分辨，否则与手动建的渠道混在一起看不出出处：
+    //   newapi       = 导自 new-api 的渠道表（直连上游厂商）
+    //   newapi-token = 导自 new-api 的令牌（指回 new-api 的 /v1 中继）
+    //   sub2api      = 导自 sub2api 的 API 密钥（指回 sub2api 的 /v1 中继）
+    // 分组名来自上游数据，必须转义（与相邻的 channel.name / protocolLabel 同等对待）。
     const source =
       channel.source === "newapi"
         ? " · 来自 new-api"
         : channel.source === "newapi-token"
-          ? // 分组名来自上游数据，必须转义（与相邻的 channel.name / protocolLabel 同等对待）
-            `${channel.newapiTokenGroup ? ` · 分组 ${escapeHtml(channel.newapiTokenGroup)}` : ""} · 来自 new-api 令牌`
-          : "";
+          ? `${channel.newapiTokenGroup ? ` · 分组 ${escapeHtml(channel.newapiTokenGroup)}` : ""} · 来自 new-api 令牌`
+          : channel.source === "sub2api"
+            ? `${channel.sub2apiGroupName ? ` · 分组 ${escapeHtml(channel.sub2apiGroupName)}` : ""} · 来自 sub2api 密钥`
+            : "";
     const models = Array.isArray(channel.models) ? channel.models.length : 0;
     return `
       <div class="chan-row">
@@ -343,6 +347,33 @@ export function createChannelAdmin({ state, els, onChange }) {
     );
   }
 
+  // 「从 sub2api 上游渠道导入测试分组」：读调用者名下名称含「测试」的 API 密钥，
+  // 每个密钥建一个渠道 + 其分组下的模型目标。creds（网址/邮箱/密码/可选 TOTP）只发这一次、不保存。
+  async function importSub2api(creds) {
+    const r = await api("/api/channels/import-sub2api-tokens", { method: "POST", body: JSON.stringify(creds) });
+    await Promise.all([loadChannels(), loadModelTargets()]);
+    const s = r.summary || {};
+    if (!s.total) {
+      toast(`没有找到名称含「${TEST_TOKEN_KEYWORD}」的启用密钥，未导入任何渠道。`, true);
+      return;
+    }
+    // 逐项只在非 0 时提示：这些都需要人工跟进，不该淹没在正常计数里。
+    // 不报「禁用 N 个」：本链路在上游就按 status=active 过滤了，该计数恒为 0，
+    // 显示「禁用 0 个」是无意义噪音，还会让人以为筛过禁用密钥。summary.disabled 仍保留，
+    // 万一上游过滤失效（改了参数语义）时非 0 会由下面这条兜出来。
+    const warn = [
+      s.noGroup ? `${s.noGroup} 个密钥没有分组信息` : "",
+      s.noModels ? `${s.noModels} 个密钥没查到可用模型` : "",
+      s.viaFallback ? `${s.viaFallback} 个密钥的模型清单来自 /v1/models 回落（该站未启用模型广场，协议按 OpenAI 兼容处理）` : "",
+      s.disabled ? `${s.disabled} 个密钥是禁用状态（上游本应已过滤，请核对）` : "",
+    ]
+      .filter(Boolean)
+      .join("；");
+    toast(
+      `导入完成：${s.total} 个「${TEST_TOKEN_KEYWORD}」密钥 → 新增 ${s.imported} / 更新 ${s.updated} 个渠道，${s.newTargets} 个模型。${warn ? `注意：${warn}。` : ""}`,
+    );
+  }
+
   return {
     loadChannels,
     loadModelTargets,
@@ -350,6 +381,7 @@ export function createChannelAdmin({ state, els, onChange }) {
     saveModelTarget,
     importFromNewapi,
     importTestTokens,
+    importSub2api,
     renderTagOptions,
     setTagFilter,
   };

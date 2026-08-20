@@ -336,6 +336,7 @@
               </div>
               <div class="action-row">
                 <button id="import-test-tokens" class="secondary" type="button">从 new-api 上游渠道导入测试分组</button>
+                <button id="import-sub2api" class="secondary" type="button">从 sub2api 上游渠道导入测试分组</button>
                 <button id="reload-channels" class="secondary" type="button">刷新</button>
               </div>
             </div>
@@ -1878,6 +1879,45 @@
             <div class="action-row split-actions">
               <button id="token-import-cancel" class="secondary" type="button">取消</button>
               <button id="token-import-submit" class="primary" type="submit">开始导入</button>
+            </div>
+          </form>
+        </div>
+
+        <div id="sub2api-import-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sub2api-import-modal-title">
+          <form id="sub2api-import-form" class="modal-card">
+            <div>
+              <p class="eyebrow">批量导入</p>
+              <h3 id="sub2api-import-modal-title">从 sub2api 上游渠道导入测试分组</h3>
+              <p class="section-desc">读取你名下<strong>名称含「测试」</strong>的 API 密钥（仅启用状态），每个密钥建一个渠道（Key 自动填入），再按密钥所属分组把该分组下的模型建成测试模型。</p>
+            </div>
+            <label>
+              sub2api 网址
+              <input id="sub2api-import-base" name="baseUrl" type="url" autocomplete="off" placeholder="https://your-sub2api.example.com" required />
+              <small class="field-hint">只填基础地址，不要带 /v1。建出的渠道 Base URL 就是这个地址。</small>
+            </label>
+            <label>
+              邮箱
+              <input id="sub2api-import-email" name="email" type="email" autocomplete="off" placeholder="shared@example.com" required />
+            </label>
+            <label>
+              密码
+              <input id="sub2api-import-password" name="password" type="password" autocomplete="off" placeholder="登录密码" required />
+              <small class="field-hint">用于代你登录取临时凭证，只用于本次导入，不会保存。</small>
+            </label>
+            <label>
+              两步验证码（可选）
+              <input id="sub2api-import-totp" name="totpCode" type="text" inputmode="numeric" autocomplete="off" placeholder="未开启两步验证请留空" />
+              <small class="field-hint">账号开了 TOTP 时填 6 位动态码；没开就留空。</small>
+            </label>
+            <!-- 排错信息折叠：属于「出问题再看」的内容，展开着会把输入项挤下去。 -->
+            <details class="helper-details">
+              <summary>协议是怎么定的？导入失败怎么办</summary>
+              <p class="section-desc">协议按上游分组声明的 platform 判定（anthropic 用 Claude Messages，其余用 OpenAI Compatible），不靠猜模型名。若该站点未启用「模型广场」，则改为按每个密钥读取其实际可调模型，此时协议一律按 OpenAI Compatible 处理。这些渠道走 sub2api 的 /v1 中继，若测试报 404 请把渠道协议改为 OpenAI Compatible。</p>
+              <p class="section-desc">若持续报登录失败或 401：sub2api 会把登录凭证绑定到发起请求的 IP 与客户端标识，本工具已在服务端完成登录以规避该限制；仍失败请确认邮箱密码，或该账号是否开启了两步验证。</p>
+            </details>
+            <div class="action-row split-actions">
+              <button id="sub2api-import-cancel" class="secondary" type="button">取消</button>
+              <button id="sub2api-import-submit" class="primary" type="submit">开始导入</button>
             </div>
           </form>
         </div>

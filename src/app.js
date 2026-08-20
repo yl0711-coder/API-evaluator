@@ -351,6 +351,55 @@ tokenImportForm.addEventListener("submit", async (event) => {
     tokenImportSubmit.textContent = "开始导入";
   }
 });
+
+// 「从 sub2api 上游渠道导入测试分组」模态框：收网址/邮箱/密码/可选 TOTP → channelAdmin.importSub2api。
+// 与上面那个框同构，关闭策略也一致（见上方注释：刻意不做点遮罩关闭）。
+// 关框只清密码与验证码，网址/邮箱留着便于重试——密码是最不该留在 DOM 里的那项。
+const sub2apiModal = requireElement("#sub2api-import-modal");
+const sub2apiForm = requireElement("#sub2api-import-form");
+const sub2apiBase = requireElement("#sub2api-import-base");
+const sub2apiEmail = requireElement("#sub2api-import-email");
+const sub2apiPassword = requireElement("#sub2api-import-password");
+const sub2apiTotp = requireElement("#sub2api-import-totp");
+const sub2apiSubmit = requireElement("#sub2api-import-submit");
+function closeSub2apiModal() {
+  sub2apiModal.classList.add("hidden");
+  sub2apiPassword.value = "";
+  sub2apiTotp.value = ""; // TOTP 是一次性动态码，留着也没用
+}
+requireElement("#import-sub2api").addEventListener("click", () => {
+  sub2apiModal.classList.remove("hidden");
+  sub2apiBase.focus();
+});
+requireElement("#sub2api-import-cancel").addEventListener("click", closeSub2apiModal);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !sub2apiModal.classList.contains("hidden")) closeSub2apiModal();
+});
+sub2apiForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const creds = {
+    baseUrl: sub2apiBase.value.trim(),
+    email: sub2apiEmail.value.trim(),
+    password: sub2apiPassword.value,
+    totpCode: sub2apiTotp.value.trim(),
+  };
+  if (!creds.baseUrl || !creds.email || !creds.password) {
+    toast("网址、邮箱、密码都必填（两步验证码仅在账号开启 TOTP 时需要）。", true);
+    return;
+  }
+  // 导入要串多个上游请求（登录→列密钥→模型广场→可能逐密钥回落），耗时可观：禁用按钮防重复提交。
+  sub2apiSubmit.disabled = true;
+  sub2apiSubmit.textContent = "导入中…";
+  try {
+    await channelAdmin.importSub2api(creds);
+    closeSub2apiModal();
+  } catch (error) {
+    toast(`导入失败：${error.message}`, true);
+  } finally {
+    sub2apiSubmit.disabled = false;
+    sub2apiSubmit.textContent = "开始导入";
+  }
+});
 const quickFailurePanel = createQuickFailurePanel({
   container: quickFailureActions,
   getDefaultProfileId: () => quickVerifyProfileSelect.value,

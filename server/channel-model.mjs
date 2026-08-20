@@ -73,6 +73,10 @@ export function normalizeChannel(body, existing = null) {
     // 所以新增来源字段必须同步加在这里（漏加的表现是：用户在 UI 里编辑过的渠道，溯源信息凭空消失）。
     newapiTokenId: body.newapiTokenId ?? existing?.newapiTokenId ?? null,
     newapiTokenGroup: body.newapiTokenGroup ?? existing?.newapiTokenGroup ?? null,
+    // 「从 sub2api 导入测试分组」的溯源字段，同理必须在白名单里。
+    sub2apiKeyId: body.sub2apiKeyId ?? existing?.sub2apiKeyId ?? null,
+    sub2apiGroupId: body.sub2apiGroupId ?? existing?.sub2apiGroupId ?? null,
+    sub2apiGroupName: body.sub2apiGroupName ?? existing?.sub2apiGroupName ?? null,
     notes: String(body.notes ?? existing?.notes ?? "").trim(),
     createdAt: existing?.createdAt || now,
     updatedAt: now,

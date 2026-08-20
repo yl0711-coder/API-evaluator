@@ -237,6 +237,26 @@ and the vote counts are written to the channel's notes. Since these channels go 
 relay — which normally speaks OpenAI-compatible — a claude-only group inferred as Claude Messages may
 404; switch that channel's protocol to **OpenAI Compatible** if so. The notes and the dialog both say this.
 
+## sub2api integration
+
+A third import path, also on the **渠道管理 / Channels** page:
+**「从 sub2api 上游渠道导入测试分组」**. Enter the sub2api URL, your email and password (plus a TOTP code
+if the account has two-factor enabled). The server logs in on your behalf, reads every **enabled** key of
+yours whose name contains 「测试」, creates one channel per key with the plaintext key filled in, then
+resolves each key's group to its models and creates a test model for each.
+
+Two things differ from the new-api token import:
+
+- **Protocol is declared, not guessed.** sub2api groups carry a `platform` field, so `anthropic` maps to
+  Claude Messages and everything else to OpenAI Compatible — no model-name voting, no mixed-protocol channels.
+- **Email + password rather than a pasted token.** sub2api binds each JWT to the client IP and User-Agent
+  and revokes the session when either changes, so a token copied out of a browser would fail server-side.
+  The server therefore logs in itself. Credentials are used for that one import and never stored.
+
+If the site has the model plaza disabled, the import falls back to reading each key's own `/v1/models`
+list. That path cannot report a `platform`, so those channels are set to OpenAI Compatible and both the
+channel notes and the import summary say the fallback was used.
+
 Compatibility: verified against new-api **v1.0.0-rc.4**. The `db` mode reads only the long-stable
 core columns `id / type / name / base_url / models / status / key` and degrades gracefully, so it
 works across new-api versions that keep those columns. Channel `type` maps to a protocol

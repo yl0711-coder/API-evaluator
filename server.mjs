@@ -147,6 +147,8 @@ import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, fetchNewapiSmtp, importSourceMode } from "./server/newapi-source.mjs";
 import { fetchPricing, fetchSelfGroup, fetchTestTokens, fetchTokenKeys } from "./server/newapi-token-import.mjs";
 import { buildTokenImportPlan } from "./server/newapi-token-plan.mjs";
+import { fetchModelPlaza, fetchModelsPerKey, fetchTestKeys, login as sub2apiLogin } from "./server/sub2api-import.mjs";
+import { buildGroupIndex, buildSub2apiImportPlan } from "./server/sub2api-plan.mjs";
 import { readConfig as readNewapiConfig, loadNewapiToken, saveNewapiToken } from "./server/newapi-tag-writer.mjs";
 import { getSettings, loadSettings, saveSettings, peekLegacyNewapiToken, stripLegacyNewapiToken } from "./server/settings-store.mjs";
 import { getNotifyConfig, loadNotifyConfig, saveNotifyConfig } from "./server/notify-config.mjs";
@@ -549,6 +551,7 @@ const API_ROUTES = [
   ["POST", "/api/channels", handleChannelUpsert],
   ["POST", "/api/channels/import", handleChannelsImport],
   ["POST", "/api/channels/import-test-tokens", handleChannelsImportTestTokens],
+  ["POST", "/api/channels/import-sub2api-tokens", handleChannelsImportSub2api],
   ["POST", "/api/channels/:id/sync-models", handleChannelSyncModels],
   ["DELETE", "/api/channels/:id", handleChannelDelete],
 
@@ -1429,6 +1432,77 @@ async function handleChannelsImportTestTokens(req, res) {
   }
   const [existingChannels, existingTargets] = await Promise.all([loadChannels(), loadModelTargets()]);
   const plan = buildTokenImportPlan({ tokens, keys, pricing, userGroup, base, existingChannels, existingTargets });
+  // 明文 key 立刻存进加密库、从渠道对象剥离（不进库、不下发浏览器）。
+  const indexById = new Map(plan.channels.map((item, i) => [item.id, i]));
+  for (const [channelId, key] of Object.entries(plan.keys)) {
+    const i = indexById.get(channelId);
+    if (i !== undefined) plan.channels[i] = await attachChannelKey(plan.channels[i], key);
+  }
+  await saveChannels(plan.channels);
+  await saveModelTargets(plan.targets);
+  // 只回汇总计数：不回 keys、不回渠道明细（渠道列表由前端另行 GET，走 maskChannel）。
+  sendJson(res, 200, { ok: true, summary: plan.summary });
+  return;
+}
+
+// 「从 sub2api 上游渠道导入测试分组」：用调用者的邮箱+密码代为登录取 JWT，读其名下名称含「测试」
+// 的 API 密钥，每个密钥建一个渠道（baseUrl 指回 sub2api、key=密钥明文，走其 /v1 中继），
+// 再按密钥绑定的分组查出该分组的模型建成模型目标。source="sub2api"，与另两条导入链路互不覆盖。
+//
+// 凭据处理：网址/邮箱/密码/TOTP 只在本次请求的内存里流转 —— 不写 settings.json、不进日志、
+// 不回响应体。JWT 也只在本次请求内使用后丢弃（sub2api 的会话绑定 IP+UA，服务端登录服务端用）。
+async function handleChannelsImportSub2api(req, res) {
+  const body = await readJson(req);
+  const base = String(body?.baseUrl || "").trim();
+  const email = String(body?.email || "").trim();
+  const password = String(body?.password || "");
+  const totpCode = String(body?.totpCode || "").trim();
+  if (!base || !email || !password) {
+    sendJson(res, 400, {
+      error: "missing_fields",
+      userMessage: "请填写 sub2api 网址、邮箱和密码（两步验证码仅在账号开启 TOTP 时需要）。",
+    });
+    return;
+  }
+  let token;
+  try {
+    token = await sub2apiLogin({ base, email, password, totpCode });
+  } catch (error) {
+    // 这里绝不回显 password/totpCode；login() 的错误信息本身也不含它们。
+    sendJson(res, 400, { error: "sub2api_login_error", userMessage: error.message });
+    return;
+  }
+  const ctx = { base, token };
+  let keyRows;
+  let plaza;
+  try {
+    // 密钥列表与模型广场无相互依赖，可并发。
+    [keyRows, plaza] = await Promise.all([fetchTestKeys(ctx), fetchModelPlaza(ctx)]);
+  } catch (error) {
+    sendJson(res, 400, { error: "sub2api_error", userMessage: error.message });
+    return;
+  }
+  if (!keyRows.length) {
+    sendJson(res, 200, {
+      ok: true,
+      summary: { total: 0, imported: 0, updated: 0, newTargets: 0, disabled: 0, noGroup: 0, noModels: 0, viaFallback: 0 },
+    });
+    return;
+  }
+  const groupIndex = buildGroupIndex(plaza);
+  // 模型广场未启用（404 -> plaza 为 null）或分组索引为空时，按密钥回落 /v1/models。
+  // 该路径拿不到分组 platform，协议只能落 OpenAI 兼容——对 /v1 中继而言恰好是对的。
+  let keyModels = {};
+  if (!groupIndex.size) {
+    try {
+      keyModels = await fetchModelsPerKey({ base }, keyRows);
+    } catch (error) {
+      sendJson(res, 400, { error: "sub2api_models_error", userMessage: `取模型清单失败：${error.message}` });
+      return;
+    }
+  }
+  const [existingChannels, existingTargets] = await Promise.all([loadChannels(), loadModelTargets()]);
+  const plan = buildSub2apiImportPlan({ keys: keyRows, groupIndex, keyModels, base, existingChannels, existingTargets });
   // 明文 key 立刻存进加密库、从渠道对象剥离（不进库、不下发浏览器）。
   const indexById = new Map(plan.channels.map((item, i) => [item.id, i]));
   for (const [channelId, key] of Object.entries(plan.keys)) {

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **「从 sub2api 上游渠道导入测试分组」**（渠道管理页第二个导入按钮 + `POST /api/channels/import-sub2api-tokens`）——
+  填 sub2api 网址 + 邮箱 + 密码（+ 账号开了 TOTP 时的 6 位码），后端代为登录取 JWT，读出该账号下
+  **名称含「测试」的启用密钥**，每个密钥建一个渠道（明文 Key 自动填入），再按密钥绑定的分组把该分组下的
+  模型建成模型目标。新增 `server/sub2api-import.mjs`（出站 I/O）+ `server/sub2api-plan.mjs`（纯映射）。
+  - **协议不靠猜**：sub2api 的分组自带 `platform` 字段（上游声明），`anthropic` → Claude Messages、
+    其余 → OpenAI Compatible。对比 new-api 那条链路只能按模型名投票（实测 120 个渠道 60 个混合），
+    这里没有混合问题。
+  - **为什么填邮箱+密码而不是填 token**：sub2api 签发 JWT 时绑定客户端 IP + User-Agent，任一变化即撤销
+    会话返回 401（其 `jwt_auth.go`）。用户把浏览器里的 token 复制到服务端用几乎必然失败，故必须
+    服务端自己登录、自己使用。这是技术必需，不只是易用性。
+  - **模型广场未启用（404）时按密钥回落 `/v1/models`**（用明文密钥而非 JWT 认证、路径无 `/api/v1` 前缀），
+    该路径拿不到 `platform`，协议如实落 OpenAI 兼容并在 `notes` 与导入汇总里写明走了回落。
+  - 与既有两条导入链路互不覆盖，`source` 为 `sub2api`；渠道 id 掺 base 哈希（密钥 id 只在单实例内唯一）。
+  - 明文密码/JWT/密钥只在内存流转：Key 存进加密库后从渠道剥离，响应只回汇总计数；密码不进日志、
+    不落 `settings.json`、错误信息也不带出（有专门测试钉住）。
+  - 沿用 new-api 那轮的两条教训：渠道 id 的 keyId 段收窄为纯数字（防上游恶意 id 打破
+    `data-edit-channel="…"` 造成 XSS）；三个溯源字段同步加进 `normalizeChannel` 白名单
+    （否则用户编辑渠道后被静默抹掉）。
+  - 出站三件套对齐；这是**第五个**出站点，`接口清单.md` 计数已更正。
+  - **回落路径有条数上限（150）**：该路径串行 + 每次 200ms 间隔，耗时随密钥数线性增长
+    （实测 120 个约 25 秒）；不设上限时按分页上限 20000 个会跑一个多小时、请求一直挂着而前端
+    只显示「导入中…」。超限直接报错并指路「让管理员启用模型广场」（那条路一次请求拿完全部映射），
+    宁可明确失败也不要不确定的长挂起。
+  - 导入汇总**不报「禁用 N 个」**：本链路在上游就按 `status=active` 过滤，该计数恒为 0，
+    显示「禁用 0 个」是噪音且会让人误以为筛过禁用密钥。`summary.disabled` 仍保留，
+    万一上游过滤语义变化导致非 0，会作为一条「请核对」提示浮出来。
+
+### Added（上一批：new-api 令牌导入）
 - **「从 new-api 上游渠道导入测试分组」**（渠道管理页新按钮 + `POST /api/channels/import-test-tokens`）——
   填 new-api 网址 + **调用者自己的**个人令牌 + 用户ID，读出其名下所有**名称含「测试」**的令牌，
   每个令牌建一个渠道（Key 自动取明文填入），再按令牌所属分组把该分组下的模型建成模型目标，导完可直接跑测试。
