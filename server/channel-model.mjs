@@ -77,6 +77,10 @@ export function normalizeChannel(body, existing = null) {
     sub2apiKeyId: body.sub2apiKeyId ?? existing?.sub2apiKeyId ?? null,
     sub2apiGroupId: body.sub2apiGroupId ?? existing?.sub2apiGroupId ?? null,
     sub2apiGroupName: body.sub2apiGroupName ?? existing?.sub2apiGroupName ?? null,
+    // 上次导入时上游给的 name/protocol/models 快照。重新导入靠它三方比对出「哪些字段是用户改的」
+    // 从而不覆盖（见 server/import-merge.mjs）。**必须留在白名单里**：漏掉的话用户在 UI 里编辑过一次，
+    // 快照就没了，下次导入退化成全量覆盖，用户的手工修正被静默推翻——正是这个字段要解决的问题。
+    importSnapshot: body.importSnapshot ?? existing?.importSnapshot ?? null,
     notes: String(body.notes ?? existing?.notes ?? "").trim(),
     createdAt: existing?.createdAt || now,
     updatedAt: now,

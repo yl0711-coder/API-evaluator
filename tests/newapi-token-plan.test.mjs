@@ -203,7 +203,13 @@ test("编排：重复导入幂等——渠道 upsert 不重复建，模型目标
   assert.equal(second.channels[0].createdAt, first.channels[0].createdAt, "创建时间要保留");
 });
 
-test("编排：命中已存在渠道时保留其 id，模型目标不会成孤儿", () => {
+// 注意：本用例原先断言「无论如何都采纳上游的新名字」。三方合并上线后语义**刻意**改了——
+// 没有 importSnapshot 的渠道（本功能之前导入的）无从判断用户是否改过名，保守保留本地值。
+// 理由：若采纳上游，则修复上线后的第一次重新导入仍会静默抹掉用户已有的修改，
+// 而"已经按 notes 改过协议的人"正是这个修复要保护的那批人。上游改名同步不过来是可恢复的
+// （用户自行改一次即对齐），静默抹掉用户修改是不可逆的。
+// 本用例原本的保护意图（id 沿用、createdAt 沿用、模型目标不成孤儿）全部保留。
+test("编排：命中已存在渠道时保留其 id 与创建时间，模型目标不会成孤儿", () => {
   const localId = newapiTokenChannelLocalId("https://relay.test", 1);
   const existing = [{ id: localId, name: "旧名", baseUrl: "https://relay.test", createdAt: "2020-01-01T00:00:00.000Z" }];
   const plan = buildTokenImportPlan({
@@ -217,9 +223,35 @@ test("编排：命中已存在渠道时保留其 id，模型目标不会成孤�
   });
   assert.equal(plan.channels.length, 1);
   assert.equal(plan.channels[0].id, localId);
-  assert.equal(plan.channels[0].name, "测试-新名", "元信息要更新");
   assert.equal(plan.channels[0].createdAt, "2020-01-01T00:00:00.000Z");
+  assert.equal(plan.channels[0].name, "旧名", "无快照的老渠道：保守保留本地名，不采纳上游（见上方说明）");
+  assert.ok(plan.channels[0].importSnapshot, "同时补写快照，下一次导入起三方比对生效");
+  assert.equal(plan.channels[0].newapiTokenGroup, "default", "分组元信息仍要更新");
   for (const t of plan.targets) assert.equal(t.channelId, localId);
+});
+
+// 有快照的渠道（正常路径）：上游改名必须能同步过来，合并不能变成"永不更新"。
+test("编排：有快照且用户没改过时，上游改名照常同步", () => {
+  const args = {
+    keys: {},
+    pricing: PRICING,
+    userGroup: "default",
+    base: "https://relay.test",
+    existingTargets: [],
+  };
+  const first = buildTokenImportPlan({
+    ...args,
+    tokens: [{ id: 1, name: "测试-原名", group: "default", status: 1 }],
+    existingChannels: [],
+  });
+  const second = buildTokenImportPlan({
+    ...args,
+    tokens: [{ id: 1, name: "测试-上游改名", group: "default", status: 1 }],
+    existingChannels: first.channels,
+    existingTargets: first.targets,
+  });
+  assert.equal(second.channels[0].name, "测试-上游改名", "元信息要更新");
+  assert.equal(second.summary.preserved, 0);
 });
 
 test("编排：无分组 / 分组下无模型 / 协议混合都要计数上报", () => {
@@ -263,4 +295,80 @@ test("编排：无令牌时返回空计划而非崩", () => {
   assert.deepEqual(plan.targets, []);
   assert.deepEqual(plan.keys, {});
   assert.equal(plan.summary.total, 0);
+});
+
+// —— P2-1 回归：重新导入不得推翻用户的手工修改（三方合并，见 server/import-merge.mjs）——
+// buildProtocolNote 明写着「若测试报 404 请把协议改为 OpenAI Compatible」——用户照做之后
+// 再次导入，原实现（{...prev, ...mapped} 全量覆盖）会把它静默改回，改的名字和手加的模型一并消失。
+const TOKEN_ARGS = { keys: {}, pricing: PRICING, userGroup: "default", base: "https://relay.test", existingTargets: [] };
+
+test("重新导入：用户按 notes 指引改的协议不被推翻，且 summary 上报 preserved", () => {
+  // 需要 guessProtocol 真判成 claude_messages（claude 票数 > 其他），那正是 notes 提示要改的情形。
+  // 注意不能用公共 PRICING 的 vip 组：它含 enable_groups:["all"] 的 shared，claude 1 : 其他 1
+  // 不构成多数，会落 openai_compatible。故这里用一份纯 claude 的局部 pricing。
+  const claudeOnly = [
+    { model_name: "claude-opus", enable_groups: ["vip"] },
+    { model_name: "claude-sonnet", enable_groups: ["vip"] },
+  ];
+  const args = { ...TOKEN_ARGS, pricing: claudeOnly };
+  const tokens = [{ id: 1, name: "测试-VIP", group: "vip", status: 1 }];
+  const first = buildTokenImportPlan({ ...args, tokens, existingChannels: [] });
+  assert.equal(first.channels[0].protocol, "claude_messages");
+  assert.ok(first.channels[0].importSnapshot, "首次导入就要落快照，否则下次无从比对");
+
+  const edited = { ...first.channels[0], protocol: "openai_compatible" };
+  const second = buildTokenImportPlan({ ...args, tokens, existingChannels: [edited] });
+  assert.equal(second.channels[0].protocol, "openai_compatible", "用户的协议修正必须活过重新导入");
+  assert.equal(second.summary.preserved, 1);
+  assert.match(second.channels[0].notes, /已保留你的手工设置/, "notes 不能还声称协议是按模型名推断的");
+});
+
+test("重新导入：用户手加的模型不被抹掉，上游新增的仍能进来；模型目标同步", () => {
+  const tokens = [{ id: 1, name: "测试-默认", group: "default", status: 1 }];
+  const first = buildTokenImportPlan({ ...TOKEN_ARGS, tokens, existingChannels: [] });
+  // 上游给 default 组：gpt-4o + shared(all)
+  assert.deepEqual(first.channels[0].models, ["gpt-4o", "shared"]);
+
+  const edited = { ...first.channels[0], models: ["gpt-4o", "我加的模型"] }; // 删了 shared、加了自己的
+  const second = buildTokenImportPlan({ ...TOKEN_ARGS, tokens, existingChannels: [edited], existingTargets: [] });
+  const ch = second.channels[0];
+  assert.ok(ch.models.includes("我加的模型"), "用户手加的模型不能被抹掉");
+  assert.ok(!ch.models.includes("shared"), "用户删掉的模型不该被加回来");
+  assert.deepEqual(second.targets.map((t) => t.model).sort(), ["gpt-4o", "我加的模型"], "模型目标按合并后的清单建");
+});
+
+test("重新导入：反复导入 3 次，用户的修改始终稳定（不是第 N 次才被吃掉）", () => {
+  const tokens = [{ id: 1, name: "测试-VIP", group: "vip", status: 1 }];
+  let channels = buildTokenImportPlan({ ...TOKEN_ARGS, tokens, existingChannels: [] }).channels;
+  channels = [{ ...channels[0], name: "我的渠道", protocol: "openai_compatible" }];
+  for (let i = 0; i < 3; i += 1) {
+    const plan = buildTokenImportPlan({ ...TOKEN_ARGS, tokens, existingChannels: channels });
+    channels = plan.channels;
+    assert.equal(channels[0].name, "我的渠道", `第 ${i + 1} 次导入后名字仍是用户的`);
+    assert.equal(channels[0].protocol, "openai_compatible", `第 ${i + 1} 次导入后协议仍是用户的`);
+    assert.equal(plan.summary.preserved, 1);
+  }
+});
+
+// 本轮自查发现：noModels 原按【上游口径】计，于是"上游分组下没有模型、但用户本地手加过模型"时
+// 会误报「N 个令牌的分组下没有模型」，而渠道其实有模型可测。改到合并之后再计。
+test("noModels 按合并后的最终清单计，不因上游给空而误报", () => {
+  const tokens = [{ id: 1, name: "测试-默认", group: "default", status: 1 }];
+  const seeded = buildTokenImportPlan({ ...TOKEN_ARGS, tokens, existingChannels: [] });
+  const userHas = { ...seeded.channels[0], models: ["我加的模型"] };
+  // 这次 pricing 里 default 组一个模型都没有
+  const plan = buildTokenImportPlan({ ...TOKEN_ARGS, pricing: [], tokens, existingChannels: [userHas] });
+  assert.deepEqual(plan.channels[0].models, ["我加的模型"], "用户手加的模型要保住");
+  assert.equal(plan.summary.noModels, 0, "渠道最终有模型可测，不该报「分组下没有模型」");
+});
+
+test("noModels：渠道最终确实没有模型时照常上报", () => {
+  const plan = buildTokenImportPlan({
+    ...TOKEN_ARGS,
+    pricing: [],
+    tokens: [{ id: 9, name: "测试-空", group: "default", status: 1 }],
+    existingChannels: [],
+  });
+  assert.deepEqual(plan.channels[0].models, []);
+  assert.equal(plan.summary.noModels, 1, "真的没有模型就要报出来");
 });

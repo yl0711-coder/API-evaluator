@@ -160,3 +160,72 @@ test("buildImportPlan：标签已下线——导入不带入 new-api 标签、�
   assert.equal(claude.tags, undefined, "新导入模型目标不含 new-api 标签");
   assert.equal("taggedTargets" in plan.summary, false, "汇总不再含 taggedTargets");
 });
+
+// —— 本轮自查发现：这条链路（读 new-api channels 表、直连上游厂商）原本也是
+// {...prev, ...mapped} 全量覆盖，与另两条导入链路同一个 bug。它由 POST /api/channels/import
+// 和 POST /api/channels/:id/sync-models 两个端点使用，是三条链路里最老、用得最多的一条。
+// 实测过的症状：用户改的渠道名、协议、手加的模型、填的 provider、写的备注，每次重新导入全被冲掉。
+const ROW = {
+  id: 11,
+  name: "上游渠道A",
+  base_url: "https://api.upstream.test",
+  key: "sk-up-1",
+  models: "gpt-4o,gpt-4o-mini",
+  status: 1,
+  type: 1,
+};
+
+test("重新导入：用户改过的名称/协议/模型/供应商/备注都不被推翻，summary 报 preserved", () => {
+  const first = buildImportPlan({ rows: [ROW], existingChannels: [], existingTargets: [], syncModels: true });
+  const ch = first.channels[0];
+  assert.ok(ch.importSnapshot, "首次导入就要落快照，否则第二次会被当成老渠道走保守保留");
+
+  const edited = {
+    ...ch,
+    name: "我改的名字",
+    protocol: "claude_messages",
+    models: [...ch.models, "我加的模型"],
+    provider: "我填的供应商",
+    notes: "我的备注：夜间才测",
+  };
+  const second = buildImportPlan({ rows: [ROW], existingChannels: [edited], existingTargets: [], syncModels: true });
+  const s = second.channels[0];
+  assert.equal(s.name, "我改的名字");
+  assert.equal(s.protocol, "claude_messages");
+  assert.ok(s.models.includes("我加的模型"), "手加的模型不能被抹掉");
+  assert.equal(s.provider, "我填的供应商");
+  assert.equal(s.notes, "我的备注：夜间才测");
+  assert.equal(second.summary.preserved, 1, "要如实上报保留了几个渠道的手工修改");
+});
+
+test("重新导入：用户没改过时仍完全跟随上游（合并不能变成永不更新）", () => {
+  const first = buildImportPlan({ rows: [ROW], existingChannels: [], existingTargets: [], syncModels: true });
+  const renamed = { ...ROW, name: "上游改名了", models: "gpt-4o,gpt-4o-mini,gpt-5" };
+  const second = buildImportPlan({ rows: [renamed], existingChannels: first.channels, existingTargets: first.targets, syncModels: true });
+  const s = second.channels[0];
+  assert.equal(s.name, "上游改名了", "上游改名要能同步");
+  assert.ok(s.models.includes("gpt-5"), "上游新增的模型要能进来");
+  assert.equal(second.summary.preserved, 0, "没有用户修改就不该报 preserved");
+});
+
+test("重新导入：模型目标按合并后的清单建，不把用户删掉的模型加回来", () => {
+  const first = buildImportPlan({ rows: [ROW], existingChannels: [], existingTargets: [], syncModels: true });
+  assert.equal(first.targets.length, 2);
+  const edited = { ...first.channels[0], models: ["gpt-4o"] }; // 用户删掉 gpt-4o-mini
+  const second = buildImportPlan({ rows: [ROW], existingChannels: [edited], existingTargets: [], syncModels: true });
+  assert.deepEqual(
+    second.targets.map((t) => t.model),
+    ["gpt-4o"],
+    "被用户删掉的模型不该重新长出模型目标",
+  );
+});
+
+// syncModels=false 是 sync-models 端点之外的调用形态（只同步渠道、不动模型目标）。
+// 此时仍要保护用户改过的模型清单，只是不建新目标。
+test("syncModels=false 时仍保护用户改过的模型清单，且不建模型目标", () => {
+  const first = buildImportPlan({ rows: [ROW], existingChannels: [], existingTargets: [], syncModels: true });
+  const edited = { ...first.channels[0], models: ["gpt-4o", "我加的模型"] };
+  const second = buildImportPlan({ rows: [ROW], existingChannels: [edited], existingTargets: [], syncModels: false });
+  assert.ok(second.channels[0].models.includes("我加的模型"), "模型清单仍要走三方合并");
+  assert.equal(second.summary.newTargets, 0, "syncModels=false 不建模型目标");
+});

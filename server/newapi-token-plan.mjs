@@ -10,6 +10,7 @@
 import crypto from "node:crypto";
 import { TEST_TOKEN_KEYWORD, isTestTokenName } from "../shared/newapi-token-keyword.mjs";
 import { deterministicModelTargetId } from "./channel-model.mjs";
+import { finalizeImportedNotes, importSnapshotOf, mergeImportedChannel } from "./import-merge.mjs";
 
 // 筛选口径：固定「名称包含『测试』」，定义在 shared/ 供前端复用（见该文件的说明）。
 export { TEST_TOKEN_KEYWORD };
@@ -122,6 +123,8 @@ export function buildTokenImportPlan({
   let noGroup = 0;
   let noModels = 0;
   let mixedProtocol = 0;
+  // 重新导入时保留了用户手工修改的渠道数（见 import-merge.mjs）。
+  let preserved = 0;
 
   for (const token of tokens) {
     const localId = newapiTokenChannelLocalId(baseUrl, token.id);
@@ -131,8 +134,9 @@ export function buildTokenImportPlan({
     const status = mapTokenStatus(token.status);
     if (status === "disabled") disabled += 1;
     if (!group) noGroup += 1;
-    if (!models.length) noModels += 1;
     if (guess.mixed) mixedProtocol += 1;
+    // noModels 移到合并之后再计：它驱动前端「N 个令牌的分组下没有模型」这句提示，
+    // 说的应是【这个渠道最终有没有模型可测】。按上游口径算会在"上游给 0 个、但用户手加过模型"时误报。
 
     const mapped = {
       id: localId,
@@ -150,23 +154,40 @@ export function buildTokenImportPlan({
 
     const idx = indexById.get(localId);
     let channelId;
+    // 建模型目标要用【合并后】的模型清单：三方合并可能保留了用户手加的模型、剔除了他删掉的，
+    // 用 mapped.models（上游原样）会把用户删掉的模型目标又加回来。
+    let finalModels = models;
     if (idx === undefined) {
-      channels.push({ ...mapped, createdAt: now, updatedAt: now });
+      // 首次导入也要落快照：漏了的话第二次导入会把它当成"老渠道"走保守保留，
+      // 上游改名/换协议永远同步不过来（见 import-merge.mjs 的 importSnapshotOf）。
+      channels.push({ ...mapped, importSnapshot: importSnapshotOf(mapped), createdAt: now, updatedAt: now });
       indexById.set(localId, channels.length - 1);
       channelId = localId;
       imported += 1;
     } else {
-      // 保留已存在渠道的 id 与创建时间；凭证字段（apiKeyRef/keyHash/hasKey）由端点重新附上。
+      // 三方合并：用户手工改过的 name/protocol/models 要保住，没动过的仍跟随上游（见 import-merge.mjs）。
+      // 直接 {...prev, ...mapped} 会把产品自己在 notes 里建议的协议修正静默推翻——本文件
+      // buildProtocolNote 就明写着「若测试报 404 请把协议改为 OpenAI Compatible」。
       const prev = channels[idx];
-      channels[idx] = { ...prev, ...mapped, id: prev.id, createdAt: prev.createdAt || now, updatedAt: now };
-      channelId = prev.id;
+      const { channel: mergedChannel, preservedFields } = mergeImportedChannel(prev, mapped);
+      // notes：用户写了自己的备注就完全不碰；没写才重新生成（协议被保留时会追加说明），
+      // 并同步快照——否则追加的那段文字下次会被误判成"用户改过 notes"。详见 finalizeImportedNotes。
+      finalizeImportedNotes(mergedChannel, preservedFields, { upstreamNotes: mapped.notes, upstreamProtocol: mapped.protocol });
+      mergedChannel.updatedAt = now;
+      channels[idx] = mergedChannel;
+      channelId = mergedChannel.id;
+      finalModels = mergedChannel.models;
       updated += 1;
+      if (preservedFields.length) preserved += 1;
     }
+
+    // 按合并后的最终清单计（见上方 noModels 的说明）。
+    if (!finalModels.length) noModels += 1;
 
     const plain = keyById?.[String(token.id)] ?? keyById?.[token.id];
     if (plain) keys[channelId] = String(plain);
 
-    for (const model of models) {
+    for (const model of finalModels) {
       const key = `${channelId}|${model}`;
       if (targetKeys.has(key)) continue;
       targets.push({
@@ -193,6 +214,6 @@ export function buildTokenImportPlan({
     channels,
     targets,
     keys,
-    summary: { total: tokens.length, imported, updated, newTargets, disabled, noGroup, noModels, mixedProtocol },
+    summary: { total: tokens.length, imported, updated, newTargets, disabled, noGroup, noModels, mixedProtocol, preserved },
   };
 }

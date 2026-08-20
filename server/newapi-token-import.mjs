@@ -18,6 +18,15 @@ import { isTestToken } from "./newapi-token-plan.mjs";
 
 const PAGE_SIZE = 100; // new-api 服务端硬上限 100（common/page_info.go），传更大会被静默截断
 const PAGE_CAP = 50; // 最多 5000 个令牌；超出只取前 5000 并告警，避免无界翻页
+// 【为什么这里没有响应体大小上限】——刻意的取舍，不是漏了（与 sub2api-import.mjs 同理）。
+// PAGE_CAP 只限页数、不限单页体积：上游若单页返回几十 MB 就会照吃，解析后建出等量渠道。
+// 对照 upstream-transport.mjs 的 MAX_UPSTREAM_STREAM_RESPONSE_BYTES —— 那里必须设限，
+// 因为被测上游是【任意用户填进来的第三方 API】，行为不可信也不可控。
+// 而本链路读的是**测试人员自己名下的令牌**（用他自己的个人令牌调 new-api 管理接口，
+// 只能看到自己的东西），这些令牌就是他自己在 new-api 上建的；要触发这个路径，
+// 等于他先给自己建出上万个名字含「测试」的令牌，再对自己发起导入——收益端与攻击端是同一个人。
+// 故风险很低，不值得为它把 fetch().json() 改写成手写 chunk 累加 + 提前中止。
+// 若哪天本链路要面向"不完全信任的上游"开放（公共服务化、或允许非超管发起导入），必须回来补上限。
 const BATCH_KEY_LIMIT = 100; // POST /api/token/batch/keys 的 ids 上限
 const BATCH_GAP_MS = 250; // 批次间隔：该端点挂了 CriticalRateLimit，别在循环里高频打
 
@@ -31,9 +40,27 @@ export function normalizeBase(base) {
     .replace(/\/+$/, "");
 }
 
+// 凭据进请求头前先自检。不这么做的话，含 CR/LF 的令牌会让 undici 的 Headers.append 抛 TypeError，
+// 而它的 message 里【带着令牌原文】——该 message 一路经端点的 catch 变成 userMessage 回到浏览器，
+// 凭据就这样被回显了（实测复现过）。这里主动挡掉并给出不含凭据的错误信息。
+// 顺带也是正确的输入校验：new-api 的令牌本身不含控制字符，带了就是用户粘贴时把换行也复制进来了。
+function assertHeaderSafe(value, label) {
+  if (/[\r\n\0]/.test(value)) {
+    throw new Error(`${label}含换行或控制字符（可能是复制粘贴时多带了内容），请重新复制后再试。`);
+  }
+  // eslint-disable-next-line no-control-regex -- 刻意匹配控制字符
+  if (/[\x00-\x1f\x7f]/.test(value)) {
+    throw new Error(`${label}含不可见的控制字符，请重新复制后再试。`);
+  }
+}
+
 function authHeaders({ token, userId }) {
+  const t = String(token || "");
+  const u = String(userId || "");
+  assertHeaderSafe(t, "个人令牌");
+  assertHeaderSafe(u, "用户ID");
   // Authorization 不加 Bearer 前缀（new-api 的管理接口要令牌原文）。
-  return { Authorization: String(token || ""), "New-Api-User": String(userId || "") };
+  return { Authorization: t, "New-Api-User": u };
 }
 
 // 单次请求：守卫已在调用方对 base 校验过一次（host 跨请求不变），这里只管超时 + 不跟随跳转 + 判 success。

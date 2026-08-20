@@ -112,7 +112,7 @@ import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
 import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
-import { appendJsonLine, compactDate, hasProxyEnv, requiredString, sendJson } from "./server/utils.mjs";
+import { appendJsonLine, compactDate, hasProxyEnv, redactSensitiveText, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
 import {
   authenticate,
@@ -1379,6 +1379,16 @@ async function handleChannelsImport(req, res) {
 // 再按令牌的分组查出该分组下的模型建成模型目标。与 handleChannelsImport（读 channels 表、直连上游厂商）
 // 是两条独立链路，source 分别为 newapi-token / newapi，互不覆盖。
 //
+// 导入类错误信息的统一出口：任何要回给浏览器的上游错误 message 都过一遍脱敏。
+//
+// 为什么需要：上游错误 message 可能带出凭据——含 CR/LF 的令牌会让 undici 的 Headers.append
+// 抛 TypeError，其 message 内嵌令牌原文，直接当 userMessage 回给浏览器就是凭据回显（实测复现过）。
+// 两条导入链路已在源头挡掉该输入（assertHeaderSafe），这里是第二道防线，覆盖任何未来新增、
+// 一时没想到的上游错误路径。redactSensitiveText 认得 sk-*/Bearer */token=* 等常见形态。
+function importErrorMessage(error) {
+  return redactSensitiveText(String(error?.message || "导入失败。"));
+}
+
 // 凭据处理：URL/令牌/用户ID 只在本次请求的内存里流转 —— 不写 settings.json、不进日志、不回响应体。
 // 这是一次性导入用的个人凭据，与设置页那个长期保存的管理员令牌是两回事，故不保存。
 async function handleChannelsImportTestTokens(req, res) {
@@ -1413,7 +1423,7 @@ async function handleChannelsImportTestTokens(req, res) {
     // 分组回落来源与分组->模型映射：两者与令牌列表无依赖，可并发。
     [userGroup, pricing] = await Promise.all([fetchSelfGroup(creds), fetchPricing(creds)]);
   } catch (error) {
-    sendJson(res, 400, { error: "newapi_error", userMessage: error.message });
+    sendJson(res, 400, { error: "newapi_error", userMessage: importErrorMessage(error) });
     return;
   }
   let keys;
@@ -1426,7 +1436,7 @@ async function handleChannelsImportTestTokens(req, res) {
     // 取明文 key 的端点挂了 CriticalRateLimit，令牌多时可能被限流。
     sendJson(res, 400, {
       error: "newapi_key_error",
-      userMessage: `取令牌明文失败：${error.message} 该接口有频率限制，稍后重试或减少「测试」令牌数量。`,
+      userMessage: `取令牌明文失败：${importErrorMessage(error)} 该接口有频率限制，稍后重试或减少「测试」令牌数量。`,
     });
     return;
   }
@@ -1469,7 +1479,7 @@ async function handleChannelsImportSub2api(req, res) {
     token = await sub2apiLogin({ base, email, password, totpCode });
   } catch (error) {
     // 这里绝不回显 password/totpCode；login() 的错误信息本身也不含它们。
-    sendJson(res, 400, { error: "sub2api_login_error", userMessage: error.message });
+    sendJson(res, 400, { error: "sub2api_login_error", userMessage: importErrorMessage(error) });
     return;
   }
   const ctx = { base, token };
@@ -1479,7 +1489,7 @@ async function handleChannelsImportSub2api(req, res) {
     // 密钥列表与模型广场无相互依赖，可并发。
     [keyRows, plaza] = await Promise.all([fetchTestKeys(ctx), fetchModelPlaza(ctx)]);
   } catch (error) {
-    sendJson(res, 400, { error: "sub2api_error", userMessage: error.message });
+    sendJson(res, 400, { error: "sub2api_error", userMessage: importErrorMessage(error) });
     return;
   }
   if (!keyRows.length) {
@@ -1497,7 +1507,7 @@ async function handleChannelsImportSub2api(req, res) {
     try {
       keyModels = await fetchModelsPerKey({ base }, keyRows);
     } catch (error) {
-      sendJson(res, 400, { error: "sub2api_models_error", userMessage: `取模型清单失败：${error.message}` });
+      sendJson(res, 400, { error: "sub2api_models_error", userMessage: `取模型清单失败：${importErrorMessage(error)}` });
       return;
     }
   }

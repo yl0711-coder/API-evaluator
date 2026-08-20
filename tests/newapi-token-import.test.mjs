@@ -32,6 +32,59 @@ const jsonRes = (res, body) => {
   res.end(JSON.stringify(body));
 };
 
+// —— P2-3 回归：凭据绝不能出现在错误信息里 ——
+// 原先含 CR/LF 的令牌会让 undici 的 Headers.append 抛 TypeError，而它的 message 内嵌【令牌原文】；
+// 该 message 经端点 catch 变成 userMessage 回到浏览器 —— 实测复现过凭据回显。
+// 现在 authHeaders 里主动自检挡掉，错误信息只说原因、不带凭据。
+const LEAK_SECRET = "sk-SUPERSECRET-TOKEN-9999";
+const CR = String.fromCharCode(13);
+const LF = String.fromCharCode(10);
+const NUL = String.fromCharCode(0);
+const TAB = String.fromCharCode(9);
+
+test("凭据含 CR/LF/控制字符时明确报错，且错误信息绝不带出令牌原文", async () => {
+  const bads = [
+    `${LEAK_SECRET}${CR}${LF}X-Injected: 1`,
+    `${LEAK_SECRET}${LF}`,
+    `${LEAK_SECRET}${CR}`,
+    `${LEAK_SECRET}${NUL}`,
+    `${LEAK_SECRET}${TAB}`,
+  ];
+  for (const bad of bads) {
+    await assert.rejects(
+      () => fetchSelfGroup({ base: "https://x.test", token: bad, userId: "1" }),
+      (err) => {
+        assert.ok(!err.message.includes(LEAK_SECRET), `错误信息不能带出令牌原文，实际：${err.message}`);
+        assert.match(err.message, /控制字符|换行/, "要说明原因，便于用户自查");
+        return true;
+      },
+      `token 含控制字符时应被挡下：${JSON.stringify(bad)}`,
+    );
+  }
+});
+
+test("用户ID 含控制字符同样被挡下，且不回显其内容", async () => {
+  await assert.rejects(
+    () => fetchSelfGroup({ base: "https://x.test", token: "ok-token", userId: `1${CR}${LF}X-Evil: y` }),
+    (err) => {
+      assert.match(err.message, /用户ID/, "要指明是哪一项有问题");
+      assert.ok(!err.message.includes("X-Evil"), "不能回显注入内容");
+      return true;
+    },
+  );
+});
+
+// 反向用例：守卫别写得过严，把正常凭据也拦了（那会让功能整体不可用）。
+test("正常凭据不被凭据自检拦下", async () => {
+  await assert.rejects(
+    () => fetchSelfGroup({ base: "http://169.254.169.254", token: "sk-normal-token-abc123", userId: "42" }),
+    (err) => {
+      assert.ok(!/控制字符|换行/.test(err.message), `正常令牌不该被自检拦下，实际：${err.message}`);
+      return true;
+    },
+  );
+});
+
 test(
   "fetchTestTokens：带双认证头、分页从 p=1 起、只留名称含「测试」的",
   withGuardOff(async () => {

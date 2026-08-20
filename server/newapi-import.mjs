@@ -3,6 +3,7 @@
 // 在 newapi-source.mjs 里取行，本文件只负责：new-api 渠道行 -> 我们的渠道/模型目标。
 // 明文 key 不进渠道记录：buildImportPlan 单独把 key 收进 keys 映射，由端点存进加密库后丢弃。
 import { deterministicModelTargetId, normalizeModelList } from "./channel-model.mjs";
+import { finalizeImportedNotes, importSnapshotOf, mergeImportedChannel } from "./import-merge.mjs";
 
 // new-api 渠道 type（见其 constant/channel.go）。14=Anthropic 走 Claude Messages，其余按 OpenAI 兼容。
 const TYPE_PROVIDER = {
@@ -86,6 +87,8 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
   let updated = 0;
   let newTargets = 0;
   let disabled = 0;
+  // 重新导入时保留了用户手工修改的渠道数（见 import-merge.mjs）。
+  let preserved = 0;
 
   for (const row of rows) {
     const mapped = mapNewapiChannel(row);
@@ -94,25 +97,36 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
     // 命中已存在渠道：优先按 newapiChannelId（含已推送的本地渠道），其次按派生 id（已导入过的）。
     const idx = indexByNewapiId.has(Number(row.id)) ? indexByNewapiId.get(Number(row.id)) : indexById.get(mapped.id);
     let channelId; // 实际使用的本地渠道 id（命中时保留已存在渠道的 id，别改成 newapi-<id> 否则其下模型目标成孤儿）。
+    // 建模型目标要用【合并后】的模型清单，否则会把用户删掉的模型目标又加回来。
+    let finalModels = mapped.models;
     if (idx === undefined) {
-      channels.push({ ...mapped, createdAt: now, updatedAt: now });
+      channels.push({ ...mapped, importSnapshot: importSnapshotOf(mapped), createdAt: now, updatedAt: now });
       const i = channels.length - 1;
       indexById.set(mapped.id, i);
       indexByNewapiId.set(Number(row.id), i);
       channelId = mapped.id;
       imported += 1;
     } else {
-      // 同步元信息/状态/模型清单；保留已存在渠道的 id、凭证(apiKeyRef/keyHash/hasKey)与创建时间。
+      // 三方合并：用户手工改过的字段要保住，没动过的仍跟随上游（见 import-merge.mjs）。
+      // 这条链路原本也是 {...prev, ...mapped} 全量覆盖 —— 与另两条导入链路同一个 bug：
+      // 用户改的渠道名、协议、手加的模型、填的 provider、写的备注每次重新导入都被静默冲掉。
+      // 注意本链路的 syncModels=false 时（只同步渠道、不动模型），仍要保护用户改过的模型清单，
+      // 故模型合并照做、只是不建新目标。
       const prev = channels[idx];
-      channels[idx] = { ...prev, ...mapped, id: prev.id, createdAt: prev.createdAt || now, updatedAt: now };
-      channelId = prev.id;
+      const { channel: mergedChannel, preservedFields } = mergeImportedChannel(prev, mapped);
+      finalizeImportedNotes(mergedChannel, preservedFields, { upstreamNotes: mapped.notes, upstreamProtocol: mapped.protocol });
+      mergedChannel.updatedAt = now;
+      channels[idx] = mergedChannel;
+      channelId = mergedChannel.id;
+      finalModels = mergedChannel.models;
       updated += 1;
+      if (preservedFields.length) preserved += 1;
     }
 
     if (row.key) keys[channelId] = String(row.key); // A2(DB) 带 key；A1(API) 不带。用实际 channelId 存。
 
     if (syncModels) {
-      for (const model of mapped.models) {
+      for (const model of finalModels) {
         const key = `${channelId}|${model}`;
         if (!targetKeys.has(key)) {
           // 最大输出/超时/单价已下沉到模型目标层：导入的目标给出默认参数，单价留空由管理员在「模型管理」补。
@@ -138,5 +152,5 @@ export function buildImportPlan({ rows = [], existingChannels = [], existingTarg
     }
   }
 
-  return { channels, targets, keys, summary: { total: rows.length, imported, updated, newTargets, disabled } };
+  return { channels, targets, keys, summary: { total: rows.length, imported, updated, newTargets, disabled, preserved } };
 }

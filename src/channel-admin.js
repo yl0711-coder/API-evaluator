@@ -316,8 +316,11 @@ export function createChannelAdmin({ state, els, onChange }) {
       const r = await api("/api/channels/import", { method: "POST", body: "{}" });
       await Promise.all([loadChannels(), loadModelTargets()]);
       const keyNote = r.mode === "api" ? "（api 模式不含 Key，请逐个补 Key）" : "";
+      // 保留了手工修改要明说：否则用户不知道"更新 N 个"里有多少是没动他改过的字段，
+      // 也就无从判断自己上次的改动还在不在。
+      const keptNote = r.preserved ? ` 其中 ${r.preserved} 个渠道保留了你的手工修改（名称/协议/模型清单/供应商/备注未被覆盖）。` : "";
       toast(
-        `从 new-api 导入完成：新增 ${r.imported} / 更新 ${r.updated} 个渠道，${r.newTargets} 个模型，禁用 ${r.disabled} 个${keyNote}。`,
+        `从 new-api 导入完成：新增 ${r.imported} / 更新 ${r.updated} 个渠道，${r.newTargets} 个模型，禁用 ${r.disabled} 个${keyNote}。${keptNote}`,
       );
     } catch (error) {
       toast(`导入失败：${error.message}`, true);
@@ -339,6 +342,9 @@ export function createChannelAdmin({ state, els, onChange }) {
       s.noGroup ? `${s.noGroup} 个令牌没有分组` : "",
       s.noModels ? `${s.noModels} 个令牌的分组下没有模型` : "",
       s.mixedProtocol ? `${s.mixedProtocol} 个渠道的模型协议不一致（见渠道备注）` : "",
+      // 保留了手工修改要明说：否则用户不知道"更新 N 个"里有多少是没动他改过的字段，
+      // 也就无从判断自己上次的协议修正还在不在。
+      s.preserved ? `${s.preserved} 个渠道保留了你的手工修改（名称/协议/模型清单/供应商/备注未被覆盖）` : "",
     ]
       .filter(Boolean)
       .join("；");
@@ -366,6 +372,9 @@ export function createChannelAdmin({ state, els, onChange }) {
       s.noModels ? `${s.noModels} 个密钥没查到可用模型` : "",
       s.viaFallback ? `${s.viaFallback} 个密钥的模型清单来自 /v1/models 回落（该站未启用模型广场，协议按 OpenAI 兼容处理）` : "",
       s.disabled ? `${s.disabled} 个密钥是禁用状态（上游本应已过滤，请核对）` : "",
+      // 保留了手工修改要明说：否则用户不知道"更新 N 个"里有多少是没动他改过的字段，
+      // 也就无从判断自己上次的协议修正还在不在。
+      s.preserved ? `${s.preserved} 个渠道保留了你的手工修改（名称/协议/模型清单/供应商/备注未被覆盖）` : "",
     ]
       .filter(Boolean)
       .join("；");

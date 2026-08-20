@@ -20,10 +20,32 @@ import { isTestTokenName } from "../shared/newapi-token-keyword.mjs";
 
 const PAGE_SIZE = 1000; // 文档：page_size 上限 1000，建议一次拿完而非小分页循环
 const PAGE_CAP = 20; // 最多 20000 个密钥，防无界翻页
+// 【为什么这里没有响应体大小上限】——刻意的取舍，不是漏了。
+// PAGE_CAP 只限页数、不限单页体积：上游若单页返回 21.9MB（实测：6 万条密钥行）就会照吃，
+// 解析后堆内存约 +37MB，随后建出等量渠道（saveChannels 实测 812ms，不会崩）。
+// 对照 upstream-transport.mjs 的 MAX_UPSTREAM_STREAM_RESPONSE_BYTES —— 那里必须设限，
+// 因为被测上游是【任意用户填进来的第三方 API】，行为不可信也不可控。
+// 而本链路的上游是**测试人员自己搭建/自己持有账号的 sub2api 站点**，密钥也是他自己在上面建的；
+// 要触发这个路径，等于他先在自己的站点上造出 6 万个名字含「测试」的密钥，再对自己发起导入。
+// 换言之收益端和攻击端是同一个人，且他已经把该站点的登录密码填进了本工具。
+// 故风险很低，不值得为它引入流式解析（fetch().json() 拿不到增量，要改就得手写 chunk 累加 + 提前中止，
+// 是对两条链路的实质改写）。
+// 若哪天这两条导入链路要面向"不完全信任的第三方站点"开放（例如做成公共服务、或允许非超管发起导入），
+// 这个取舍就不再成立，必须回来补上限。
 const FALLBACK_GAP_MS = 200; // 逐密钥调 /v1/models 时的间隔（面板/网关都有按用户限流）
 // 回落路径的密钥上限：串行 + 200ms 间隔，150 个约 30 秒已是可接受等待的上限。
 // 超过就报错让用户改用模型广场，而不是让请求挂上几十分钟（详见 fetchModelsPerKey 的说明）。
 const FALLBACK_MAX_KEYS = 150;
+// 回落路径的【总耗时】上限。条数上限只在上游正常响应时才等于时间上限：每个密钥各自享有
+// 完整的 timeoutMs（默认 15s），上游若挂起不答，150 个密钥 = 150 × 15s ≈ 38 分钟
+// （实测耗时随密钥数线性增长：1/3/6 个分别 613/2240/4697ms，与 n × timeout 吻合）。
+// 期间请求一直挂着、前端只显示「导入中…」，与本文件"宁可明确失败，不要不确定的长挂起"的原则相悖。
+// 故再加一道按墙钟的总预算：超了就停下并报错指路。
+// 走 envInt（而非写死常量）：一是让用例能把预算压到亚秒级来验证中止行为，
+// 二是给运维在"上游确实慢但还能用"时留一个调大的口子。默认 2 分钟。
+function fallbackBudgetMs() {
+  return envInt("EVALUATOR_SUB2API_FALLBACK_BUDGET_MS", 120_000, { min: 100, max: 3_600_000 });
+}
 
 function timeoutMs() {
   return envInt("EVALUATOR_SUB2API_IMPORT_TIMEOUT_MS", 15_000, { max: 600_000 });
@@ -37,13 +59,28 @@ export function normalizeBase(base) {
 
 // 统一解包 sub2api 信封。注意与 new-api 的差别：这里出错时 HTTP 状态码本身非 200，
 // 但仍要判 code —— 两道都判才既不漏网络层错误、也不漏业务层错误。
+// 凭据进请求头前先自检。含 CR/LF 的值会让 undici 的 Headers.append 抛 TypeError，
+// 而它的 message 里【带着凭据原文】——该 message 一路经端点的 catch 变成 userMessage 回到浏览器
+// （在 new-api 那条链路上实测复现过凭据回显）。这里主动挡掉并给出不含凭据的错误信息。
+// 本链路的 token 是上游签发的 JWT、apiKey 是上游返回的密钥：正常都不含控制字符，
+// 带了说明上游响应异常或被篡改，同样该明确失败而不是把原文抛出去。
+function assertHeaderSafe(value, label) {
+  // eslint-disable-next-line no-control-regex -- 刻意匹配控制字符
+  if (/[\x00-\x1f\x7f]/.test(value)) {
+    throw new Error(`${label}含控制字符，无法用于请求头（上游响应可能异常）。`);
+  }
+}
+
 async function callSub2api(url, { token = "", method = "GET", body = null, apiKey = "" } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs());
   const headers = {};
   // /v1/* 网关接口用**明文 API 密钥**认证；/api/v1/* 面板接口用登录得到的 JWT。
   const bearer = apiKey || token;
-  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  if (bearer) {
+    assertHeaderSafe(String(bearer), apiKey ? "API 密钥" : "登录凭证");
+    headers.Authorization = `Bearer ${bearer}`;
+  }
   if (body) headers["content-type"] = "application/json";
   let res;
   try {
@@ -145,10 +182,13 @@ export async function fetchModelPlaza({ base, token }) {
 // 路径没有 /api/v1 前缀。串行 + 间隔，避免撞按用户限流。
 // 单个密钥失败不应中断整体导入（可能只是该密钥被禁用），记空清单继续。
 //
-// 有条数上限（FALLBACK_MAX_KEYS）：本路径是**串行 + 每次间隔**，耗时随密钥数线性增长
-// （实测 120 个约 25 秒，若放开到分页上限 20000 个会跑一个多小时），期间前端只显示「导入中…」
-// 且请求一直挂着。超过上限直接报错、让用户去启用模型广场（那条路一次请求拿完全部映射），
-// 而不是让请求无声地跑到不知何时——宁可明确失败，不要不确定的长挂起。
+// 两道上限，缺一不可：
+//   · 条数（FALLBACK_MAX_KEYS）——挡住"密钥太多"这种一看就知道会很慢的情形，可提前拒绝、不发请求。
+//   · 总耗时（FALLBACK_TOTAL_BUDGET_MS）——条数上限只在上游【正常响应】时才等于时间上限。
+//     每个密钥各自享有完整的 timeoutMs，上游挂起不答时 150 个密钥能跑 38 分钟（见常量处实测数据）。
+//     故必须另按墙钟兜一道：超预算就带着已拿到的部分结果停下并报错。
+// 两者都指向同一句建议：让站点管理员启用「模型广场」，那条路一次请求拿完全部映射。
+// 宁可明确失败，不要不确定的长挂起。
 export async function fetchModelsPerKey({ base }, keyRows) {
   const b = normalizeBase(base);
   const out = {};
@@ -159,9 +199,22 @@ export async function fetchModelsPerKey({ base }, keyRows) {
         `逐个查询会耗时过长。请让站点管理员启用「模型广场」后重试，或减少名称含「测试」的密钥数量。`,
     );
   }
+  const startedAt = Date.now();
+  const budgetMs = fallbackBudgetMs();
   for (let i = 0; i < rows.length; i += 1) {
     const row = rows[i];
     if (!row?.key) continue;
+    // 预算检查放在【发请求前】：已经花掉的时间无法退回，能做的是不再往里投。
+    // 报错而不是静默返回半份结果——半份结果会让上层把没查到模型的密钥建成 0 模型渠道，
+    // 用户看到的是"导入成功但一半渠道没模型"，比明确失败更难排查。
+    const elapsed = Date.now() - startedAt;
+    if (elapsed > budgetMs) {
+      throw new Error(
+        `逐个密钥查询模型已耗时 ${Math.round(elapsed / 1000)} 秒（上限 ${Math.round(budgetMs / 1000)} 秒），` +
+          `已处理 ${i}/${rows.length} 个，判定上游响应过慢并中止。请让站点管理员启用「模型广场」后重试` +
+          `（那条路一次请求即可拿到全部分组与模型，不受本限制）。`,
+      );
+    }
     if (i > 0) await new Promise((r) => setTimeout(r, FALLBACK_GAP_MS));
     try {
       const data = await callSub2api(`${b}/v1/models`, { apiKey: String(row.key) });

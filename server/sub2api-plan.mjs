@@ -10,6 +10,7 @@
 //   3. source 用 "sub2api"，与 "newapi" / "newapi-token" 三者互不覆盖。
 import crypto from "node:crypto";
 import { deterministicModelTargetId } from "./channel-model.mjs";
+import { finalizeImportedNotes, importSnapshotOf, mergeImportedChannel } from "./import-merge.mjs";
 
 // 分组的 platform -> 我们的协议。这是上游**声明**的平台，比按模型名投票可靠。
 // 只有 anthropic 走 Claude Messages；openai / gemini / 其它一律按 OpenAI 兼容
@@ -105,6 +106,8 @@ export function buildSub2apiImportPlan({
   let noGroup = 0;
   let noModels = 0;
   let viaFallbackCount = 0;
+  // 重新导入时保留了用户手工修改的渠道数（见 import-merge.mjs）。
+  let preserved = 0;
 
   for (const row of keyRows) {
     const keyId = row?.id;
@@ -122,8 +125,10 @@ export function buildSub2apiImportPlan({
 
     if (status === "disabled") disabled += 1;
     if (!group) noGroup += 1;
-    if (!models.length) noModels += 1;
     if (viaFallback) viaFallbackCount += 1;
+    // noModels 移到合并之后再计：它驱动前端「N 个密钥没查到可用模型」这句提示，
+    // 说的应是【这个渠道最终有没有模型可测】。按上游口径算会在"上游给 0 个、但用户手加过模型"时
+    // 误报（实测：渠道最终 models=["我加的模型"] 却仍提示没查到模型）。
 
     const mapped = {
       id: localId,
@@ -142,23 +147,39 @@ export function buildSub2apiImportPlan({
 
     const idx = indexById.get(localId);
     let channelId;
+    // 建模型目标要用【合并后】的模型清单：三方合并可能保留了用户手加的模型、剔除了他删掉的，
+    // 用 mapped.models（上游原样）会把用户删掉的模型目标又加回来。
+    let finalModels = models;
     if (idx === undefined) {
-      channels.push({ ...mapped, createdAt: now, updatedAt: now });
+      // 首次导入也要落快照：漏了的话第二次导入会把它当成"老渠道"走保守保留，
+      // 上游改名/换协议永远同步不过来（见 import-merge.mjs 的 importSnapshotOf）。
+      channels.push({ ...mapped, importSnapshot: importSnapshotOf(mapped), createdAt: now, updatedAt: now });
       indexById.set(localId, channels.length - 1);
       channelId = localId;
       imported += 1;
     } else {
-      // 保留已存在渠道的 id 与创建时间；凭证字段（apiKeyRef/keyHash/hasKey）由端点重新附上。
+      // 三方合并：用户手工改过的 name/protocol/models 要保住，没动过的仍跟随上游（见 import-merge.mjs）。
+      // 直接 {...prev, ...mapped} 会把产品自己在 notes 里建议的协议修正静默推翻。
       const prev = channels[idx];
-      channels[idx] = { ...prev, ...mapped, id: prev.id, createdAt: prev.createdAt || now, updatedAt: now };
-      channelId = prev.id;
+      const { channel: mergedChannel, preservedFields } = mergeImportedChannel(prev, mapped);
+      // notes：用户写了自己的备注就完全不碰；没写才重新生成（协议被保留时会追加说明），
+      // 并同步快照——否则追加的那段文字下次会被误判成"用户改过 notes"。详见 finalizeImportedNotes。
+      finalizeImportedNotes(mergedChannel, preservedFields, { upstreamNotes: mapped.notes, upstreamProtocol: mapped.protocol });
+      mergedChannel.updatedAt = now;
+      channels[idx] = mergedChannel;
+      channelId = mergedChannel.id;
+      finalModels = mergedChannel.models;
       updated += 1;
+      if (preservedFields.length) preserved += 1;
     }
+
+    // 按合并后的最终清单计（见上方 noModels 的说明）。
+    if (!finalModels.length) noModels += 1;
 
     // sub2api 的密钥列表直接返回明文 key（无需二次请求），这里原样收进 keys 映射。
     if (row?.key) plainKeys[channelId] = String(row.key);
 
-    for (const model of models) {
+    for (const model of finalModels) {
       const dedupe = `${channelId}|${model}`;
       if (targetKeys.has(dedupe)) continue;
       targets.push({
@@ -194,6 +215,7 @@ export function buildSub2apiImportPlan({
       noGroup,
       noModels,
       viaFallback: viaFallbackCount,
+      preserved,
     },
   };
 }

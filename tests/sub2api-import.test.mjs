@@ -293,6 +293,67 @@ test(
   }),
 );
 
+// —— P3-2 回归：回落路径要有【总耗时】上限，不只是条数上限 ——
+// 条数上限只在上游正常响应时才等于时间上限：每个密钥各自享有完整的 timeoutMs，
+// 上游挂起不答时 150 个密钥能跑约 38 分钟（实测耗时随密钥数线性增长：1/3/6 个 → 613/2240/4697ms），
+// 期间请求一直挂着、前端只显示「导入中…」。故必须另按墙钟兜一道。
+test(
+  "fetchModelsPerKey：上游挂起时按总耗时预算中止，不无限拖下去",
+  withGuardOff(async () => {
+    // 每次请求都挂起 → 每个密钥耗满 timeoutMs。把 timeout 压到 300ms、预算压到 700ms，
+    // 于是约 3 个密钥后就该触发预算中止，而不是把 40 个都跑完（40 × 300ms = 12s）。
+    process.env.EVALUATOR_SUB2API_IMPORT_TIMEOUT_MS = "300";
+    process.env.EVALUATOR_SUB2API_FALLBACK_BUDGET_MS = "700";
+    let served = 0;
+    try {
+      await withMock(
+        () => {
+          served += 1; // 刻意不响应：模拟上游挂起
+        },
+        async (base) => {
+          const rows = Array.from({ length: 40 }, (_, i) => ({ id: i + 1, key: `sk-${i}` }));
+          const startedAt = Date.now();
+          await assert.rejects(
+            () => fetchModelsPerKey({ base }, rows),
+            (err) => {
+              assert.match(err.message, /模型广场/, "要指出解决办法");
+              assert.match(err.message, /上限|耗时/, "要说明是超时中止");
+              return true;
+            },
+          );
+          const elapsed = Date.now() - startedAt;
+          assert.ok(elapsed < 6000, `应在预算附近就中止，实际耗时 ${elapsed}ms`);
+          assert.ok(served < 40, `不该把全部 40 个密钥都打完，实际发出 ${served} 次`);
+        },
+      );
+    } finally {
+      delete process.env.EVALUATOR_SUB2API_IMPORT_TIMEOUT_MS;
+      delete process.env.EVALUATOR_SUB2API_FALLBACK_BUDGET_MS;
+    }
+  }),
+);
+
+// 反向用例：预算别设得过紧，把正常（快速响应）的导入也掐掉。
+test(
+  "fetchModelsPerKey：上游响应正常时不受预算影响，全部密钥都查完",
+  withGuardOff(async () => {
+    let served = 0;
+    await withMock(
+      (req, res) => {
+        served += 1;
+        send(res, { data: [{ id: "gpt-4o" }] });
+      },
+      async (base) => {
+        const rows = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, key: `sk-${i}` }));
+        const out = await fetchModelsPerKey({ base }, rows);
+        assert.equal(Object.keys(out).length, 6, "6 个密钥都要有结果");
+        assert.equal(served, 6);
+        for (const id of ["1", "6"]) assert.deepEqual(out[id], ["gpt-4o"]);
+      },
+    );
+  }),
+);
+
 // 出站守卫：与本仓其它出站点一致，内网/元数据地址必须在发请求前就被拦。
 test("base 指向内网 → 被出站守卫拦截，不发请求", async () => {
   delete process.env.EVALUATOR_EGRESS_DENY_PRIVATE;
