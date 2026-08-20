@@ -145,6 +145,8 @@ import { modelTargetDedupKey, normalizeChannel, normalizeModelTarget } from "./s
 import { loadRunnableProfiles } from "./server/run-targets.mjs";
 import { buildImportPlan } from "./server/newapi-import.mjs";
 import { fetchNewapiChannels, fetchNewapiSmtp, importSourceMode } from "./server/newapi-source.mjs";
+import { fetchPricing, fetchSelfGroup, fetchTestTokens, fetchTokenKeys } from "./server/newapi-token-import.mjs";
+import { buildTokenImportPlan } from "./server/newapi-token-plan.mjs";
 import { readConfig as readNewapiConfig, loadNewapiToken, saveNewapiToken } from "./server/newapi-tag-writer.mjs";
 import { getSettings, loadSettings, saveSettings, peekLegacyNewapiToken, stripLegacyNewapiToken } from "./server/settings-store.mjs";
 import { getNotifyConfig, loadNotifyConfig, saveNotifyConfig } from "./server/notify-config.mjs";
@@ -546,6 +548,7 @@ const API_ROUTES = [
   ["GET", "/api/channels", handleChannelsList],
   ["POST", "/api/channels", handleChannelUpsert],
   ["POST", "/api/channels/import", handleChannelsImport],
+  ["POST", "/api/channels/import-test-tokens", handleChannelsImportTestTokens],
   ["POST", "/api/channels/:id/sync-models", handleChannelSyncModels],
   ["DELETE", "/api/channels/:id", handleChannelDelete],
 
@@ -1365,6 +1368,77 @@ async function handleChannelsImport(req, res) {
   await saveChannels(plan.channels);
   await saveModelTargets(plan.targets);
   sendJson(res, 200, { ok: true, mode: importSourceMode(), ...plan.summary });
+  return;
+}
+
+// 「从 new-api 上游渠道导入测试分组」：用调用者一次性填入的**个人令牌**读他名下名称含「测试」的令牌，
+// 每个令牌建一个渠道（baseUrl 指回 new-api 自己、key=令牌明文，走其 /v1 中继），
+// 再按令牌的分组查出该分组下的模型建成模型目标。与 handleChannelsImport（读 channels 表、直连上游厂商）
+// 是两条独立链路，source 分别为 newapi-token / newapi，互不覆盖。
+//
+// 凭据处理：URL/令牌/用户ID 只在本次请求的内存里流转 —— 不写 settings.json、不进日志、不回响应体。
+// 这是一次性导入用的个人凭据，与设置页那个长期保存的管理员令牌是两回事，故不保存。
+async function handleChannelsImportTestTokens(req, res) {
+  const body = await readJson(req);
+  const base = String(body?.baseUrl || "").trim();
+  const token = String(body?.token || "").trim();
+  const userId = String(body?.userId || "").trim();
+  if (!base || !token || !userId) {
+    sendJson(res, 400, {
+      error: "missing_fields",
+      userMessage: "请填写 new-api 网址、个人令牌和用户ID（三项都必填，缺一个 new-api 会返回 401）。",
+    });
+    return;
+  }
+  if (!/^\d+$/.test(userId)) {
+    sendJson(res, 400, { error: "bad_user_id", userMessage: "用户ID必须是数字（new-api 的 New-Api-User 头只接受数字用户 id）。" });
+    return;
+  }
+  const creds = { base, token, userId };
+  let tokens;
+  let pricing;
+  let userGroup;
+  try {
+    tokens = await fetchTestTokens(creds);
+    if (!tokens.length) {
+      sendJson(res, 200, {
+        ok: true,
+        summary: { total: 0, imported: 0, updated: 0, newTargets: 0, disabled: 0, noGroup: 0, noModels: 0, mixedProtocol: 0 },
+      });
+      return;
+    }
+    // 分组回落来源与分组->模型映射：两者与令牌列表无依赖，可并发。
+    [userGroup, pricing] = await Promise.all([fetchSelfGroup(creds), fetchPricing(creds)]);
+  } catch (error) {
+    sendJson(res, 400, { error: "newapi_error", userMessage: error.message });
+    return;
+  }
+  let keys;
+  try {
+    keys = await fetchTokenKeys(
+      creds,
+      tokens.map((t) => t.id),
+    );
+  } catch (error) {
+    // 取明文 key 的端点挂了 CriticalRateLimit，令牌多时可能被限流。
+    sendJson(res, 400, {
+      error: "newapi_key_error",
+      userMessage: `取令牌明文失败：${error.message} 该接口有频率限制，稍后重试或减少「测试」令牌数量。`,
+    });
+    return;
+  }
+  const [existingChannels, existingTargets] = await Promise.all([loadChannels(), loadModelTargets()]);
+  const plan = buildTokenImportPlan({ tokens, keys, pricing, userGroup, base, existingChannels, existingTargets });
+  // 明文 key 立刻存进加密库、从渠道对象剥离（不进库、不下发浏览器）。
+  const indexById = new Map(plan.channels.map((item, i) => [item.id, i]));
+  for (const [channelId, key] of Object.entries(plan.keys)) {
+    const i = indexById.get(channelId);
+    if (i !== undefined) plan.channels[i] = await attachChannelKey(plan.channels[i], key);
+  }
+  await saveChannels(plan.channels);
+  await saveModelTargets(plan.targets);
+  // 只回汇总计数：不回 keys、不回渠道明细（渠道列表由前端另行 GET，走 maskChannel）。
+  sendJson(res, 200, { ok: true, summary: plan.summary });
   return;
 }
 

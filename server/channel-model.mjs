@@ -67,8 +67,12 @@ export function normalizeChannel(body, existing = null) {
     protocol: normalizeProtocol(body.protocol ?? existing?.protocol),
     models: normalizeModelList(body.models ?? existing?.models),
     status: normalizeChannelStatus(body.status ?? existing?.status),
-    source: body.source || existing?.source || "manual", // manual | newapi
+    source: body.source || existing?.source || "manual", // manual | newapi | newapi-token
     newapiChannelId: body.newapiChannelId ?? existing?.newapiChannelId ?? null,
+    // 「导入测试分组」带来的溯源字段：这是**白名单**，不在表里的字段编辑渠道时会被静默抹掉，
+    // 所以新增来源字段必须同步加在这里（漏加的表现是：用户在 UI 里编辑过的渠道，溯源信息凭空消失）。
+    newapiTokenId: body.newapiTokenId ?? existing?.newapiTokenId ?? null,
+    newapiTokenGroup: body.newapiTokenGroup ?? existing?.newapiTokenGroup ?? null,
     notes: String(body.notes ?? existing?.notes ?? "").trim(),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
