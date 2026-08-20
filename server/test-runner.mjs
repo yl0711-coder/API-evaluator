@@ -1385,6 +1385,10 @@ export async function runScenarioTest(body, taskContext = {}) {
     throw new Error("请至少选择一个测试场景。");
   }
 
+  // 批次 runId：多模型场景测试共享一个批次 ID，用于关联所有请求记录。
+  // 这个 runId 会传给 executeTestRequest → finalizeTestRecord，写入 test_requests.run_id。
+  // 单模型报告有独立的 perId（见下方 1462 行），仅用于报告文件命名和 test_runs 主键，
+  // 不影响请求记录的 run_id——这样设计是因为一个批次可以测多个模型，所有请求需要共享批次 ID。
   const runId = buildReportId("scenario", selectedProfiles.length === 1 ? reportTargetSlug(selectedProfiles[0]) : "");
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const requestConcurrency = clampNumber(body.requestConcurrency || body.concurrency, 1, 3, 1);
@@ -1459,6 +1463,10 @@ export async function runScenarioTest(body, taskContext = {}) {
   for (const profileResult of profileResults) {
     const profile = selectedProfiles.find((p) => p.id === profileResult.profileId) || null;
     const slug = reportTargetSlug(profile || { name: profileResult.profileName, defaultModel: profileResult.model });
+    // perId：每个模型报告的唯一 ID，用于报告文件命名、test_runs 主键、工件目录名。
+    // 它与批次 runId（1388 行）不同：批次 runId 写入 test_requests.run_id（所有模型共享），
+    // perId 写入 test_runs.run_id（每个模型独立）。趋势查询按 profile_id 找 test_runs，
+    // 再用 test_runs.run_id 去 test_requests 里查逐轮数据——两个 ID 各司其职，不冲突。
     const perId = buildReportId("scenario", slug);
     let one = buildScenarioSummary({
       runId: perId,
