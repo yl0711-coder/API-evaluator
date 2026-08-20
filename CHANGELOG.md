@@ -6,6 +6,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **「从 new-api 上游渠道导入测试分组」**（渠道管理页新按钮 + `POST /api/channels/import-test-tokens`）——
+  填 new-api 网址 + **调用者自己的**个人令牌 + 用户ID，读出其名下所有**名称含「测试」**的令牌，
+  每个令牌建一个渠道（Key 自动取明文填入），再按令牌所属分组把该分组下的模型建成模型目标，导完可直接跑测试。
+  新增 `server/newapi-token-import.mjs`（出站 I/O）+ `server/newapi-token-plan.mjs`（纯映射，便于单测）。
+  - 与既有「一键导入」是**两条独立链路**，`source` 分别为 `newapi-token` / `newapi`，互不覆盖：前者读
+    new-api 的 **tokens**、建出的渠道**指回 new-api 自己**（走其 `/v1` 中继）；后者读 **channels 表**、
+    建出的渠道**直连上游厂商**。
+  - 本地渠道 id 为 `newapi-token-<sha1(base|tokenId)[0:8]>-<tokenId>`，**掺 base 的哈希**——令牌 id 只在
+    单个 new-api 实例内唯一，同时导入两个上游（都有 token id=3）会撞成同一个本地渠道。重复导入按此 id upsert，幂等。
+  - 令牌 `group` 为空串时**回落到用户自身分组**（new-api 里空值语义是「跟随用户分组」，不是「无分组」，
+    当成无分组会一个模型也查不到）；分组→模型取 `/api/pricing` 的 `enable_groups`，含 `"all"` 的也算开放。
+  - 明文令牌与明文 Key **只在内存流转**：Key 立刻存进加密库并从渠道对象剥离，响应体只回汇总计数
+    （不回 keys、不回渠道明细）；三项凭据不写 `settings.json`、不进日志、不保存。
+  - 协议按模型名推断（分组内 claude 占多数→Claude Messages，否则 OpenAI Compatible），票数写进渠道
+    `notes`，混合时追加告警。**已知取舍**：这些渠道走 new-api 的 `/v1` 中继，中继对外通常是 OpenAI 兼容协议，
+    故纯 Claude 分组会被判成 `claude_messages` → 打 `/v1/messages`，new-api 未开该路由时 404。
+    口径由用户指定，实现照办，但 `notes` 与弹窗都写明了「报 404 就把协议改成 OpenAI Compatible」。
+  - 取明文 Key 的 `POST /api/token/batch/keys` 挂着 new-api 的 `CriticalRateLimit`：切成每批 ≤100 串行请求、
+    批次间留 250ms 间隔；被限流时错误文案提示稍后重试或减少「测试」令牌数量。
+  - 筛选关键词定义在 `shared/newapi-token-keyword.mjs`，前后端共用一份，避免「提示说筛『测试』、实际筛别的」。
+  - 出站三件套（`assertPublicTarget` + `redirect:"error"` + `AbortSignal` 超时）与既有三个出站点对齐；
+    这是**第四个**出站点，`接口清单.md` 的计数已同步更正。
+
+### Fixed
+- **（本功能自查）渠道 id 会把上游 `tokenId` 原样拼进前端的 `data-edit-channel="${channel.id}"`** ——
+  渠道 id 按约定是后端生成的安全值、前端不转义，但 `tokenId` 来自上游 new-api，恶意/被攻陷的上游给个
+  `7" onmouseover=...` 就能打破属性造成 XSS。`newapiTokenChannelLocalId` 现把该段收窄成纯数字，
+  非数字走哈希分支，任何输入下 id 都只含 `[a-z0-9-]`；哈希仍用原始值，保证不同的异常 id 不塌缩成同一渠道。
+- **（本功能自查）`normalizeChannel` 的字段白名单漏了 `newapiTokenId`/`newapiTokenGroup`** ——
+  用户在 UI 里编辑过导入来的渠道后，这两个溯源字段会被静默抹掉（幂等不受影响：渠道 id 是算出来的，
+  重导会补回）。已加进白名单并补回归测试——**新增来源字段时必须同步加在那里**。
+- **（本功能自查）渠道列表不显示 `newapi-token` 来源** —— 原判定只认 `source === "newapi"`，
+  导入来的渠道在列表里与手动建的无从分辨。现显示「· 分组 X · 来自 new-api 令牌」（分组名来自上游，已转义）。
+- **（本功能自查）响应字段名变更会表现成「没有含『测试』的令牌」** —— 若 new-api 改了字段名
+  （如 `items` → `records`）或 `data` 为空，原实现静默返回 0 条，用户只会去怀疑自己的令牌命名。
+  现在 `total` 报了正数却一条都没解析出来时抛错并说明可能是版本变更。
+
+### Notes
+- 新模块的分页**从 `p=1` 起**（new-api 的 `p` 是 1 起页码），并且**判 `body.success` 而非只判 `res.ok`**
+  （管理接口业务失败也返回 HTTP 200）。既有 `server/newapi-source.mjs` 这两点都不对——它从 `p=0` 起翻页，
+  且只判 `res.ok`，`success:false` 时会把「令牌无效」当成空结果、导入静默返回 0 条而不报错。
+  本轮**未改**那个文件（不在本次范围内），但两处差异是已知的、待修。
+
 ## [0.7.11] - 2026-08-18
 
 ### Fixed

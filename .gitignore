@@ -44,3 +44,6 @@ app-data/
 postman
 .audit/
 list.md
+# Playwright 产物（跑 pnpm test:e2e 后生成，失败时含 trace/截图）
+test-results/
+playwright-report/

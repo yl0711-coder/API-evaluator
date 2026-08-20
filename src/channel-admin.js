@@ -2,6 +2,7 @@ import { api } from "./api-client.js";
 import { escapeHtml, protocolLabel, toast } from "./client-utils.js";
 import { unionTagVocabulary, distinctTargetTags, hasUntaggedTarget, filterTargetsByTag, NO_TAG_FILTER } from "./model-tags.js";
 import { formatLastTested, isRetestDue } from "./model-test-status.js";
+import { TEST_TOKEN_KEYWORD } from "../shared/newapi-token-keyword.mjs";
 
 // v0.3.0 两区管理：渠道（超管，含 key）+ 模型目标（管理员，选渠道+填模型，不见 key）。
 export function createChannelAdmin({ state, els, onChange }) {
@@ -26,7 +27,7 @@ export function createChannelAdmin({ state, els, onChange }) {
     const list = state.channels || [];
     els.channelList.innerHTML = list.length
       ? list.map(channelRow).join("")
-      : `<div class="empty-state"><strong>还没有渠道</strong><p>在左侧填 Base URL + Key 添加，或从 new-api 一键导入。</p></div>`;
+      : `<div class="empty-state"><strong>还没有渠道</strong><p>在左侧填 Base URL + Key 添加，或在「帮助与设置 → 设置 → new-api 网关」里一键导入。</p></div>`;
     els.channelList
       .querySelectorAll("[data-del-channel]")
       .forEach((b) => b.addEventListener("click", () => deleteChannel(b.dataset.delChannel)));
@@ -43,7 +44,15 @@ export function createChannelAdmin({ state, els, onChange }) {
       : channel.status === "disabled"
         ? `<span class="chan-pill bad">已禁用</span>`
         : `<span class="chan-pill good">启用</span>`;
-    const source = channel.source === "newapi" ? " · 来自 new-api" : "";
+    // 两种 new-api 来源要能分辨：newapi=导自其渠道表（直连上游厂商）；
+    // newapi-token=导自其令牌（指回 new-api 的 /v1 中继）。漏掉后者会让它看起来像手动建的渠道。
+    const source =
+      channel.source === "newapi"
+        ? " · 来自 new-api"
+        : channel.source === "newapi-token"
+          ? // 分组名来自上游数据，必须转义（与相邻的 channel.name / protocolLabel 同等对待）
+            `${channel.newapiTokenGroup ? ` · 分组 ${escapeHtml(channel.newapiTokenGroup)}` : ""} · 来自 new-api 令牌`
+          : "";
     const models = Array.isArray(channel.models) ? channel.models.length : 0;
     return `
       <div class="chan-row">
@@ -311,5 +320,37 @@ export function createChannelAdmin({ state, els, onChange }) {
     }
   }
 
-  return { loadChannels, loadModelTargets, saveChannel, saveModelTarget, importFromNewapi, renderTagOptions, setTagFilter };
+  // 「从 new-api 上游渠道导入测试分组」：读调用者名下名称含「测试」的令牌，每个令牌建一个渠道 + 其分组下的模型目标。
+  // creds 三项（网址/个人令牌/用户ID）由模态框收集，只发这一次、不保存。
+  async function importTestTokens(creds) {
+    const r = await api("/api/channels/import-test-tokens", { method: "POST", body: JSON.stringify(creds) });
+    await Promise.all([loadChannels(), loadModelTargets()]);
+    const s = r.summary || {};
+    if (!s.total) {
+      toast(`没有找到名称含「${TEST_TOKEN_KEYWORD}」的令牌，未导入任何渠道。`, true);
+      return;
+    }
+    // 逐项只在非 0 时提示：分组缺失/无模型/协议混合都需要人工跟进，不该淹没在正常计数里。
+    const warn = [
+      s.noGroup ? `${s.noGroup} 个令牌没有分组` : "",
+      s.noModels ? `${s.noModels} 个令牌的分组下没有模型` : "",
+      s.mixedProtocol ? `${s.mixedProtocol} 个渠道的模型协议不一致（见渠道备注）` : "",
+    ]
+      .filter(Boolean)
+      .join("；");
+    toast(
+      `导入完成：${s.total} 个「${TEST_TOKEN_KEYWORD}」令牌 → 新增 ${s.imported} / 更新 ${s.updated} 个渠道，${s.newTargets} 个模型，禁用 ${s.disabled} 个。${warn ? `注意：${warn}。` : ""}`,
+    );
+  }
+
+  return {
+    loadChannels,
+    loadModelTargets,
+    saveChannel,
+    saveModelTarget,
+    importFromNewapi,
+    importTestTokens,
+    renderTagOptions,
+    setTagFilter,
+  };
 }

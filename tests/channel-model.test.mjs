@@ -83,6 +83,36 @@ test("normalizeChannel：编辑时沿用 existing 的创建时间与未传字段
   assert.equal(ch.createdAt, "2020-01-01T00:00:00.000Z");
 });
 
+// 回归：normalizeChannel 返回的是**固定白名单**，不在表里的字段编辑渠道时会被静默抹掉。
+// 「导入测试分组」的溯源字段曾漏在白名单外——表现是用户在 UI 里编辑过该渠道后，
+// newapiTokenId/newapiTokenGroup 凭空消失。新增来源字段时这条会失败，提醒同步加进白名单。
+test("normalizeChannel：编辑「导入测试分组」渠道时保留 newapiTokenId/newapiTokenGroup", () => {
+  const existing = {
+    id: "newapi-token-abc12345-7",
+    name: "测试-7",
+    baseUrl: "https://relay.test",
+    protocol: "claude_messages",
+    models: ["claude-opus"],
+    source: "newapi-token",
+    newapiTokenId: 7,
+    newapiTokenGroup: "vip",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const ch = normalizeChannel({ id: existing.id, name: "测试-7 改名", protocol: "openai_compatible" }, existing);
+  assert.equal(ch.source, "newapi-token");
+  assert.equal(ch.newapiTokenId, 7, "溯源字段不能被编辑操作抹掉");
+  assert.equal(ch.newapiTokenGroup, "vip", "溯源字段不能被编辑操作抹掉");
+  assert.equal(ch.protocol, "openai_compatible", "协议改动要生效（混合分组的常见修法）");
+});
+
+test("normalizeChannel：手动渠道不会凭空长出 new-api 溯源字段的脏值", () => {
+  const ch = normalizeChannel({ name: "手动渠道", baseUrl: "https://m.test" });
+  assert.equal(ch.source, "manual");
+  assert.equal(ch.newapiTokenId, null);
+  assert.equal(ch.newapiTokenGroup, null);
+  assert.equal(ch.newapiChannelId, null);
+});
+
 test("normalizeModelTarget：必填 channelId + model", () => {
   const t = normalizeModelTarget({ channelId: "c1", model: "gpt-4o", note: "主力" });
   assert.equal(t.channelId, "c1");
