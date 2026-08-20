@@ -173,6 +173,55 @@ code {
   height: 0;
 }
 
+/* —— 其余可滚动容器的滚动条：细化 + 配色贴合站点，而不是隐藏 ——
+   上面三个是「整页级」容器，隐藏它们不影响可用性（页面本身就是要滚的，滚多少心里有数）。
+   但卡片/表格/弹窗内部的滚动条得留着：那是「这里还有内容」的唯一提示，藏掉会让人以为
+   内容就这么多。默认的浏览器滚动条是浅灰宽条，落在深色圆角卡片上格外扎眼——
+   所以统一改成 8px 细条、深色轨道 + 半透明滑块，让它看起来像卡片右侧的一条内嵌轨道。
+   轨道刻意保留（不做成完全透明的悬浮条）：圆角矩形右侧那道竖轨本身是构成层次的元素。
+   两套语法都写：scrollbar-* 是标准属性（Firefox 64+/Chrome 121+），::-webkit-scrollbar
+   覆盖旧版 Chrome/Safari/Edge；同时生效时后者在 WebKit 内优先，视觉结果一致。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--blue-rgb), 0.28) rgba(var(--bg-rgb), 0.5);
+}
+
+/* 上面三个整页容器已 scrollbar-width:none，通配符会把它们改回 thin，这里要重新藏掉。
+   （通配符声明晚于它们，同特异性下后者胜。） */
+.main,
+.sidebar,
+.doc-toc {
+  scrollbar-width: none;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(var(--bg-rgb), 0.5);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(var(--blue-rgb), 0.28);
+  border-radius: 8px;
+  /* 两侧留 2px 透明边，滑块看着比轨道细一圈，不会顶满 */
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--blue-rgb), 0.45);
+  background-clip: content-box;
+}
+
+/* 横竖滚动条交汇的直角块，默认是浅灰小方块，同样要压深 */
+::-webkit-scrollbar-corner {
+  background: rgba(var(--bg-rgb), 0.5);
+}
+
 .demo-banner,
 .edition-banner,
 .page-help {
@@ -253,11 +302,26 @@ code {
 }
 
 .hero,
+/* 卡片边框走渐变而非单一 var(--line)。
+   做法：两层 background + 双 background-clip——第一层（padding-box）是卡片实色底，
+   第二层（border-box）是渐变，铺满含 border 的整个盒子；border 自身设为 transparent，
+   于是渐变只从这 1px 边框区透出来，就成了渐变描边。
+   为什么不用 border-image：它不跟随 border-radius，24px 圆角会被切成直角。
+   为什么不用 ::before 叠一层：.panel 数量大（全站卡片），多一个合成层不划算，而且
+   已有若干 .panel::before 用于其他装饰，会撞。
+   渐变主色仍取自既有 token（--line 中性 → --blue 冷 → --accent 暖），亮部落在左上角，
+   与 --shadow-card 的右下投影方向相反、互相呼应。
+   用 to bottom right 而非固定 135deg：卡片宽高比实测跨 0.57~7.89，固定角度在宽卡上会
+   让暖色端跑到可视区外（实测右边中点仍偏蓝 +25），关键字会按盒子对角线自适应，
+   任何长宽比下都走完整个色域。 */
 .panel,
 .metric-card {
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   border-radius: 24px;
-  background: var(--panel);
+  background:
+    linear-gradient(var(--panel), var(--panel)) padding-box,
+    linear-gradient(to bottom right, rgba(var(--blue-rgb), 0.55) 0%, var(--line) 42%, var(--line) 62%, rgba(var(--accent-rgb), 0.45) 100%)
+    border-box;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.24);
 }
 
@@ -1716,24 +1780,69 @@ button.quiet-action {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(var(--bg-rgb), 0.72);
-  backdrop-filter: blur(8px);
+  /* 底色比原来更深（0.72 → 0.86）：这是移除 backdrop-filter 的视觉补偿，
+     靠压暗背景维持「焦点在弹窗」的层次，代替原先的磨砂质感。 */
+  background: rgba(var(--bg-rgb), 0.86);
+  /* 刻意【不】用 backdrop-filter。实测（1920x1080，开框 12~14 次取中位）：
+       有 blur(8px)：new-api 框 p50 107ms、sub2api 框 p50 138ms
+       移除后：      两者均 p50 33ms
+     即这一项占开框耗时的 70~75%，表现为「点下去要等 100ms+ 才出现」的顿感。
+     成本不在卷积半径而在「为全屏建一个需采样背景像素的合成层」本身——实测
+     8px/4px/2px 分别 107/123/129ms，调小半径无效，只有彻底移除才回到 33ms。
+     与之前停掉背景流光动画（见文件末 better-lighting 处）是两件事：那个治的是
+     开着框时的持续掉帧，这个治的是开框瞬间的延迟。 */
+  /* 内容比视口高时整体可滚动。原先只有 place-items:center，超高的框会上下各裁掉一截且
+     滚不动（内容多的框——如导入弹窗——首当其冲）。 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-card {
   display: grid;
   width: min(520px, 100%);
   gap: 16px;
-  border: 1px solid rgba(var(--accent-rgb), 0.38);
+  /* 渐变描边，同 .panel 的双层 background 做法（见那里的注释）。
+     弹窗保持以强调色为主（原本就是 accent 单色边），只在末端掺入冷色收尾，
+     让它跟卡片是同一套语言但仍比卡片更「亮」——它是当前焦点。 */
+  border: 1px solid transparent;
   border-radius: 24px;
-  background: var(--panel-strong);
+  background:
+    linear-gradient(var(--panel-strong), var(--panel-strong)) padding-box,
+    linear-gradient(to bottom right, rgba(var(--accent-rgb), 0.65) 0%, rgba(var(--accent-rgb), 0.3) 45%, rgba(var(--blue-rgb), 0.4) 100%)
+    border-box;
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.38);
   padding: 24px;
+  /* 高度跟着内容走，但不超过视口（减去 .modal 的 24px 上下内边距）；超了自己滚，
+     卡片本身不再被拉满屏。min-height:auto 是必需的：grid item 默认 min-height:auto
+     会无视 max-height 撑开，导致这条形同虚设。 */
+  max-height: calc(100vh - 48px);
+  min-height: auto;
+  overflow-y: auto;
+  /* 滚动时给圆角留白，避免首尾内容贴着 24px 圆角被切 */
+  scrollbar-gutter: stable;
 }
 
 .modal-card h3 {
   margin: 6px 0 0;
   font-size: 26px;
+}
+
+/* 弹窗里的折叠说明：.helper-details 是为页面正文写的（自带 max-width:1180px 与
+   margin-bottom:18px），直接放进 gap:16px 的卡片网格会宽度失据、底部多出一截空白，
+   且内部 .section-desc 没有内边距会贴着边框。这里只做容器适配，不动原规则。 */
+.modal-card .helper-details {
+  max-width: none;
+  margin: 0;
+}
+
+.modal-card .helper-details > summary {
+  padding: 11px 14px;
+  font-size: 14px;
+}
+
+.modal-card .helper-details > .section-desc {
+  margin: 0;
+  padding: 12px 14px 14px;
 }
 
 .confirm-card {
@@ -3727,10 +3836,19 @@ textarea,
 button {
   font-family: var(--sans);
 }
-/* 卡片 */
+/* 卡片。
+   注意：这条晚于上方的 .panel/.metric-card，同特异性下由它胜出——通例卡片圆角其实是
+   18px（不是上面那条写的 24px）、无投影；仪表盘另有 .dash .panel 收窄到 14px。
+   渐变描边必须做在这里，只改上面那条不生效。
+   两层 background + 双 background-clip 做渐变边（原理见上方 .panel/.metric-card 处的注释）：
+   padding-box 层保留原有的顶部高光 + var(--card) 实底，border-box 层是描边渐变。 */
 .panel {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent), var(--card);
-  border: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent) padding-box,
+    linear-gradient(var(--card), var(--card)) padding-box,
+    linear-gradient(to bottom right, rgba(var(--blue-rgb), 0.5) 0%, var(--line) 38%, var(--line) 60%, rgba(var(--accent-rgb), 0.42) 100%)
+    border-box;
+  border: 1px solid transparent;
   border-radius: 18px;
   box-shadow: none;
 }
@@ -4025,8 +4143,11 @@ textarea:focus {
 .report-overlay__backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(var(--bg-rgb), 0.62);
-  backdrop-filter: blur(3px);
+  /* 底色加深（0.62 → 0.8）补偿移除毛玻璃后的层次感，同 .modal 的处理。 */
+  background: rgba(var(--bg-rgb), 0.8);
+  /* 同 .modal：不用 backdrop-filter。实测（1920x1080，开层 10 次取中位）
+     blur(3px) 时 p50 72.7ms、移除后 33.3ms——半径小到 3px 也照样翻倍，
+     再次印证成本在「全屏采样背景的合成层」本身而非卷积半径。 */
 }
 .report-overlay__panel {
   position: relative;
@@ -4546,6 +4667,21 @@ body.better-lighting::after {
   body.better-lighting::after {
     animation: none;
   }
+}
+
+/* 有覆盖层打开时暂停这道背景流光（16s infinite 的 transform 动画）。
+   覆盖层打开时它被压暗的遮罩挡住基本看不见（.modal 0.86、报告浮层 0.8），继续跑纯属
+   白烧合成开销——整页仅此一个常驻动画，停掉零视觉损失。
+   历史：这条最初是为了解决「毛玻璃每帧重采样 × 流光每帧改动被采样内容」的叠加掉帧。
+   两处 backdrop-filter 现已移除（见 .modal 与 .report-overlay__backdrop 处的实测记录），
+   那个叠加不再存在，但省掉无谓重绘这一层价值仍在，故保留。
+   :has() 在 Chrome 105+/Safari 15.4+/Firefox 121+ 支持；不支持的浏览器只是照旧多耗一点，
+   不影响功能（渐进增强）。
+   两种覆盖层的显隐机制不同：.modal 常驻 DOM、靠 .hidden 切换；.report-overlay 是
+   openReportOverlay 动态建、关闭即移除（从不带 .hidden），故按「存在即打开」判断。 */
+body.better-lighting:has(.modal:not(.hidden))::after,
+body.better-lighting:has(.report-overlay)::after {
+  animation-play-state: paused;
 }
 
 /* 模型比对：两列对象横向对照，较优结果以克制的绿色强调。 */

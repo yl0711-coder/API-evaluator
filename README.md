@@ -101,7 +101,7 @@ persisted config and reports. A `docker-compose` file and a Caddy reverse-proxy 
 
 ```bash
 # Build once on a build host / CI:
-docker build -t api-evaluator:0.7.11 .
+docker build -t api-evaluator:0.7.12 .
 # Then on the server (image loaded/pulled), run without rebuilding:
 docker compose --env-file .env.evaluator \
   -f deploy/docker-compose.evaluator.yml up -d --no-build evaluator
@@ -182,7 +182,8 @@ compressed report around for another ~150 days before deleting it."
 ## new-api integration
 
 If your gateway is built on [new-api](https://github.com/QuantumNous/new-api), a super-admin can
-one-click import its channels and models (button on the **渠道管理 / Channels** page). Already
+one-click import its channels and models (button under **帮助与设置 → 设置 → new-api 网关**, right below
+the gateway fields). Already
 configured channels need not be re-entered; only new ones are added by hand. Re-importing is
 idempotent (upsert by new-api channel id) and syncs enabled/disabled status.
 
@@ -213,6 +214,48 @@ The matching `EVALUATOR_NEWAPI_*` env vars remain as a fallback (used only when 
 are blank), so existing deployments keep working. Note the auth backend (`EVALUATOR_AUTH_BACKEND=newapi`)
 still reads `EVALUATOR_NEWAPI_BASE_URL` from env for login, since that happens before any session exists.
 The `db`-mode DSN stays env-only.
+
+### Import test groups from upstream tokens
+
+A second, independent import path lives on the **渠道管理 / Channels** page:
+**「从 new-api 上游渠道导入测试分组」**. Enter the new-api URL, **your own** personal access token and
+user id; it reads every token of yours whose **name contains 「测试」**, creates one channel per token
+(key filled in automatically), then resolves that token's group to its available models and creates a
+test model for each. Ready to run immediately after import.
+
+How it differs from the one-click import above:
+
+| | 一键导入 (`/api/channels/import`) | 导入测试分组 (`/api/channels/import-test-tokens`) |
+|---|---|---|
+| Reads | new-api's `channels` table | your **tokens** |
+| Created channel points at | the upstream vendor directly | **new-api itself** (via its `/v1` relay) |
+| Credentials | super-admin token saved in settings | one-off personal token, **never saved** |
+| `source` | `newapi` | `newapi-token` |
+
+Protocol is inferred from model names (claude-majority → Claude Messages, otherwise OpenAI Compatible)
+and the vote counts are written to the channel's notes. Since these channels go through new-api's `/v1`
+relay — which normally speaks OpenAI-compatible — a claude-only group inferred as Claude Messages may
+404; switch that channel's protocol to **OpenAI Compatible** if so. The notes and the dialog both say this.
+
+## sub2api integration
+
+A third import path, also on the **渠道管理 / Channels** page:
+**「从 sub2api 上游渠道导入测试分组」**. Enter the sub2api URL, your email and password (plus a TOTP code
+if the account has two-factor enabled). The server logs in on your behalf, reads every **enabled** key of
+yours whose name contains 「测试」, creates one channel per key with the plaintext key filled in, then
+resolves each key's group to its models and creates a test model for each.
+
+Two things differ from the new-api token import:
+
+- **Protocol is declared, not guessed.** sub2api groups carry a `platform` field, so `anthropic` maps to
+  Claude Messages and everything else to OpenAI Compatible — no model-name voting, no mixed-protocol channels.
+- **Email + password rather than a pasted token.** sub2api binds each JWT to the client IP and User-Agent
+  and revokes the session when either changes, so a token copied out of a browser would fail server-side.
+  The server therefore logs in itself. Credentials are used for that one import and never stored.
+
+If the site has the model plaza disabled, the import falls back to reading each key's own `/v1/models`
+list. That path cannot report a `platform`, so those channels are set to OpenAI Compatible and both the
+channel notes and the import summary say the fallback was used.
 
 Compatibility: verified against new-api **v1.0.0-rc.4**. The `db` mode reads only the long-stable
 core columns `id / type / name / base_url / models / status / key` and degrades gracefully, so it

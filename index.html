@@ -335,7 +335,8 @@
                 <p class="section-desc">渠道 = 连接信息（Base URL + Key + 协议）。Key 只存本机、不进报告/导出、管理员看不到。一个渠道下可挂多个模型，去“模型管理”里选用。</p>
               </div>
               <div class="action-row">
-                <button id="import-from-newapi" class="secondary" type="button">从 new-api 一键导入</button>
+                <button id="import-test-tokens" class="secondary" type="button">从 new-api 上游渠道导入测试分组</button>
+                <button id="import-sub2api" class="secondary" type="button">从 sub2api 上游渠道导入测试分组</button>
                 <button id="reload-channels" class="secondary" type="button">刷新</button>
               </div>
             </div>
@@ -753,6 +754,10 @@
               <h2><span class="step">运营 · 趋势</span>稳定性趋势与基线回归</h2>
               <p class="section-desc">同一供应商 / 同一渠道的历次测试随时间的变化。掉级会与历史基线对比并告警，方便观察稳定性。</p>
             </div>
+            <div class="action-row">
+              <button id="trend-export-series" class="secondary" type="button" disabled>导出历次运行 CSV</button>
+              <button id="trend-export-rounds" class="secondary" type="button" disabled>导出逐轮请求 CSV</button>
+            </div>
           </div>
 
           <div class="panel">
@@ -790,6 +795,10 @@
               </div>
             </div>
             <div id="trend-chart" class="trend-chart">选择测试目标后显示历次测试曲线。</div>
+            <p class="field-hint" id="trend-export-hint">
+              需要做数据分析时，用右上角两个「导出 CSV」：「历次运行」每次运行一行（成功率 / P95 / 等级 / 成本），
+              「逐轮请求」每个请求一行（耗时 / 成败 / 错误类型），两份表可用「运行ID」列关联。导出的是当前所选模型的全部历史，不受上面横轴与时间范围的影响。
+            </p>
             <h3>历次测试</h3>
             <div id="trend-table" class="result-box">—</div>
             <h3>回归告警</h3>
@@ -1117,6 +1126,12 @@
               管理员用户ID
               <input id="set-newapi-userid" type="text" inputmode="numeric" placeholder="1" />
             </label>
+            <!-- 导入按钮放在网关配置正下方：先填上面三项并保存，再点这里导入。
+                 type="button" 是必需的——它在 #settings-form 内，默认 submit 会误触发保存设置。 -->
+            <div class="wide action-row" data-requires-admin>
+              <button id="import-from-newapi" class="secondary" type="button">从 new-api 一键导入</button>
+              <small class="field-hint">按上面的网关配置导入渠道与模型到「渠道管理」。改了上面的字段要先保存再导入，否则用的还是已保存的旧配置。</small>
+            </div>
 
             <label class="wide checkbox-option">
               <input type="checkbox" id="set-better-lighting" />
@@ -1837,6 +1852,80 @@
             <div class="action-row split-actions">
               <button id="key-modal-cancel" class="secondary" type="button">取消</button>
               <button class="primary" type="submit">保存 Key</button>
+            </div>
+          </form>
+        </div>
+
+        <div id="token-import-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="token-import-modal-title">
+          <form id="token-import-form" class="modal-card">
+            <div>
+              <p class="eyebrow">批量导入</p>
+              <h3 id="token-import-modal-title">从 new-api 上游渠道导入测试分组</h3>
+              <!-- 原文写的是 Markdown 的 **加粗**，HTML 里会原样显示星号，改用 <strong>。 -->
+              <p class="section-desc">读取你名下<strong>名称含「测试」</strong>的令牌，每个令牌建一个渠道（Key 自动填入），再按令牌所属分组把该分组下的模型建成测试模型。</p>
+            </div>
+            <label>
+              new-api 网址
+              <input id="token-import-base" name="baseUrl" type="url" autocomplete="off" placeholder="https://your-newapi.example.com" required />
+              <small class="field-hint">只填基础地址，不要带 /v1。建出的渠道 Base URL 就是这个地址。</small>
+            </label>
+            <label>
+              个人令牌
+              <input id="token-import-token" name="token" type="password" autocomplete="off" placeholder="new-api 个人设置里的系统访问令牌" required />
+              <small class="field-hint">三项凭据只用于本次导入，不会保存。</small>
+            </label>
+            <label>
+              用户ID
+              <input id="token-import-userid" name="userId" type="text" inputmode="numeric" autocomplete="off" placeholder="1" required />
+              <small class="field-hint">必须与上面令牌所属的用户一致，否则 new-api 报「用户 ID 不匹配」。在 new-api 个人设置页可看到。</small>
+            </label>
+            <!-- 协议推断说明折叠：属于「出问题再看」的排错信息，展开着会把三个输入项挤下去。 -->
+            <details class="helper-details">
+              <summary>协议是怎么定的？测试报 404 怎么办</summary>
+              <p class="section-desc">协议按模型名推断：分组内 claude 占多数则用 Claude Messages，否则 OpenAI Compatible。由于这些渠道走 new-api 的 /v1 中继（对外通常是 OpenAI 兼容协议），若测试报 404 请把渠道协议改为 OpenAI Compatible。</p>
+            </details>
+            <div class="action-row split-actions">
+              <button id="token-import-cancel" class="secondary" type="button">取消</button>
+              <button id="token-import-submit" class="primary" type="submit">开始导入</button>
+            </div>
+          </form>
+        </div>
+
+        <div id="sub2api-import-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sub2api-import-modal-title">
+          <form id="sub2api-import-form" class="modal-card">
+            <div>
+              <p class="eyebrow">批量导入</p>
+              <h3 id="sub2api-import-modal-title">从 sub2api 上游渠道导入测试分组</h3>
+              <p class="section-desc">读取你名下<strong>名称含「测试」</strong>的 API 密钥（仅启用状态），每个密钥建一个渠道（Key 自动填入），再按密钥所属分组把该分组下的模型建成测试模型。</p>
+            </div>
+            <label>
+              sub2api 网址
+              <input id="sub2api-import-base" name="baseUrl" type="url" autocomplete="off" placeholder="https://your-sub2api.example.com" required />
+              <small class="field-hint">只填基础地址，不要带 /v1。建出的渠道 Base URL 就是这个地址。</small>
+            </label>
+            <label>
+              邮箱
+              <input id="sub2api-import-email" name="email" type="email" autocomplete="off" placeholder="shared@example.com" required />
+            </label>
+            <label>
+              密码
+              <input id="sub2api-import-password" name="password" type="password" autocomplete="off" placeholder="登录密码" required />
+              <small class="field-hint">用于代你登录取临时凭证，只用于本次导入，不会保存。</small>
+            </label>
+            <label>
+              两步验证码（可选）
+              <input id="sub2api-import-totp" name="totpCode" type="text" inputmode="numeric" autocomplete="off" placeholder="未开启两步验证请留空" />
+              <small class="field-hint">账号开了 TOTP 时填 6 位动态码；没开就留空。</small>
+            </label>
+            <!-- 排错信息折叠：属于「出问题再看」的内容，展开着会把输入项挤下去。 -->
+            <details class="helper-details">
+              <summary>协议是怎么定的？导入失败怎么办</summary>
+              <p class="section-desc">协议按上游分组声明的 platform 判定（anthropic 用 Claude Messages，其余用 OpenAI Compatible），不靠猜模型名。若该站点未启用「模型广场」，则改为按每个密钥读取其实际可调模型，此时协议一律按 OpenAI Compatible 处理。这些渠道走 sub2api 的 /v1 中继，若测试报 404 请把渠道协议改为 OpenAI Compatible。</p>
+              <p class="section-desc">若持续报登录失败或 401：sub2api 会把登录凭证绑定到发起请求的 IP 与客户端标识，本工具已在服务端完成登录以规避该限制；仍失败请确认邮箱密码，或该账号是否开启了两步验证。</p>
+            </details>
+            <div class="action-row split-actions">
+              <button id="sub2api-import-cancel" class="secondary" type="button">取消</button>
+              <button id="sub2api-import-submit" class="primary" type="submit">开始导入</button>
             </div>
           </form>
         </div>

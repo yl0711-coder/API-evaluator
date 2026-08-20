@@ -133,7 +133,7 @@ _onProfileData.push((data) => autoTestConfig.refreshTargets(data));
 _onProfileData.push((data) => modelCompare.refreshTargets(data));
 _onProfileData.push((data) => alertRules.refreshTargets(data));
 requireElement("#reload-channels").addEventListener("click", () => channelAdmin.loadChannels());
-requireElement("#import-from-newapi").addEventListener("click", () => channelAdmin.importFromNewapi());
+// #import-from-newapi 的接线在 settings 创建之后（需要 settings.isDirty()），见下方。
 requireElement("#model-tag-filter").addEventListener("change", (event) => channelAdmin.setTagFilter(event.target.value));
 const quickVerifyProfileSelect = requireElement("#quickverify-profile-select");
 const quickVerifySubmit = requireElement("#quickverify-submit");
@@ -146,6 +146,8 @@ const trendChart = requireElement("#trend-chart");
 const trendRegression = requireElement("#trend-regression");
 const trendTable = requireElement("#trend-table");
 const trendAlerts = requireElement("#trend-alerts");
+const trendExportSeries = requireElement("#trend-export-series");
+const trendExportRounds = requireElement("#trend-export-rounds");
 const requestList = requireElement("#request-list");
 const standardEvalForm = requireElement("#standard-eval-form");
 const standardProfileSelect = requireElement("#standard-profile-select");
@@ -302,6 +304,104 @@ const keyPrompt = createKeyModal({
   input: keyModalInput,
   cancelButton: keyModalCancel,
 });
+
+// 「从 new-api 上游渠道导入测试分组」模态框：收三项凭据 → 调 channelAdmin.importTestTokens。
+// 凭据不保存（后端也不存），关框即清空输入，避免个人令牌留在 DOM 里。
+const tokenImportModal = requireElement("#token-import-modal");
+const tokenImportForm = requireElement("#token-import-form");
+const tokenImportBase = requireElement("#token-import-base");
+const tokenImportToken = requireElement("#token-import-token");
+const tokenImportUserid = requireElement("#token-import-userid");
+const tokenImportSubmit = requireElement("#token-import-submit");
+function closeTokenImportModal() {
+  tokenImportModal.classList.add("hidden");
+  tokenImportToken.value = ""; // 只清令牌：网址/用户ID 留着，重试时不用重填
+}
+requireElement("#import-test-tokens").addEventListener("click", () => {
+  tokenImportModal.classList.remove("hidden");
+  tokenImportBase.focus();
+});
+requireElement("#token-import-cancel").addEventListener("click", closeTokenImportModal);
+// 刻意【不】做「点遮罩即关」：本框要手填三项凭据（个人令牌还得去 new-api 后台翻），
+// 误点空白就全部作废、令牌还会被 closeTokenImportModal 清空，代价远大于少一种关闭方式。
+// 关闭途径保留取消按钮与 Esc（Esc 有按键意图、不会误触）。key-modal/confirm-modal 仍保留
+// 点遮罩关闭——那两个是即答即走的小框，填的内容丢了也不心疼，不必强求一致。
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !tokenImportModal.classList.contains("hidden")) closeTokenImportModal();
+});
+tokenImportForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const creds = {
+    baseUrl: tokenImportBase.value.trim(),
+    token: tokenImportToken.value.trim(),
+    userId: tokenImportUserid.value.trim(),
+  };
+  if (!creds.baseUrl || !creds.token || !creds.userId) {
+    toast("三项都必填：new-api 网址、个人令牌、用户ID。", true);
+    return;
+  }
+  // 导入要串多个上游请求（列令牌→取明文→查定价），耗时可观：禁用按钮防重复提交。
+  tokenImportSubmit.disabled = true;
+  tokenImportSubmit.textContent = "导入中…";
+  try {
+    await channelAdmin.importTestTokens(creds);
+    closeTokenImportModal();
+  } catch (error) {
+    toast(`导入失败：${error.message}`, true);
+  } finally {
+    tokenImportSubmit.disabled = false;
+    tokenImportSubmit.textContent = "开始导入";
+  }
+});
+
+// 「从 sub2api 上游渠道导入测试分组」模态框：收网址/邮箱/密码/可选 TOTP → channelAdmin.importSub2api。
+// 与上面那个框同构，关闭策略也一致（见上方注释：刻意不做点遮罩关闭）。
+// 关框只清密码与验证码，网址/邮箱留着便于重试——密码是最不该留在 DOM 里的那项。
+const sub2apiModal = requireElement("#sub2api-import-modal");
+const sub2apiForm = requireElement("#sub2api-import-form");
+const sub2apiBase = requireElement("#sub2api-import-base");
+const sub2apiEmail = requireElement("#sub2api-import-email");
+const sub2apiPassword = requireElement("#sub2api-import-password");
+const sub2apiTotp = requireElement("#sub2api-import-totp");
+const sub2apiSubmit = requireElement("#sub2api-import-submit");
+function closeSub2apiModal() {
+  sub2apiModal.classList.add("hidden");
+  sub2apiPassword.value = "";
+  sub2apiTotp.value = ""; // TOTP 是一次性动态码，留着也没用
+}
+requireElement("#import-sub2api").addEventListener("click", () => {
+  sub2apiModal.classList.remove("hidden");
+  sub2apiBase.focus();
+});
+requireElement("#sub2api-import-cancel").addEventListener("click", closeSub2apiModal);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !sub2apiModal.classList.contains("hidden")) closeSub2apiModal();
+});
+sub2apiForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const creds = {
+    baseUrl: sub2apiBase.value.trim(),
+    email: sub2apiEmail.value.trim(),
+    password: sub2apiPassword.value,
+    totpCode: sub2apiTotp.value.trim(),
+  };
+  if (!creds.baseUrl || !creds.email || !creds.password) {
+    toast("网址、邮箱、密码都必填（两步验证码仅在账号开启 TOTP 时需要）。", true);
+    return;
+  }
+  // 导入要串多个上游请求（登录→列密钥→模型广场→可能逐密钥回落），耗时可观：禁用按钮防重复提交。
+  sub2apiSubmit.disabled = true;
+  sub2apiSubmit.textContent = "导入中…";
+  try {
+    await channelAdmin.importSub2api(creds);
+    closeSub2apiModal();
+  } catch (error) {
+    toast(`导入失败：${error.message}`, true);
+  } finally {
+    sub2apiSubmit.disabled = false;
+    sub2apiSubmit.textContent = "开始导入";
+  }
+});
 const quickFailurePanel = createQuickFailurePanel({
   container: quickFailureActions,
   getDefaultProfileId: () => quickVerifyProfileSelect.value,
@@ -403,6 +503,17 @@ const settings = createSettings({
   deps: { api, toast, createCascadeTargetPicker, channelAdmin, highRiskBanner, loadScenarios, onProfileData },
 });
 
+// 「从 new-api 一键导入」按钮在设置页的 new-api 网关配置正下方（原在渠道管理页顶栏）。
+// 放在这里而非上方其它接线处：需要 settings.isDirty() —— 后端导入读的是已保存的 settings，
+// 用户改了网关字段没保存就点导入，会拿旧配置去导，先提醒一次。
+requireElement("#import-from-newapi").addEventListener("click", () => {
+  if (settings.isDirty()) {
+    toast("上面的设置还没保存，导入会使用已保存的旧配置。请先点「保存设置」。", true);
+    return;
+  }
+  return channelAdmin.importFromNewapi();
+});
+
 // 趋势图页（逐轮质量/延迟趋势 + 退化检测 + 历史告警）：见 src/trend.js。
 // 模块自管事件监听器（nav 按钮点击 / 选择器切换），app.js 无需持有其返回值。
 createTrend({
@@ -417,6 +528,8 @@ createTrend({
     trendRegression,
     trendTable,
     trendAlerts,
+    trendExportSeries,
+    trendExportRounds,
   },
   onProfileData,
   deps: { api, escapeHtml, renderTrendChart, createCascadeTargetPicker },
