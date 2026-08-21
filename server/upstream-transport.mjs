@@ -415,24 +415,38 @@ export async function readBoundedResponseText(response, maxBytes, controller, { 
   let matchWindow = "";
   const MATCH_WINDOW = 4096;
 
+  // P2-5：reader.read() 不保证跟随 AbortSignal —— fetch 的 signal 作用于网络层，而响应体
+  // ReadableStream 的 reader.read() 是独立 API。曾观测到「响应头已到、流挂起」时 controller.abort()
+  // 中止不了读取，请求挂到 timeoutMs 耗尽才抛 AbortError（该有 15s，实测延到 5 分钟）。
+  // 故用 Promise.race 竞速「实际读取」与「abort 信号」，信号先到时主动抛 AbortError 中止循环。
+  // 保留这段是**跨 undici 版本的防御**：新版 undici 已会把 abort 传播到 body 流（该版本上竞速永远是
+  // undici 先赢，这段不生效），但旧版/其它运行时未必，删掉就等于赌运行时行为。
+  //
+  // 【监听器必须在循环外注册一次】初版把 new Promise + addEventListener 写在循环【内】，于是监听器数
+  // 随 read() 次数线性增长——每轮挂一个新的 abort 监听器、从不移除，各自持有一个 reject 闭包。
+  // 实测 500 次读取 = 501 个监听器；按流式上限 MAX_UPSTREAM_STREAM_RESPONSE_BYTES（24MB、
+  // 每次 read 约 2KB）估算，单个满额流式请求可累积上万个。AbortSignal 是 EventTarget、默认不设监听器
+  // 上限，所以【不会】有 MaxListenersExceededWarning——线上只表现为容器内存偏高、无任何告警
+  // （对 deploy/docker-compose 里 mem_limit 768m 是实际风险）。
+  // 竞速语义与注册次数无关（一个信号只 abort 一次），故一次注册即可，**不要挪回循环内**。
+  let removeAbortListener = null;
+  const abortPromise = new Promise((_, reject) => {
+    const fail = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+    if (controller.signal.aborted) {
+      fail();
+      return;
+    }
+    controller.signal.addEventListener("abort", fail, { once: true });
+    removeAbortListener = () => controller.signal.removeEventListener("abort", fail);
+  });
+  // 读取正常结束、之后外层才 abort 时，abortPromise 会 reject 而无人 await。
+  // Promise.race 每轮都给它挂过处理器（故已算「已处理」），这里再显式吸收一次，
+  // 确保上方任何提前 return 的分支（truncated / 累积超限）都不会留下 unhandledRejection。
+  abortPromise.catch(() => {});
+
   try {
     while (true) {
-      // P2-5：reader.read() 对 AbortSignal 免疫（响应头已到、流挂起时 controller.abort() 不会中止读取，
-      // 导致超时后请求挂到 timeoutMs 耗尽才抛 AbortError，实测延迟从该有的 15s 延到 5 分钟）。
-      // 原因：fetch 的 signal 只作用于网络层；响应体 ReadableStream 的 reader.read() 是独立 API，
-      // 不继承父 signal。解法：Promise.race 竞赛「实际读取」与「abort 信号转 Promise」，
-      // 信号先到时主动抛 AbortError 中止循环，finally 释放 reader。
-      const readPromise = reader.read();
-      const abortPromise = new Promise((_, reject) => {
-        if (controller.signal.aborted) {
-          reject(new DOMException("The operation was aborted.", "AbortError"));
-        } else {
-          controller.signal.addEventListener("abort", () => {
-            reject(new DOMException("The operation was aborted.", "AbortError"));
-          });
-        }
-      });
-      const { done, value } = await Promise.race([readPromise, abortPromise]);
+      const { done, value } = await Promise.race([reader.read(), abortPromise]);
       if (done) {
         break;
       }
@@ -460,6 +474,10 @@ export async function readBoundedResponseText(response, maxBytes, controller, { 
     if (partial) error.partialText = partial;
     throw error;
   } finally {
+    // 摘掉 abort 监听器：signal 常常比本次读取活得更久（executeUpstreamRequest 里同一个
+    // controller 还要走重试后续、外部 abortSignal 也可能挂着别的链路），不摘就等于把闭包
+    // 留在信号上直到整个请求生命周期结束——那正是上面说的内存放大。
+    removeAbortListener?.();
     reader.releaseLock?.();
   }
 }
