@@ -1415,6 +1415,15 @@
               规则名称
               <input type="text" id="ar-name" placeholder="如：成功率过低报警" maxlength="120" />
             </label>
+            <label class="wide">
+              规则类型
+              <select id="ar-kind">
+                <option value="threshold" selected>阈值规则（单个指标 + 阈值）</option>
+                <option value="stability-jitter">稳定性抖动（复合，看单次运行内部的离散度）</option>
+                <option value="stability-decline">稳定性退化（复合，与自身历史比）</option>
+              </select>
+              <small class="field-hint">后两种只在稳定性测试 / 批量稳定性测试跑完时评估，其它测试类型静默跳过。</small>
+            </label>
             <label>
               适用范围
               <select id="ar-scope-type">
@@ -1432,7 +1441,7 @@
                 <select id="ar-model-select" disabled></select>
               </label>
             </div>
-            <label>
+            <label id="ar-metric-label">
               触发指标
               <select id="ar-metric">
                 <option value="successRate">成功率</option>
@@ -1445,7 +1454,7 @@
                 <option value="verdictLevel">快速验证结论</option>
               </select>
             </label>
-            <label>
+            <label id="ar-comparator-label">
               比较符
               <select id="ar-comparator">
                 <option value="lt">低于</option>
@@ -1463,6 +1472,51 @@
               阈值等级
               <select id="ar-threshold-level"></select>
             </label>
+            <div id="ar-jitter-params" class="hidden">
+              <p class="section-desc">
+                三项子阈值各自可选，<b>留空 = 不检查该项</b>，但至少要配一项。任一项越界即判不合格，一封邮件列出全部越界项。
+              </p>
+              <label>
+                耗时抖动倍数上限（P95 ÷ P50）
+                <input type="number" id="ar-jitter-ratio" step="any" min="0" placeholder="如 6" />
+                <small class="field-hint">尾部延迟离散度。实测该口径正常在 2.3～3.6× 之间，阈值 6 只抓明显长尾。</small>
+              </label>
+              <label>
+                首次成功率下限（0～1）
+                <input type="number" id="ar-jitter-first-sr" step="any" min="0" max="1" placeholder="如 0.9" />
+                <small class="field-hint">不含重试兜底的成功率。普通成功率会被重试洗成 100%，这一项才看得见真实失败。</small>
+              </label>
+              <label>
+                重试额外等待 P95 上限（毫秒）
+                <input type="number" id="ar-jitter-retry-overhead" step="any" min="0" placeholder="留空则不检查" />
+                <small class="field-hint">端到端 P95 减去单次 P95，即重试与退避让用户多等的时间。历史数据无此字段时该项自动跳过。</small>
+              </label>
+            </div>
+            <div id="ar-decline-params" class="hidden">
+              <p class="section-desc">
+                拿这个模型<b>最近几次</b>的中位数，比它<b>自己先前一段时间</b>的中位数。两个判定阈值各自可选（留空 = 不查该维），但至少要配一项。历史样本不足时静默不判，不会在冷启动阶段乱报。
+              </p>
+              <label>
+                最近窗口（取最近几次运行）
+                <input type="number" id="ar-decline-recent" step="1" min="1" max="20" placeholder="如 3" />
+                <small class="field-hint">含刚跑完这次。取 3 次的中位数能吸掉单次偶然，又不致于反应过慢。</small>
+              </label>
+              <label>
+                基线窗口（取之前几次运行）
+                <input type="number" id="ar-decline-baseline" step="1" min="5" max="200" placeholder="如 20" />
+                <small class="field-hint">紧邻最近窗口之前的那一段，不含最近窗口自身。最少 5 次（少于此数中位数抗不住离群值），填更小会被自动抬到 5。</small>
+              </label>
+              <label>
+                成功率跌幅阈值（0～1）
+                <input type="number" id="ar-decline-sr-drop" step="any" min="0" max="1" placeholder="如 0.1" />
+                <small class="field-hint">两窗口成功率中位数之差达到此值即越界。填 0.1 表示跌 10 个百分点。</small>
+              </label>
+              <label>
+                P95 恶化倍数阈值
+                <input type="number" id="ar-decline-p95-worsen" step="any" min="0" placeholder="如 1.5" />
+                <small class="field-hint">最近中位数 ÷ 基线中位数达到此值即越界。填 1.5 表示慢了一半。</small>
+              </label>
+            </div>
             <label>
               冷却时长（小时）
               <input type="number" id="ar-cooldown" min="0.1" step="any" value="1" />

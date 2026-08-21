@@ -6,7 +6,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { getLastFiredAt, markFired, __setRuleStateFileForTest, __resetRuleStateWriteChainForTest } from "../server/alert-rule-state.mjs";
+import {
+  getLastFiredAt,
+  markFired,
+  clearRuleState,
+  __setRuleStateFileForTest,
+  __resetRuleStateWriteChainForTest,
+  __writeStateForTest,
+} from "../server/alert-rule-state.mjs";
 
 test.afterEach(() => {
   __resetRuleStateWriteChainForTest();
@@ -76,5 +83,59 @@ test("并发 markFired 多个 key 串行化，互不覆盖丢失", async () => {
     for (let i = 0; i < 20; i += 1) {
       assert.ok(await getLastFiredAt(`alr_${i}`, "all"), `alr_${i} 应已记账`);
     }
+  });
+});
+
+// —— clearRuleState：规则删除时清理冷却记录 ——
+// 不清的话每删一条触发过的规则就多一条孤儿键，状态文件只增不减；
+// 且一旦 id 复用（概率极低但非零），新规则会继承前任的冷却、可能一上线就处于沉默期。
+
+test("clearRuleState：清掉该规则的全部 targetKey 记录", async () => {
+  await withTempFile(async () => {
+    await markFired("alr_x", "all");
+    await markFired("alr_x", "p1");
+    await markFired("alr_x", "p2");
+    await clearRuleState("alr_x");
+    assert.equal(await getLastFiredAt("alr_x", "all"), null);
+    assert.equal(await getLastFiredAt("alr_x", "p1"), null);
+    assert.equal(await getLastFiredAt("alr_x", "p2"), null);
+  });
+});
+
+test("clearRuleState：不误删其它规则的记录", async () => {
+  await withTempFile(async () => {
+    await markFired("alr_keep", "all");
+    await markFired("alr_drop", "all");
+    await clearRuleState("alr_drop");
+    assert.equal(await getLastFiredAt("alr_drop", "all"), null);
+    assert.ok(await getLastFiredAt("alr_keep", "all"), "同批其它规则的记录必须保留");
+  });
+});
+
+// 前缀匹配必须带分隔符：清 alr_1 不该顺手清掉 alr_12（id 是随机串，这种前缀关系真会出现）。
+test("clearRuleState：id 前缀相同的另一条规则不受影响", async () => {
+  await withTempFile(async () => {
+    await markFired("alr_1", "all");
+    await markFired("alr_12", "all");
+    await clearRuleState("alr_1");
+    assert.equal(await getLastFiredAt("alr_1", "all"), null);
+    assert.ok(await getLastFiredAt("alr_12", "all"), "alr_12 不该被 alr_1 的清理波及");
+  });
+});
+
+test("clearRuleState：无记录时静默通过，不抛错", async () => {
+  await withTempFile(async () => {
+    await clearRuleState("alr_never_fired");
+    assert.equal(await getLastFiredAt("alr_never_fired", "all"), null);
+  });
+});
+
+test("__writeStateForTest：整份替换（供构造异常时间戳用）", async () => {
+  await withTempFile(async () => {
+    await markFired("alr_old", "all");
+    const future = new Date(Date.now() + 86400000).toISOString();
+    await __writeStateForTest({ "alr_new::all": future });
+    assert.equal(await getLastFiredAt("alr_old", "all"), null, "整份替换应清掉旧键");
+    assert.equal(await getLastFiredAt("alr_new", "all"), future);
   });
 });

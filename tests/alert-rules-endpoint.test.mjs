@@ -220,3 +220,126 @@ test("DELETE 不存在的 id → 200（幂等，不报错）", async () => {
   const { status } = await del("/api/alert-rules/alr_does_not_exist", cookieAdmin);
   assert.equal(status, 200);
 });
+
+// —— 两种复合规则形态走真实 HTTP 层的往返 ——
+// store/evaluator 的单测绕过了端点，这里补上「前端真实送出的 body → 存盘 → GET 读回」这一段。
+
+test("抖动规则：POST → GET 读回 params 完整，且不带 metric/threshold 死字段", async () => {
+  assert.ok(ready, "server 未就绪");
+  const created = await post("/api/alert-rules", cookieAdmin, {
+    name: "抖动规则",
+    kind: "stability-jitter",
+    params: { jitterRatioMax: 6, firstAttemptSuccessRateMin: 0.9, retryOverheadP95MsMax: null },
+    cooldownHours: 1,
+  });
+  assert.equal(created.status, 200);
+  const ruleId = created.body.rule.id;
+
+  const list = await get("/api/alert-rules", cookieAdmin);
+  const found = list.body.rules.find((r) => r.id === ruleId);
+  assert.equal(found.kind, "stability-jitter");
+  assert.equal(found.params.jitterRatioMax, 6);
+  assert.equal(found.params.firstAttemptSuccessRateMin, 0.9);
+  assert.equal(found.params.retryOverheadP95MsMax, null, "未配置的子阈值应为 null");
+  assert.equal(found.metric, undefined, "复合规则不该带 metric");
+  assert.equal(found.threshold, undefined);
+
+  await del(`/api/alert-rules/${ruleId}`, cookieAdmin);
+});
+
+test("退化规则：POST → GET 读回 params 完整（窗口 + 判定阈值）", async () => {
+  assert.ok(ready, "server 未就绪");
+  const created = await post("/api/alert-rules", cookieAdmin, {
+    name: "退化规则",
+    kind: "stability-decline",
+    params: { recentRuns: 3, baselineRuns: 20, successRateDropPp: 0.1, p95WorsenRatio: 1.5 },
+    cooldownHours: 24,
+  });
+  assert.equal(created.status, 200);
+  const ruleId = created.body.rule.id;
+
+  const list = await get("/api/alert-rules", cookieAdmin);
+  const found = list.body.rules.find((r) => r.id === ruleId);
+  assert.equal(found.kind, "stability-decline");
+  assert.deepEqual(found.params, { recentRuns: 3, baselineRuns: 20, successRateDropPp: 0.1, p95WorsenRatio: 1.5 });
+  assert.equal(found.cooldownHours, 24);
+  assert.equal(found.metric, undefined);
+
+  await del(`/api/alert-rules/${ruleId}`, cookieAdmin);
+});
+
+test("抖动规则：一项子阈值都没配 → 400", async () => {
+  assert.ok(ready, "server 未就绪");
+  const { status, body } = await post("/api/alert-rules", cookieAdmin, {
+    name: "空抖动",
+    kind: "stability-jitter",
+    params: { jitterRatioMax: null, firstAttemptSuccessRateMin: null, retryOverheadP95MsMax: null },
+  });
+  assert.equal(status, 400);
+  assert.equal(body.error, "invalid_rule");
+  assert.match(body.userMessage, /至少要配一项/);
+});
+
+test("退化规则：两个判定阈值都没配 → 400（窗口尺寸有默认值，不算配了一项）", async () => {
+  assert.ok(ready, "server 未就绪");
+  const { status, body } = await post("/api/alert-rules", cookieAdmin, {
+    name: "空退化",
+    kind: "stability-decline",
+    params: { recentRuns: 3, baselineRuns: 20, successRateDropPp: null, p95WorsenRatio: null },
+  });
+  assert.equal(status, 400);
+  assert.match(body.userMessage, /至少要配一项判定阈值/);
+});
+
+// 回归：store 的钳制下界曾是 2、评估器门槛是 5，填 2~4 会存下一条永不生效的规则。
+test("退化规则：baselineRuns 填 2 → 存盘被抬到 5（不留永不生效的规则）", async () => {
+  assert.ok(ready, "server 未就绪");
+  const created = await post("/api/alert-rules", cookieAdmin, {
+    name: "小基线",
+    kind: "stability-decline",
+    params: { recentRuns: 3, baselineRuns: 2, p95WorsenRatio: 1.5 },
+  });
+  assert.equal(created.status, 200);
+  assert.equal(created.body.rule.params.baselineRuns, 5);
+  await del(`/api/alert-rules/${created.body.rule.id}`, cookieAdmin);
+});
+
+test("未知 kind → 回退成 threshold（不接受脏数据）", async () => {
+  assert.ok(ready, "server 未就绪");
+  const created = await post("/api/alert-rules", cookieAdmin, {
+    name: "脏 kind",
+    kind: "bogus-kind",
+    metric: "successRate",
+    comparator: "lt",
+    threshold: 0.8,
+  });
+  assert.equal(created.status, 200);
+  assert.equal(created.body.rule.kind, "threshold");
+  await del(`/api/alert-rules/${created.body.rule.id}`, cookieAdmin);
+});
+
+// 形态互切：退化规则改成阈值规则时，params 该被清掉、不留死字段。
+test("形态互切：退化规则改成阈值规则，params 被清除", async () => {
+  assert.ok(ready, "server 未就绪");
+  const created = await post("/api/alert-rules", cookieAdmin, {
+    name: "先退化",
+    kind: "stability-decline",
+    params: { recentRuns: 3, baselineRuns: 20, p95WorsenRatio: 1.5 },
+  });
+  const ruleId = created.body.rule.id;
+
+  const switched = await post("/api/alert-rules", cookieAdmin, {
+    id: ruleId,
+    name: "改成阈值",
+    kind: "threshold",
+    metric: "p95TotalMs",
+    comparator: "gt",
+    threshold: 60000,
+  });
+  assert.equal(switched.status, 200);
+  assert.equal(switched.body.rule.kind, "threshold");
+  assert.equal(switched.body.rule.threshold, 60000);
+  assert.equal(switched.body.rule.params, undefined, "切成阈值形态后不该残留 params");
+
+  await del(`/api/alert-rules/${ruleId}`, cookieAdmin);
+});
