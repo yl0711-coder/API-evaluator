@@ -128,9 +128,7 @@ test("场景运行的基础轮 rounds 同样保留 runId", async () => {
     successCount: 1,
     successRate: 1.0,
     totalMs: 1500,
-    scenarios: [
-      { id: "case-basic-1", group: "基础", name: "基础场景1", success: true, totalMs: 1500 },
-    ],
+    scenarios: [{ id: "case-basic-1", group: "基础", name: "基础场景1", success: true, totalMs: 1500 }],
   });
   await recordRequest({
     runId,
