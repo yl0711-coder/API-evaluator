@@ -26,6 +26,28 @@ export function normalizeChannelStatus(status) {
   return CHANNEL_STATUSES.has(status) ? status : "enabled";
 }
 
+/**
+ * 导入链路生成渠道名的唯一入口。三条导入链路（newapi-import / newapi-token-plan /
+ * sub2api-plan）都必须走这里，**不要再各自写 `String(上游名 || 兜底名)`**。
+ *
+ * 【为什么必须与 normalizeChannel 同口径】normalizeChannel 对 name 走 requiredString（会 trim），
+ * 而 saveChannels 不做归一化、导入路径原样落库。两边口径一旦不一致，就会出两个真实缺陷
+ * （都实测复现过，见 tests/import-merge.test.mjs 末尾两个用例）：
+ *
+ *   1) **上游改名永久同步不过来**。上游名带首尾空格时，导入落库 "名字 "、importSnapshot 也是 "名字 "；
+ *      用户在 UI 里保存一次（哪怕什么都没改）→ normalizeChannel 把 name trim 成 "名字"，快照仍是
+ *      "名字 " → 下次导入三方比对判定 `prev !== snapshot` = "用户改过名字" → 永久保留本地值，
+ *      上游此后再改名都同步不过来，且导入汇总把这个字段计入 preserved（"保留了 N 个"），
+ *      削弱该提示的可信度。这正是 import-merge.mjs 通篇警告的"三方合并退化"，只是触发点在 trim。
+ *   2) **全空白名的渠道无法在 UI 里保存**。上游名是 "   " 时落库就是 "   "，用户之后编辑该渠道，
+ *      requiredString trim 后为空 → 抛 400「渠道名称 不能为空」，该渠道再也存不了任何修改。
+ *
+ * 故先 trim 再判空回落兜底名：trim 后为空视同没给名字，用兜底名（而不是留下一个存不了的空白名）。
+ */
+export function importedChannelName(upstreamName, fallback) {
+  return String(upstreamName ?? "").trim() || String(fallback ?? "").trim();
+}
+
 // 模型清单：接受数组或逗号分隔字符串，去空白、去重、保序。
 export function normalizeModelList(input) {
   const arr = Array.isArray(input) ? input : String(input || "").split(/[,，]/);

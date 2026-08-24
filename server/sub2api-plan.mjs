@@ -9,7 +9,7 @@
 //      上回 new-api 那边实测 120 个渠道 60 个协议混合，正是只能投票所致；这里没有该问题。
 //   3. source 用 "sub2api"，与 "newapi" / "newapi-token" 三者互不覆盖。
 import crypto from "node:crypto";
-import { deterministicModelTargetId } from "./channel-model.mjs";
+import { deterministicModelTargetId, importedChannelName } from "./channel-model.mjs";
 import { finalizeImportedNotes, importSnapshotOf, mergeImportedChannel } from "./import-merge.mjs";
 
 // 分组的 platform -> 我们的协议。这是上游**声明**的平台，比按模型名投票可靠。
@@ -132,7 +132,7 @@ export function buildSub2apiImportPlan({
 
     const mapped = {
       id: localId,
-      name: String(row?.name || `sub2api 密钥 ${keyId}`),
+      name: importedChannelName(row?.name, `sub2api 密钥 ${keyId}`),
       provider: "",
       baseUrl,
       protocol: platformToProtocol(platform),

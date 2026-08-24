@@ -9,7 +9,7 @@
 // 两者渠道来源不同、不该互相覆盖，故用独立的 source("newapi-token") 与独立的 id 前缀。
 import crypto from "node:crypto";
 import { TEST_TOKEN_KEYWORD, isTestTokenName } from "../shared/newapi-token-keyword.mjs";
-import { deterministicModelTargetId } from "./channel-model.mjs";
+import { deterministicModelTargetId, importedChannelName } from "./channel-model.mjs";
 import { finalizeImportedNotes, importSnapshotOf, mergeImportedChannel } from "./import-merge.mjs";
 
 // 筛选口径：固定「名称包含『测试』」，定义在 shared/ 供前端复用（见该文件的说明）。
@@ -140,7 +140,7 @@ export function buildTokenImportPlan({
 
     const mapped = {
       id: localId,
-      name: String(token.name || `new-api 令牌 ${token.id}`),
+      name: importedChannelName(token.name, `new-api 令牌 ${token.id}`),
       provider: "",
       baseUrl,
       protocol: guess.protocol,
