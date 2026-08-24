@@ -49,13 +49,14 @@ export function createChannelAdmin({ state, els, onChange }) {
     //   newapi-token = 导自 new-api 的令牌（指回 new-api 的 /v1 中继）
     //   sub2api      = 导自 sub2api 的 API 密钥（指回 sub2api 的 /v1 中继）
     // 分组名来自上游数据，必须转义（与相邻的 channel.name / protocolLabel 同等对待）。
+    // sub2api 密钥 ID 也需展示（便于对照上游后台、定位问题），但它是数字故可直接拼接。
     const source =
       channel.source === "newapi"
         ? " · 来自 new-api"
         : channel.source === "newapi-token"
           ? `${channel.newapiTokenGroup ? ` · 分组 ${escapeHtml(channel.newapiTokenGroup)}` : ""} · 来自 new-api 令牌`
           : channel.source === "sub2api"
-            ? `${channel.sub2apiGroupName ? ` · 分组 ${escapeHtml(channel.sub2apiGroupName)}` : ""} · 来自 sub2api 密钥`
+            ? `${channel.sub2apiGroupName ? ` · 分组 ${escapeHtml(channel.sub2apiGroupName)}` : ""}${channel.sub2apiKeyId != null ? ` · 密钥 ID ${channel.sub2apiKeyId}` : ""} · 来自 sub2api`
             : "";
     const models = Array.isArray(channel.models) ? channel.models.length : 0;
     return `

@@ -1,5 +1,5 @@
 import { escapeHtml } from "./client-utils.js";
-import { recommendationClass, temperatureStrippedNotice } from "./formatters.js";
+import { reasoningEffortStrippedNotice, recommendationClass, temperatureStrippedNotice } from "./formatters.js";
 
 export function renderStabilitySummary(container, result) {
   const levelClass = recommendationClass(result.recommendation?.level);
@@ -7,6 +7,7 @@ export function renderStabilitySummary(container, result) {
 
   container.innerHTML = `
     ${temperatureStrippedNotice(result.temperatureStrippedCount, result.rounds)}
+    ${reasoningEffortStrippedNotice(result.reasoningEffortStrippedCount, result.rounds)}
     <article class="summary-card">
       <span>成功率</span>
       <strong class="${levelClass}">${escapeHtml(result.successRateText)}</strong>

@@ -9,9 +9,10 @@
 import crypto from "node:crypto";
 import { normalizePricePerMillion } from "./costing.mjs";
 import { normalizeProtocol } from "./profile-store.mjs";
-import { requiredString } from "./utils.mjs";
+import { requiredString, safeEntityId, safeUpstreamNumericId } from "./utils.mjs";
 
 const CHANNEL_STATUSES = new Set(["enabled", "disabled"]);
+
 const normalizeBaseUrl = (url) =>
   String(url || "")
     .trim()
@@ -24,6 +25,28 @@ const toFinite = (value, fallback) => {
 
 export function normalizeChannelStatus(status) {
   return CHANNEL_STATUSES.has(status) ? status : "enabled";
+}
+
+/**
+ * 导入链路生成渠道名的唯一入口。三条导入链路（newapi-import / newapi-token-plan /
+ * sub2api-plan）都必须走这里，**不要再各自写 `String(上游名 || 兜底名)`**。
+ *
+ * 【为什么必须与 normalizeChannel 同口径】normalizeChannel 对 name 走 requiredString（会 trim），
+ * 而 saveChannels 不做归一化、导入路径原样落库。两边口径一旦不一致，就会出两个真实缺陷
+ * （都实测复现过，见 tests/import-merge.test.mjs 末尾两个用例）：
+ *
+ *   1) **上游改名永久同步不过来**。上游名带首尾空格时，导入落库 "名字 "、importSnapshot 也是 "名字 "；
+ *      用户在 UI 里保存一次（哪怕什么都没改）→ normalizeChannel 把 name trim 成 "名字"，快照仍是
+ *      "名字 " → 下次导入三方比对判定 `prev !== snapshot` = "用户改过名字" → 永久保留本地值，
+ *      上游此后再改名都同步不过来，且导入汇总把这个字段计入 preserved（"保留了 N 个"），
+ *      削弱该提示的可信度。这正是 import-merge.mjs 通篇警告的"三方合并退化"，只是触发点在 trim。
+ *   2) **全空白名的渠道无法在 UI 里保存**。上游名是 "   " 时落库就是 "   "，用户之后编辑该渠道，
+ *      requiredString trim 后为空 → 抛 400「渠道名称 不能为空」，该渠道再也存不了任何修改。
+ *
+ * 故先 trim 再判空回落兜底名：trim 后为空视同没给名字，用兜底名（而不是留下一个存不了的空白名）。
+ */
+export function importedChannelName(upstreamName, fallback) {
+  return String(upstreamName ?? "").trim() || String(fallback ?? "").trim();
 }
 
 // 模型清单：接受数组或逗号分隔字符串，去空白、去重、保序。
@@ -50,7 +73,7 @@ const pricingFields = (src, existing = {}) => ({
 
 // 规范化一个渠道（不含凭证字段——那些由 channel-store 维护）。
 export function normalizeChannel(body, existing = null) {
-  const id = String(body.id || existing?.id || crypto.randomUUID());
+  const id = safeEntityId(body.id, existing?.id);
   const now = new Date().toISOString();
   const name = requiredString(body.name ?? existing?.name, "渠道名称");
   // 曾用名：改名时把旧名并入（去重、排除当前名），供报告按名字匹配时归并改名前的历史。
@@ -68,14 +91,17 @@ export function normalizeChannel(body, existing = null) {
     models: normalizeModelList(body.models ?? existing?.models),
     status: normalizeChannelStatus(body.status ?? existing?.status),
     source: body.source || existing?.source || "manual", // manual | newapi | newapi-token
-    newapiChannelId: body.newapiChannelId ?? existing?.newapiChannelId ?? null,
+    // 三个上游数值 id 统一走 safeUpstreamNumericId：前端把 sub2apiKeyId 不转义拼进文本，
+    // 非数字会被当 HTML 渲染（详见该函数上的说明）。另两个同类字段一并收口，不留下一个"下次
+    // 谁把它拼进模板就中招"的缺口。
+    newapiChannelId: safeUpstreamNumericId(body.newapiChannelId ?? existing?.newapiChannelId),
     // 「导入测试分组」带来的溯源字段：这是**白名单**，不在表里的字段编辑渠道时会被静默抹掉，
     // 所以新增来源字段必须同步加在这里（漏加的表现是：用户在 UI 里编辑过的渠道，溯源信息凭空消失）。
-    newapiTokenId: body.newapiTokenId ?? existing?.newapiTokenId ?? null,
+    newapiTokenId: safeUpstreamNumericId(body.newapiTokenId ?? existing?.newapiTokenId),
     newapiTokenGroup: body.newapiTokenGroup ?? existing?.newapiTokenGroup ?? null,
     // 「从 sub2api 导入测试分组」的溯源字段，同理必须在白名单里。
-    sub2apiKeyId: body.sub2apiKeyId ?? existing?.sub2apiKeyId ?? null,
-    sub2apiGroupId: body.sub2apiGroupId ?? existing?.sub2apiGroupId ?? null,
+    sub2apiKeyId: safeUpstreamNumericId(body.sub2apiKeyId ?? existing?.sub2apiKeyId),
+    sub2apiGroupId: safeUpstreamNumericId(body.sub2apiGroupId ?? existing?.sub2apiGroupId),
     sub2apiGroupName: body.sub2apiGroupName ?? existing?.sub2apiGroupName ?? null,
     // 上次导入时上游给的 name/protocol/models 快照。重新导入靠它三方比对出「哪些字段是用户改的」
     // 从而不覆盖（见 server/import-merge.mjs）。**必须留在白名单里**：漏掉的话用户在 UI 里编辑过一次，
@@ -114,7 +140,7 @@ export function normalizeModelTarget(body, existing = null) {
     ...(existing?.model && existing.model !== model ? [existing.model] : []),
   ]).filter((a) => a !== model);
   return {
-    id: String(body.id || existing?.id || crypto.randomUUID()),
+    id: safeEntityId(body.id, existing?.id),
     channelId: requiredString(body.channelId ?? existing?.channelId, "渠道"),
     model,
     note: String(body.note ?? existing?.note ?? "").trim(),

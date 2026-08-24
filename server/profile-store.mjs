@@ -9,7 +9,7 @@ import { loadModelConfigs, saveModelConfigs } from "./db.mjs";
 import { normalizePricePerMillion } from "./costing.mjs";
 import { OPENAI_PATH_PREFIX_PROTOCOL } from "./protocols.mjs";
 import { buildApiKeyRef, getSecretStorageName, readProfileApiKey, saveProfileApiKey } from "./secret-store.mjs";
-import { requiredString, writeJsonAtomic } from "./utils.mjs";
+import { requiredString, safeEntityId, writeJsonAtomic } from "./utils.mjs";
 
 // API Key 的单向指纹（sha256），用于"重复渠道"判定（url+模型+key 全一致即重复），不暴露 key。
 export function hashApiKey(key) {
@@ -50,7 +50,7 @@ export async function findDuplicateProfile(profiles, candidate) {
 // Profile records are safe to persist. API keys are migrated into secret-store
 // and stripped before profiles.json is written.
 export async function normalizeProfile(body, existingProfile = null) {
-  const id = String(body.id || existingProfile?.id || crypto.randomUUID());
+  const id = safeEntityId(body.id, existingProfile?.id);
   const apiKey = String(body.apiKey || "").trim();
   const hasExistingKey = Boolean(existingProfile?.apiKeyRef);
   if (!apiKey && !hasExistingKey) {
@@ -114,7 +114,7 @@ export async function normalizeImportedProfiles(body, currentProfiles = []) {
   const profiles = [];
   for (const item of items) {
     const existing = currentProfiles.find((profile) => profile.id === item.id);
-    const id = String(item.id || crypto.randomUUID());
+    const id = safeEntityId(item.id);
     const apiKey = String(item.apiKey || "").trim();
     const keyInfo = apiKey ? await saveProfileApiKey(id, apiKey) : null;
     profiles.push({

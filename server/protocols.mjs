@@ -16,6 +16,57 @@
 // 兼容端点地址，工具只补最后一段 /chat/completions——多一个厂商不需要改代码。
 export const OPENAI_PATH_PREFIX_PROTOCOL = "openai_path_prefix";
 
+// 推理强度（思考强度）的合法档位。官方口径：取值与默认值都是 **per-model** 的，
+// 这个全集只是「可能出现的档位」，不代表任一模型都收全部七档
+// （如 GPT-5.6 sol/terra/luna 支持 none/low/medium/high/xhigh/max，独缺 minimal）。
+// 因此本工具只做「白名单挡掉手滑」，不做「保证上游一定接受」——发出去被 400 由传输层摘参重试兜底。
+export const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+// Claude（Messages API）侧的合法档位：官方只定义 low / medium / high / xhigh / max，
+// **没有 none 和 minimal**——这是与 OpenAI 系档位集合的实质差异，不是文档写漏。
+// 另两条官方口径影响本文件的实现：
+//   · effort 不需要开启 thinking，它约束**整个响应**的 token 花费（正文 + 工具调用 + 思考）；
+//     故按 output_config 顶层字段发，与 thinking 无关。
+//   · effort="high" 与「完全不发该字段」行为**完全等价**（high 即默认）。仍照发不做优化：
+//     用户显式选了 high 就该在请求里看到，省掉它会让抓包对不上，也让日后默认档变更时行为静默漂移。
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
+// 刻意【没有】工具级默认值：默认档位由厂商按模型各自调好（如 gpt-5.5 默认 medium），
+// 我们凭空发一个"默认"等于悄悄改掉那个基线，报告里的质量/延迟/成本就不再代表用户直连时的表现。
+// 留空 = 整个字段不出现在请求体里 = 用模型自己的默认档。
+//
+// 字段名用扁平 `reasoning_effort`：官方文档里写作 `reasoning.effort` 的是 Responses API 的嵌套形状，
+// 而本工具打的是 /v1/chat/completions，那里的拼写是扁平的 reasoning_effort。
+// 万一拼错或上游不认，传输层的 isReasoningEffortUnsupportedError 会摘参重试，不会让整轮判失败。
+function applyReasoningEffort(body, profile) {
+  if (profile.reasoningEffortOverride != null) {
+    body.reasoning_effort = profile.reasoningEffortOverride;
+  }
+  return body;
+}
+
+// Claude 侧的思考强度。与 OpenAI 分支同一个 profile 字段（reasoningEffortOverride），
+// 但落到请求里是 output_config.effort（嵌套），不是扁平的 reasoning_effort——两者不可混用：
+// 把 OpenAI 的字段名发给 Claude 会被当未知参数 400，反之亦然。
+//
+// 【用户选了 Claude 不支持的档位（none / minimal）时就地丢弃，不发出去】
+// 这与「发出去被 400 再摘参重试」的既有套路刻意不同：那套路用于**运行时才知道**的约束
+// （某模型收不收某档、与工具调用冲不冲突）；而 none/minimal 不在 Claude 协议的取值域里，
+// 是**编译期就已知**的事实，发一趟注定失败的请求只是白烧一次往返和额度。
+// 丢弃必须留痕：置 effortDropped，由传输层转成 reasoningEffortStripped，
+// 报告与提示卡照常写明「所选思考强度未生效」。静默丢弃才是本仓库最忌讳的失真。
+function applyClaudeEffort(request, profile) {
+  const effort = profile.reasoningEffortOverride;
+  if (effort == null) return request;
+  if (!CLAUDE_EFFORT_LEVELS.includes(effort)) {
+    request.effortDropped = true;
+    return request;
+  }
+  // 与已有字段合并而非整体赋值：output_config 日后可能承载别的子字段，直接盖会把它们冲掉。
+  request.body.output_config = { ...(request.body.output_config || {}), effort };
+  return request;
+}
+
 // 各协议的目标 URL。集中一处，四个 builder（普通/流式/工具/token 探针）都走它，
 // 避免此前那样在 6 处各自硬编码字面量、加协议要逐个补。
 export function buildProtocolUrl(protocol, baseUrl) {
@@ -44,24 +95,30 @@ export function buildProtocolRequest(profile, prompt) {
     if (profile.temperatureOverride != null) {
       body.temperature = profile.temperatureOverride;
     }
-    return {
-      url: buildProtocolUrl(profile.protocol, baseUrl),
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": profile.apiKey,
-        "anthropic-version": profile.anthropicVersion || "2023-06-01",
+    return applyClaudeEffort(
+      {
+        url: buildProtocolUrl(profile.protocol, baseUrl),
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": profile.apiKey,
+          "anthropic-version": profile.anthropicVersion || "2023-06-01",
+        },
+        body,
       },
-      body,
-    };
+      profile,
+    );
   }
 
-  const body = {
-    model,
-    messages: [{ role: "user", content: text }],
-    temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
-    max_tokens: Number(profile.maxTokens || 512),
-    stream: false,
-  };
+  const body = applyReasoningEffort(
+    {
+      model,
+      messages: [{ role: "user", content: text }],
+      temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
+      max_tokens: Number(profile.maxTokens || 512),
+      stream: false,
+    },
+    profile,
+  );
   return {
     url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: {
@@ -110,15 +167,20 @@ export function buildProtocolToolRequest(profile) {
     if (profile.temperatureOverride != null) {
       body.temperature = profile.temperatureOverride;
     }
-    return {
-      url: buildProtocolUrl(profile.protocol, baseUrl),
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": profile.apiKey,
-        "anthropic-version": profile.anthropicVersion || "2023-06-01",
+    // 工具题同样带 effort。官方明说 effort 约束的是「全部 token，含工具调用参数」，
+    // 低档会让模型少调工具——正是本题要观察的行为，不该在这里替用户抹掉。
+    return applyClaudeEffort(
+      {
+        url: buildProtocolUrl(profile.protocol, baseUrl),
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": profile.apiKey,
+          "anthropic-version": profile.anthropicVersion || "2023-06-01",
+        },
+        body,
       },
-      body,
-    };
+      profile,
+    );
   }
 
   return {
@@ -127,41 +189,49 @@ export function buildProtocolToolRequest(profile) {
       "content-type": "application/json",
       authorization: `Bearer ${profile.apiKey}`,
     },
-    body: {
-      model,
-      messages: [{ role: "user", content: prompt }],
-      // 工具调用题默认用 0 求确定性（结构对不对不该受采样影响）。用户手填温度时以手填为准——
-      // 有些模型只接受特定温度（如月之暗面只认 1），硬发 0 会让这一题必然 400，
-      // 报告上就成了一条并不存在的「工具调用不可用」。
-      temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0,
-      max_tokens: Number(profile.maxTokens || 512),
-      stream: false,
-      tools: [
-        {
+    // 工具题也带 reasoning_effort（用户填了才带）。已知边界：GPT-5.6 系在
+    // /v1/chat/completions 上「function tools + reasoning_effort≠none」直接不支持，报错原文
+    // 「To use function tools, use /v1/responses or set reasoning_effort to 'none'」。
+    // 刻意仍然发：被 400 后由传输层摘参重试，工具题照样能过，并在报告里标注「档位被摘」——
+    // 比这里静默不发好，后者会让用户以为工具题是在他选的档位下通过的。
+    body: applyReasoningEffort(
+      {
+        model,
+        messages: [{ role: "user", content: prompt }],
+        // 工具调用题默认用 0 求确定性（结构对不对不该受采样影响）。用户手填温度时以手填为准——
+        // 有些模型只接受特定温度（如月之暗面只认 1），硬发 0 会让这一题必然 400，
+        // 报告上就成了一条并不存在的「工具调用不可用」。
+        temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0,
+        max_tokens: Number(profile.maxTokens || 512),
+        stream: false,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: toolName,
+              description: "Get weather for a city",
+              parameters: {
+                type: "object",
+                properties: {
+                  city: {
+                    type: "string",
+                    description: "City name",
+                  },
+                },
+                required: ["city"],
+              },
+            },
+          },
+        ],
+        tool_choice: {
           type: "function",
           function: {
             name: toolName,
-            description: "Get weather for a city",
-            parameters: {
-              type: "object",
-              properties: {
-                city: {
-                  type: "string",
-                  description: "City name",
-                },
-              },
-              required: ["city"],
-            },
           },
         },
-      ],
-      tool_choice: {
-        type: "function",
-        function: {
-          name: toolName,
-        },
       },
-    },
+      profile,
+    ),
   };
 }
 
@@ -185,27 +255,33 @@ export function buildProtocolStreamRequest(profile, prompt, { includeUsage = fal
     if (profile.temperatureOverride != null) {
       body.temperature = profile.temperatureOverride;
     }
-    return {
-      url: buildProtocolUrl(profile.protocol, baseUrl),
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": profile.apiKey,
-        "anthropic-version": profile.anthropicVersion || "2023-06-01",
+    return applyClaudeEffort(
+      {
+        url: buildProtocolUrl(profile.protocol, baseUrl),
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": profile.apiKey,
+          "anthropic-version": profile.anthropicVersion || "2023-06-01",
+        },
+        body,
       },
-      body,
-    };
+      profile,
+    );
   }
 
-  const body = {
-    model,
-    messages: [{ role: "user", content: text }],
-    temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
-    max_tokens: Number(profile.maxTokens || 512),
-    stream: true,
-    // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
-    // coalesceClaudeSse 已做合并。
-    ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
-  };
+  const body = applyReasoningEffort(
+    {
+      model,
+      messages: [{ role: "user", content: text }],
+      temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
+      max_tokens: Number(profile.maxTokens || 512),
+      stream: true,
+      // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
+      // coalesceClaudeSse 已做合并。
+      ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
+    },
+    profile,
+  );
   return {
     url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: {
@@ -539,6 +615,133 @@ export function isStreamOptionsUnsupportedError(raw) {
     text.includes("not permitted") || // Extra inputs are not permitted（pydantic 系）
     text.includes("not allowed") ||
     text.includes("invalid")
+  );
+}
+
+// 上游拒收 reasoning_effort（思考强度）的几种情形，识别后由传输层删参重试：
+//   ① 该模型不是推理模型 —— "Invalid 'reasoning_effort' for non-reasoning model"
+//   ② 该模型不认这一档 —— 取值是 per-model 的，如 GPT-5.6 系不支持 minimal
+//   ③ 与 function tools 冲突 —— GPT-5.6 系在 chat/completions 上要求
+//      "use /v1/responses or set reasoning_effort to 'none'"
+//   ④ 中转 / 非官方实现根本不认这个字段
+// 同 isTemperatureUnsupportedError / isStreamOptionsUnsupportedError 的保守口径：必须点名
+// reasoning_effort 才认（见 errorNamesParam——我们发了它，400 的请求体回显里就必然带着它）。
+// 宁可漏判也不误判：漏判只是这次照旧 400（用户看得见真实报错）；误判会把模型加进进程级摘参名单，
+// 此后静默按模型默认档跑，报告却显示用户选的档位——那是最坏的失真。
+export function isReasoningEffortUnsupportedError(raw) {
+  const text = String(raw || "").toLowerCase();
+  if (!errorNamesParam(text, "reasoning_effort")) return false;
+  return (
+    text.includes("unsupported") ||
+    text.includes("not supported") ||
+    text.includes("does not support") ||
+    text.includes("unrecognized") ||
+    text.includes("unknown") ||
+    text.includes("unexpected") ||
+    text.includes("not permitted") ||
+    text.includes("not allowed") ||
+    text.includes("invalid") || // Invalid 'reasoning_effort' for non-reasoning model
+    text.includes("only the default") ||
+    text.includes("/v1/responses") || // 「改用 Responses API 或设成 none」这类改道建议
+    text.includes("responses api")
+  );
+}
+
+// 上游要求把 max_tokens 改名成 max_completion_tokens。OpenAI 从 o1 起把 max_tokens 标为
+// deprecated，GPT-5 系（已确认到 5.4）直接 400：
+//   "Unsupported parameter: 'max_tokens' is not supported with this model.
+//    Use 'max_completion_tokens' instead."
+// 不处理的后果不是少一项指标，而是**整轮全灭**：四个 builder 全都发 max_tokens，直连这类模型
+// 每一道用例都 400 → successRate 0 → grade F → 报告写「暂不建议接入」。一条健康渠道被报成不可用，
+// 与此前直连智谱必然 404 是同一类假失败。
+//
+// 【这一类必须改名，不能像 temperature / stream_options / reasoning_effort 那样摘掉】
+// 那三个都是可选参数，摘了只是少个约束；max_tokens 是输出上限，摘掉等于放开到模型自己的上限
+// （GPT-5.6 是 128K）。代价不只是钱：场景题刻意设 8192/4096、压测按 4096 收口，且传输层还有
+// MAX_UPSTREAM_RESPONSE_BYTES 字节上限——放开 token 上限会把响应顶到那个截断分支，
+// 变成 response_too_large 判 F，又是一条假失败。
+//
+// 【判定要求同时点名两个字段】——这是刻意的严格：
+// 只说「max_tokens 不支持」而不给替代名，改成什么就是猜；猜错照旧 400，还多烧一次往返。
+// 那种情况宁可让用户看见真实报错（本仓库一贯取向：宁可漏判不可误判）。
+// 必须有「拒收词」才认，且先抹掉请求体回显（见 errorNamesParam）：我方发的就是 max_tokens，
+// 400 的回显里必然带着它，单纯 includes 挡不住。
+export function isMaxTokensRenameRequiredError(raw) {
+  const text = String(raw || "").toLowerCase();
+  // 替代名只作为「上游给出了改名建议」的证据，不参与回显判定：它不可能出现在我方请求体里。
+  if (!text.includes("max_completion_tokens")) return false;
+  if (!errorNamesParam(text, "max_tokens")) return false;
+  return (
+    text.includes("unsupported") || // Unsupported parameter: 'max_tokens'
+    text.includes("not supported") || // is not supported with this model
+    text.includes("does not support") ||
+    text.includes("instead") || // Use 'max_completion_tokens' instead
+    text.includes("deprecated") ||
+    text.includes("invalid") ||
+    text.includes("unrecognized")
+  );
+}
+
+// 上游拒收 Claude 侧思考强度（output_config.effort）的情形。刻意与
+// isReasoningEffortUnsupportedError 分开：两边的字段名不同（嵌套 output_config.effort vs 扁平
+// reasoning_effort），共用一个探测器会互相漏判——按 "reasoning_effort" 点名去查 Claude 的报错，
+// 永远查不到，摘参重试就永不触发。
+// 拒收来源有二：
+//   ① 老版本 API / 中转不认 output_config 这个顶层字段
+//      —— Anthropic 是 pydantic 风格，原文形如 "output_config: Extra inputs are not permitted"
+//   ② 该模型不支持所选档位（xhigh / max 是后加的，老模型只到 high）
+//      —— 原文形如 "output_config.effort: Input should be 'low', 'medium' or 'high'"
+// 同款保守口径：必须点名 effort 或 output_config 才认（见 errorNamesParam，挡请求体回显）。
+// 「上游点名了 Claude 侧的思考强度字段」的判定。刻意不直接用 errorNamesParam(text, "effort")：
+// 那个函数最后一步是纯子串 includes，裸 "effort" 会命中任何含该英文词的句子——实测
+// "Best-effort routing is not supported for this endpoint" 会被判成 true，于是模型被永久加进
+// 进程级摘参名单，此后静默按默认档跑却仍显示用户选的档位。那是本仓库最忌讳的失真。
+// 故只认三种「确实在指字段」的形态：
+//   ① 嵌套路径 output_config.effort
+//   ② 带引号的字段形态（'effort' / "effort"——pydantic 与 OpenAI 系报错都是这个样子）
+//   ③ 容器被整体拒收（output_config 这个名字不与任何英文词碰撞，交给 errorNamesParam 即可）
+//   ④ 裸 effort 作为键，且**位于键该出现的位置**（行首，或紧跟 { , ; 或引号）
+// 另外刻意【认】扁平的 reasoning_effort：中转把 Claude 形状翻成 OpenAI 后端时，回的是 OpenAI
+// 措辞的报错，而我方发的确实是思考强度——摘参重试正是对的处置。
+// 反向不对称（isReasoningEffortUnsupportedError 不认 output_config）是有意的：非 Claude 渠道
+// 本就不该出现这个字段，认它只会扩大误判面，而漏判的代价仅是用户看见真实 400。
+function errorNamesClaudeEffort(text) {
+  if (text.includes("reasoning_effort")) return true;
+  if (text.includes("output_config.effort")) return true;
+  if (errorNamesParam(text, "output_config")) return true;
+  // 带引号的字段形态（'effort' / "effort"），或裸 effort 作为键出现。
+  // 先抹掉「键: 值」的请求体回显，剩下还提到才算真投诉。
+  const stripped = text.replace(/["']effort["']\s*[:=]\s*(?=[{[]|["']|-?\d|true\b|false\b|null\b)/g, " ");
+  if (/["']effort["']/.test(stripped)) return true;
+  // 裸 effort + 冒号：必须出现在【键该出现的位置】——行首，或紧跟 { , ; 或引号。
+  // 【为什么不能只用 (?<![\w.]) 排除前缀】那个 lookbehind 不排除连字符，于是
+  // "Best-effort: not supported" / "Low-effort: not allowed" 这类**与思考强度无关**的网关报错
+  // 全被判成"该参数被拒"（四个变体实测复现）→ 模型被永久加进进程级摘参名单 →
+  // 此后静默按默认档跑，报告却写「思考强度未生效」，把排查引向"模型支持哪些档位"，
+  // 而真实原因在网关容量配置。这是本仓库最忌讳的那类归因失真。
+  // 【刻意接受的漏判】句中散文式的 "Invalid value for effort: xhigh"（effort 前是空格）不再认。
+  // 实证依据：Anthropic / pydantic 与 OpenAI 系的真实报错都写成字段路径或带引号形态
+  // （output_config.effort: … / 'effort' …），已由上面三支覆盖；而"best effort"作为英文习语
+  // 在基础设施报错里是真实存在的。两害相权取漏判：漏判的代价仅是用户看见真实 400（自己能看懂），
+  // 误判的代价是静默丢掉用户选的档位 + 误导排查方向。
+  return /(?:^|[\n\r{,;"'])\s*effort\s*:/.test(stripped);
+}
+
+export function isClaudeEffortUnsupportedError(raw) {
+  const text = String(raw || "").toLowerCase();
+  if (!errorNamesClaudeEffort(text)) return false;
+  return (
+    text.includes("unsupported") ||
+    text.includes("not supported") ||
+    text.includes("does not support") ||
+    text.includes("unrecognized") || // Unrecognized request argument supplied: output_config
+    text.includes("unknown") ||
+    text.includes("unexpected") ||
+    text.includes("not permitted") || // Extra inputs are not permitted（Anthropic 的 pydantic 风格）
+    text.includes("not allowed") ||
+    text.includes("invalid") ||
+    text.includes("input should be") || // Input should be 'low', 'medium' or 'high'
+    text.includes("should be one of")
   );
 }
 

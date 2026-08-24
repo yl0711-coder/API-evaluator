@@ -4551,6 +4551,60 @@ textarea:focus {
   border-color: rgba(var(--bad-rgb), 0.4);
 }
 
+/* —— 报警规则页：本页此前**没有任何专属样式**，导致四处对齐问题（实测 1440px 宽）——
+   1) #ar-form 缺 align-items:start。默认 stretch 下，「适用范围」被同行那个高得多的参数块
+      拉到等高，其下拉框随之垂直居中下飘：scope=target 时错位 37px、稳定性抖动 81px、
+      稳定性退化 128px。这个 bug 在 #admission-batch-form / #load-test-form / #channel-form /
+      #auto-test-config 都修过，本页漏了。
+   2) 三个参数块（#ar-target-picker / #ar-jitter-params / #ar-decline-params）是裸 div、
+      display:block、无 gap，内部 label 实测间距 0px 全挤在一起（表单自身 gap 是 16px）。
+   3) 这三块只占两列中的一列（525px），旁边一列空着，于是 3~4 个字段被迫竖着堆叠，
+      把整块拉到 h362/h509——正是 1) 里那些错位量的来源。改为整行 + 内部两列。
+   4) 本页复用了 .atc-list-head / .atc-form-actions 两个类名，但那两条规则被
+      #auto-test-config 限定了作用域，本页取不到：标题栏因 .action-row 默认 flex-end
+      被推到右侧、按钮排布也不对。
+   整体照抄 #auto-test-config 的既有惯例（两列网格 + .wide 跨行 + 子块内部再两列），
+   不新造一套观感。 */
+#alert-rules .form-grid {
+  gap: 20px 24px;
+  align-items: start;
+}
+
+/* 三个参数块：作为整行出现，内部再走两列网格，与主表单同一套行列节奏。
+   显隐由 JS 的 .hidden（display:none !important）控制，稳压此处的 display:grid。 */
+#alert-rules #ar-target-picker,
+#alert-rules #ar-jitter-params,
+#alert-rules #ar-decline-params {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 24px;
+  align-items: start;
+}
+
+/* 参数块内的说明文字独占整行，不参与两列（否则它会占掉第一格、把首个字段挤到右列）。 */
+#alert-rules #ar-jitter-params > .section-desc,
+#alert-rules #ar-decline-params > .section-desc {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+/* 规则列表标题栏：标题贴左（.action-row 默认 flex-end 会把它推到右侧），按钮靠右。
+   与 #auto-test-config .atc-list-head 同一处理，只是那条限定了页面作用域，本页需自带。 */
+#alert-rules .atc-list-head {
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+#alert-rules .atc-list-head h3 {
+  margin: 0;
+  margin-right: auto;
+}
+#alert-rules .atc-form-actions {
+  justify-content: flex-start;
+  gap: 12px;
+}
+
 /* SMTP 分区标题栏：标题贴左、同步按钮靠右贴同一行（同 .atc-list-head 思路），说明文字仍在下方独占一行。 */
 #notify-config .ntf-section-head {
   justify-content: space-between;

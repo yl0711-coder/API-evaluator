@@ -279,3 +279,72 @@ test("normalize*：改名自动记曾用名（aliases），改回时剔除当前
   t = normalizeModelTarget({ channelId: "c1", model: "gpt-4o-2024" }, t);
   assert.deepEqual(t.aliases, ["gpt-4o"]); // 改模型名同样记曾用名
 });
+
+// —— P4 回归：id 与上游数值 id 的注入防护 ——
+// 前端有多处【刻意不转义】地把 id 拼进 HTML 属性，并注释声明「渠道 id 按约定是后端生成的安全值」
+// （src/channel-admin.js 的 data-edit-channel、src/profile-view.js 的 data-edit-profile）。
+// 两条导入链路守约（safeTokenIdPart / safeKeyIdPart），但 POST /api/channels 的原始请求体
+// 直接进 normalizeChannel，原实现 `String(body.id || ...)` 原样收下 → 属性可被打破。
+// 这些端点目前仅超管可写，故非越权；但 requiresAdmin 里已有放宽给 role 10 的先例，
+// 一旦渠道写权限放宽即成真实存储型 XSS，故在数据层收口。
+// 变异验证：把 safeEntityId / safeUpstreamNumericId 换回原写法即变红。
+test("P4：非法 id 被丢弃重新生成，打不破 HTML 属性", () => {
+  const evil = '7" onmouseover="alert(1)" x="';
+  const channel = normalizeChannel({ id: evil, name: "渠道", baseUrl: "https://relay.test", protocol: "openai_compatible" });
+  assert.notEqual(channel.id, evil, "非法 id 不得原样落库");
+  assert.match(channel.id, /^[A-Za-z0-9_-]+$/, "重新生成的 id 必须符合白名单");
+  // 复刻前端不转义的属性渲染，确认引号出不来
+  assert.ok(!`<button data-edit-channel="${channel.id}">`.includes("onmouseover"), "渲染进属性后不得逃出");
+
+  const target = normalizeModelTarget({ id: evil, channelId: "c1", model: "gpt-4o" });
+  assert.notEqual(target.id, evil, "模型目标 id 同样要挡（data-edit-target 也不转义）");
+});
+
+test("P4：合法 id 一律原样保留（不得换掉既有数据的 id）", () => {
+  // 换掉既有 id 会孤立所有关联（模型目标指向渠道、报告按 id 归并），比不挡注入更糟。
+  // 这里列的是各生成器的真实形状 + 线上实测样本。
+  for (const id of [
+    "05311b8b-37d2-4b7d-af14-5147e1371a5e", // randomUUID（线上 75 个渠道均为此形状）
+    "mt_a1b2c3d4e5f60718", // deterministicModelTargetId
+    "newapi-42", // newapiChannelLocalId
+    "newapi-token-1a2b3c4d-7", // newapiTokenChannelLocalId
+    "sub2api-key-9f8e7d6c-42", // sub2apiChannelLocalId
+  ]) {
+    assert.equal(normalizeChannel({ id, name: "n", baseUrl: "https://r.test", protocol: "openai_compatible" }).id, id, id);
+  }
+});
+
+test("P4：上游数值 id 强制为有限数，非数字落 null；0 与空值语义不混淆", () => {
+  const channel = normalizeChannel({
+    name: "渠道",
+    baseUrl: "https://relay.test",
+    protocol: "openai_compatible",
+    source: "sub2api",
+    sub2apiKeyId: '1 <img src=x onerror="alert(1)">', // 前端不转义拼进文本
+    newapiTokenId: "<svg onload=alert(2)>",
+    sub2apiGroupId: "99 junk",
+    newapiChannelId: "not-a-number",
+  });
+  assert.equal(channel.sub2apiKeyId, null, "非数字的 sub2apiKeyId 必须落 null 而非原样字符串");
+  assert.equal(channel.newapiTokenId, null);
+  assert.equal(channel.sub2apiGroupId, null);
+  assert.equal(channel.newapiChannelId, null);
+
+  // 0 是真实可能的上游 id，必须与「没有值」区分开（别用 `|| null` 那种写法）。
+  const zero = normalizeChannel({
+    name: "渠道",
+    baseUrl: "https://relay.test",
+    protocol: "openai_compatible",
+    sub2apiKeyId: 0,
+  });
+  assert.equal(zero.sub2apiKeyId, 0, "0 是有效 id，不能被当成空值抹掉");
+
+  // 合法数值（含字符串数字，导入链路会传 Number，UI 回显可能是字符串）要保留
+  const normal = normalizeChannel({
+    name: "渠道",
+    baseUrl: "https://relay.test",
+    protocol: "openai_compatible",
+    sub2apiKeyId: "42",
+  });
+  assert.equal(normal.sub2apiKeyId, 42);
+});
