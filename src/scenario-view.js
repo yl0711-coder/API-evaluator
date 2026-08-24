@@ -1,5 +1,5 @@
 import { escapeHtml } from "./client-utils.js";
-import { recommendationClass, temperatureStrippedNotice } from "./formatters.js";
+import { reasoningEffortStrippedNotice, recommendationClass, temperatureStrippedNotice } from "./formatters.js";
 import { reportViewUrl } from "./report-overlay.js";
 
 // 场景测试「汇总结论」：场景测试是多 API × 多场景的矩阵，没有单一成功率，
@@ -35,6 +35,8 @@ export function renderScenarioSummary(container, result) {
   // 逐模型重复同一句话很吵；这里累加各模型的被摘次数与总请求数。
   const strippedCount = profiles.reduce((sum, p) => sum + (Number(p.temperatureStrippedCount) || 0), 0);
   const totalCases = profiles.reduce((sum, p) => sum + (Number(p.caseCount) || 0), 0);
+  // 思考强度被摘同理按整轮累加出一张卡。
+  const effortStrippedCount = profiles.reduce((sum, p) => sum + (Number(p.reasoningEffortStrippedCount) || 0), 0);
 
   // reportCard 内含 <a> 链接标签和 escapeHtml() 转义过的数据——HTML 标签刻意不转义
   const reports = Array.isArray(result.reports) ? result.reports.filter((r) => r && r.id) : [];
@@ -58,5 +60,9 @@ export function renderScenarioSummary(container, result) {
     </article>
   `;
 
-  container.innerHTML = temperatureStrippedNotice(strippedCount, totalCases) + cards.join("") + reportCard;
+  container.innerHTML =
+    temperatureStrippedNotice(strippedCount, totalCases) +
+    reasoningEffortStrippedNotice(effortStrippedCount, totalCases) +
+    cards.join("") +
+    reportCard;
 }

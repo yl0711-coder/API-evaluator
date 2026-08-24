@@ -16,6 +16,26 @@
 // 兼容端点地址，工具只补最后一段 /chat/completions——多一个厂商不需要改代码。
 export const OPENAI_PATH_PREFIX_PROTOCOL = "openai_path_prefix";
 
+// 推理强度（思考强度）的合法档位。官方口径：取值与默认值都是 **per-model** 的，
+// 这个全集只是「可能出现的档位」，不代表任一模型都收全部七档
+// （如 GPT-5.6 sol/terra/luna 支持 none/low/medium/high/xhigh/max，独缺 minimal）。
+// 因此本工具只做「白名单挡掉手滑」，不做「保证上游一定接受」——发出去被 400 由传输层摘参重试兜底。
+export const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+// 刻意【没有】工具级默认值：默认档位由厂商按模型各自调好（如 gpt-5.5 默认 medium），
+// 我们凭空发一个"默认"等于悄悄改掉那个基线，报告里的质量/延迟/成本就不再代表用户直连时的表现。
+// 留空 = 整个字段不出现在请求体里 = 用模型自己的默认档。
+//
+// 字段名用扁平 `reasoning_effort`：官方文档里写作 `reasoning.effort` 的是 Responses API 的嵌套形状，
+// 而本工具打的是 /v1/chat/completions，那里的拼写是扁平的 reasoning_effort。
+// 万一拼错或上游不认，传输层的 isReasoningEffortUnsupportedError 会摘参重试，不会让整轮判失败。
+function applyReasoningEffort(body, profile) {
+  if (profile.reasoningEffortOverride != null) {
+    body.reasoning_effort = profile.reasoningEffortOverride;
+  }
+  return body;
+}
+
 // 各协议的目标 URL。集中一处，四个 builder（普通/流式/工具/token 探针）都走它，
 // 避免此前那样在 6 处各自硬编码字面量、加协议要逐个补。
 export function buildProtocolUrl(protocol, baseUrl) {
@@ -55,13 +75,16 @@ export function buildProtocolRequest(profile, prompt) {
     };
   }
 
-  const body = {
-    model,
-    messages: [{ role: "user", content: text }],
-    temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
-    max_tokens: Number(profile.maxTokens || 512),
-    stream: false,
-  };
+  const body = applyReasoningEffort(
+    {
+      model,
+      messages: [{ role: "user", content: text }],
+      temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
+      max_tokens: Number(profile.maxTokens || 512),
+      stream: false,
+    },
+    profile,
+  );
   return {
     url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: {
@@ -127,41 +150,49 @@ export function buildProtocolToolRequest(profile) {
       "content-type": "application/json",
       authorization: `Bearer ${profile.apiKey}`,
     },
-    body: {
-      model,
-      messages: [{ role: "user", content: prompt }],
-      // 工具调用题默认用 0 求确定性（结构对不对不该受采样影响）。用户手填温度时以手填为准——
-      // 有些模型只接受特定温度（如月之暗面只认 1），硬发 0 会让这一题必然 400，
-      // 报告上就成了一条并不存在的「工具调用不可用」。
-      temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0,
-      max_tokens: Number(profile.maxTokens || 512),
-      stream: false,
-      tools: [
-        {
+    // 工具题也带 reasoning_effort（用户填了才带）。已知边界：GPT-5.6 系在
+    // /v1/chat/completions 上「function tools + reasoning_effort≠none」直接不支持，报错原文
+    // 「To use function tools, use /v1/responses or set reasoning_effort to 'none'」。
+    // 刻意仍然发：被 400 后由传输层摘参重试，工具题照样能过，并在报告里标注「档位被摘」——
+    // 比这里静默不发好，后者会让用户以为工具题是在他选的档位下通过的。
+    body: applyReasoningEffort(
+      {
+        model,
+        messages: [{ role: "user", content: prompt }],
+        // 工具调用题默认用 0 求确定性（结构对不对不该受采样影响）。用户手填温度时以手填为准——
+        // 有些模型只接受特定温度（如月之暗面只认 1），硬发 0 会让这一题必然 400，
+        // 报告上就成了一条并不存在的「工具调用不可用」。
+        temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0,
+        max_tokens: Number(profile.maxTokens || 512),
+        stream: false,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: toolName,
+              description: "Get weather for a city",
+              parameters: {
+                type: "object",
+                properties: {
+                  city: {
+                    type: "string",
+                    description: "City name",
+                  },
+                },
+                required: ["city"],
+              },
+            },
+          },
+        ],
+        tool_choice: {
           type: "function",
           function: {
             name: toolName,
-            description: "Get weather for a city",
-            parameters: {
-              type: "object",
-              properties: {
-                city: {
-                  type: "string",
-                  description: "City name",
-                },
-              },
-              required: ["city"],
-            },
           },
         },
-      ],
-      tool_choice: {
-        type: "function",
-        function: {
-          name: toolName,
-        },
       },
-    },
+      profile,
+    ),
   };
 }
 
@@ -196,16 +227,19 @@ export function buildProtocolStreamRequest(profile, prompt, { includeUsage = fal
     };
   }
 
-  const body = {
-    model,
-    messages: [{ role: "user", content: text }],
-    temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
-    max_tokens: Number(profile.maxTokens || 512),
-    stream: true,
-    // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
-    // coalesceClaudeSse 已做合并。
-    ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
-  };
+  const body = applyReasoningEffort(
+    {
+      model,
+      messages: [{ role: "user", content: text }],
+      temperature: profile.temperatureOverride != null ? profile.temperatureOverride : 0.2,
+      max_tokens: Number(profile.maxTokens || 512),
+      stream: true,
+      // Claude 分支无需对应字段：其流式原生带 usage（message_start + message_delta），
+      // coalesceClaudeSse 已做合并。
+      ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
+    },
+    profile,
+  );
   return {
     url: buildProtocolUrl(profile.protocol, baseUrl),
     headers: {
@@ -539,6 +573,35 @@ export function isStreamOptionsUnsupportedError(raw) {
     text.includes("not permitted") || // Extra inputs are not permitted（pydantic 系）
     text.includes("not allowed") ||
     text.includes("invalid")
+  );
+}
+
+// 上游拒收 reasoning_effort（思考强度）的几种情形，识别后由传输层删参重试：
+//   ① 该模型不是推理模型 —— "Invalid 'reasoning_effort' for non-reasoning model"
+//   ② 该模型不认这一档 —— 取值是 per-model 的，如 GPT-5.6 系不支持 minimal
+//   ③ 与 function tools 冲突 —— GPT-5.6 系在 chat/completions 上要求
+//      "use /v1/responses or set reasoning_effort to 'none'"
+//   ④ 中转 / 非官方实现根本不认这个字段
+// 同 isTemperatureUnsupportedError / isStreamOptionsUnsupportedError 的保守口径：必须点名
+// reasoning_effort 才认（见 errorNamesParam——我们发了它，400 的请求体回显里就必然带着它）。
+// 宁可漏判也不误判：漏判只是这次照旧 400（用户看得见真实报错）；误判会把模型加进进程级摘参名单，
+// 此后静默按模型默认档跑，报告却显示用户选的档位——那是最坏的失真。
+export function isReasoningEffortUnsupportedError(raw) {
+  const text = String(raw || "").toLowerCase();
+  if (!errorNamesParam(text, "reasoning_effort")) return false;
+  return (
+    text.includes("unsupported") ||
+    text.includes("not supported") ||
+    text.includes("does not support") ||
+    text.includes("unrecognized") ||
+    text.includes("unknown") ||
+    text.includes("unexpected") ||
+    text.includes("not permitted") ||
+    text.includes("not allowed") ||
+    text.includes("invalid") || // Invalid 'reasoning_effort' for non-reasoning model
+    text.includes("only the default") ||
+    text.includes("/v1/responses") || // 「改用 Responses API 或设成 none」这类改道建议
+    text.includes("responses api")
   );
 }
 

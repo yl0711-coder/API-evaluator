@@ -7,7 +7,13 @@
 import crypto from "node:crypto";
 import { readProfileApiKey } from "./secret-store.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
-import { firstTokenPatternFor, isStreamOptionsUnsupportedError, isTemperatureUnsupportedError, normalizeHttpError } from "./protocols.mjs";
+import {
+  firstTokenPatternFor,
+  isReasoningEffortUnsupportedError,
+  isStreamOptionsUnsupportedError,
+  isTemperatureUnsupportedError,
+  normalizeHttpError,
+} from "./protocols.mjs";
 import { summarizeText } from "./utils.mjs";
 import { envInt } from "./env-config.mjs";
 import { recordUpstreamTiming } from "./performance.mjs";
@@ -71,6 +77,14 @@ const RETRY_MAX_DELAY_MS = 20000; // 单次退避上限（同时钳制 Retry-Aft
 const TEMPERATURE_UNSUPPORTED_MODELS = new Set();
 // 同款记忆：本进程内曾因 stream_options 被 400 的模型，后续流式请求首发就不带，省掉注定失败的往返。
 const STREAM_OPTIONS_UNSUPPORTED_MODELS = new Set();
+// 同款记忆：曾因 reasoning_effort 被 400 的模型。
+//
+// 【键里必须带请求形状】——这是与上面两个名单的关键差异，不是多余的谨慎：
+// GPT-5.6 系在 chat/completions 上「带 function tools 时」才拒收 reasoning_effort，普通生成请求
+// 完全接受。若沿用 `baseUrl|model` 作键，工具题那一次 400 会让**后续所有生成探测**也首发就不带档位，
+// 于是用户选了 high、报告显示 high，实际却在模型默认档上跑——静默失真，正是本仓库最忌讳的那种。
+// 故按 `baseUrl|model|hasTools` 记忆：两种形状各自学习，互不污染。
+const REASONING_EFFORT_UNSUPPORTED_MODELS = new Set();
 
 // Retry-After（秒数或 HTTP 日期）→ 毫秒。无法解析 → null。
 function parseRetryAfter(value) {
@@ -144,6 +158,9 @@ export async function executeUpstreamRequest(
     // 摘掉工具自己的默认 0.2 属于内部自愈、无需惊动用户；摘掉用户明确填的值必须如实上报，
     // 否则报告里的数字来自一个和用户所填不同的温度，却毫无痕迹。
     temperatureStripped: false,
+    // 同上：用户选的思考强度被本层摘掉了（上游拒收该字段/该档位，或与 function tools 冲突）。
+    // 这个字段【只有】用户明确选档时才可能置位——留空时我们根本不发 reasoning_effort。
+    reasoningEffortStripped: false,
   };
   let attempts = 0; // 实际发出的请求次数（含重试），写进记录便于诊断
   // 端到端计时起点（ADM-010）。在真正开始发请求前赋值；确定性重配会把它【重置】到重配后的那次
@@ -190,6 +207,7 @@ export async function executeUpstreamRequest(
       toolCall: r.toolCall,
       streamValidation: r.streamValidation,
       temperatureStripped: r.temperatureStripped,
+      reasoningEffortStripped: r.reasoningEffortStripped,
       attempts,
       successOverride: computeSuccess(r),
     });
@@ -234,6 +252,14 @@ export async function executeUpstreamRequest(
   if (request.body?.stream_options !== undefined && STREAM_OPTIONS_UNSUPPORTED_MODELS.has(tempKey)) {
     delete request.body.stream_options;
   }
+  // 同上：已知拒收 reasoning_effort 的「模型 + 请求形状」，首发就不带。
+  // 键带 hasTools（见名单定义处的注释）：工具请求与普通请求各自学习，一次工具题被拒不会
+  // 让后续生成探测也悄悄丢档位。
+  const effortKey = `${tempKey}|tools:${request.body?.tools ? "1" : "0"}`;
+  if (request.body?.reasoning_effort !== undefined && REASONING_EFFORT_UNSUPPORTED_MODELS.has(effortKey)) {
+    delete request.body.reasoning_effort;
+    r.reasoningEffortStripped = true; // 只有用户明确选档才会走到这里（留空时字段根本不存在）
+  }
 
   endToEndStartedAt = performance.now();
   for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
@@ -260,6 +286,9 @@ export async function executeUpstreamRequest(
     r.normalizedError = "";
     r.toolCall = null;
     r.streamValidation = null;
+    // temperatureStripped / reasoningEffortStripped 刻意【不】在这里重置：它们记录的是
+    // 「本次调用最终发出的请求体少了用户填的参数」，跨尝试有效。清掉会让摘参后成功的那次
+    // 报告里不留痕迹——正是这个标记要防的事。
     let retryable = false;
     let retryAfterMs = null;
     // 确定性重配：上游拒收某个我方可选参数（temperature / stream_options），已就地删掉并原样重试。
@@ -322,6 +351,16 @@ export async function executeUpstreamRequest(
           // 代价仅是没有上游 usage → 调用方回退按字符估算输出 token。
           STREAM_OPTIONS_UNSUPPORTED_MODELS.add(tempKey);
           delete request.body.stream_options;
+          retryable = true;
+          reconfigured = true;
+          retryAfterMs = 0; // 确定性重配，不退避
+        } else if (response.status === 400 && request.body?.reasoning_effort !== undefined && isReasoningEffortUnsupportedError(raw)) {
+          // 同 temperature：上游拒收思考强度（非推理模型 / 不认这一档 / 与 function tools 冲突 /
+          // 中转不认这个字段）。去掉后原样重试，让这一题仍能测出结果，代价是它跑在模型默认档上——
+          // 故必须置 reasoningEffortStripped 让报告如实标注，否则报告显示的档位与实际不符。
+          REASONING_EFFORT_UNSUPPORTED_MODELS.add(effortKey);
+          delete request.body.reasoning_effort;
+          r.reasoningEffortStripped = true;
           retryable = true;
           reconfigured = true;
           retryAfterMs = 0; // 确定性重配，不退避

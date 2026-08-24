@@ -169,6 +169,20 @@
                   <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
                   <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。准入评测含标称一致性与指纹类判别，改温度会让这些结论与历史记录不同条件、可比性下降，建议只在上游强制要求时才填。其中「档位降级判别」题为保持与离线基线同条件，不使用此处填的温度。</small>
                 </label>
+                <label>
+                  思考强度
+                  <select name="reasoningEffort">
+                    <option value="">留空 = 模型默认档</option>
+                    <option value="none">none（不思考）</option>
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                    <option value="max">max（想最久）</option>
+                  </select>
+                  <small class="field-hint">推理模型的思考深度（OpenAI 系发 <code>reasoning_effort</code>）。<strong>支持哪些档位、默认是哪一档都由模型自己决定</strong>，例如 GPT-5.6 系支持除 minimal 外的六档、gpt-5.5 默认 medium，所以留空才是「按厂商调好的基线跑」。选了上游不认的档位（含非推理模型、或该档与工具调用冲突）会被自动去掉后重试，报告里会标注「思考强度未生效」。档位越高越慢越贵：它直接改变思考 token 数，会同时影响耗时、成本和质量结论。</small>
+                </label>
               </div>
             </details>
             <label class="wide checkbox-option">
@@ -215,6 +229,20 @@
                 温度
                 <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
                 <small class="field-hint">对本批所有 API 生效。部分模型只接受特定值（如月之暗面只认 1）。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数；Claude Opus 4.7 及更新的模型拒收该参数，填值可能整批报 400。</small>
+              </label>
+              <label>
+                思考强度
+                <select name="reasoningEffort">
+                  <option value="">留空 = 模型默认档</option>
+                  <option value="none">none（不思考）</option>
+                  <option value="minimal">minimal</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="max">max（想最久）</option>
+                </select>
+                <small class="field-hint">对本批所有 API 生效。支持的档位与默认档由各模型自己决定，留空即按厂商基线跑。批量对比尤其注意：不同模型认的档位不一样，选了某一档可能只有部分模型真正生效，被拒的会去掉重试并在报告里标注，那样横向比较就不是同条件了。</small>
               </label>
               <label class="wide checkbox-option">
                 <input name="useAiReportAnalysis" type="checkbox" value="1" />
@@ -536,6 +564,20 @@
                   <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
                   <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。</small>
                 </label>
+                <label>
+                  思考强度
+                  <select name="reasoningEffort">
+                    <option value="">留空 = 模型默认档</option>
+                    <option value="none">none（不思考）</option>
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                    <option value="max">max（想最久）</option>
+                  </select>
+                  <small class="field-hint">推理模型的思考深度（OpenAI 系发 <code>reasoning_effort</code>）。支持的档位与默认档由模型自己决定，留空即按厂商基线跑。稳定性测试测的是多轮延迟分布，档位越高思考 token 越多、耗时越长，改档后与历史记录不再同条件、P95 不可直接比。</small>
+                </label>
               </div>
             </details>
             <label class="wide checkbox-option">
@@ -678,6 +720,20 @@
                   温度
                   <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="留空 = 默认 0.2" />
                   <small class="field-hint">控制输出随机性（0=确定，2=最随机）。部分模型只接受特定值（如月之暗面只认 1），填写对应值可避免报错。留空则 OpenAI 协议用 0.2，Claude 协议不带此参数。注意：Claude Opus 4.7 及更新的模型拒收温度参数，给它们填值可能让整轮测试报 400，建议留空。</small>
+                </label>
+                <label>
+                  思考强度
+                  <select name="reasoningEffort">
+                    <option value="">留空 = 模型默认档</option>
+                    <option value="none">none（不思考）</option>
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                    <option value="max">max（想最久）</option>
+                  </select>
+                  <small class="field-hint">推理模型的思考深度（OpenAI 系发 <code>reasoning_effort</code>）。支持的档位与默认档由模型自己决定，留空即按厂商基线跑。场景测验按质量打分，调高档位通常能提分但更慢更贵——想比较「同一模型不同档位值不值」时才改它，跨模型横比建议留空以保同条件。</small>
                 </label>
                 <label>
                   每个场景重复次数

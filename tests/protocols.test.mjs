@@ -8,8 +8,10 @@ import {
   extractOutputText,
   extractToolCall,
   extractUsage,
+  isReasoningEffortUnsupportedError,
   normalizeEmptyResponse,
   normalizeHttpError,
+  REASONING_EFFORT_LEVELS,
   summarizeStreamStructure,
 } from "../server/protocols.mjs";
 
@@ -108,6 +110,77 @@ test("openai_path_prefix：四种请求构造都走自定义前缀，请求体�
     assert.equal("x-api-key" in request.headers, false);
     assert.equal("anthropic-version" in request.headers, false);
   }
+});
+
+// 思考强度（reasoning_effort）。最关键的一条是「留空绝不发」：官方口径默认档是 per-model 的
+// （如 gpt-5.5 默认 medium），凭空发一个工具级默认会悄悄改掉厂商调好的基线，
+// 报告里的质量/耗时/成本就不再代表用户直连时的表现。
+test("reasoningEffortOverride：留空绝不发该字段，填了才发", () => {
+  const base = {
+    baseUrl: "https://api.example.com",
+    apiKey: "sk-test",
+    protocol: "openai_compatible",
+    defaultModel: "gpt-5.6",
+    maxTokens: 256,
+  };
+
+  // 留空/未传 → 字段整个不存在（不是 null、不是空串，那些会被上游当成非法值）
+  for (const profile of [base, { ...base, reasoningEffortOverride: null }]) {
+    assert.equal("reasoning_effort" in buildProtocolRequest(profile, "hi").body, false);
+    assert.equal("reasoning_effort" in buildProtocolStreamRequest(profile, "hi").body, false);
+    assert.equal("reasoning_effort" in buildProtocolToolRequest(profile).body, false);
+  }
+
+  // 填了 → 三种请求都带上
+  const withEffort = { ...base, reasoningEffortOverride: "xhigh" };
+  assert.equal(buildProtocolRequest(withEffort, "hi").body.reasoning_effort, "xhigh");
+  assert.equal(buildProtocolStreamRequest(withEffort, "hi").body.reasoning_effort, "xhigh");
+  assert.equal(buildProtocolToolRequest(withEffort).body.reasoning_effort, "xhigh");
+
+  // "none" 是合法档位（不思考），不能被 falsy 判断吞掉——同 temperature 填 0 的那个坑
+  assert.equal(buildProtocolRequest({ ...base, reasoningEffortOverride: "none" }, "hi").body.reasoning_effort, "none");
+
+  // 自定义路径前缀协议（GLM 等）同样带上：它与 openai_compatible 共用同一套 body 构造
+  assert.equal(
+    buildProtocolRequest({ ...withEffort, protocol: "openai_path_prefix", baseUrl: "https://open.bigmodel.cn/api/paas/v4" }, "hi").body
+      .reasoning_effort,
+    "xhigh",
+  );
+
+  // Claude 分支本次刻意不动（其 API 是 thinking:{type:"adaptive"} + effort，形状完全不同），
+  // 不得因为共用 profile 就误发 OpenAI 的扁平字段。
+  const claude = { ...withEffort, protocol: "claude_messages", defaultModel: "claude-opus-4-7" };
+  assert.equal("reasoning_effort" in buildProtocolRequest(claude, "hi").body, false);
+  assert.equal("reasoning_effort" in buildProtocolStreamRequest(claude, "hi").body, false);
+  assert.equal("reasoning_effort" in buildProtocolToolRequest(claude).body, false);
+});
+
+test("REASONING_EFFORT_LEVELS：七档全集，覆盖官方 per-model 取值的并集", () => {
+  assert.deepEqual(REASONING_EFFORT_LEVELS, ["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+});
+
+test("isReasoningEffortUnsupportedError：认全四类拒收，且不被请求体回显误导", () => {
+  // ① 非推理模型
+  assert.equal(isReasoningEffortUnsupportedError("Invalid 'reasoning_effort' for non-reasoning model: gpt-5-chat-latest"), true);
+  // ② 不认这一档（取值 per-model，如 GPT-5.6 系无 minimal）
+  assert.equal(isReasoningEffortUnsupportedError("Unsupported value: 'reasoning_effort' does not support 'minimal'"), true);
+  // ③ 与 function tools 冲突（GPT-5.6 系在 chat/completions 上）
+  assert.equal(
+    isReasoningEffortUnsupportedError(
+      "Function tools with reasoning_effort are not supported for gpt-5.6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
+    ),
+    true,
+  );
+  // ④ 中转/非官方实现根本不认这个字段
+  assert.equal(isReasoningEffortUnsupportedError("Unrecognized request argument supplied: reasoning_effort"), true);
+
+  // 关键：400 常把我方请求体原样回显，只凭「文本里出现 reasoning_effort」会把无关错误
+  // 误判成"该参数被拒" → 模型被永久加进摘参名单 → 此后静默按默认档跑却仍显示用户选的档位。
+  assert.equal(isReasoningEffortUnsupportedError('{"error":"rate limit exceeded","request":{"reasoning_effort":"high"}}'), false);
+  assert.equal(isReasoningEffortUnsupportedError("kwargs: reasoning_effort='high', temperature=0.2 -> upstream timeout"), false);
+  // 不点名该参数的错误一律不认（哪怕含 unsupported 字样）
+  assert.equal(isReasoningEffortUnsupportedError("Unsupported parameter: 'stream_options'"), false);
+  assert.equal(isReasoningEffortUnsupportedError(""), false);
 });
 
 test("temperatureOverride：填写时覆盖协议默认温度，0 不被当作留空", () => {

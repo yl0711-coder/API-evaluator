@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import { buildApiKeyRef, saveProfileApiKey } from "../server/secret-store.mjs";
-import { executeTestRequest } from "../server/test-runner.mjs";
+import { executeTestRequest, executeToolCallTestRequest } from "../server/test-runner.mjs";
 
 // runUpstreamProbe 的退避重试骨架：429 / 5xx / 瞬时网络错误重试，超时与用户取消止损不重试。
 // 限流型中转最常见的失败就是 429——重试是它唯一的补救，却此前只有 normalizeHttpError(429) 这类
@@ -207,6 +207,93 @@ test("400 拒收 temperature 但用户没手填 → 摘掉工具默认值属内�
       assert.equal(bodies[0].temperature, 0.2, "未手填时发的是工具默认 0.2");
       assert.ok(!("temperature" in bodies[1]), "同样应摘干净");
       assert.equal(r.temperatureStripped, false, "摘默认值不该出提示");
+    },
+  );
+});
+
+// 思考强度被拒 → 同款摘参重试 + 留痕。与 temperature 的差别在于：这个字段【只有】用户
+// 明确选档时才会发出去（留空时协议层根本不加），所以不存在"摘默认值属内部自愈"的对应分支——
+// 一旦被摘，就一定是用户选的档位没生效，必须留痕。
+test("400 拒收 reasoning_effort → 摘掉该档位重试，并如实标记「思考强度未生效」", async () => {
+  const bodies = [];
+  await withMockUpstream(
+    async (req, res) => {
+      bodies.push(JSON.parse(await readBody(req)));
+      if (bodies.length === 1) {
+        return sendJson(res, 400, {
+          error: { message: "Invalid 'reasoning_effort' for non-reasoning model: mock-model" },
+        });
+      }
+      return sendJson(res, 200, okBody);
+    },
+    async (baseUrl) => {
+      // 模型名各测试独立，避免进程级摘参名单跨测试串味（名单键含 baseUrl+model，端口每次也不同）
+      const profile = await probeProfile(baseUrl, { reasoningEffortOverride: "high", defaultModel: "effort-reject-1" });
+      const r = await executeTestRequest(profile, "hi", { writeLog: false });
+      assert.equal(r.success, true, "摘掉 reasoning_effort 后应重试并最终成功");
+      assert.equal(r.attempts, 2, "这类 400 应恰好重试一次");
+      assert.equal(bodies[0].reasoning_effort, "high", "首发应带用户选的档位");
+      assert.ok(!("reasoning_effort" in bodies[1]), "重发应彻底不带该字段，而不是悄悄换成 none");
+      assert.equal(r.reasoningEffortStripped, true, "档位被摘必须留痕，界面据此出提示卡");
+    },
+  );
+});
+
+// GPT-5.6 系的真实约束：chat/completions 上「function tools + reasoning_effort≠none」不支持，
+// 但普通生成请求完全接受该参数。故进程级摘参名单的键必须带请求形状（hasTools）——
+// 否则工具题那一次 400 会让【后续所有生成探测】也首发就不带档位：用户选了 high、报告显示 high，
+// 实际却跑在模型默认档上，静默失真。这条测试就是钉这个键的粒度。
+test("工具请求被拒 reasoning_effort → 不得连带让普通生成请求也丢档位", async () => {
+  const bodies = [];
+  await withMockUpstream(
+    async (req, res) => {
+      const body = JSON.parse(await readBody(req));
+      bodies.push(body);
+      // 只在带 tools 时拒收该参数，普通请求一律接受（复刻 GPT-5.6 的行为）
+      if (body.tools && body.reasoning_effort !== undefined) {
+        return sendJson(res, 400, {
+          error: {
+            message:
+              "Function tools with reasoning_effort are not supported for gpt-5.6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
+          },
+        });
+      }
+      if (body.tools) {
+        return sendJson(res, 200, {
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                tool_calls: [{ id: "c1", type: "function", function: { name: "get_weather", arguments: '{"city":"北京"}' } }],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+        });
+      }
+      return sendJson(res, 200, okBody);
+    },
+    async (baseUrl) => {
+      const profile = await probeProfile(baseUrl, { reasoningEffortOverride: "high", defaultModel: "effort-tools-conflict" });
+
+      // ① 工具题：被拒 → 摘参重试 → 成功，且留痕
+      const tool = await executeToolCallTestRequest(profile, { writeLog: false });
+      assert.equal(tool.success, true, "工具题摘掉档位后应成功");
+      assert.equal(tool.reasoningEffortStripped, true, "工具题的档位被摘，要留痕");
+
+      // ② 紧接着的普通生成请求：必须仍然带 high（这才是本测试的重点）
+      const plain = await executeTestRequest(profile, "hi", { writeLog: false });
+      assert.equal(plain.success, true);
+      const lastPlain = bodies.filter((b) => !b.tools).at(-1);
+      assert.equal(lastPlain.reasoning_effort, "high", "普通生成请求不得被工具题的拒收连带摘参");
+      assert.equal(plain.reasoningEffortStripped, false, "没被摘就不该留痕，否则提示卡变噪音");
+
+      // ③ 再跑一次工具题：这次应首发就不带（名单已学到「这个形状不行」），只发 1 次
+      const before = bodies.length;
+      const tool2 = await executeToolCallTestRequest(profile, { writeLog: false });
+      assert.equal(tool2.success, true);
+      assert.equal(bodies.length - before, 1, "已知不支持的形状应首发就不带该参数，省掉注定失败的往返");
+      assert.equal(tool2.reasoningEffortStripped, true, "首发即摘同样要留痕");
     },
   );
 });

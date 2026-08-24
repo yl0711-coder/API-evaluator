@@ -43,6 +43,7 @@ import {
   buildProtocolToolRequest,
   buildProtocolUrl,
   coalesceSseResponse,
+  REASONING_EFFORT_LEVELS,
   extractFinishReason,
   extractOutputText,
   extractToolCall,
@@ -65,7 +66,13 @@ import {
   saveAiAnalysisReport,
   saveReportFiles,
 } from "./reporting.mjs";
-import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary, countTemperatureStripped } from "./summaries.mjs";
+import {
+  buildScenarioProfileSummary,
+  buildScenarioSummary,
+  buildStabilitySummary,
+  countReasoningEffortStripped,
+  countTemperatureStripped,
+} from "./summaries.mjs";
 import { buildFingerprintSnapshot, trackModelFingerprint } from "./fingerprint-tracking.mjs";
 import { buildTierProbeCases, classifyTierFromRecords, evaluateTierCase, loadTierContext } from "./tier-admission.mjs";
 import { buildTrendSeries, detectRegression, toTrendPoint } from "./regression.mjs";
@@ -317,7 +324,13 @@ export async function runAdmissionTest(body, taskContext = {}) {
   // 高级设置里手填的温度。与稳定性/场景测试同一套口径：留空 = 不覆盖、走协议层默认。
   // 存在的理由是有些模型只接受特定温度（如月之暗面只认 1），不给对的值整轮准入都会 400。
   const temperatureOverride = optionalTemperature(body.temperature);
-  const profile = temperatureOverride != null ? { ...baseProfile, temperatureOverride } : baseProfile;
+  // 思考强度同理：留空 = 不发该字段、用模型自己的默认档（默认值是 per-model 的，我们不替它选）。
+  const reasoningEffortOverride = optionalReasoningEffort(body.reasoningEffort);
+  const profile = {
+    ...baseProfile,
+    ...(temperatureOverride != null ? { temperatureOverride } : {}),
+    ...(reasoningEffortOverride != null ? { reasoningEffortOverride } : {}),
+  };
 
   const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel) ? body.packageLevel : "standard";
   const runId = buildReportId("admission", reportTargetSlug(profile));
@@ -1005,6 +1018,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     // 手填温度被上游拒收、传输层就地摘掉的请求数。准入页也有温度入口（高级设置），
     // 不留痕的话用户会把这份报告的分数读成「我设的那个温度下的表现」，实际跑的是模型默认温度。
     temperatureStrippedCount: countTemperatureStripped(records),
+    reasoningEffortStrippedCount: countReasoningEffortStripped(records),
     gradedCaseCount,
     passedCount,
     passRate,
@@ -1128,7 +1142,12 @@ function normalizeStabilityGroups(body) {
 async function runStabilityForProfile({ profile, body, taskContext = {}, onProgress = null }) {
   const concurrency = clampNumber(body.concurrency, 1, 5, 1);
   const temperatureOverride = optionalTemperature(body.temperature);
-  const runProfile = temperatureOverride != null ? { ...profile, temperatureOverride } : profile;
+  const reasoningEffortOverride = optionalReasoningEffort(body.reasoningEffort);
+  const runProfile = {
+    ...profile,
+    ...(temperatureOverride != null ? { temperatureOverride } : {}),
+    ...(reasoningEffortOverride != null ? { reasoningEffortOverride } : {}),
+  };
   const groups = normalizeStabilityGroups(body);
   const jobs = [];
   for (const group of groups) {
@@ -1359,6 +1378,23 @@ function optionalTemperature(value) {
   return n;
 }
 
+// 思考强度一次性覆盖：留空 → null（整个 reasoning_effort 字段不发，用模型自己的默认档）。
+// 同 optionalTemperature 的口径——非法值直接报错，不静默回落成某个档位：
+// 悄悄换档会让报告里的质量/延迟/成本对应一个用户没选过的档位，而这参数实质改变模型行为。
+// 只挡拼写手滑；某个模型到底收不收这一档是 per-model 的，发出去被 400 由传输层摘参重试兜底。
+function optionalReasoningEffort(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const level = String(value).trim().toLowerCase();
+  if (!REASONING_EFFORT_LEVELS.includes(level)) {
+    throw new HttpRequestError(
+      400,
+      "invalid_reasoning_effort",
+      `思考强度只能是 ${REASONING_EFFORT_LEVELS.join(" / ")} 之一，留空则用模型默认档。`,
+    );
+  }
+  return level;
+}
+
 // 表单复选框未勾选时字段直接缺席，勾选时为 "1"；JSON 调用方可传 true/"true"/"on"/"yes"。
 function isScenarioFlagOn(value) {
   return (
@@ -1398,6 +1434,8 @@ export async function runScenarioTest(body, taskContext = {}) {
   const timeoutMsOverride = optionalOverrideInt(body.timeoutMs, 1000, 600000);
   // temperature 覆盖：0-2 范围，支持小数。留空则走协议默认（OpenAI 0.2，Claude 不带）。
   const temperatureOverride = optionalTemperature(body.temperature);
+  // 思考强度覆盖：留空则不发 reasoning_effort，用模型自己的默认档（默认值 per-model，不代选）。
+  const reasoningEffortOverride = optionalReasoningEffort(body.reasoningEffort);
   // 「在报告中完整显示返回」：表单复选框传 "1"；同时容忍 JSON 调用方传 true/"true"/"on"/"yes"。
   const fullResponseInReport = isScenarioFlagOn(body.fullResponseInReport);
   // 「发送流式请求（SSE）」：开启则整轮场景都走流式，并采集真 TTFT。
@@ -1422,6 +1460,7 @@ export async function runScenarioTest(body, taskContext = {}) {
           maxTokensOverride,
           timeoutMsOverride,
           temperatureOverride,
+          reasoningEffortOverride,
           keepFullResponse: fullResponseInReport,
           streamRequest,
           taskContext,
@@ -1574,6 +1613,7 @@ async function runScenarioProfile({
   maxTokensOverride = null,
   timeoutMsOverride = null,
   temperatureOverride = null,
+  reasoningEffortOverride = null,
   keepFullResponse = false,
   streamRequest = false,
   taskContext,
@@ -1601,6 +1641,7 @@ async function runScenarioProfile({
           maxTokens: maxTokensOverride ?? SCENARIO_MAX_OUTPUT_TOKENS,
           timeoutMs: timeoutMsOverride ?? profile.timeoutMs,
           temperatureOverride: temperatureOverride, // 传递到协议层，让它覆盖默认温度值
+          reasoningEffortOverride: reasoningEffortOverride, // 同上：null 时协议层根本不发该字段
         };
         const record = await executeTestRequest(caseProfile, buildScenarioPrompt(scenario, repeat, repeats), {
           runId,
@@ -1882,6 +1923,7 @@ async function finalizeTestRecord({
   toolCall = null,
   streamValidation = null,
   temperatureStripped = false,
+  reasoningEffortStripped = false,
   attempts = 1,
   successOverride = undefined,
 }) {
@@ -1901,6 +1943,9 @@ async function finalizeTestRecord({
     // 高级设置里手填的温度被传输层摘掉了（该模型拒收自定义 temperature）。落进记录，
     // 汇总时聚合成一条界面提示——否则用户以为跑的是自己填的温度，实际跑的是模型默认值。
     temperatureStripped,
+    // 同上：用户选的思考强度被传输层摘掉了（上游拒收该字段/该档位，或与 function tools 冲突）。
+    // 这一条尤其要留痕——报告若显示 high 而实际跑在模型默认档，整份质量/成本数据都对不上。
+    reasoningEffortStripped,
     // 实际发出的是不是 SSE 流式请求。诊断时不必再靠 firstTokenMs 反推（那会把「流式但没吐内容」
     // 的失败误判成非流式）。
     stream,
