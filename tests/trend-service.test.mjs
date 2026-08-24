@@ -1,11 +1,30 @@
 // tests/trend-service.test.mjs
 // buildProfileTrend 的集成测试：确保从数据库查询到组装 rounds 的完整链路中 runId 被正确保留。
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { recordRequest, recordTestRun } from "../server/db.mjs";
-import { buildProfileTrend } from "../server/trend-service.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
 
-// 测试使用真实数据库文件路径（每个测试独立隔离，通过 profileId 区分）。
+// 先设 env 再动态 import：让 paths.mjs 在模块求值时就捕获临时数据目录（与 channel-store.test 同模式）。
+// 必须隔离，不能打默认库，有两个理由：
+// ① DATA_DIR 在全新检出里不存在，而 SQLite 只建文件不建目录，`new DatabaseSync()` 会抛
+//    「unable to open database file」；db.mjs 把它 catch 成 `return false` / `return []`，
+//    于是断言只看到 0 !== 2，看不出是数据库压根没打开。本地因有用过的库而目录已存在，故只在 CI 红。
+// ② 打默认库会把测试数据写进开发者真实的评测库。
+const dataDir = mkdtempSync(join(tmpdir(), "trend-service-test-"));
+process.env.EVALUATOR_DATA_DIR = dataDir;
+
+const { closeDatabase, recordRequest, recordTestRun } = await import("../server/db.mjs");
+const { buildProfileTrend } = await import("../server/trend-service.mjs");
+
+after(() => {
+  // 先关连接再删目录：Windows 上文件仍被占用时 rm 会失败。
+  closeDatabase();
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+});
+
+// 库内每个测试仍用独立 profileId 相互隔离（同一个库文件，靠 profile_id 分区）。
 // 不使用 :memory: 是因为 buildProfileTrend 内部调用多个数据库函数，
 // 它们都需要访问同一个数据库实例，而 :memory: 在不同调用间无法共享状态。
 
