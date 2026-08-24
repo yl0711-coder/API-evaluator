@@ -41,19 +41,12 @@ const channels = [
 async function installApiFixture(page) {
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    const json = (body, status = 200) =>
-      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
-    if (path === "/api/auth/me")
-      return json({ user: { username: "super-admin", role: 100, canConfig: true } });
+    if (path === "/api/auth/me") return json({ user: { username: "super-admin", role: 100, canConfig: true } });
     if (path === "/api/channels") return json(channels);
     if (path === "/api/model-targets") return json([]);
-    if (
-      path === "/api/profiles" ||
-      path === "/api/scenarios" ||
-      path === "/api/requests/recent" ||
-      path === "/api/test-runs/recent"
-    )
+    if (path === "/api/profiles" || path === "/api/scenarios" || path === "/api/requests/recent" || path === "/api/test-runs/recent")
       return json([]);
     if (path === "/api/settings") return json({});
     if (path === "/api/high-risk-alerts") return json([]);
@@ -116,19 +109,12 @@ test("sub2api 渠道缺少分组名时不显示分组字段", async ({ page }) =
 
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    const json = (body, status = 200) =>
-      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
-    if (path === "/api/auth/me")
-      return json({ user: { username: "super-admin", role: 100, canConfig: true } });
+    if (path === "/api/auth/me") return json({ user: { username: "super-admin", role: 100, canConfig: true } });
     if (path === "/api/channels") return json(fallbackChannels);
     if (path === "/api/model-targets") return json([]);
-    if (
-      path === "/api/profiles" ||
-      path === "/api/scenarios" ||
-      path === "/api/requests/recent" ||
-      path === "/api/test-runs/recent"
-    )
+    if (path === "/api/profiles" || path === "/api/scenarios" || path === "/api/requests/recent" || path === "/api/test-runs/recent")
       return json([]);
     if (path === "/api/settings") return json({});
     if (path === "/api/high-risk-alerts") return json([]);
