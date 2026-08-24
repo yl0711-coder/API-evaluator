@@ -19,6 +19,7 @@ import {
   buildReviewSection,
   buildReportAppendix,
   buildTemperatureStrippedLines,
+  buildReasoningEffortStrippedLines,
 } from "./report-authority.mjs";
 import {
   compressAgedReportFiles,
@@ -39,6 +40,7 @@ export {
   buildReviewSection,
   buildReportAppendix,
   buildTemperatureStrippedLines,
+  buildReasoningEffortStrippedLines,
   compressAgedReportFiles,
   readReportFileText,
   saveAiAnalysisReport,
@@ -824,6 +826,7 @@ export function formatAdmissionReport(summary, records, options = {}) {
     // 得先说清这个前提，读者才不会把整节读成「我设的那个温度下的表现」。准入报告没有溯源头
     // （另三类报告有，那一份写在 buildReportAuthorityHeader 里），故在此单独展开同一份措辞。
     ...buildTemperatureStrippedLines(summary),
+    ...buildReasoningEffortStrippedLines(summary),
     `- 请求数：${summary.requestCount}（逻辑测试用例数）`,
     `- 实际上游请求数（计费口径）：${formatBilledRequests(summary.upstreamUsage)}`,
     `- 成功率：${summary.successRateText} (${summary.successCount}/${summary.requestCount})`,

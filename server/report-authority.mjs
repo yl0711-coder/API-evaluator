@@ -12,11 +12,17 @@ export const SUSPECTED_WORDING_DISCLAIMER =
 // 手填温度被摘掉的请求总数。准入/稳定性把它放在汇总顶层；场景是多 API 汇总，顶层没有这个数，
 // 得把各 API 的加起来（profileDigest 是前端/报告都能拿到的那份，results 会被任务通道剥掉）。
 function countStrippedTemperature(summary = {}) {
-  const top = Number(summary.temperatureStrippedCount) || 0;
+  return countStrippedField(summary, "temperatureStrippedCount");
+}
+
+// 上面那套「顶层拿不到就把各 API 的加起来」的取数逻辑，思考强度完全一样，故抽出共用。
+// field 由调用方点名，避免为第二个字段再抄一遍同样的三段判断。
+function countStrippedField(summary = {}, field) {
+  const top = Number(summary[field]) || 0;
   if (top > 0) return top;
   const perProfile = Array.isArray(summary.profileDigest) ? summary.profileDigest : summary.results;
   if (!Array.isArray(perProfile)) return 0;
-  return perProfile.reduce((sum, item) => sum + (Number(item?.temperatureStrippedCount) || 0), 0);
+  return perProfile.reduce((sum, item) => sum + (Number(item?.[field]) || 0), 0);
 }
 
 // 温度失效说明行；没发生就返回空数组，可直接展开进任意报告的行数组。
@@ -27,6 +33,20 @@ export function buildTemperatureStrippedLines(summary = {}) {
   return [
     `- 采样温度：**手填温度未生效**（${count} 次请求的 temperature 被上游拒收并自动去掉，` +
       `这部分实际使用模型默认温度）。本报告数字请按“模型默认温度下的表现”解读。`,
+  ];
+}
+
+// 思考强度失效说明行，与上面同款处理。报告是交付物（用户会把它发给负责人），
+// 而思考强度直接决定模型思考多久——它对质量、耗时、成本三项的影响都比采样温度大。
+// 若选了 high 却被上游摘掉、报告里不写，读者会把「模型默认档的表现」当成「high 档的表现」，
+// 据此做的选型和报价都是错的。
+export function buildReasoningEffortStrippedLines(summary = {}) {
+  const count = countStrippedField(summary, "reasoningEffortStrippedCount");
+  if (count <= 0) return [];
+  return [
+    `- 思考强度：**所选思考强度未生效**（${count} 次请求的 reasoning_effort 被上游拒收并自动去掉，` +
+      `这部分实际使用模型默认档）。可能原因：该模型不是推理模型、不支持所选档位，或该档位与工具调用冲突。` +
+      `本报告的质量、耗时与成本数字请按“模型默认思考档下的表现”解读。`,
   ];
 }
 
@@ -47,6 +67,7 @@ export function buildReportAuthorityHeader(summary = {}, options = {}) {
     `- 复核人：${meta.reviewer || "待复核"}`,
     `- 复核状态：${meta.reviewStatus || "待复核"}`,
     ...buildTemperatureStrippedLines(summary),
+    ...buildReasoningEffortStrippedLines(summary),
     "",
   ];
 }

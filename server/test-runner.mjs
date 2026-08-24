@@ -699,8 +699,18 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
   // 而 Claude 恰恰是拒收自定义 temperature 的那一族，不带反而更安全。
   // 诚实边界：离线校准脚本本身一个 temperature 都不发，OpenAI 协议下的 0.2 与它仍有细微差异——
   // 那是本功能之前就存在的偏差，不在这次改动范围内。
-  if (testCase.tier && effectiveProfile.temperatureOverride != null) {
-    effectiveProfile = { ...effectiveProfile, temperatureOverride: null };
+  //
+  // 【思考强度同样必须摘掉，而且比 temperature 更要紧】——它直接改变模型思考多久，
+  // 对答题正确率的影响远大于采样温度。参考分布是在「不发该参数」条件下离线校准的：
+  //   · 选 max/high → 在线通过率虚高 → 明明降级了却判「正常」（漏放）
+  //   · 选 none     → 通过率虚低 → 对上游的误控告（更严重）
+  // 上面那条「不担心 400」的安全论证在这里【不成立】，故必须显式摘：
+  // 档位门禁按【模型名】过（inferModelFamily(modelName)==="claude"），而 reasoning_effort
+  // 按【协议】发（OpenAI 分支才带）。中转站把 Claude 包成 OpenAI 兼容协议时两者相交——
+  // 而那恰恰是本工具最主要的使用场景。已实测：protocol=openai_compatible +
+  // defaultModel=claude-sonnet-4-5 时，档位题请求体里确实带着 reasoning_effort。
+  if (testCase.tier && (effectiveProfile.temperatureOverride != null || effectiveProfile.reasoningEffortOverride != null)) {
+    effectiveProfile = { ...effectiveProfile, temperatureOverride: null, reasoningEffortOverride: null };
   }
 
   if (testCase.kind === "tool") {

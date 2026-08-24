@@ -157,6 +157,40 @@ test("runAdmissionTest：档位判别题不带手填温度，其余用例照带�
   );
 });
 
+// 同上，针对思考强度——而且比温度更要紧：它直接改变模型思考多久，对答题正确率的影响
+// 远大于采样温度。参考分布在「不发该参数」条件下离线校准，故档位题必须回到那个条件：
+//   · 选 max/high → 在线通过率虚高 → 明明降级了却判「正常」（漏放）
+//   · 选 none     → 通过率虚低 → 对上游的误控告（更严重）
+//
+// 可达性不是假设的：档位门禁按【模型名】过（inferModelFamily==="claude"），而 reasoning_effort
+// 按【协议】发（OpenAI 分支才带）。本用例的渠道正是 protocol=openai_chat + Claude 模型名，
+// 复刻「中转站把 Claude 包成 OpenAI 兼容」——本工具最主要的使用场景。
+test("runAdmissionTest：档位判别题不带思考强度，其余用例照带（对齐离线校准条件）", async () => {
+  const { loadTierContext, buildTierProbeCases } = await import("../server/tier-admission.mjs");
+  const model = "claude-sonnet-4-5";
+  const tierContext = loadTierContext(model);
+  assert.ok(tierContext, "仓库内置的档位参考应覆盖 sonnet 档，否则本用例测不到东西");
+  const tierPrompts = new Set(buildTierProbeCases(tierContext.reference).map((c) => c.prompt));
+  assert.ok(tierPrompts.size > 0);
+
+  const bodies = await collectAdmissionBodies({ model, packageLevel: "standard", reasoningEffort: "max" });
+  const promptOf = (body) => {
+    const last = body.messages?.[body.messages.length - 1];
+    return typeof last?.content === "string" ? last.content : "";
+  };
+  const tierBodies = bodies.filter((b) => tierPrompts.has(promptOf(b)));
+  const otherBodies = bodies.filter((b) => !tierPrompts.has(promptOf(b)));
+
+  assert.ok(tierBodies.length > 0, "standard 包 + Claude 应追加档位判别题");
+  for (const body of tierBodies) {
+    assert.ok(!("reasoning_effort" in body), "档位判别题必须彻底不带 reasoning_effort（回到离线校准条件），而不是换成某个档位");
+  }
+  assert.ok(
+    otherBodies.some((b) => b.reasoning_effort === "max"),
+    "其余用例仍应带上用户选的思考强度",
+  );
+});
+
 // 回归：准入摘要必须给出【双口径】成功率。此前准入侧只把 attempts 用于计费求和，
 // 双口径只有稳定性/压测路径有（server/summaries.mjs），准入报告因此只有「重试后最终成功率」
 // 一个数——一个靠重试才成功的渠道，和一次就成的长得一模一样，而这恰恰是准入决策要看的差。
