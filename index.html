@@ -173,15 +173,15 @@
                   思考强度
                   <select name="reasoningEffort">
                     <option value="">留空 = 模型默认档</option>
-                    <option value="none">none（不思考）</option>
-                    <option value="minimal">minimal</option>
+                    <option value="none">none（不思考，仅 GPT 系）</option>
+                    <option value="minimal">minimal（仅 GPT 系）</option>
                     <option value="low">low</option>
                     <option value="medium">medium</option>
                     <option value="high">high</option>
                     <option value="xhigh">xhigh</option>
                     <option value="max">max（想最久）</option>
                   </select>
-                  <small class="field-hint">推理模型的思考深度（OpenAI 系发 <code>reasoning_effort</code>）。<strong>支持哪些档位、默认是哪一档都由模型自己决定</strong>，例如 GPT-5.6 系支持除 minimal 外的六档、gpt-5.5 默认 medium，所以留空才是「按厂商调好的基线跑」。选了上游不认的档位（含非推理模型、或该档与工具调用冲突）会被自动去掉后重试，报告里会标注「思考强度未生效」。档位越高越慢越贵：它直接改变思考 token 数，会同时影响耗时、成本和质量结论。</small>
+                  <small class="field-hint">模型的思考深度。按渠道协议自动发对应字段：OpenAI 系发 <code>reasoning_effort</code>，Claude 协议发 <code>output_config.effort</code>。<strong>支持哪些档位、默认是哪一档都由模型自己决定</strong>，例如 GPT-5.6 系支持除 minimal 外的六档、gpt-5.5 默认 medium，所以留空才是「按厂商调好的基线跑」。<strong>Claude 只有 low/medium/high/xhigh/max 五档</strong>（且 high 就是它的默认档，选 high 与留空等价）——给 Claude 渠道选 none 或 minimal 会被直接去掉并在报告里标注，因为这两档不在它的取值范围内。选了上游不认的档位（含非推理模型、或该档与工具调用冲突）同样会自动去掉后重试并标注「思考强度未生效」。档位越高越慢越贵：它直接改变思考 token 数，会同时影响耗时、成本和质量结论。</small>
                 </label>
               </div>
             </details>
@@ -234,15 +234,15 @@
                 思考强度
                 <select name="reasoningEffort">
                   <option value="">留空 = 模型默认档</option>
-                  <option value="none">none（不思考）</option>
-                  <option value="minimal">minimal</option>
+                  <option value="none">none（不思考，仅 GPT 系）</option>
+                  <option value="minimal">minimal（仅 GPT 系）</option>
                   <option value="low">low</option>
                   <option value="medium">medium</option>
                   <option value="high">high</option>
                   <option value="xhigh">xhigh</option>
                   <option value="max">max（想最久）</option>
                 </select>
-                <small class="field-hint">对本批所有 API 生效。支持的档位与默认档由各模型自己决定，留空即按厂商基线跑。批量对比尤其注意：不同模型认的档位不一样，选了某一档可能只有部分模型真正生效，被拒的会去掉重试并在报告里标注，那样横向比较就不是同条件了。</small>
+                <small class="field-hint">对本批所有 API 生效，按各自协议发对应字段（OpenAI 系 <code>reasoning_effort</code>、Claude <code>output_config.effort</code>）。支持的档位与默认档由各模型自己决定，留空即按厂商基线跑。批量对比尤其注意：不同模型认的档位不一样，选了某一档可能只有部分模型真正生效，被拒的会去掉重试并在报告里标注，那样横向比较就不是同条件了。<strong>混选 GPT 与 Claude 渠道时更要留意</strong>：none 与 minimal 只有 GPT 系有，Claude 渠道会直接落回它自己的默认档，这一批就成了两种档位混跑。</small>
               </label>
               <label class="wide checkbox-option">
                 <input name="useAiReportAnalysis" type="checkbox" value="1" />
@@ -568,15 +568,15 @@
                   思考强度
                   <select name="reasoningEffort">
                     <option value="">留空 = 模型默认档</option>
-                    <option value="none">none（不思考）</option>
-                    <option value="minimal">minimal</option>
+                    <option value="none">none（不思考，仅 GPT 系）</option>
+                    <option value="minimal">minimal（仅 GPT 系）</option>
                     <option value="low">low</option>
                     <option value="medium">medium</option>
                     <option value="high">high</option>
                     <option value="xhigh">xhigh</option>
                     <option value="max">max（想最久）</option>
                   </select>
-                  <small class="field-hint">推理模型的思考深度（OpenAI 系发 <code>reasoning_effort</code>）。支持的档位与默认档由模型自己决定，留空即按厂商基线跑。稳定性测试测的是多轮延迟分布，档位越高思考 token 越多、耗时越长，改档后与历史记录不再同条件、P95 不可直接比。</small>
+                  <small class="field-hint">模型的思考深度（OpenAI 系发 <code>reasoning_effort</code>，Claude 协议发 <code>output_config.effort</code>）。支持的档位与默认档由模型自己决定，留空即按厂商基线跑；Claude 只有 low/medium/high/xhigh/max 五档，选 none 或 minimal 会被去掉并标注。稳定性测试测的是多轮延迟分布，档位越高思考 token 越多、耗时越长，改档后与历史记录不再同条件、P95 不可直接比。</small>
                 </label>
               </div>
             </details>
@@ -725,15 +725,15 @@
                   思考强度
                   <select name="reasoningEffort">
                     <option value="">留空 = 模型默认档</option>
-                    <option value="none">none（不思考）</option>
-                    <option value="minimal">minimal</option>
+                    <option value="none">none（不思考，仅 GPT 系）</option>
+                    <option value="minimal">minimal（仅 GPT 系）</option>
                     <option value="low">low</option>
                     <option value="medium">medium</option>
                     <option value="high">high</option>
                     <option value="xhigh">xhigh</option>
                     <option value="max">max（想最久）</option>
                   </select>
-                  <small class="field-hint">推理模型的思考深度（OpenAI 系发 <code>reasoning_effort</code>）。支持的档位与默认档由模型自己决定，留空即按厂商基线跑。场景测验按质量打分，调高档位通常能提分但更慢更贵——想比较「同一模型不同档位值不值」时才改它，跨模型横比建议留空以保同条件。</small>
+                  <small class="field-hint">模型的思考深度（OpenAI 系发 <code>reasoning_effort</code>，Claude 协议发 <code>output_config.effort</code>）。支持的档位与默认档由模型自己决定，留空即按厂商基线跑；Claude 只有 low/medium/high/xhigh/max 五档，选 none 或 minimal 会被去掉并标注。场景测验按质量打分，调高档位通常能提分但更慢更贵——想比较「同一模型不同档位值不值」时才改它，跨模型横比建议留空以保同条件。</small>
                 </label>
                 <label>
                   每个场景重复次数

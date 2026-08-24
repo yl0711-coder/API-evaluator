@@ -65,8 +65,11 @@ test("runAdmissionTest：渠道不存在时报错，而不是静默通过", asyn
 
 // 高级设置里的温度：必须真的发到上游每一道准入用例上（工具题、流式题也不例外）。
 // 存在这个开关的理由是有些模型只接受特定温度（如月之暗面只认 1），不给对值整轮准入都会 400。
-async function collectAdmissionBodies(over) {
+// protocol 可换：思考强度在两种协议下落点不同（OpenAI 系扁平 reasoning_effort、
+// Claude 嵌套 output_config.effort），档位题「必须回到离线校准条件」这条不变量得两边各验一次。
+async function collectAdmissionBodies(over, { protocol = "openai_chat", channelId = "ch-temp-1" } = {}) {
   const bodies = [];
+  const isClaude = protocol === "claude_messages";
   return withMockUpstream(
     (req, res) => {
       let raw = "";
@@ -75,18 +78,24 @@ async function collectAdmissionBodies(over) {
       });
       req.on("end", () => {
         bodies.push(JSON.parse(raw));
-        // 流式用例要 SSE 才判通过，但这里只关心「发出去的请求体带没带温度」，
+        // 流式用例要 SSE 才判通过，但这里只关心「发出去的请求体带没带某个参数」，
         // 200 + 非流式响应足够：用例判失败不影响本断言。
-        sendJson(res, 200, { choices: [{ message: { content: "admission ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } });
+        sendJson(
+          res,
+          200,
+          isClaude
+            ? { content: [{ type: "text", text: "admission ok" }], stop_reason: "end_turn", usage: { input_tokens: 5, output_tokens: 3 } }
+            : { choices: [{ message: { content: "admission ok" } }], usage: { prompt_tokens: 5, completion_tokens: 3 } },
+        );
       });
     },
     async (baseUrl) => {
       const channel = await channelStore.attachChannelKey(
-        { id: "ch-temp-1", name: "温度渠道", provider: "Anthropic", baseUrl, protocol: "openai_chat", status: "enabled" },
+        { id: channelId, name: "温度渠道", provider: "Anthropic", baseUrl, protocol, status: "enabled" },
         "sk-mock",
       );
       await channelStore.saveChannels([channel]);
-      await runAdmissionTest({ channelId: "ch-temp-1", packageLevel: "quick", ...over });
+      await runAdmissionTest({ channelId, packageLevel: "quick", ...over });
       return bodies;
     },
   );
@@ -188,6 +197,39 @@ test("runAdmissionTest：档位判别题不带思考强度，其余用例照带�
   assert.ok(
     otherBodies.some((b) => b.reasoning_effort === "max"),
     "其余用例仍应带上用户选的思考强度",
+  );
+});
+
+// 同上，但走【原生 Claude 渠道】。这是比中转包装更短的一条可达路径：档位门禁按模型名过、
+// 而 protocol=claude_messages 本来就发 output_config.effort，两者天然相交，不需要任何中转参与。
+// 两种协议的落点不同（嵌套 vs 扁平），只测一边等于放过另一边——上一版就是这么漏的。
+test("runAdmissionTest：原生 Claude 渠道的档位判别题同样不带 output_config.effort", async () => {
+  const { loadTierContext, buildTierProbeCases } = await import("../server/tier-admission.mjs");
+  const model = "claude-sonnet-4-5";
+  const tierContext = loadTierContext(model);
+  assert.ok(tierContext, "仓库内置的档位参考应覆盖 sonnet 档，否则本用例测不到东西");
+  const tierPrompts = new Set(buildTierProbeCases(tierContext.reference).map((c) => c.prompt));
+  assert.ok(tierPrompts.size > 0);
+
+  const bodies = await collectAdmissionBodies(
+    { model, packageLevel: "standard", reasoningEffort: "max" },
+    { protocol: "claude_messages", channelId: "ch-claude-tier" },
+  );
+  const promptOf = (body) => {
+    const last = body.messages?.[body.messages.length - 1];
+    return typeof last?.content === "string" ? last.content : "";
+  };
+  const tierBodies = bodies.filter((b) => tierPrompts.has(promptOf(b)));
+  const otherBodies = bodies.filter((b) => !tierPrompts.has(promptOf(b)));
+
+  assert.ok(tierBodies.length > 0, "standard 包 + Claude 应追加档位判别题");
+  for (const body of tierBodies) {
+    // 连 output_config 壳都不该有：参考分布是在「一个思考强度参数都不发」的条件下校准的。
+    assert.ok(!("output_config" in body), "档位判别题必须彻底不带 output_config.effort（回到离线校准条件）");
+  }
+  assert.ok(
+    otherBodies.some((b) => b.output_config?.effort === "max"),
+    "其余用例仍应带上用户选的思考强度（嵌套形状）",
   );
 });
 

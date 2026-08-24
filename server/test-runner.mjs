@@ -704,11 +704,13 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
   // 对答题正确率的影响远大于采样温度。参考分布是在「不发该参数」条件下离线校准的：
   //   · 选 max/high → 在线通过率虚高 → 明明降级了却判「正常」（漏放）
   //   · 选 none     → 通过率虚低 → 对上游的误控告（更严重）
-  // 上面那条「不担心 400」的安全论证在这里【不成立】，故必须显式摘：
-  // 档位门禁按【模型名】过（inferModelFamily(modelName)==="claude"），而 reasoning_effort
-  // 按【协议】发（OpenAI 分支才带）。中转站把 Claude 包成 OpenAI 兼容协议时两者相交——
-  // 而那恰恰是本工具最主要的使用场景。已实测：protocol=openai_compatible +
-  // defaultModel=claude-sonnet-4-5 时，档位题请求体里确实带着 reasoning_effort。
+  // 上面那条「不担心 400」的安全论证在这里【不成立】，故必须显式摘。两条可达路径都实测过：
+  //   · 原生 Claude 渠道：protocol=claude_messages 会发 output_config.effort（见 applyClaudeEffort），
+  //     与档位门禁的「模型名属 Claude 家族」直接相交——这是最短的一条路。
+  //   · 中转包装：protocol=openai_compatible + defaultModel=claude-sonnet-4-5 时发扁平
+  //     reasoning_effort。档位门禁按【模型名】过而该字段按【协议】发，两者在这里相交——
+  //     而中转恰恰是本工具最主要的使用场景。
+  // 清的是 profile 上的 reasoningEffortOverride（两种协议共用这一个字段），故一处覆盖两条路。
   if (testCase.tier && (effectiveProfile.temperatureOverride != null || effectiveProfile.reasoningEffortOverride != null)) {
     effectiveProfile = { ...effectiveProfile, temperatureOverride: null, reasoningEffortOverride: null };
   }
@@ -1934,6 +1936,7 @@ async function finalizeTestRecord({
   streamValidation = null,
   temperatureStripped = false,
   reasoningEffortStripped = false,
+  maxTokensRenamed = false,
   attempts = 1,
   successOverride = undefined,
 }) {
@@ -1956,6 +1959,11 @@ async function finalizeTestRecord({
     // 同上：用户选的思考强度被传输层摘掉了（上游拒收该字段/该档位，或与 function tools 冲突）。
     // 这一条尤其要留痕——报告若显示 high 而实际跑在模型默认档，整份质量/成本数据都对不上。
     reasoningEffortStripped,
+    // 上面那个 requestMaxTokens 是【数值】，这个记的是它以哪个【字段名】发出去的：
+    // OpenAI o 系 / GPT-5 系拒收 max_tokens、要求 max_completion_tokens，传输层会就地改名重试。
+    // 数值上限不变，故不算失真、不出提示卡；留痕是因为新字段的预算含推理 token，
+    // 推理模型可能把预算烧在不可见思考上、回空串或截断——排查这类记录时它是关键线索。
+    maxTokensRenamed,
     // 实际发出的是不是 SSE 流式请求。诊断时不必再靠 firstTokenMs 反推（那会把「流式但没吐内容」
     // 的失败误判成非流式）。
     stream,

@@ -44,8 +44,9 @@ export function buildReasoningEffortStrippedLines(summary = {}) {
   const count = countStrippedField(summary, "reasoningEffortStrippedCount");
   if (count <= 0) return [];
   return [
-    `- 思考强度：**所选思考强度未生效**（${count} 次请求的 reasoning_effort 被上游拒收并自动去掉，` +
-      `这部分实际使用模型默认档）。可能原因：该模型不是推理模型、不支持所选档位，或该档位与工具调用冲突。` +
+    `- 思考强度：**所选思考强度未生效**（${count} 次请求的思考强度参数被去掉，` +
+      `这部分实际使用模型默认档）。可能原因：该模型不是推理模型、不支持所选档位、该档位与工具调用冲突，` +
+      `或所选档位不在该协议的取值范围内（如 Claude 只有 low/medium/high/xhigh/max 五档，没有 none 与 minimal）。` +
       `本报告的质量、耗时与成本数字请按“模型默认思考档下的表现”解读。`,
   ];
 }
