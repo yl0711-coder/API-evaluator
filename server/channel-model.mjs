@@ -9,9 +9,10 @@
 import crypto from "node:crypto";
 import { normalizePricePerMillion } from "./costing.mjs";
 import { normalizeProtocol } from "./profile-store.mjs";
-import { requiredString } from "./utils.mjs";
+import { requiredString, safeEntityId, safeUpstreamNumericId } from "./utils.mjs";
 
 const CHANNEL_STATUSES = new Set(["enabled", "disabled"]);
+
 const normalizeBaseUrl = (url) =>
   String(url || "")
     .trim()
@@ -72,7 +73,7 @@ const pricingFields = (src, existing = {}) => ({
 
 // 规范化一个渠道（不含凭证字段——那些由 channel-store 维护）。
 export function normalizeChannel(body, existing = null) {
-  const id = String(body.id || existing?.id || crypto.randomUUID());
+  const id = safeEntityId(body.id, existing?.id);
   const now = new Date().toISOString();
   const name = requiredString(body.name ?? existing?.name, "渠道名称");
   // 曾用名：改名时把旧名并入（去重、排除当前名），供报告按名字匹配时归并改名前的历史。
@@ -90,14 +91,17 @@ export function normalizeChannel(body, existing = null) {
     models: normalizeModelList(body.models ?? existing?.models),
     status: normalizeChannelStatus(body.status ?? existing?.status),
     source: body.source || existing?.source || "manual", // manual | newapi | newapi-token
-    newapiChannelId: body.newapiChannelId ?? existing?.newapiChannelId ?? null,
+    // 三个上游数值 id 统一走 safeUpstreamNumericId：前端把 sub2apiKeyId 不转义拼进文本，
+    // 非数字会被当 HTML 渲染（详见该函数上的说明）。另两个同类字段一并收口，不留下一个"下次
+    // 谁把它拼进模板就中招"的缺口。
+    newapiChannelId: safeUpstreamNumericId(body.newapiChannelId ?? existing?.newapiChannelId),
     // 「导入测试分组」带来的溯源字段：这是**白名单**，不在表里的字段编辑渠道时会被静默抹掉，
     // 所以新增来源字段必须同步加在这里（漏加的表现是：用户在 UI 里编辑过的渠道，溯源信息凭空消失）。
-    newapiTokenId: body.newapiTokenId ?? existing?.newapiTokenId ?? null,
+    newapiTokenId: safeUpstreamNumericId(body.newapiTokenId ?? existing?.newapiTokenId),
     newapiTokenGroup: body.newapiTokenGroup ?? existing?.newapiTokenGroup ?? null,
     // 「从 sub2api 导入测试分组」的溯源字段，同理必须在白名单里。
-    sub2apiKeyId: body.sub2apiKeyId ?? existing?.sub2apiKeyId ?? null,
-    sub2apiGroupId: body.sub2apiGroupId ?? existing?.sub2apiGroupId ?? null,
+    sub2apiKeyId: safeUpstreamNumericId(body.sub2apiKeyId ?? existing?.sub2apiKeyId),
+    sub2apiGroupId: safeUpstreamNumericId(body.sub2apiGroupId ?? existing?.sub2apiGroupId),
     sub2apiGroupName: body.sub2apiGroupName ?? existing?.sub2apiGroupName ?? null,
     // 上次导入时上游给的 name/protocol/models 快照。重新导入靠它三方比对出「哪些字段是用户改的」
     // 从而不覆盖（见 server/import-merge.mjs）。**必须留在白名单里**：漏掉的话用户在 UI 里编辑过一次，
@@ -136,7 +140,7 @@ export function normalizeModelTarget(body, existing = null) {
     ...(existing?.model && existing.model !== model ? [existing.model] : []),
   ]).filter((a) => a !== model);
   return {
-    id: String(body.id || existing?.id || crypto.randomUUID()),
+    id: safeEntityId(body.id, existing?.id),
     channelId: requiredString(body.channelId ?? existing?.channelId, "渠道"),
     model,
     note: String(body.note ?? existing?.note ?? "").trim(),

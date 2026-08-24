@@ -2,6 +2,7 @@
 // 通用纯函数工具：JSON 安全解析、文本脱敏与摘要、JSONL 追加写与尾部读取（带大小封顶）、
 // 数值/百分比统计与格式化等，供各模块复用。
 import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { HttpRequestError } from "./http-request.mjs";
 
@@ -168,6 +169,52 @@ export function groupBy(values, getKey) {
 
 export function formatPercent(value) {
   return `${Math.round(value * 100)}%`;
+}
+
+/**
+ * 实体 id 白名单校验：只允许 `[A-Za-z0-9_-]`，非法一律**丢弃并重新生成** UUID。
+ * 渠道 / 模型目标 / profile 三处的 id 都走它（channel-model.mjs、profile-store.mjs）。
+ *
+ * 【为什么必须在数据层挡】前端有多处**刻意不转义**地把 id 拼进 HTML 属性，并在注释里
+ * 声明「渠道 id 按约定是后端生成的安全值」——例如 `data-edit-channel="${channel.id}"`
+ * （src/channel-admin.js）、`data-edit-profile="${profile.id}"`（src/profile-view.js）。
+ * 两条导入链路都严格守约（safeTokenIdPart / safeKeyIdPart 把上游 id 收窄成 [a-z0-9-]），
+ * 但 `POST /api/channels` 是另一条路：readJson 的原始请求体直接进 normalizeChannel，
+ * 而原实现是 `String(body.id || existing?.id || randomUUID())` —— **原样收下**。
+ * 实测提交 id = `7" onmouseover="alert(1)" x="` 会渲染出
+ * `<button data-edit-channel="7" onmouseover="alert(1)" x="">`，属性被打破（存储型 XSS）。
+ *
+ * 目前这些端点仅超管可写（api-access.requiresAdmin 对 /api/channels、/api/profiles 的非 GET
+ * 判 role 100），超管本就持有全部渠道 key，故不构成越权；但这是**纵深防御缺的一层**：
+ * requiresAdmin 里已有 /api/settings 做字段级放宽给 role 10 的先例，一旦渠道写权限也放宽，
+ * 它立刻变成真实可利用的存储型 XSS。故在数据层收口，不依赖「调用方都会守约」。
+ *
+ * 【为什么是重新生成而非抛错】id 非法只可能来自伪造请求（UI 永远回传后端给的 id），
+ * 抛 400 与静默换 id 对正常用户都不可见；换 id 不给探测者可区分的错误信号。
+ * 注意**不做字符剔除**（如 replace 掉引号）：那会把两个不同的非法 id 折叠成同一个，
+ * 可能撞上已有实体。全量实测：线上 75 个渠道 + 268 个模型目标 id 全部符合该白名单，
+ * 收紧不影响既有数据。
+ */
+const ENTITY_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+export function safeEntityId(...candidates) {
+  for (const candidate of candidates) {
+    const s = String(candidate ?? "").trim();
+    if (s && ENTITY_ID_PATTERN.test(s)) return s;
+  }
+  return randomUUID();
+}
+
+/**
+ * 上游数值 id（new-api 渠道/令牌 id、sub2api 密钥 id）→ 有限数或 null。
+ * 前端把 sub2apiKeyId **不转义**拼进文本（src/channel-admin.js 注释：「它是数字故可直接拼接」）。
+ * 导入链路确实做了 `Number.isFinite(Number(keyId)) ? Number(keyId) : null`，但 normalizeChannel
+ * 原先是 `body.sub2apiKeyId ?? existing ?? null` —— 无数值强制，实测可塞
+ * `1 <img src=x onerror=...>` 进去并渲染成真 HTML。此处统一收口。
+ */
+export function safeUpstreamNumericId(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 export function requiredString(value, label) {
