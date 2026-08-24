@@ -20,6 +20,11 @@ const METRIC_LABEL = {
 };
 const COMPARATOR_LABEL = { lt: "低于", lte: "不高于", gt: "高于", gte: "不低于", eq: "等于" };
 const LEVEL_METRICS = ["grade", "recommendationLevel", "verdictLevel"];
+const JITTER_KIND = "stability-jitter";
+const DECLINE_KIND = "stability-decline";
+// 退化规则冷却默认 24 小时（其余形态 1 小时）：持续退化会让之后【每一次】运行都继续命中
+// （两个窗口整体下移），1 小时冷却在 2 小时一测的节奏下等于每次都发。24 小时把一次退化事件收敛成一封信。
+const DECLINE_DEFAULT_COOLDOWN_HOURS = 24;
 const LEVEL_OPTIONS = {
   grade: ["A", "B", "C", "D", "E", "X", "F"],
   recommendationLevel: [
@@ -50,16 +55,28 @@ export function createAlertRules({ state, confirm }) {
   const formTitle = requireElement("#ar-form-title");
   const ruleIdInput = requireElement("#ar-rule-id");
   const nameInput = requireElement("#ar-name");
+  const kindSelect = requireElement("#ar-kind");
   const scopeTypeSelect = requireElement("#ar-scope-type");
   const targetPickerBox = requireElement("#ar-target-picker");
   const channelSelect = requireElement("#ar-channel-select");
   const modelSelect = requireElement("#ar-model-select");
+  const metricLabel = requireElement("#ar-metric-label");
   const metricSelect = requireElement("#ar-metric");
+  const comparatorLabel = requireElement("#ar-comparator-label");
   const comparatorSelect = requireElement("#ar-comparator");
   const thresholdNumberLabel = requireElement("#ar-threshold-number-label");
   const thresholdNumberInput = requireElement("#ar-threshold-number");
   const thresholdLevelLabel = requireElement("#ar-threshold-level-label");
   const thresholdLevelSelect = requireElement("#ar-threshold-level");
+  const jitterBox = requireElement("#ar-jitter-params");
+  const jitterRatioInput = requireElement("#ar-jitter-ratio");
+  const jitterFirstSrInput = requireElement("#ar-jitter-first-sr");
+  const jitterRetryOverheadInput = requireElement("#ar-jitter-retry-overhead");
+  const declineBox = requireElement("#ar-decline-params");
+  const declineRecentInput = requireElement("#ar-decline-recent");
+  const declineBaselineInput = requireElement("#ar-decline-baseline");
+  const declineSrDropInput = requireElement("#ar-decline-sr-drop");
+  const declineP95WorsenInput = requireElement("#ar-decline-p95-worsen");
   const cooldownInput = requireElement("#ar-cooldown");
   const enabledInput = requireElement("#ar-enabled");
   const resetBtn = requireElement("#ar-reset");
@@ -98,25 +115,64 @@ export function createAlertRules({ state, confirm }) {
   syncScopeType();
 
   // 指标切换：等级型指标（grade/recommendationLevel/verdictLevel）用等级下拉选阈值，其余用数值输入。
+  // 复合形态（jitter/decline）下这三个控件整体隐藏，故先看 kind 再决定阈值控件的显隐。
   function syncMetric() {
+    if (kindSelect.value !== "threshold") {
+      thresholdNumberLabel.classList.add("hidden");
+      thresholdLevelLabel.classList.add("hidden");
+      return;
+    }
     const isLevel = LEVEL_METRICS.includes(metricSelect.value);
     thresholdNumberLabel.classList.toggle("hidden", isLevel);
     thresholdLevelLabel.classList.toggle("hidden", !isLevel);
     if (isLevel) thresholdLevelSelect.innerHTML = levelOptionsHtml(metricSelect.value);
   }
   metricSelect.addEventListener("change", syncMetric);
-  syncMetric();
+
+  // 规则类型切换：三组控件互斥显隐——阈值形态（指标+比较符+阈值）/ 稳定性抖动（三个子阈值）/
+  // 稳定性退化（两个窗口 + 两个判定阈值）。
+  // 同上用 .hidden class 而非 hidden 属性——本页 .form-grid 的 display:grid 压不住 UA 的 display:none。
+  function syncKind() {
+    const kind = kindSelect.value;
+    const isThreshold = kind === "threshold";
+    metricLabel.classList.toggle("hidden", !isThreshold);
+    comparatorLabel.classList.toggle("hidden", !isThreshold);
+    jitterBox.classList.toggle("hidden", kind !== JITTER_KIND);
+    declineBox.classList.toggle("hidden", kind !== DECLINE_KIND);
+    syncMetric();
+  }
+  // 切到退化形态时把冷却默认值抬到 24 小时（仅在用户还没手改过、且是新建时）——
+  // 避免持续退化下每 2 小时就来一封。用户随后手改的值不会被这里覆盖。
+  kindSelect.addEventListener("change", () => {
+    syncKind();
+    if (!ruleIdInput.value) {
+      cooldownInput.value = kindSelect.value === DECLINE_KIND ? String(DECLINE_DEFAULT_COOLDOWN_HOURS) : "1";
+    }
+  });
+  syncKind();
 
   function resetForm() {
     ruleIdInput.value = "";
     nameInput.value = "";
+    kindSelect.value = "threshold";
     scopeTypeSelect.value = "all";
     cascade.setValue("", { silent: true });
     syncScopeType();
     metricSelect.value = "successRate";
     comparatorSelect.value = "lt";
     thresholdNumberInput.value = "";
-    syncMetric();
+    // 抖动子阈值的默认值：倍数 6 与首次成功率 0.9 有实测依据（正常区间 2.3～3.6×），
+    // 重试额外等待留空（历史数据常无 endToEndMs，默认给个数会让人以为在检查其实一直跳过）。
+    jitterRatioInput.value = "6";
+    jitterFirstSrInput.value = "0.9";
+    jitterRetryOverheadInput.value = "";
+    // 退化默认：最近 3 次 vs 之前 20 次（约 6 小时 vs 1.7 天，按 2 小时一测的节奏），
+    // 跌幅 10pp / P95 恶化 1.5× 沿用趋势页既有回归判定的克制口径。
+    declineRecentInput.value = "3";
+    declineBaselineInput.value = "20";
+    declineSrDropInput.value = "0.1";
+    declineP95WorsenInput.value = "1.5";
+    syncKind();
     cooldownInput.value = "1";
     enabledInput.checked = true;
     formTitle.textContent = "新建报警规则";
@@ -124,18 +180,48 @@ export function createAlertRules({ state, confirm }) {
   resetBtn.addEventListener("click", resetForm);
   reloadBtn.addEventListener("click", loadRules);
 
+  // 空输入框送 null 而非 0：后端把 null 当「不检查该项」，0 会被当成真阈值（且非正数会被兜成 null，
+  // 但语义上还是送 null 更直白）。
+  const optionalNum = (input) => (input.value.trim() === "" ? null : Number(input.value));
+
   function collect() {
-    const isLevel = LEVEL_METRICS.includes(metricSelect.value);
     const scopeType = scopeTypeSelect.value;
-    return {
+    const base = {
       id: ruleIdInput.value || undefined,
       name: nameInput.value.trim(),
+      kind: kindSelect.value,
       scope: scopeType === "target" ? { type: "target", targetId: cascade.value } : { type: "all" },
+      cooldownHours: Math.max(0.1, Number(cooldownInput.value) || 0.1),
+      enabled: enabledInput.checked,
+    };
+    if (kindSelect.value === JITTER_KIND) {
+      return {
+        ...base,
+        params: {
+          jitterRatioMax: optionalNum(jitterRatioInput),
+          firstAttemptSuccessRateMin: optionalNum(jitterFirstSrInput),
+          retryOverheadP95MsMax: optionalNum(jitterRetryOverheadInput),
+        },
+      };
+    }
+    if (kindSelect.value === DECLINE_KIND) {
+      return {
+        ...base,
+        params: {
+          // 窗口尺寸留空也送 null，后端 normalizeWindowSize 会兜默认 3 / 20。
+          recentRuns: optionalNum(declineRecentInput),
+          baselineRuns: optionalNum(declineBaselineInput),
+          successRateDropPp: optionalNum(declineSrDropInput),
+          p95WorsenRatio: optionalNum(declineP95WorsenInput),
+        },
+      };
+    }
+    const isLevel = LEVEL_METRICS.includes(metricSelect.value);
+    return {
+      ...base,
       metric: metricSelect.value,
       comparator: comparatorSelect.value,
       threshold: isLevel ? thresholdLevelSelect.value : Number(thresholdNumberInput.value),
-      cooldownHours: Math.max(0.1, Number(cooldownInput.value) || 0.1),
-      enabled: enabledInput.checked,
     };
   }
 
@@ -150,6 +236,19 @@ export function createAlertRules({ state, confirm }) {
       toast("请选择渠道与模型，或改为「全部渠道 + 模型」。", true);
       return;
     }
+    // 后端也会拦（返回 400），这里先拦一道给即时反馈，省一次往返。
+    if (body.kind === JITTER_KIND && !Object.values(body.params).some((v) => Number.isFinite(v) && v > 0)) {
+      toast("稳定性抖动规则至少要配一项子阈值。", true);
+      return;
+    }
+    // 退化规则只看两个【判定阈值】——窗口尺寸留空后端会兜默认值，不算「配了一项」。
+    if (body.kind === DECLINE_KIND) {
+      const thresholds = [body.params.successRateDropPp, body.params.p95WorsenRatio];
+      if (!thresholds.some((v) => Number.isFinite(v) && v > 0)) {
+        toast("稳定性退化规则至少要配一项判定阈值（成功率跌幅 / P95 恶化倍数）。", true);
+        return;
+      }
+    }
     try {
       await api("/api/alert-rules", { method: "POST", body: JSON.stringify(body) });
       toast(body.id ? "规则已更新。" : "规则已创建。");
@@ -160,17 +259,41 @@ export function createAlertRules({ state, confirm }) {
     }
   });
 
+  // 回填数值输入：null/undefined（= 该项不检查）要留空，不能写成 "null" 或 0。
+  const fillOptional = (input, value) => {
+    input.value = Number.isFinite(value) ? String(value) : "";
+  };
+
   function editRule(rule) {
     ruleIdInput.value = rule.id;
     nameInput.value = rule.name || "";
+    kindSelect.value = rule.kind === JITTER_KIND || rule.kind === DECLINE_KIND ? rule.kind : "threshold";
     scopeTypeSelect.value = rule.scope?.type === "target" ? "target" : "all";
     syncScopeType();
     if (rule.scope?.type === "target") cascade.setValue(rule.scope.targetId, { silent: true });
-    metricSelect.value = rule.metric;
-    syncMetric();
-    comparatorSelect.value = rule.comparator;
-    if (LEVEL_METRICS.includes(rule.metric)) thresholdLevelSelect.value = String(rule.threshold ?? "");
-    else thresholdNumberInput.value = String(rule.threshold ?? "");
+    if (rule.kind === JITTER_KIND) {
+      const p = rule.params || {};
+      fillOptional(jitterRatioInput, p.jitterRatioMax);
+      fillOptional(jitterFirstSrInput, p.firstAttemptSuccessRateMin);
+      fillOptional(jitterRetryOverheadInput, p.retryOverheadP95MsMax);
+    } else if (rule.kind === DECLINE_KIND) {
+      const p = rule.params || {};
+      fillOptional(declineRecentInput, p.recentRuns);
+      fillOptional(declineBaselineInput, p.baselineRuns);
+      fillOptional(declineSrDropInput, p.successRateDropPp);
+      fillOptional(declineP95WorsenInput, p.p95WorsenRatio);
+    } else {
+      metricSelect.value = rule.metric;
+      comparatorSelect.value = rule.comparator;
+      if (LEVEL_METRICS.includes(rule.metric)) {
+        // 等级下拉的 options 由 syncMetric 按指标现填，故必须先 sync 再赋 value，否则赋不上。
+        syncMetric();
+        thresholdLevelSelect.value = String(rule.threshold ?? "");
+      } else {
+        thresholdNumberInput.value = String(rule.threshold ?? "");
+      }
+    }
+    syncKind();
     cooldownInput.value = String(rule.cooldownHours ?? 1);
     enabledInput.checked = rule.enabled !== false;
     formTitle.textContent = `编辑规则：${rule.name || rule.id}`;
@@ -220,18 +343,48 @@ export function createAlertRules({ state, confirm }) {
     return String(rule.threshold);
   }
 
+  // 卡片「条件：」行。复合规则列出已配置的子阈值（未配置的不列，与「不检查」的语义一致）。
+  // 返回值会插进 innerHTML，故这里出现的动态量都得转义；数值走 Number() 后拼接，本身不含标记。
+  function conditionHtml(rule) {
+    const p = rule.params || {};
+    if (rule.kind === JITTER_KIND) {
+      const lines = [];
+      if (Number.isFinite(p.jitterRatioMax)) lines.push(`耗时抖动倍数（P95÷P50）高于 ${Number(p.jitterRatioMax)}×`);
+      if (Number.isFinite(p.firstAttemptSuccessRateMin)) lines.push(`首次成功率低于 ${Math.round(p.firstAttemptSuccessRateMin * 100)}%`);
+      if (Number.isFinite(p.retryOverheadP95MsMax)) lines.push(`重试额外等待 P95 高于 ${Number(p.retryOverheadP95MsMax)}ms`);
+      if (!lines.length) return "（未配置任何子阈值，不会触发）";
+      return `任一越界即不合格<br>${lines.map((l) => `　· ${escapeHtml(l)}`).join("<br>")}`;
+    }
+    if (rule.kind === DECLINE_KIND) {
+      const lines = [];
+      if (Number.isFinite(p.successRateDropPp)) lines.push(`成功率中位数跌幅达 ${Math.round(p.successRateDropPp * 100)}pp`);
+      if (Number.isFinite(p.p95WorsenRatio)) lines.push(`P95 中位数恶化达 ${Number(p.p95WorsenRatio)}×`);
+      if (!lines.length) return "（未配置任何判定阈值，不会触发）";
+      const window = `最近 ${Number(p.recentRuns) || 3} 次 vs 之前 ${Number(p.baselineRuns) || 20} 次`;
+      return `${escapeHtml(window)}，任一越界即不合格<br>${lines.map((l) => `　· ${escapeHtml(l)}`).join("<br>")}`;
+    }
+    return `${escapeHtml(METRIC_LABEL[rule.metric] || rule.metric)} ${escapeHtml(COMPARATOR_LABEL[rule.comparator] || rule.comparator)} ${escapeHtml(thresholdText(rule))}`;
+  }
+
   function ruleCard(rule) {
     const card = document.createElement("div");
     card.className = "atc-job-card";
     const targetWarn = rule.scope?.type === "target" && rule.targetRunnable === false ? ` <span class="pill danger">目标不可用</span>` : "";
+    // kindPill 是硬编码 HTML，不是用户数据——刻意不转义（同 auto-test-config 的 targetWarn 惯例）。
+    const kindPill =
+      rule.kind === JITTER_KIND
+        ? ` <span class="pill">稳定性抖动</span>`
+        : rule.kind === DECLINE_KIND
+          ? ` <span class="pill">稳定性退化</span>`
+          : "";
     card.innerHTML = `
       <div class="atc-job-head">
         <b>${escapeHtml(rule.name || rule.id)}</b>
-        <span class="pill ${rule.enabled ? "" : "muted"}">${rule.enabled ? "已启用" : "已停用"}</span>${targetWarn}
+        <span class="pill ${rule.enabled ? "" : "muted"}">${rule.enabled ? "已启用" : "已停用"}</span>${kindPill}${targetWarn}
       </div>
       <div class="atc-job-meta">
         范围：${scopeText(rule)}<br>
-        条件：${escapeHtml(METRIC_LABEL[rule.metric] || rule.metric)} ${escapeHtml(COMPARATOR_LABEL[rule.comparator] || rule.comparator)} ${escapeHtml(thresholdText(rule))}<br>
+        条件：${conditionHtml(rule)}<br>
         冷却：${Number(rule.cooldownHours)} 小时
       </div>
       <div class="action-row atc-job-actions"></div>`;

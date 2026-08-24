@@ -111,6 +111,7 @@ import { loadRules, updateRules, normalizeRule, validateRule, RuleValidationErro
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
 import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
+import { clearRuleState } from "./server/alert-rule-state.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, redactSensitiveText, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -1220,10 +1221,15 @@ async function handleAlertRuleUpsert(req, res) {
 
 async function handleAlertRuleDelete(req, res, { params }) {
   const id = params.id;
-  await updateRules((rules) => {
+  const removed = await updateRules((rules) => {
     const idx = rules.findIndex((r) => r.id === id);
-    if (idx >= 0) rules.splice(idx, 1);
+    if (idx < 0) return false;
+    rules.splice(idx, 1);
+    return true;
   });
+  // 顺带清掉该规则的冷却记录，否则键会永久留在状态文件里（只增不减）。
+  // best-effort：清理失败不影响删除结果（规则已删，残留键无害）。
+  if (removed) await clearRuleState(id);
   sendJson(res, 200, { ok: true });
   return;
 }
