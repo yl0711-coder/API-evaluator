@@ -43,6 +43,7 @@ import {
   buildProtocolToolRequest,
   buildProtocolUrl,
   coalesceSseResponse,
+  REASONING_EFFORT_LEVELS,
   extractFinishReason,
   extractOutputText,
   extractToolCall,
@@ -65,7 +66,13 @@ import {
   saveAiAnalysisReport,
   saveReportFiles,
 } from "./reporting.mjs";
-import { buildScenarioProfileSummary, buildScenarioSummary, buildStabilitySummary, countTemperatureStripped } from "./summaries.mjs";
+import {
+  buildScenarioProfileSummary,
+  buildScenarioSummary,
+  buildStabilitySummary,
+  countReasoningEffortStripped,
+  countTemperatureStripped,
+} from "./summaries.mjs";
 import { buildFingerprintSnapshot, trackModelFingerprint } from "./fingerprint-tracking.mjs";
 import { buildTierProbeCases, classifyTierFromRecords, evaluateTierCase, loadTierContext } from "./tier-admission.mjs";
 import { buildTrendSeries, detectRegression, toTrendPoint } from "./regression.mjs";
@@ -317,7 +324,13 @@ export async function runAdmissionTest(body, taskContext = {}) {
   // 高级设置里手填的温度。与稳定性/场景测试同一套口径：留空 = 不覆盖、走协议层默认。
   // 存在的理由是有些模型只接受特定温度（如月之暗面只认 1），不给对的值整轮准入都会 400。
   const temperatureOverride = optionalTemperature(body.temperature);
-  const profile = temperatureOverride != null ? { ...baseProfile, temperatureOverride } : baseProfile;
+  // 思考强度同理：留空 = 不发该字段、用模型自己的默认档（默认值是 per-model 的，我们不替它选）。
+  const reasoningEffortOverride = optionalReasoningEffort(body.reasoningEffort);
+  const profile = {
+    ...baseProfile,
+    ...(temperatureOverride != null ? { temperatureOverride } : {}),
+    ...(reasoningEffortOverride != null ? { reasoningEffortOverride } : {}),
+  };
 
   const packageLevel = ["quick", "standard", "deep"].includes(body.packageLevel) ? body.packageLevel : "standard";
   const runId = buildReportId("admission", reportTargetSlug(profile));
@@ -686,8 +699,20 @@ async function executeAdmissionTestCase(profile, testCase, runId, taskContext = 
   // 而 Claude 恰恰是拒收自定义 temperature 的那一族，不带反而更安全。
   // 诚实边界：离线校准脚本本身一个 temperature 都不发，OpenAI 协议下的 0.2 与它仍有细微差异——
   // 那是本功能之前就存在的偏差，不在这次改动范围内。
-  if (testCase.tier && effectiveProfile.temperatureOverride != null) {
-    effectiveProfile = { ...effectiveProfile, temperatureOverride: null };
+  //
+  // 【思考强度同样必须摘掉，而且比 temperature 更要紧】——它直接改变模型思考多久，
+  // 对答题正确率的影响远大于采样温度。参考分布是在「不发该参数」条件下离线校准的：
+  //   · 选 max/high → 在线通过率虚高 → 明明降级了却判「正常」（漏放）
+  //   · 选 none     → 通过率虚低 → 对上游的误控告（更严重）
+  // 上面那条「不担心 400」的安全论证在这里【不成立】，故必须显式摘。两条可达路径都实测过：
+  //   · 原生 Claude 渠道：protocol=claude_messages 会发 output_config.effort（见 applyClaudeEffort），
+  //     与档位门禁的「模型名属 Claude 家族」直接相交——这是最短的一条路。
+  //   · 中转包装：protocol=openai_compatible + defaultModel=claude-sonnet-4-5 时发扁平
+  //     reasoning_effort。档位门禁按【模型名】过而该字段按【协议】发，两者在这里相交——
+  //     而中转恰恰是本工具最主要的使用场景。
+  // 清的是 profile 上的 reasoningEffortOverride（两种协议共用这一个字段），故一处覆盖两条路。
+  if (testCase.tier && (effectiveProfile.temperatureOverride != null || effectiveProfile.reasoningEffortOverride != null)) {
+    effectiveProfile = { ...effectiveProfile, temperatureOverride: null, reasoningEffortOverride: null };
   }
 
   if (testCase.kind === "tool") {
@@ -1005,6 +1030,7 @@ function buildAdmissionSummary({ runId, profile, records, packageLevel, startedA
     // 手填温度被上游拒收、传输层就地摘掉的请求数。准入页也有温度入口（高级设置），
     // 不留痕的话用户会把这份报告的分数读成「我设的那个温度下的表现」，实际跑的是模型默认温度。
     temperatureStrippedCount: countTemperatureStripped(records),
+    reasoningEffortStrippedCount: countReasoningEffortStripped(records),
     gradedCaseCount,
     passedCount,
     passRate,
@@ -1128,7 +1154,12 @@ function normalizeStabilityGroups(body) {
 async function runStabilityForProfile({ profile, body, taskContext = {}, onProgress = null }) {
   const concurrency = clampNumber(body.concurrency, 1, 5, 1);
   const temperatureOverride = optionalTemperature(body.temperature);
-  const runProfile = temperatureOverride != null ? { ...profile, temperatureOverride } : profile;
+  const reasoningEffortOverride = optionalReasoningEffort(body.reasoningEffort);
+  const runProfile = {
+    ...profile,
+    ...(temperatureOverride != null ? { temperatureOverride } : {}),
+    ...(reasoningEffortOverride != null ? { reasoningEffortOverride } : {}),
+  };
   const groups = normalizeStabilityGroups(body);
   const jobs = [];
   for (const group of groups) {
@@ -1359,6 +1390,23 @@ function optionalTemperature(value) {
   return n;
 }
 
+// 思考强度一次性覆盖：留空 → null（整个 reasoning_effort 字段不发，用模型自己的默认档）。
+// 同 optionalTemperature 的口径——非法值直接报错，不静默回落成某个档位：
+// 悄悄换档会让报告里的质量/延迟/成本对应一个用户没选过的档位，而这参数实质改变模型行为。
+// 只挡拼写手滑；某个模型到底收不收这一档是 per-model 的，发出去被 400 由传输层摘参重试兜底。
+function optionalReasoningEffort(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const level = String(value).trim().toLowerCase();
+  if (!REASONING_EFFORT_LEVELS.includes(level)) {
+    throw new HttpRequestError(
+      400,
+      "invalid_reasoning_effort",
+      `思考强度只能是 ${REASONING_EFFORT_LEVELS.join(" / ")} 之一，留空则用模型默认档。`,
+    );
+  }
+  return level;
+}
+
 // 表单复选框未勾选时字段直接缺席，勾选时为 "1"；JSON 调用方可传 true/"true"/"on"/"yes"。
 function isScenarioFlagOn(value) {
   return (
@@ -1385,6 +1433,10 @@ export async function runScenarioTest(body, taskContext = {}) {
     throw new Error("请至少选择一个测试场景。");
   }
 
+  // 批次 runId：多模型场景测试共享一个批次 ID，用于关联所有请求记录。
+  // 这个 runId 会传给 executeTestRequest → finalizeTestRecord，写入 test_requests.run_id。
+  // 单模型报告有独立的 perId（见下方 1462 行），仅用于报告文件命名和 test_runs 主键，
+  // 不影响请求记录的 run_id——这样设计是因为一个批次可以测多个模型，所有请求需要共享批次 ID。
   const runId = buildReportId("scenario", selectedProfiles.length === 1 ? reportTargetSlug(selectedProfiles[0]) : "");
   const maxParallelProfiles = clampNumber(body.maxParallelProfiles, 1, 5, 2);
   const requestConcurrency = clampNumber(body.requestConcurrency || body.concurrency, 1, 3, 1);
@@ -1394,6 +1446,8 @@ export async function runScenarioTest(body, taskContext = {}) {
   const timeoutMsOverride = optionalOverrideInt(body.timeoutMs, 1000, 600000);
   // temperature 覆盖：0-2 范围，支持小数。留空则走协议默认（OpenAI 0.2，Claude 不带）。
   const temperatureOverride = optionalTemperature(body.temperature);
+  // 思考强度覆盖：留空则不发 reasoning_effort，用模型自己的默认档（默认值 per-model，不代选）。
+  const reasoningEffortOverride = optionalReasoningEffort(body.reasoningEffort);
   // 「在报告中完整显示返回」：表单复选框传 "1"；同时容忍 JSON 调用方传 true/"true"/"on"/"yes"。
   const fullResponseInReport = isScenarioFlagOn(body.fullResponseInReport);
   // 「发送流式请求（SSE）」：开启则整轮场景都走流式，并采集真 TTFT。
@@ -1418,6 +1472,7 @@ export async function runScenarioTest(body, taskContext = {}) {
           maxTokensOverride,
           timeoutMsOverride,
           temperatureOverride,
+          reasoningEffortOverride,
           keepFullResponse: fullResponseInReport,
           streamRequest,
           taskContext,
@@ -1459,6 +1514,10 @@ export async function runScenarioTest(body, taskContext = {}) {
   for (const profileResult of profileResults) {
     const profile = selectedProfiles.find((p) => p.id === profileResult.profileId) || null;
     const slug = reportTargetSlug(profile || { name: profileResult.profileName, defaultModel: profileResult.model });
+    // perId：每个模型报告的唯一 ID，用于报告文件命名、test_runs 主键、工件目录名。
+    // 它与批次 runId（1388 行）不同：批次 runId 写入 test_requests.run_id（所有模型共享），
+    // perId 写入 test_runs.run_id（每个模型独立）。趋势查询按 profile_id 找 test_runs，
+    // 再用 test_runs.run_id 去 test_requests 里查逐轮数据——两个 ID 各司其职，不冲突。
     const perId = buildReportId("scenario", slug);
     let one = buildScenarioSummary({
       runId: perId,
@@ -1566,6 +1625,7 @@ async function runScenarioProfile({
   maxTokensOverride = null,
   timeoutMsOverride = null,
   temperatureOverride = null,
+  reasoningEffortOverride = null,
   keepFullResponse = false,
   streamRequest = false,
   taskContext,
@@ -1593,6 +1653,7 @@ async function runScenarioProfile({
           maxTokens: maxTokensOverride ?? SCENARIO_MAX_OUTPUT_TOKENS,
           timeoutMs: timeoutMsOverride ?? profile.timeoutMs,
           temperatureOverride: temperatureOverride, // 传递到协议层，让它覆盖默认温度值
+          reasoningEffortOverride: reasoningEffortOverride, // 同上：null 时协议层根本不发该字段
         };
         const record = await executeTestRequest(caseProfile, buildScenarioPrompt(scenario, repeat, repeats), {
           runId,
@@ -1874,6 +1935,8 @@ async function finalizeTestRecord({
   toolCall = null,
   streamValidation = null,
   temperatureStripped = false,
+  reasoningEffortStripped = false,
+  maxTokensRenamed = false,
   attempts = 1,
   successOverride = undefined,
 }) {
@@ -1893,6 +1956,14 @@ async function finalizeTestRecord({
     // 高级设置里手填的温度被传输层摘掉了（该模型拒收自定义 temperature）。落进记录，
     // 汇总时聚合成一条界面提示——否则用户以为跑的是自己填的温度，实际跑的是模型默认值。
     temperatureStripped,
+    // 同上：用户选的思考强度被传输层摘掉了（上游拒收该字段/该档位，或与 function tools 冲突）。
+    // 这一条尤其要留痕——报告若显示 high 而实际跑在模型默认档，整份质量/成本数据都对不上。
+    reasoningEffortStripped,
+    // 上面那个 requestMaxTokens 是【数值】，这个记的是它以哪个【字段名】发出去的：
+    // OpenAI o 系 / GPT-5 系拒收 max_tokens、要求 max_completion_tokens，传输层会就地改名重试。
+    // 数值上限不变，故不算失真、不出提示卡；留痕是因为新字段的预算含推理 token，
+    // 推理模型可能把预算烧在不可见思考上、回空串或截断——排查这类记录时它是关键线索。
+    maxTokensRenamed,
     // 实际发出的是不是 SSE 流式请求。诊断时不必再靠 firstTokenMs 反推（那会把「流式但没吐内容」
     // 的失败误判成非流式）。
     stream,

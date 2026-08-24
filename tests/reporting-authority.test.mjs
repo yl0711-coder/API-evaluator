@@ -130,6 +130,60 @@ test("buildReportAuthorityHeader：场景报告顶层无该计数，应按各 AP
   assert.match(text, /7 次请求/, "应为各 API 之和（3+0+4=7）");
 });
 
+// —— 思考强度被摘掉时同样必须留痕 ——
+// 比温度更要紧：它决定模型思考多久，对质量/耗时/成本三项的影响都更大。选了 high 却被摘掉、
+// 报告不写，读者会把「默认档的表现」当成「high 档的表现」，据此做的选型和报价都是错的。
+// 同样两条路径分别驱动（准入没有溯源头）。
+
+test("formatStabilityReport：思考强度被摘掉时，报告正文写明数字产自模型默认档", () => {
+  const summary = makeSummary();
+  summary.reasoningEffortStrippedCount = 10;
+  const report = formatStabilityReport(summary, []);
+  assert.match(report, /所选思考强度未生效/, "稳定性报告未记录思考强度被摘");
+  assert.match(report, /10 次请求/, "应写明被摘掉的请求数");
+  assert.match(report, /模型默认档/, "应点明这部分实际用的是模型默认档");
+});
+
+test("formatAdmissionReport：思考强度被摘掉时，关键指标节先声明前提", () => {
+  const summary = { ...makeSummary(), type: "admission", grade: "A", score: 90, requestCount: 10, reasoningEffortStrippedCount: 4 };
+  summary.cases = [];
+  const report = formatAdmissionReport(summary, []);
+  assert.match(report, /所选思考强度未生效/, "准入报告未记录思考强度被摘（准入页也有该入口）");
+  assert.match(report, /4 次请求/);
+  assert.ok(report.indexOf("所选思考强度未生效") < report.indexOf("- 请求数："), "说明应位于关键指标节最前，先于各项数字");
+});
+
+test("buildReportAuthorityHeader：思考强度计数同样按 profileDigest 求和（场景多 API）", () => {
+  const text = buildReportAuthorityHeader({
+    runId: "r-scenario-effort",
+    profileDigest: [{ reasoningEffortStrippedCount: 2 }, { reasoningEffortStrippedCount: 0 }, { reasoningEffortStrippedCount: 5 }],
+  }).join("\n");
+  assert.match(text, /所选思考强度未生效/, "场景报告应能从 profileDigest 聚合出思考强度失效");
+  assert.match(text, /7 次请求/, "应为各 API 之和（2+0+5=7）");
+});
+
+test("温度与思考强度同时被摘：两条说明都要在，互不覆盖", () => {
+  // 抽出公共取数函数时最容易犯的错：两个字段共用一份状态、后者盖掉前者。
+  const text = buildReportAuthorityHeader({
+    runId: "r-both",
+    temperatureStrippedCount: 3,
+    reasoningEffortStrippedCount: 5,
+  }).join("\n");
+  assert.match(text, /手填温度未生效/);
+  assert.match(text, /所选思考强度未生效/);
+  assert.match(text, /3 次请求/);
+  assert.match(text, /5 次请求/);
+});
+
+test("负对照：思考强度未被摘时不出现该说明，不误报", () => {
+  assert.doesNotMatch(buildReportAuthorityHeader({ runId: "r-clean-effort" }).join("\n"), /所选思考强度未生效/);
+  assert.doesNotMatch(formatStabilityReport(makeSummary(), []), /所选思考强度未生效/);
+  assert.doesNotMatch(
+    buildReportAuthorityHeader({ profileDigest: [{ reasoningEffortStrippedCount: 0 }] }).join("\n"),
+    /所选思考强度未生效/,
+  );
+});
+
 test("负对照：温度未被摘时三类报告都不出现该说明，不误报", () => {
   // 没有这条，上面几条的绿可能只是撞上了报告里别处的「温度」字样。
   const header = buildReportAuthorityHeader({ runId: "r-clean" }).join("\n");

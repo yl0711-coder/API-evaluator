@@ -27,6 +27,24 @@ export function temperatureStrippedNotice(count, total) {
   `;
 }
 
+// 「选的思考强度没生效」提示卡。与 temperatureStrippedNotice 同一职责、同一 Number() 口径，
+// 刻意分开写而不抽公共模板：两者的成因与用户该采取的动作不同（温度是"这模型只认默认值"，
+// 思考强度还可能是"这一档不存在"或"和工具调用冲突"），合并后文案只能说得含糊。
+// count 为 0 / 缺失（老报告没有该字段）时不出卡。
+export function reasoningEffortStrippedNotice(count, total) {
+  const stripped = Number(count) || 0;
+  if (stripped <= 0) return "";
+  const denominator = Number(total) || 0;
+  const scope = denominator > 0 ? `${stripped}/${denominator} 次请求` : `${stripped} 次请求`;
+  return `
+    <article class="summary-card wide-summary">
+      <span class="warn">思考强度未生效</span>
+      <strong class="warn">${scope}的思考强度未能发给上游，已去掉后照常测试</strong>
+      <small>可能是该模型不是推理模型、不支持你选的这一档、该档位与工具调用冲突，或这一档不在该协议的取值范围内（Claude 只有 low/medium/high/xhigh/max 五档，没有 none 和 minimal）。这部分请求实际跑在模型自己的默认档上，质量、耗时和成本都不代表你选的档位，看数字时请留意。</small>
+    </article>
+  `;
+}
+
 export function formatTaskType(type) {
   return (
     {

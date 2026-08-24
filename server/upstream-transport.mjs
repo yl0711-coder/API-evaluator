@@ -7,7 +7,15 @@
 import crypto from "node:crypto";
 import { readProfileApiKey } from "./secret-store.mjs";
 import { assertPublicTarget } from "./egress-guard.mjs";
-import { firstTokenPatternFor, isStreamOptionsUnsupportedError, isTemperatureUnsupportedError, normalizeHttpError } from "./protocols.mjs";
+import {
+  firstTokenPatternFor,
+  isClaudeEffortUnsupportedError,
+  isMaxTokensRenameRequiredError,
+  isReasoningEffortUnsupportedError,
+  isStreamOptionsUnsupportedError,
+  isTemperatureUnsupportedError,
+  normalizeHttpError,
+} from "./protocols.mjs";
 import { summarizeText } from "./utils.mjs";
 import { envInt } from "./env-config.mjs";
 import { recordUpstreamTiming } from "./performance.mjs";
@@ -66,11 +74,77 @@ export function linkExternalAbort(controller, signal) {
 const RETRY_MAX_ATTEMPTS = 3; // 含首次：最多 1 + 2 次重试
 const RETRY_BASE_DELAY_MS = 600; // 指数退避基数
 const RETRY_MAX_DELAY_MS = 20000; // 单次退避上限（同时钳制 Retry-After，避免被上游要求长睡）
-// 本进程内记住哪些模型（baseUrl|model）拒绝自定义 temperature，后续同模型请求首发就不带，
+// 本进程内记住哪些「协议|baseUrl|model」拒绝自定义 temperature，后续同键请求首发就不带，
 // 省掉那次注定 400 的往返。仅内存态：模型不会中途改变是否支持，重启后从头学习即可。
+// 键含协议的理由见下方 tempKey 的构造处（跨协议误学习实测复现过）。
 const TEMPERATURE_UNSUPPORTED_MODELS = new Set();
 // 同款记忆：本进程内曾因 stream_options 被 400 的模型，后续流式请求首发就不带，省掉注定失败的往返。
 const STREAM_OPTIONS_UNSUPPORTED_MODELS = new Set();
+// 同款记忆：曾因思考强度被 400 的模型。两种协议形状（OpenAI 扁平 reasoning_effort / Claude 嵌套
+// output_config.effort）共用这一个 Set，但**键里带协议**故互不污染——曾有一版注释断言
+// 「同一个 baseUrl+model 只会走一种协议」，那条已被实测推翻（中转同时暴露两种端点是常态），
+// 见 tempKey 构造处。
+//
+// 【键里还必须带请求形状】——这是与上面两个名单的关键差异，不是多余的谨慎：
+// GPT-5.6 系在 chat/completions 上「带 function tools 时」才拒收 reasoning_effort，普通生成请求
+// 完全接受。若沿用 `baseUrl|model` 作键，工具题那一次 400 会让**后续所有生成探测**也首发就不带档位，
+// 于是用户选了 high、报告显示 high，实际却在模型默认档上跑——静默失真，正是本仓库最忌讳的那种。
+// 故按 `协议|baseUrl|model|hasTools` 记忆：各形状各自学习，互不污染。
+const REASONING_EFFORT_UNSUPPORTED_MODELS = new Set();
+
+// 同款记忆：本进程内曾被要求把 max_tokens 改名成 max_completion_tokens 的模型
+//（OpenAI o 系 / GPT-5 系），后续同模型请求首发就用新名，省掉那次注定 400 的往返。
+//
+// 键用 `协议|baseUrl|model`，不像 REASONING_EFFORT 那样还要把请求形状（tools）编进去：
+// 「这个模型用哪个字段名」与带不带 tools、是否流式都无关。但**协议维度仍要留**——
+// 同址同模型换协议时 URL 与请求形状都不同（如 openai_path_prefix 打 baseUrl/chat/completions、
+// openai_compatible 打 baseUrl/v1/chat/completions），拿另一条协议学到的字段名去发注定不对。
+// 与 renameMaxTokens 的 claude_messages 门禁是两层独立防护：门禁挡「绝不能改名」的那一族，
+// 协议分区挡「同族不同端点」的误学习。
+//
+// 【刻意不做全局换名】——首发仍发 max_tokens，只在被 400 点名后才改。理由是反向危险同样真实：
+// 大量中转、非 OpenAI 厂商（智谱 / DashScope / 月之暗面 / 火山）、旧版 Azure 部署只认 max_tokens，
+// 收到 max_completion_tokens 会回 "Unrecognized request argument supplied: max_completion_tokens"。
+// 而「经中转测」恰恰是本工具最主要的使用场景：全局换名等于拿现在能用的多数去换现在不能用的少数。
+// 按 400 学习的另一个好处：若某模型其实两个都收（或官方日后回退），本策略零成本——
+// 不多发请求、不多花额度，行为与改动前完全一致。
+const MAX_TOKENS_RENAME_MODELS = new Set();
+
+// max_tokens → max_completion_tokens 就地改名。返回是否真的改了。
+// 【必须按协议门禁】Claude 分支绝不能改：Anthropic 的 max_tokens 是**必填**字段，
+// 改名会让原生 Claude 渠道从「好的」变成「坏的」——本工具最主要的两类渠道之一直接全灭。
+function renameMaxTokens(profile, body) {
+  if (profile.protocol === "claude_messages") return false;
+  if (body?.max_tokens === undefined) return false;
+  body.max_completion_tokens = body.max_tokens;
+  delete body.max_tokens;
+  return true;
+}
+
+// 思考强度在两种协议里的落点不同：OpenAI 系是扁平 reasoning_effort，Claude 是嵌套
+// output_config.effort。以下三个小工具把这个差异收在一处，免得「判断有没有」「删掉」这两件事
+// 在预检、400 摘参两个分支里各写两遍字段路径——漏改一处就是静默失真。
+function requestHasEffort(body) {
+  return body?.reasoning_effort !== undefined || body?.output_config?.effort !== undefined;
+}
+
+function deleteRequestEffort(body) {
+  if (!body) return;
+  delete body.reasoning_effort;
+  if (body.output_config && typeof body.output_config === "object") {
+    delete body.output_config.effort;
+    // effort 是我们唯一会写进 output_config 的子字段；删空后连壳一起去掉。
+    // 留一个空对象在请求体里，对「不认 output_config 这个顶层字段」的上游（拒收原因 ①）
+    // 等于没摘参，重试会再吃一个同样的 400、白烧一次往返。
+    if (Object.keys(body.output_config).length === 0) delete body.output_config;
+  }
+}
+
+// 该协议下「上游确实点名了思考强度」的判定。字段名不同 → 探测器也必须分开选，
+// 用错一边永远判不出来（按 reasoning_effort 去查 Claude 的报错必然查不到），摘参重试就永不触发。
+function isEffortUnsupportedFor(protocol, raw) {
+  return protocol === "claude_messages" ? isClaudeEffortUnsupportedError(raw) : isReasoningEffortUnsupportedError(raw);
+}
 
 // Retry-After（秒数或 HTTP 日期）→ 毫秒。无法解析 → null。
 function parseRetryAfter(value) {
@@ -144,6 +218,16 @@ export async function executeUpstreamRequest(
     // 摘掉工具自己的默认 0.2 属于内部自愈、无需惊动用户；摘掉用户明确填的值必须如实上报，
     // 否则报告里的数字来自一个和用户所填不同的温度，却毫无痕迹。
     temperatureStripped: false,
+    // 同上：用户选的思考强度被本层摘掉了（上游拒收该字段/该档位，或与 function tools 冲突）。
+    // 这个字段【只有】用户明确选档时才可能置位——留空时我们根本不发 reasoning_effort。
+    reasoningEffortStripped: false,
+    // max_tokens 被改名成 max_completion_tokens 发出（OpenAI o 系 / GPT-5 系要求）。
+    // 与上面两个标记不同，这【不是】失真：同一个数值上限，只是字段名不同，无需惊动用户，
+    // 故只落进 requests.jsonl 供诊断，不出提示卡、不进报告正文。
+    // 留它的理由是一处真实差异：新字段的预算【含推理 token】，而老 max_tokens 在非推理模型上
+    // 只约束可见输出。于是推理模型可能把预算烧在不可见的思考上、回一个空串或截断——
+    // 排查「为什么这条记录空响应/被截断」时，这个标记是关键线索。
+    maxTokensRenamed: false,
   };
   let attempts = 0; // 实际发出的请求次数（含重试），写进记录便于诊断
   // 端到端计时起点（ADM-010）。在真正开始发请求前赋值；确定性重配会把它【重置】到重配后的那次
@@ -190,6 +274,8 @@ export async function executeUpstreamRequest(
       toolCall: r.toolCall,
       streamValidation: r.streamValidation,
       temperatureStripped: r.temperatureStripped,
+      reasoningEffortStripped: r.reasoningEffortStripped,
+      maxTokensRenamed: r.maxTokensRenamed,
       attempts,
       successOverride: computeSuccess(r),
     });
@@ -224,7 +310,16 @@ export async function executeUpstreamRequest(
     return await finalize();
   }
   // 已知拒绝自定义 temperature 的模型（本进程内曾被 400 过）：首发就不带，省掉那次注定失败的往返。
-  const tempKey = `${profile.baseUrl}|${profile.defaultModel}`;
+  //
+  // 【键里必须带协议】——同一个 baseUrl + model 完全可能同时存在两种协议的渠道：中转
+  // （new-api / one-api / sub2api）常同时暴露 /v1/chat/completions 与 /v1/messages，而渠道判重键是
+  // `baseUrl|keyHash`（不含协议）、sub2api 导入又是「每个密钥建一个渠道、协议按分组 platform 各判」，
+  // 于是「同址同模型、协议不同」是本工具的常见形态而非边缘情况。
+  // 不带协议的后果已实测复现：Claude 渠道因拒收某参数写进名单后，OpenAI 渠道**首发就丢掉**
+  // 用户填的那个值——而那个端点本来是接受的。报告虽会标注"未生效"，但用户选的档位/温度实际没跑，
+  // 且归因指向错误的方向。故四个名单统一按 `协议|baseUrl|model` 分区：两种形状各自学习。
+  // 代价是同址同模型换协议时要各吃一次 400（每种形状一次），有界且值得。
+  const tempKey = `${profile.protocol || "openai"}|${profile.baseUrl}|${profile.defaultModel}`;
   if (request.body?.temperature !== undefined && TEMPERATURE_UNSUPPORTED_MODELS.has(tempKey)) {
     delete request.body.temperature;
     // 这条记忆是进程级的，无法区分「上次是谁填的温度」；此处按本次调用是否带了用户覆盖来判定。
@@ -233,6 +328,23 @@ export async function executeUpstreamRequest(
   // 同上：已知不认 stream_options 的模型，流式请求首发就不带（拿不到上游 usage，调用方回退字符估算）。
   if (request.body?.stream_options !== undefined && STREAM_OPTIONS_UNSUPPORTED_MODELS.has(tempKey)) {
     delete request.body.stream_options;
+  }
+  // 同上：已知拒收 reasoning_effort 的「模型 + 请求形状」，首发就不带。
+  // 键带 hasTools（见名单定义处的注释）：工具请求与普通请求各自学习，一次工具题被拒不会
+  // 让后续生成探测也悄悄丢档位。
+  const effortKey = `${tempKey}|tools:${request.body?.tools ? "1" : "0"}`;
+  if (requestHasEffort(request.body) && REASONING_EFFORT_UNSUPPORTED_MODELS.has(effortKey)) {
+    deleteRequestEffort(request.body);
+    r.reasoningEffortStripped = true; // 只有用户明确选档才会走到这里（留空时字段根本不存在）
+  }
+  // 协议层就地丢弃了用户选的档位（Claude 不认 none / minimal——不在其取值域里，发出去注定 400，
+  // 见 protocols.mjs 的 applyClaudeEffort）。请求体里本来就没有该字段，无需再删，
+  // 但必须在这里转成 reasoningEffortStripped：否则用户选了 none、报告一声不响，
+  // 读者会把「模型默认档（=high）的表现」当成「不思考时的表现」——两者差别极大。
+  if (request.effortDropped) r.reasoningEffortStripped = true;
+  // 已知要求新字段名的模型（本进程内曾被 400 过）：首发就用 max_completion_tokens。
+  if (MAX_TOKENS_RENAME_MODELS.has(tempKey) && renameMaxTokens(profile, request.body)) {
+    r.maxTokensRenamed = true;
   }
 
   endToEndStartedAt = performance.now();
@@ -260,6 +372,9 @@ export async function executeUpstreamRequest(
     r.normalizedError = "";
     r.toolCall = null;
     r.streamValidation = null;
+    // temperatureStripped / reasoningEffortStripped 刻意【不】在这里重置：它们记录的是
+    // 「本次调用最终发出的请求体少了用户填的参数」，跨尝试有效。清掉会让摘参后成功的那次
+    // 报告里不留痕迹——正是这个标记要防的事。
     let retryable = false;
     let retryAfterMs = null;
     // 确定性重配：上游拒收某个我方可选参数（temperature / stream_options），已就地删掉并原样重试。
@@ -322,6 +437,28 @@ export async function executeUpstreamRequest(
           // 代价仅是没有上游 usage → 调用方回退按字符估算输出 token。
           STREAM_OPTIONS_UNSUPPORTED_MODELS.add(tempKey);
           delete request.body.stream_options;
+          retryable = true;
+          reconfigured = true;
+          retryAfterMs = 0; // 确定性重配，不退避
+        } else if (response.status === 400 && requestHasEffort(request.body) && isEffortUnsupportedFor(profile.protocol, raw)) {
+          // 同 temperature：上游拒收思考强度（非推理模型 / 不认这一档 / 与 function tools 冲突 /
+          // 中转或老版本 API 不认这个字段）。去掉后原样重试，让这一题仍能测出结果，代价是它跑在
+          // 模型默认档上——故必须置 reasoningEffortStripped 让报告如实标注，否则报告显示的档位与实际不符。
+          // 两种协议形状都走这一支：删参与判定各自按协议分流（见 deleteRequestEffort / isEffortUnsupportedFor）。
+          REASONING_EFFORT_UNSUPPORTED_MODELS.add(effortKey);
+          deleteRequestEffort(request.body);
+          r.reasoningEffortStripped = true;
+          retryable = true;
+          reconfigured = true;
+          retryAfterMs = 0; // 确定性重配，不退避
+        } else if (response.status === 400 && isMaxTokensRenameRequiredError(raw) && renameMaxTokens(profile, request.body)) {
+          // OpenAI o 系 / GPT-5 系要求把 max_tokens 改名成 max_completion_tokens。改名后原样重试。
+          // 与上面三支的差别：这是【改名】不是【摘参】——max_tokens 是输出上限，摘掉会放开到模型
+          // 自己的上限（GPT-5.6 达 128K），既烧额度又会把响应顶到字节上限判 response_too_large。
+          // renameMaxTokens 放在条件里：它按协议门禁（Claude 的 max_tokens 必填，不能改），
+          // 返回 false 时不该进这一支——否则会白重试一次同样的请求。
+          MAX_TOKENS_RENAME_MODELS.add(tempKey);
+          r.maxTokensRenamed = true;
           retryable = true;
           reconfigured = true;
           retryAfterMs = 0; // 确定性重配，不退避
@@ -415,9 +552,38 @@ export async function readBoundedResponseText(response, maxBytes, controller, { 
   let matchWindow = "";
   const MATCH_WINDOW = 4096;
 
+  // P2-5：reader.read() 不保证跟随 AbortSignal —— fetch 的 signal 作用于网络层，而响应体
+  // ReadableStream 的 reader.read() 是独立 API。曾观测到「响应头已到、流挂起」时 controller.abort()
+  // 中止不了读取，请求挂到 timeoutMs 耗尽才抛 AbortError（该有 15s，实测延到 5 分钟）。
+  // 故用 Promise.race 竞速「实际读取」与「abort 信号」，信号先到时主动抛 AbortError 中止循环。
+  // 保留这段是**跨 undici 版本的防御**：新版 undici 已会把 abort 传播到 body 流（该版本上竞速永远是
+  // undici 先赢，这段不生效），但旧版/其它运行时未必，删掉就等于赌运行时行为。
+  //
+  // 【监听器必须在循环外注册一次】初版把 new Promise + addEventListener 写在循环【内】，于是监听器数
+  // 随 read() 次数线性增长——每轮挂一个新的 abort 监听器、从不移除，各自持有一个 reject 闭包。
+  // 实测 500 次读取 = 501 个监听器；按流式上限 MAX_UPSTREAM_STREAM_RESPONSE_BYTES（24MB、
+  // 每次 read 约 2KB）估算，单个满额流式请求可累积上万个。AbortSignal 是 EventTarget、默认不设监听器
+  // 上限，所以【不会】有 MaxListenersExceededWarning——线上只表现为容器内存偏高、无任何告警
+  // （对 deploy/docker-compose 里 mem_limit 768m 是实际风险）。
+  // 竞速语义与注册次数无关（一个信号只 abort 一次），故一次注册即可，**不要挪回循环内**。
+  let removeAbortListener = null;
+  const abortPromise = new Promise((_, reject) => {
+    const fail = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+    if (controller.signal.aborted) {
+      fail();
+      return;
+    }
+    controller.signal.addEventListener("abort", fail, { once: true });
+    removeAbortListener = () => controller.signal.removeEventListener("abort", fail);
+  });
+  // 读取正常结束、之后外层才 abort 时，abortPromise 会 reject 而无人 await。
+  // Promise.race 每轮都给它挂过处理器（故已算「已处理」），这里再显式吸收一次，
+  // 确保上方任何提前 return 的分支（truncated / 累积超限）都不会留下 unhandledRejection。
+  abortPromise.catch(() => {});
+
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await Promise.race([reader.read(), abortPromise]);
       if (done) {
         break;
       }
@@ -445,6 +611,10 @@ export async function readBoundedResponseText(response, maxBytes, controller, { 
     if (partial) error.partialText = partial;
     throw error;
   } finally {
+    // 摘掉 abort 监听器：signal 常常比本次读取活得更久（executeUpstreamRequest 里同一个
+    // controller 还要走重试后续、外部 abortSignal 也可能挂着别的链路），不摘就等于把闭包
+    // 留在信号上直到整个请求生命周期结束——那正是上面说的内存放大。
+    removeAbortListener?.();
     reader.releaseLock?.();
   }
 }

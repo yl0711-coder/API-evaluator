@@ -17,6 +17,7 @@ import {
   mergeModels,
   mergeScalar,
 } from "../server/import-merge.mjs";
+import { importedChannelName, normalizeChannel } from "../server/channel-model.mjs";
 
 test("mergeScalar：用户没动过 → 跟随上游改名", () => {
   const r = mergeScalar({ upstream: "新名字", prev: "老名字", snapshot: "老名字", hasSnapshot: true });
@@ -299,4 +300,46 @@ test("反复导入 5 次，preservedFields 恒定不虚增", () => {
     channel = r.channel;
     assert.deepEqual(r.preservedFields, ["protocol"], `第 ${i + 1} 次导入：只有协议被保留`);
   }
+});
+
+// —— 快照口径必须与 normalizeChannel 一致（P3 回归）——
+// 三条导入链路都走 importedChannelName 生成渠道名。它存在的唯一理由是：
+// normalizeChannel 对 name 走 requiredString（trim），而 saveChannels 不归一化、导入原样落库；
+// 两边口径不一致会让三方合并退化。下面两个用例分别钉住那两个实测复现过的后果。
+// 变异验证：把三条链路里的 importedChannelName 换回 String(x || fallback) 即两条同时变红。
+
+test("上游名带首尾空格：UI 保存过一次后，上游改名仍能同步过来", () => {
+  // 模拟三条链路的映射（都用 importedChannelName），上游名带尾随空格
+  const mappedOf = (upstreamName) => ({
+    id: "c1",
+    name: importedChannelName(upstreamName, "兜底名"),
+    protocol: "claude_messages",
+    provider: "",
+    notes: "上游说明。",
+    models: ["m1"],
+  });
+
+  const first = mappedOf("测试密钥 ");
+  let channel = { ...first, importSnapshot: importSnapshotOf(first) };
+
+  // 用户在 UI 里保存一次（什么都没改）——normalizeChannel 会 trim name
+  channel = normalizeChannel({ ...channel }, channel);
+  assert.equal(channel.name, "测试密钥", "normalizeChannel 会 trim（这是 UI 保存的既有行为）");
+  assert.ok(channel.importSnapshot, "importSnapshot 在白名单里，UI 编辑后要留存");
+
+  // 再次导入，上游数据没变 → 不该判成「用户改过」
+  const second = mergeImportedChannel(channel, mappedOf("测试密钥 "));
+  assert.deepEqual(second.preservedFields, [], "用户没改过 name，不能计入 preserved");
+
+  // 上游真改名 → 必须同步过来
+  const third = mergeImportedChannel(second.channel, mappedOf("上游改的新名字"));
+  assert.equal(third.channel.name, "上游改的新名字", "上游改名必须能同步（退化时会卡在旧名）");
+});
+
+test("上游名是全空白：回落兜底名，渠道在 UI 里存得下来", () => {
+  const name = importedChannelName("   ", "sub2api 密钥 5");
+  assert.equal(name, "sub2api 密钥 5", "trim 后为空视同没给名字，用兜底名");
+  // 落库的名字必须能通过 normalizeChannel——否则该渠道永远存不了任何修改（400 渠道名称不能为空）
+  const channel = normalizeChannel({ name, baseUrl: "https://relay.test", protocol: "openai_compatible" }, null);
+  assert.equal(channel.name, "sub2api 密钥 5");
 });

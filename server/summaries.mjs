@@ -59,6 +59,13 @@ export function countTemperatureStripped(records) {
   return records.filter((item) => item.temperatureStripped).length;
 }
 
+// 同上，针对思考强度：用户选的档位被上游拒收（非推理模型 / 不认这一档 / 与 function tools 冲突），
+// 这些请求实际跑在模型自己的默认档上。不留痕的话，报告里的质量/延迟/成本会被读成
+// 「我选的那个档位下的表现」——而思考强度对这三项的影响比温度大得多。
+export function countReasoningEffortStripped(records) {
+  return records.filter((item) => item.reasoningEffortStripped).length;
+}
+
 export function buildStabilitySummary({ runId, profile, records, rounds, concurrency, prompt, startedAt, endedAt }) {
   const successRecords = records.filter((item) => item.success);
   const failedRecords = records.filter((item) => !item.success);
@@ -153,6 +160,7 @@ export function buildStabilitySummary({ runId, profile, records, rounds, concurr
     tokenAudit,
     tokenAuditFindings: tokenAudit.flags || [],
     temperatureStrippedCount: countTemperatureStripped(records),
+    reasoningEffortStrippedCount: countReasoningEffortStripped(records),
     ...economics,
     actualConsumption: buildRunConsumption(profile, records),
     errorCounts,
@@ -256,6 +264,7 @@ export function buildScenarioProfileSummary(profile, records, { judgeAudit = nul
     tokenAudit,
     tokenAuditFindings: tokenAudit.flags || [],
     temperatureStrippedCount: countTemperatureStripped(records),
+    reasoningEffortStrippedCount: countReasoningEffortStripped(records),
     ...economics,
     errorCounts,
     diagnostics: buildErrorDiagnostics(errorCounts),
@@ -320,6 +329,7 @@ export function buildScenarioSummary({
       // 手填温度被摘的请求数：digest 是前端唯一可靠来源（results/records 会被任务通道剥掉），
       // 提示要显示就必须在这里带上。
       temperatureStrippedCount: p.temperatureStrippedCount || 0,
+      reasoningEffortStrippedCount: p.reasoningEffortStrippedCount || 0,
       caseCount: p.caseCount, // 上面那条提示的分母（「N/总数 次请求」）
     })),
     results: profileResults,

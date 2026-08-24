@@ -2,7 +2,7 @@
 // 从 new-api 导入渠道的纯映射 + 编排（无 I/O，便于单测）。数据来源（A1 管理 API / A2 只读 DB）
 // 在 newapi-source.mjs 里取行，本文件只负责：new-api 渠道行 -> 我们的渠道/模型目标。
 // 明文 key 不进渠道记录：buildImportPlan 单独把 key 收进 keys 映射，由端点存进加密库后丢弃。
-import { deterministicModelTargetId, normalizeModelList } from "./channel-model.mjs";
+import { deterministicModelTargetId, importedChannelName, normalizeModelList } from "./channel-model.mjs";
 import { finalizeImportedNotes, importSnapshotOf, mergeImportedChannel } from "./import-merge.mjs";
 
 // new-api 渠道 type（见其 constant/channel.go）。14=Anthropic 走 Claude Messages，其余按 OpenAI 兼容。
@@ -55,7 +55,7 @@ export function mapNewapiChannel(row) {
   const inferred = type !== 1 && type !== 14;
   return {
     id: newapiChannelLocalId(row.id),
-    name: String(row.name || `new-api 渠道 ${row.id}`),
+    name: importedChannelName(row.name, `new-api 渠道 ${row.id}`),
     provider: TYPE_PROVIDER[type] || "",
     baseUrl,
     protocol,

@@ -52,7 +52,10 @@ export async function buildProfileTrend(profileId, { limit = 200 } = {}) {
   const rounds = [];
   for (const r of rawRounds) {
     if (!r.startedAt) continue;
-    const base = { at: r.startedAt, ms: r.totalMs, ok: r.success, err: r.normalizedError || "" };
+    // runId 必须保留：CSV 导出用它关联「历次运行」与「逐轮请求」两张表。
+    // 数据库查询（queryRoundSeriesByRunIds）返回了 r.runId，但之前组装 rounds 时丢弃了它，
+    // 导致导出的 CSV 中"运行ID"列全是空单元格。
+    const base = { at: r.startedAt, ms: r.totalMs, ok: r.success, err: r.normalizedError || "", runId: r.runId };
     if (basicIdsByRun.has(r.runId)) {
       const ids = basicIdsByRun.get(r.runId);
       if (!(r.caseId && ids.has(r.caseId))) continue; // 丢弃非基础组的场景轮次
