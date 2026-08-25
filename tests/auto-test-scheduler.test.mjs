@@ -675,3 +675,50 @@ test("未注入 onTickEnd 时 tick 正常工作（可选钩子）", async () => 
   await s.tick();
   assert.equal(calls.length, 1);
 });
+
+// —— onRunComplete 的第二个参数：作业身份 ——
+// 报警汇总要按作业筛选（哪些作业的报警攒起来、哪些立即发），而 result 里只有 profileId/type，
+// 认不出是哪个作业 —— 同一个渠道+模型可以配多个作业（不同种类、不同节奏）。
+
+test("onRunComplete 收到作业身份（jobId/jobName/jobKind）", async () => {
+  const store = makeStore([{ id: "j1", name: "每日快检", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners } = makeRunners();
+  const seen = [];
+  const s = build(store, runners, { onRunComplete: (result, ctx) => seen.push({ result, ctx }) });
+  await s.tick();
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].ctx, { jobId: "j1", jobName: "每日快检", jobKind: "quick" });
+});
+
+test("onRunComplete 第一个参数仍是 result（不破坏既有调用方）", async () => {
+  const store = makeStore([{ id: "j1", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners } = makeRunners();
+  let got = null;
+  const s = build(store, runners, { onRunComplete: (result) => (got = result) });
+  await s.tick();
+  assert.equal(got.success, true, "旧签名 (result) => …… 必须照旧可用");
+});
+
+// 同一目标配多个作业时，各自的回调要带各自的身份 —— 这正是 profileId 不足以区分的场景。
+test("同一目标的两个作业：各自回调带各自的 jobId", async () => {
+  const store = makeStore([
+    { id: "j-quick", name: "快检", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null },
+    { id: "j-stab", name: "稳定性", kind: "stability", targetId: "p1", enabled: true, nextRunAt: null },
+  ]);
+  const { runners } = makeRunners();
+  const seen = [];
+  const s = build(store, runners, { onRunComplete: (result, ctx) => seen.push(ctx.jobId) });
+  await s.tick();
+  assert.deepEqual(seen.sort(), ["j-quick", "j-stab"]);
+});
+
+test("runJobNow 触发的运行也带作业身份", async () => {
+  const store = makeStore([{ id: "j1", name: "手动触发", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners } = makeRunners();
+  const seen = [];
+  const s = build(store, runners, { onRunComplete: (result, ctx) => seen.push(ctx) });
+  await s.runJobNow("j1");
+  await new Promise((r) => setTimeout(r, 50)); // runJobNow 是后台触发
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].jobId, "j1");
+});

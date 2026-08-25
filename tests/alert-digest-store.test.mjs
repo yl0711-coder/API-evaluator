@@ -14,6 +14,7 @@ import {
   enqueueRun,
   drainQueue,
   removeAlertsByRule,
+  jobInDigestScope,
   requeue,
   MAX_QUEUE_ENTRIES,
   __setDigestFilesForTest,
@@ -309,4 +310,69 @@ test("removeAlertsByRule：id 前缀相同的另一条规则不受影响", async
       "alr_12 不该被 alr_1 的清理波及",
     );
   });
+});
+
+// —— 按作业筛选汇总范围 ——
+// 部分自动测试需要汇总、部分不需要。jobScope="all" 含日后新建的作业；
+// "selected" 只认 jobIds 里的，其余仍命中即发信。
+// 【最要紧的语义】不在汇总范围内 ≠ 不报警。取消勾选只是改变【送达方式】（攒着 → 立即发），
+// 绝不是一个静默开关——否则用户会以为自己只是调整了节奏，实际关掉了监控。
+
+test("默认 jobScope=all、jobIds 为空（现有用户升级后全部照旧汇总）", async () => {
+  await withTempFiles(async () => {
+    const cfg = await loadDigestConfig();
+    assert.equal(cfg.jobScope, "all");
+    assert.deepEqual(cfg.jobIds, []);
+  });
+});
+
+test("jobScope 脏值 → 落回 all（宁可多汇总，不可因脏数据改变送达方式）", async () => {
+  await withTempFiles(async ({ config }) => {
+    writeFileSync(config, JSON.stringify({ enabled: true, jobScope: "bogus", jobIds: ["a"] }));
+    assert.equal((await loadDigestConfig()).jobScope, "all");
+  });
+});
+
+test("jobIds 去重、去空、非数组落空数组", async () => {
+  await withTempFiles(async ({ config }) => {
+    writeFileSync(config, JSON.stringify({ jobScope: "selected", jobIds: ["a", "a", "", "  b  ", null, "c"] }));
+    assert.deepEqual((await loadDigestConfig()).jobIds, ["a", "b", "c"]);
+    writeFileSync(config, JSON.stringify({ jobScope: "selected", jobIds: "不是数组" }));
+    assert.deepEqual((await loadDigestConfig()).jobIds, []);
+  });
+});
+
+test("jobInDigestScope：功能关闭 → 一律 false", () => {
+  assert.equal(jobInDigestScope({ enabled: false, jobScope: "all" }, "atj_1"), false);
+  assert.equal(jobInDigestScope(null, "atj_1"), false);
+});
+
+test("jobInDigestScope：all → 任何作业都进（含日后新建的）", () => {
+  const cfg = { enabled: true, jobScope: "all", jobIds: [] };
+  assert.equal(jobInDigestScope(cfg, "atj_1"), true);
+  assert.equal(jobInDigestScope(cfg, "atj_从没见过的新作业"), true);
+});
+
+test("jobInDigestScope：selected → 只有列出的作业进", () => {
+  const cfg = { enabled: true, jobScope: "selected", jobIds: ["atj_1", "atj_2"] };
+  assert.equal(jobInDigestScope(cfg, "atj_1"), true);
+  assert.equal(jobInDigestScope(cfg, "atj_3"), false, "没勾的作业不进汇总（但仍会立即发信）");
+});
+
+// 关键的保守取向：认不出是哪个作业时不攒。与「source 缺省视为手动」同一考虑——
+// 宁可多发几封立即信，不可把报警攒进一个可能几小时后才发的队列。
+test("jobInDigestScope：selected 且 jobId 为空 → 不进汇总（保守，立即发）", () => {
+  const cfg = { enabled: true, jobScope: "selected", jobIds: ["atj_1"] };
+  assert.equal(jobInDigestScope(cfg, ""), false);
+  assert.equal(jobInDigestScope(cfg, undefined), false);
+});
+
+// all 模式下即使认不出作业也照样汇总：这与 selected 不同，因为 all 的语义是「不筛选」。
+test("jobInDigestScope：all 且 jobId 为空 → 仍进汇总（all 就是不筛选）", () => {
+  assert.equal(jobInDigestScope({ enabled: true, jobScope: "all" }, ""), true);
+});
+
+test("jobScope=all 时 jobIds 不参与判定（脏数据不影响）", () => {
+  const cfg = { enabled: true, jobScope: "all", jobIds: ["只有这个"] };
+  assert.equal(jobInDigestScope(cfg, "别的作业"), true);
 });

@@ -1201,3 +1201,88 @@ test("scope=target 的冷却桶不受影响（两种模式都用 targetId）", a
     assert.equal(await getLastFiredAt(rule.id, "all::p1"), null);
   });
 });
+
+// —— 按作业筛选：部分自动测试走汇总，部分仍立即发信 ——
+// 【最要紧的语义】没被汇总的作业不是「不报警」，而是「不攒着、命中即发」。
+// 若哪天有人把它改成静默，下面这批用例应当立刻变红。
+
+function spiesWithScope({ jobScope = "all", jobIds = [] } = {}) {
+  const s = makeSpies({ digestEnabled: true });
+  return { ...s, opts: { ...s.opts, digestConfigFn: async () => ({ enabled: true, jobScope, jobIds }) } };
+}
+
+test("jobScope=selected：勾选的作业 → 入队", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_1", ...s.opts });
+    assert.equal(s.alerts.length, 1, "勾选的作业该攒进汇总");
+    assert.equal(s.mails.length, 0);
+  });
+});
+
+// 这一条是整个功能的安全护栏：没勾选 ≠ 静默。
+test("jobScope=selected：没勾选的作业 → 立即发信（绝不静默）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_2", ...s.opts });
+    assert.equal(s.mails.length, 1, "没勾选的作业必须照旧立即发信——取消勾选不是关掉报警");
+    assert.equal(s.alerts.length, 0, "不该进汇总队列");
+  });
+});
+
+test("jobScope=all：任何作业都入队，含从没见过的新作业", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "all" });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_新建的", ...s.opts });
+    assert.equal(s.alerts.length, 1);
+    assert.equal(s.mails.length, 0);
+  });
+});
+
+// 保守取向：selected 模式下认不出作业身份时立即发，不攒。
+test("jobScope=selected 且没传 jobId → 立即发信（宁可多发，不可攒着）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...s.opts });
+    assert.equal(s.mails.length, 1);
+    assert.equal(s.alerts.length, 0);
+  });
+});
+
+// 不在汇总范围内时，运行记录也不该入队——否则汇总信会列出一个「本期不汇总」的作业的数字，
+// 而它的报警却是单独发的，两处对不上。
+test("不在汇总范围内的作业：运行记录也不入队（避免信里数字与报警对不上）", async () => {
+  await withTempStores(async () => {
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 1 }), { source: "auto", jobId: "atj_2", ...s.opts });
+    assert.equal(s.runs.length, 0);
+    // 对照：在范围内的作业照记
+    await evaluateAlertRules(stabilityResult({ successRate: 1 }), { source: "auto", jobId: "atj_1", ...s.opts });
+    assert.equal(s.runs.length, 1);
+  });
+});
+
+test("手动测试不受作业筛选影响（本来就立即发信）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "manual", jobId: "atj_1", ...s.opts });
+    assert.equal(s.mails.length, 1);
+    assert.equal(s.alerts.length, 0);
+  });
+});
+
+// 冷却桶的选择依赖 digestMode。没进汇总的作业走立即发信路径，故 scope=all 的规则用 "all" 桶。
+test("没勾选的作业走立即发信 → scope=all 规则用 all 冷却桶（不是 all::targetId）", async () => {
+  await withTempStores(async () => {
+    const rule = await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, scope: { type: "all" } });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_2", ...s.opts });
+    assert.ok(await getLastFiredAt(rule.id, "all"), "立即发信路径应用共用桶");
+    assert.equal(await getLastFiredAt(rule.id, "all::p1"), null);
+  });
+});

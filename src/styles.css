@@ -4589,6 +4589,33 @@ textarea:focus {
   margin: 0;
 }
 
+/* 报警汇总的作业勾选区：整行出现，内部单列纵向排列（每行一个作业，信息较长，两列会挤）。
+   显隐由 JS 的 .hidden（display:none !important）控制，稳压此处的 display:grid。 */
+#alert-rules #ar-digest-job-picker {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+}
+#alert-rules #ar-digest-job-list {
+  display: grid;
+  gap: 8px;
+}
+/* 单个作业行：勾选框与文字同一基线，整行有边框便于点击定位。
+   照 #auto-test-config .atc-fixed-time-row 的观感，只是不限宽（作业名+种类+渠道较长）。 */
+#alert-rules .ar-digest-job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-weight: 400;
+}
+#alert-rules .ar-digest-job input[type="checkbox"] {
+  margin: 0;
+}
+
 /* 规则列表标题栏：标题贴左（.action-row 默认 flex-end 会把它推到右侧），按钮靠右。
    与 #auto-test-config .atc-list-head 同一处理，只是那条限定了页面作用域，本页需自带。 */
 #alert-rules .atc-list-head {

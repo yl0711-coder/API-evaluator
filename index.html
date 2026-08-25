@@ -1476,28 +1476,56 @@
                 <input type="checkbox" id="ar-digest-enabled" />
                 启用报警汇总
               </label>
+
               <label>
-                汇总频率
+                多久发一封
                 <select id="ar-digest-freq">
                   <option value="daily" selected>每天一次</option>
-                  <option value="h6">每 6 小时</option>
-                  <option value="h12">每 12 小时</option>
-                  <option value="custom">自定义 crontab</option>
+                  <option value="h12">每天两次（早晚各一次）</option>
+                  <option value="h6">每天四次（每 6 小时）</option>
+                  <option value="weekday">只在工作日，每天一次</option>
+                  <option value="weekly">每周一次</option>
                 </select>
               </label>
-              <label id="ar-digest-time-label">
-                发送时刻
+              <label>
+                第一封的时刻
                 <input type="time" id="ar-digest-time" value="09:07" step="60" />
-                <small class="field-hint">北京时间。建议避开整点，也避开自动测试正在跑的时段。</small>
+                <small class="field-hint">北京时间。选「每天两次/四次」时，后面几封按这个时刻等间隔推算。</small>
               </label>
-              <label class="wide hidden" id="ar-digest-cron-label">
-                crontab 表达式
-                <input type="text" id="ar-digest-cron" placeholder="7 9 * * *" maxlength="200" />
-                <small class="field-hint">五段式：分 时 日 月 星期。多个时刻用分号分隔。</small>
+              <label id="ar-digest-weekday-label" class="hidden">
+                星期几
+                <select id="ar-digest-weekday">
+                  <option value="1" selected>每周一</option>
+                  <option value="2">每周二</option>
+                  <option value="3">每周三</option>
+                  <option value="4">每周四</option>
+                  <option value="5">每周五</option>
+                  <option value="6">每周六</option>
+                  <option value="0">每周日</option>
+                </select>
               </label>
               <div class="wide">
                 <small class="field-hint" id="ar-digest-preview">—</small>
               </div>
+
+              <label class="wide">
+                汇总哪些自动测试
+                <select id="ar-digest-job-scope">
+                  <option value="all" selected>全部自动测试（日后新建的作业也自动包含）</option>
+                  <option value="selected">只汇总下面勾选的作业</option>
+                </select>
+                <small class="field-hint">
+                  没被汇总的作业<strong>照旧会报警</strong>，只是命中就立刻单独发信、不攒到汇总里。取消勾选不会让它变哑。
+                </small>
+              </label>
+              <div class="wide hidden" id="ar-digest-job-picker">
+                <div class="action-row">
+                  <button type="button" id="ar-digest-job-all" class="secondary">全选</button>
+                  <button type="button" id="ar-digest-job-none" class="secondary">全不选</button>
+                </div>
+                <div id="ar-digest-job-list">正在加载作业清单…</div>
+              </div>
+
               <div class="wide action-row">
                 <button type="button" id="ar-digest-save">保存汇总设置</button>
                 <button type="button" id="ar-digest-test" class="secondary">立即发送一封（测试）</button>

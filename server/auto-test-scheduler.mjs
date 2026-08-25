@@ -149,8 +149,11 @@ export function createAutoTestScheduler({
         try {
           const result = await run();
           // 运行完成回调（高危报告提示按开关判危记录）：best-effort，绝不影响调度与状态回写。
+          // 第二个参数带上触发这次运行的作业身份：报警汇总要按作业筛选（哪些作业的报警攒起来、
+          // 哪些立即发），而 result 里只有 profileId/type，认不出是哪个作业 ——
+          // 同一个渠道+模型可以配多个作业（不同种类、不同节奏），profileId 不足以区分。
           try {
-            await onRunComplete?.(result);
+            await onRunComplete?.(result, { jobId: job.id, jobName: job.name, jobKind: job.kind });
           } catch {
             /* 回调失败不影响调度 */
           }

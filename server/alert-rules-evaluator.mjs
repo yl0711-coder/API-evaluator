@@ -9,7 +9,7 @@ import { readSecret } from "./secret-store.mjs";
 import { sendMail } from "./mailer.mjs";
 import { queryProfileRunSummaries } from "./db.mjs";
 import { percentile } from "./utils.mjs";
-import { loadDigestConfig, enqueueAlert, enqueueRun } from "./alert-digest-store.mjs";
+import { loadDigestConfig, enqueueAlert, enqueueRun, jobInDigestScope } from "./alert-digest-store.mjs";
 
 const SMTP_PASSWORD_REF = "notify:smtp-password";
 
@@ -305,7 +305,9 @@ export async function evaluateAlertRules(result, opts = {}) {
     let digestMode = false;
     if (opts.source === "auto") {
       try {
-        digestMode = (await digestConfigFn())?.enabled === true;
+        // 按作业筛选：jobScope="selected" 时只有被勾选的作业走汇总，其余仍命中即发。
+        // 不在汇总范围内【不等于】不报警——见 jobInDigestScope 的注释。
+        digestMode = jobInDigestScope(await digestConfigFn(), opts.jobId || "");
       } catch (error) {
         // 读配置失败 → 退回立即发信。宁可多发几封，不可静默丢报警。
         console.error("[alert-rules] 读汇总配置失败（本次退回立即发信）：", error?.message || error);
