@@ -397,3 +397,93 @@ test("无指标的场景运行成为最新点时，不挤掉该 profile 原有�
     await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
   }
 });
+
+// —— toTrendPoint 的 null 判别（曾用 isNum = Number.isFinite(Number(v))）——
+// Number(null)===0、Number("")===0 都是有限值，于是「没报出来」被读成「报出了 0」。
+// 下面三个用例各钉住一种已复现的真实故障，改回 isNum 会分别失败。
+
+// ① 假 0 造成误报：跑了 0 条记录的空运行本该「无从判断」，却被判「↓100pp，明显退化」。
+// 来源：test-runner.mjs:229 在 records 为空时显式写 successRate: null，
+// p95TotalMs = percentile([], .95) = null；存盘走 JSON，null 原样留在 raw_json 里。
+test("toTrendPoint：空运行的 null 指标不得变成 0（否则对着满分基线误报 ↓100pp）", () => {
+  // 经 JSON 往返，模拟从 test_runs.raw_json 读回
+  const emptyRun = JSON.parse(
+    JSON.stringify({
+      runId: "qv-empty",
+      type: "quick-verify",
+      endedAt: new Date().toISOString(),
+      requestCount: 0,
+      successCount: 0,
+      successRate: null,
+      avgTotalMs: 0,
+      p95TotalMs: null,
+    }),
+  );
+  const p = toTrendPoint(emptyRun);
+  assert.equal(p.successRate, null, "null 成功率不得读成 0");
+  assert.equal(p.p95Ms, null, "null P95 不得读成 0");
+  // 兜底必须生效：假 0 会让 hasComparableMetric 误判「报出了指标」，绕过 incomparable 分支
+  assert.equal(hasComparableMetric(p), false);
+
+  const history = [
+    toTrendPoint(run({ runId: "h1", type: "quick-verify", successRate: 1, p95TotalMs: 30000 })),
+    toTrendPoint(run({ runId: "h2", type: "quick-verify", successRate: 1, p95TotalMs: 31000 })),
+    toTrendPoint(run({ runId: "h3", type: "quick-verify", successRate: 1, p95TotalMs: 29000 })),
+  ];
+  const v = detectRegression({ current: p, history: [...history, p] });
+  assert.equal(v.status, "incomparable", "空运行应判无从比对，而非退化");
+  assert.equal(v.severity, "none");
+  assert.deepEqual(v.changes, []);
+});
+
+// ② 全失败运行：成功率 0 是真实观测（要保留、要能判退化），但 P95 无成功请求可统计 → null。
+// 假 0 会让「全挂的一次」在趋势图上显示成 0ms，即最快的一次。
+test("toTrendPoint：全失败运行保留 successRate=0，但 P95 仍为 null（不显示成 0ms）", () => {
+  const p = toTrendPoint(
+    JSON.parse(
+      JSON.stringify({ runId: "st-fail", type: "stability", endedAt: new Date().toISOString(), successRate: 0, p95TotalMs: null }),
+    ),
+  );
+  assert.equal(p.successRate, 0, "成功率 0 是真值，不能当缺失丢掉");
+  assert.equal(p.p95Ms, null, "无成功请求 → P95 缺失，不得读成 0ms");
+  assert.equal(hasComparableMetric(p), true, "成功率 0 可比 —— 这正是最该判退化的情形");
+
+  // 且真退化仍要报得出来（修复不能把正常判定吞掉）
+  const history = [
+    toTrendPoint(run({ runId: "h1", successRate: 1, p95TotalMs: 2000 })),
+    toTrendPoint(run({ runId: "h2", successRate: 1, p95TotalMs: 2100 })),
+  ];
+  const v = detectRegression({ current: p, history: [...history, p] });
+  assert.equal(v.status, "regressed");
+  assert.deepEqual(
+    v.changes.map((c) => c.metric),
+    ["success_rate"],
+    "只报成功率；P95 缺失不参与，不臆造 P95 变化",
+  );
+});
+
+// ③ 假阴性（比误报更值得修）：median 的过滤同样漏 null，null 占多数时 P95 基线中位数变成 0，
+// 于是 `baseline.p95Ms > 0` 不成立 → P95 维彻底静默，×4 的真实劣化被判 stable。
+test("buildBaseline：null 的 P95 不参与中位数（否则 P95 基线塌成 0，真劣化判成 stable）", () => {
+  const pt = (runId, successRate, p95Ms) => ({
+    runId,
+    type: "stability",
+    at: new Date().toISOString(),
+    successRate,
+    p95Ms,
+    score: null,
+    grade: null,
+  });
+  // 3 次全失败（P95 无从统计）+ 2 次正常
+  const prior = [pt("h1", 1, 30000), pt("h2", 1, 29000), pt("h3", 0, null), pt("h4", 0, null), pt("h5", 0, null)];
+
+  const b = buildBaseline(prior, { type: "stability" });
+  assert.equal(b.p95Ms, 29500, "只对真实报出的 29000/30000 取中位，null 不算 0");
+
+  const cur = pt("cur", 1, 120000); // 约 30s → 120s，×4
+  const v = detectRegression({ current: cur, history: [...prior, cur] });
+  assert.ok(
+    v.changes.some((c) => c.metric === "p95"),
+    "×4 的 P95 劣化必须报出（假 0 塌基线时这里会静默）",
+  );
+});

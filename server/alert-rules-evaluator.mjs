@@ -9,6 +9,7 @@ import { readSecret } from "./secret-store.mjs";
 import { sendMail } from "./mailer.mjs";
 import { queryProfileRunSummaries } from "./db.mjs";
 import { percentile } from "./utils.mjs";
+import { loadDigestConfig, enqueueAlert, enqueueRun } from "./alert-digest-store.mjs";
 
 const SMTP_PASSWORD_REF = "notify:smtp-password";
 
@@ -185,12 +186,13 @@ function describeCompositeHit(rule, entry, breaches) {
 
 // 历史行 → 退化判定用的最小趋势点。
 //
-// 【为什么不用 regression.mjs 的 toTrendPoint】它对这两个字段用的是 isNum（Number.isFinite(Number(v))），
-// 而 Number(null) === 0、Number("") === 0 都是有限数 —— 于是 successRate: null（历史行没这一列）
-// 会被投影成 0。后果是实打实的误报：基线成功率 1.0、最近几次该字段缺失时，会算出「跌 100pp」并发信。
-// 而缺失被转成 0 发生在【进本模块之前】，medianOf 里的 num() 防线届时已无从分辨真 0 与假 0。
-// 同文件里就摆着正确的 hasNum，但 toTrendPoint 被趋势页与巡检报告共用，改它等于动那两处的既有行为，
-// 超出本次范围。故这里自己映射：只取退化判定要用的三个量，缺测一律保持 null。
+// 【为什么自己映射而不用 regression.mjs 的 toTrendPoint】历史原因是那边曾用 isNum
+// （Number.isFinite(Number(v))），会把 successRate: null 投影成 0 并算出「跌 100pp」误报。
+// 该缺陷已在 ad40d28 修掉（那边现在统一用 hasNum），所以这不再是正确性理由。
+// 保留自映射的现实理由：本模块只需要 runId/at/successRate/p95Ms 三个量，
+// toTrendPoint 还会产出 score/grade/totalTokens/cost 等本模块用不上的字段，
+// 且它按趋势页的需要保留 type、丢掉 batchId —— 而 splitWindows 恰恰要靠 batchId 判别运行类型
+// （见下方 splitWindows 的注释）。故维持独立映射，缺测一律保持 null。
 // at 的口径与 toTrendPoint 保持一致（endedAt 优先，回落 startedAt）。
 function declinePoint(summary) {
   return {
@@ -282,16 +284,54 @@ async function sendAlertMail(rule, entry, reason) {
 // opts.sendAlertMailFn：仅供测试注入假发信函数（模拟 SMTP 故障），默认走真实 sendAlertMail。
 // opts.historyProviderFn：仅供测试注入假历史（避免建库），默认走真实 queryProfileRunSummaries。
 // 二者与 mailer.mjs 的 opts.transportFactory / auth.mjs 的 opts.fetchImpl 同一惯例。
+//
+// opts.source："auto" = 定时自动测试，"manual" = 页面上点的手动测试（默认）。
+// 只有 auto 才可能走汇总队列：手动测试时人就在屏幕前，攒到几小时后再发没有意义。
+// opts.digestConfigFn：仅供测试注入汇总配置，默认走真实 loadDigestConfig。
 export async function evaluateAlertRules(result, opts = {}) {
   const sendAlertMailFn = opts.sendAlertMailFn || sendAlertMail;
   const historyProviderFn = opts.historyProviderFn || queryProfileRunSummaries;
+  const digestConfigFn = opts.digestConfigFn || loadDigestConfig;
+  const enqueueAlertFn = opts.enqueueAlertFn || enqueueAlert;
+  const enqueueRunFn = opts.enqueueRunFn || enqueueRun;
   try {
     if (!result || typeof result !== "object") return;
     const entries = collectEntries(result);
     if (!entries.length) return;
+
+    // 汇总模式判定要在「有没有规则」之前做：即使一条规则都没配，本时段跑了什么也该记进队列，
+    // 否则汇总信会说「本时段没有完成任何测试」——那是假话，会让人以为作业停了。
+    const runType = testTypeOf(result);
+    let digestMode = false;
+    if (opts.source === "auto") {
+      try {
+        digestMode = (await digestConfigFn())?.enabled === true;
+      } catch (error) {
+        // 读配置失败 → 退回立即发信。宁可多发几封，不可静默丢报警。
+        console.error("[alert-rules] 读汇总配置失败（本次退回立即发信）：", error?.message || error);
+      }
+    }
+    if (digestMode) {
+      for (const entry of entries) {
+        try {
+          await enqueueRunFn({
+            targetId: entry.targetId,
+            targetLabel: entry.model || entry.profileName || entry.targetId,
+            testType: runType,
+            runId: result.runId || "",
+            successRate: entry.metrics.successRate,
+            p95TotalMs: entry.metrics.p95TotalMs,
+            grade: entry.metrics.grade,
+          });
+        } catch (error) {
+          console.error("[alert-rules] 运行记录入队失败：", error?.message || error);
+        }
+      }
+    }
+
     const rules = (await getRules()).filter((rule) => rule.enabled);
     if (!rules.length) return;
-    const isStabilityRun = STABILITY_TYPES.has(testTypeOf(result));
+    const isStabilityRun = STABILITY_TYPES.has(runType);
 
     // 退化规则要查库，这里做两层节流：
     //   ① 懒查——只有「本次是稳定性类运行」且「确实有启用的退化规则」时才查，
@@ -345,7 +385,19 @@ export async function evaluateAlertRules(result, opts = {}) {
           reason = describeHit(rule, entry);
         }
 
-        const targetKey = rule.scope?.type === "all" ? "all" : entry.targetId;
+        // 冷却记账的桶。
+        //
+        // 立即发信模式：scope=all 的规则共用一个桶（"all"）—— 这是有意的降噪，
+        //   否则 20 个渠道同时出问题会一次发出 20 封信。
+        //
+        // 汇总模式：按渠道各算一个桶。理由是这条取舍的前提变了 ——
+        //   共用一个桶的收益是「少发邮件」，而汇总模式下无论几个渠道出问题都只发一封，
+        //   压掉其余渠道不再节省任何邮件，只会让报警列表和标题【低报故障范围】：
+        //   实测 5 个渠道同时挂，报警列表里只出现 1 条、标题写「1 个目标」。
+        //   （runs 表仍列出全部 5 个的实测数字，故信息未丢，但读信人先看到的是报警列表。）
+        // 两种模式的桶不互通，这是刻意的：切换汇总开关后各自按自己的口径重新计时，
+        // 不会出现「立即模式攒的冷却把汇总模式的首条报警压掉」这种跨口径干扰。
+        const targetKey = rule.scope?.type === "all" ? (digestMode ? `all::${entry.targetId}` : "all") : entry.targetId;
         const lastFiredAt = await getLastFiredAt(rule.id, targetKey);
         if (lastFiredAt) {
           const elapsedHours = (Date.now() - new Date(lastFiredAt).getTime()) / 3_600_000;
@@ -357,14 +409,29 @@ export async function evaluateAlertRules(result, opts = {}) {
           if (elapsedHours >= 0 && elapsedHours < rule.cooldownHours) continue; // 冷却期内，跳过不发信
         }
 
-        // markFired 只在发信真正成功后才记——否则 SMTP 故障期间第一次告警的异常被吞掉，
+        // markFired 只在「已确实交付」后才记——否则 SMTP 故障期间第一次告警的异常被吞掉，
         // 却仍标记为「已触发」，会让整个冷却窗口（可能长达数小时）内即使指标持续恶化也不再重试，
-        // 恰好是最该报警却失声的场景。发信失败就让下一次命中在没有冷却阻挡的情况下立即重试。
+        // 恰好是最该报警却失声的场景。失败就让下一次命中在没有冷却阻挡的情况下立即重试。
+        //
+        // 汇总模式下「交付」= 成功入队（真正发信由 alert-digest-sender 定时做，失败会回填队列重试），
+        // 立即模式下「交付」= 发信成功。两种模式的失败语义一致：不记冷却、下次重来。
         try {
-          await sendAlertMailFn(rule, entry, reason);
+          if (digestMode) {
+            await enqueueAlertFn({
+              ruleId: rule.id,
+              ruleName: rule.name,
+              ruleKind: rule.kind || "threshold",
+              targetId: entry.targetId,
+              targetLabel: entry.model || entry.profileName || entry.targetId,
+              reason,
+              runId: result.runId || "",
+            });
+          } else {
+            await sendAlertMailFn(rule, entry, reason);
+          }
           await markFired(rule.id, targetKey);
         } catch (error) {
-          console.error("[alert-rules] 发信失败：", error?.message || error);
+          console.error(`[alert-rules] ${digestMode ? "入队" : "发信"}失败：`, error?.message || error);
         }
       }
     }

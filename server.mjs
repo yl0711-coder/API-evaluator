@@ -112,6 +112,8 @@ import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
 import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
 import { clearRuleState } from "./server/alert-rule-state.mjs";
+import { loadDigestConfig, updateDigestConfig, loadQueue } from "./server/alert-digest-store.mjs";
+import { maybeSendDigest, sendDigestNow, discardQueuedAlerts, dropQueuedAlertsForRule } from "./server/alert-digest-sender.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, redactSensitiveText, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -201,7 +203,8 @@ const taskManager = createTaskManager({
   executionLimiter,
   onRunComplete: (result) => {
     noteRunIfEnabled(result); // 高危报告提示：手动测试完成时按开关判危记录
-    evaluateAlertRules(result); // 自定义阈值报警规则：手动测试完成时按规则判断是否报警
+    // 手动测试：命中即发信，不进汇总队列 —— 人就在屏幕前，攒到几小时后再发没有意义。
+    evaluateAlertRules(result, { source: "manual" });
   },
 });
 
@@ -213,8 +216,11 @@ const autoTestScheduler = createAutoTestScheduler({
   reportIdFromHtmlPath,
   onRunComplete: (result) => {
     noteRunIfEnabled(result); // 高危报告提示：自动测试完成时按开关判危记录
-    evaluateAlertRules(result); // 自定义阈值报警规则：自动测试完成时按规则判断是否报警
+    // 自动测试：开了汇总就入队（到汇总时刻一次发一封），没开则命中即发信（旧行为）。
+    evaluateAlertRules(result, { source: "auto" });
   },
+  // 报警汇总：每 tick 判一次「到点了吗 + 调度器空闲了吗」，满足才发一封汇总信。
+  onTickEnd: ({ activeJobs }) => maybeSendDigest({ getActiveJobs: () => activeJobs }),
   logError: (error, job) =>
     logErrorSafely({ source: "auto-test-scheduler", error, context: { jobId: job?.id, kind: job?.kind, targetId: job?.targetId } }),
   executionLimiter,
@@ -539,6 +545,12 @@ const API_ROUTES = [
   // 报警规则：登录即可用（任意管理员可自定义阈值报警规则），同样不走 /api/dev/ 前缀
   ["GET", "/api/alert-rules", handleAlertRulesList],
   ["POST", "/api/alert-rules", handleAlertRuleUpsert],
+  // 汇总相关三条必须排在 /api/alert-rules/:id 之前（顺序即优先级，见本表头部说明）。
+  // 当前 :id 只挂了 DELETE、不会遮住这里的 GET/PUT/POST，但顺序摆对可免去日后加
+  // 「GET /api/alert-rules/:id」时踩坑。
+  ["GET", "/api/alert-rules/digest", handleAlertDigestConfigGet],
+  ["PUT", "/api/alert-rules/digest", handleAlertDigestConfigSave],
+  ["POST", "/api/alert-rules/digest/test", handleAlertDigestTestSend],
   ["DELETE", "/api/alert-rules/:id", handleAlertRuleDelete],
 
   // 配置档案：写（非 GET 一律要超管，见 api-access.requiresAdmin）
@@ -1228,9 +1240,70 @@ async function handleAlertRuleDelete(req, res, { params }) {
     return true;
   });
   // 顺带清掉该规则的冷却记录，否则键会永久留在状态文件里（只增不减）。
-  // best-effort：清理失败不影响删除结果（规则已删，残留键无害）。
-  if (removed) await clearRuleState(id);
+  // 同时丢掉它在汇总队列里尚未发出的报警：否则汇总信会在数小时后报出一条【已不存在的规则】，
+  // 收件人按名字去页面上找会找不到。两者语义一致——删除的含义是「别再就这件事提醒我」。
+  // 均为 best-effort：失败不影响删除结果。
+  if (removed) {
+    await clearRuleState(id);
+    await dropQueuedAlertsForRule(id);
+  }
   sendJson(res, 200, { ok: true });
+  return;
+}
+
+// —— 报警汇总（把同一时段多个渠道的报警并成一封信）——
+// 路径挂在 /api/alert-rules/ 下，因此沿用报警规则的权限口径：登录即可用（普通管理员 role=10 也可），
+// 不是超管专属。这是有意的——汇总节奏属于「报警怎么报」，与规则本身同一层；
+// 而 /api/notify（持 SMTP 凭证）才是超管专属。改动此路径前请先看 server/api-access.mjs。
+
+async function handleAlertDigestConfigGet(req, res) {
+  const [config, queue] = await Promise.all([loadDigestConfig(), loadQueue()]);
+  // 顺带回队列现状：前端据此显示「当前已攒下 N 条待发报警」，让管理员看得见汇总在工作。
+  sendJson(res, 200, {
+    ok: true,
+    config,
+    pending: { alerts: queue.alerts.length, runs: queue.runs.length },
+  });
+  return;
+}
+
+async function handleAlertDigestConfigSave(req, res) {
+  const body = await readJson(req);
+  const cron = typeof body?.cron === "string" ? body.cron.trim() : "";
+  const enabled = body?.enabled === true;
+  // 坏 cron 必须在这里挡掉：存下去的话，maybeSendDigest 会把 nextDigestAt 算成 null，
+  // 于是每个 tick 都判「立即到期」→ 每分钟发一封汇总信。这比不发信更糟。
+  if (enabled && cron && computeNextRunAt({ cron }, Date.now()) === null) {
+    sendJson(res, 400, { error: "invalid_cron", userMessage: "定时表达式在未来四年内没有可执行时刻，请检查。" });
+    return;
+  }
+  const wasEnabled = (await loadDigestConfig()).enabled;
+  const config = await updateDigestConfig((cfg) => {
+    cfg.enabled = enabled;
+    if (cron) cfg.cron = cron;
+    // 从关到开、或改了 cron：重算下一个到期时刻。
+    // 不这样做的话，旧的 nextDigestAt（可能是很久以前）会让开启后的第一个 tick 立刻发一封，
+    // 而那封信的内容是「上次汇总以来」——对刚开启的人来说是一封莫名其妙的空信。
+    if (!cfg.enabled || cron) cfg.nextDigestAt = computeNextRunAt({ cron: cfg.cron }, Date.now());
+    if (!enabled) cfg.nextDigestAt = null; // 关闭时清掉，避免下次开启沿用过期时刻
+    return { ...cfg };
+  });
+
+  // 从开到关：队列里已攒的报警必须处置，不能就这么放着。理由见 discardQueuedAlerts 的注释
+  // （它们已记过冷却 → 静默吞掉；日后重开还会让陈旧报警诈尸）。
+  const flushed = wasEnabled && !enabled ? await discardQueuedAlerts() : null;
+  sendJson(res, 200, { ok: true, config, ...(flushed ? { flushed } : {}) });
+  return;
+}
+
+// 立即发一封当前队列内容（不清队列、不推进节奏），供管理员确认收件人与格式。
+async function handleAlertDigestTestSend(req, res) {
+  try {
+    const stat = await sendDigestNow();
+    sendJson(res, 200, { ok: true, ...stat });
+  } catch (error) {
+    sendJson(res, 400, { error: "send_failed", userMessage: String(error?.message || error) });
+  }
   return;
 }
 

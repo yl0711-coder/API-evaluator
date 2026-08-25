@@ -598,3 +598,80 @@ test("固定时刻：24 个密集时刻且每轮耗时超过间隔时，全天�
   assert.ok(runs.length <= TIMES.length, `全天运行次数不该超过配置的时刻数（配置 ${TIMES.length}，实际 ${runs.length}）——超出即为重复扣费`);
   assert.ok(runs.length > 0, "前提校验：这批固定时刻当天应当真的跑过，否则本用例是空转的假绿");
 });
+
+// —— onTickEnd：报警汇总的发信时机钩子 ——
+// 挂在本调度器的 tick 上而非另起定时器：本调度器是「平台唯一的周期性定时器」，
+// 这是一条有意维持的不变量（多一个 setInterval 就多一处僵死可能，而 /api/health 只认这一个）。
+
+test("onTickEnd：每个 tick 末尾都调一次，即使本轮没有到期作业", async () => {
+  const store = makeStore([{ id: "j1", kind: "quick", targetId: "p1", enabled: false, nextRunAt: null }]);
+  const { runners, calls } = makeRunners();
+  const seen = [];
+  const s = build(store, runners, { onTickEnd: (info) => seen.push(info) });
+  await s.tick();
+  assert.equal(calls.length, 0, "停用作业不该跑");
+  assert.equal(seen.length, 1, "没有到期作业也要给汇总一次判定机会——否则空闲期永远发不出汇总信");
+  assert.equal(seen[0].activeJobs, 0);
+});
+
+test("onTickEnd：本 tick 触发的作业已跑完 → activeJobs 为 0（可以发汇总）", async () => {
+  const store = makeStore([{ id: "j1", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners, calls } = makeRunners();
+  const seen = [];
+  const s = build(store, runners, { onTickEnd: (info) => seen.push(info) });
+  await s.tick();
+  assert.equal(calls.length, 1, "作业应已触发");
+  assert.equal(seen[0].activeJobs, 0, "tick 内的作业在 onTickEnd 之前已 await 完成");
+});
+
+// 这条是「等调度器空闲」的承重用例：长批次期间并行进来的 tick 必须看到 activeJobs > 0，
+// 汇总才会顺延而不是把同一批结果切成两封。
+test("onTickEnd：上一轮作业仍在跑时，并行 tick 看到 activeJobs > 0（汇总据此顺延）", async () => {
+  const store = makeStore([
+    { id: "slow", kind: "stability", targetId: "p1", enabled: true, nextRunAt: null },
+    { id: "other", kind: "quick", targetId: "p2", enabled: false, nextRunAt: null },
+  ]);
+  let release;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  const { runners } = makeRunners({
+    runStabilityTest: async () => {
+      await gate; // 卡住，模拟跑几分钟的稳定性测试
+      return { success: true, reportHtmlPath: "/reports/x.html" };
+    },
+  });
+  const seen = [];
+  const s = build(store, runners, { onTickEnd: (info) => seen.push(info) });
+
+  const first = s.tick(); // 触发 slow，会卡在 gate 上
+  await new Promise((r) => setTimeout(r, 20)); // 让 first 走到 await
+  await s.tick(); // 并行的第二个 tick：slow 仍在 runningJobIds 里
+  assert.equal(seen.length, 1, "第二个 tick 应已走完并报告一次");
+  assert.equal(seen[0].activeJobs, 1, "必须看到还有 1 个作业在跑");
+
+  release();
+  await first;
+  assert.equal(seen.at(-1).activeJobs, 0, "批次跑完后的那次 onTickEnd 应看到已空闲");
+});
+
+test("onTickEnd 抛错不影响调度（best-effort）", async () => {
+  const store = makeStore([{ id: "j1", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners, calls } = makeRunners();
+  const s = build(store, runners, {
+    onTickEnd: () => {
+      throw new Error("汇总发信炸了");
+    },
+  });
+  await s.tick(); // 不得抛出
+  assert.equal(calls.length, 1, "作业照跑");
+  assert.equal(store.snapshot()[0].lastStatus, "success", "状态照样回写");
+});
+
+test("未注入 onTickEnd 时 tick 正常工作（可选钩子）", async () => {
+  const store = makeStore([{ id: "j1", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners, calls } = makeRunners();
+  const s = build(store, runners);
+  await s.tick();
+  assert.equal(calls.length, 1);
+});

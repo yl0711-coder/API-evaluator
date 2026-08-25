@@ -21,6 +21,11 @@ export function createAutoTestScheduler({
   runners,
   reportIdFromHtmlPath,
   onRunComplete, // (result) => void：运行完成回调（用于高危报告提示等），best-effort
+  // 每 tick 末尾调一次：报警汇总的发信时机判断（到点 + 调度器空闲才发）。best-effort。
+  // 【为什么挂在这个 tick 上而不另起定时器】本调度器是「平台唯一的周期性定时器」（见文件头），
+  // 这是一条有意维持的不变量：多一个 setInterval 就多一处僵死可能，而 /api/health 的活性判定
+  // 只认这一个。汇总只需要分钟级精度，复用现成心跳足够。
+  onTickEnd,
   logError,
   tickMs = 60_000,
   // 活性判定：距上次 tick 超过此毫秒数即判「僵死」（getStatus().stale=true），供 /api/health 暴露、
@@ -216,6 +221,16 @@ export function createAutoTestScheduler({
     // 并发触发但受信号量封顶（最多 maxConcurrent 个同时跑），其余在信号量队列里等。
     // 每个 fireJob 在首个 await 前已把 id 记入 runningJobIds，故本轮内不会重复、跨 tick 也不会重复。
     await Promise.all(due.map((job) => fireJob(job)));
+    // 汇总发信时机判断。放在 await 之后：本 tick 触发的作业到这里已经跑完，
+    // 故 runningJobIds 里剩下的是【上一个 tick 起的、仍未结束的】作业 —— 正是要等的那些。
+    // （setInterval 不等上一个 tick 结束，长批次期间会有多个 tick 并行走到这里，
+    //   它们都会看到 activeJobs > 0 而顺延，直到那一批真正跑完。）
+    // best-effort：汇总失败绝不影响调度。
+    try {
+      await onTickEnd?.({ activeJobs: runningJobIds.size });
+    } catch {
+      /* 汇总发信异常不影响调度 */
+    }
   }
 
   // 启动对账：进程崩溃/OOM/重启会让中途运行的作业在盘上永久停留 lastStatus="running"（内存 runningJobIds
