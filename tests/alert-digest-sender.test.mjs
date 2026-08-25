@@ -346,3 +346,78 @@ test("清完冷却后：同一规则的下次命中不再被冷却拦住", async
     assert.equal(await getLastFiredAt("r1", "all"), null, "冷却记录必须被清掉");
   });
 });
+
+// 【回归：并发 tick 各发一封】到期判定与推进节奏若不是一次原子操作，两个并发的 tick 会
+// 都在对方写入之前读到同一个已到期的 nextDigestAt，于是各发一封。
+// 实测两封还是互补的残信：第一封列出报警，第二封紧跟着说「本时段无新增报警」
+// （队列已被第一封取空）—— 恰是本功能最该避免的观感。
+// setInterval 不等上一个 tick 结束，长批次期间确实会有多个 tick 并行走到 onTickEnd，
+// 而读配置是异步读盘，两个 tick 落在那个 await 的间隙里就会撞上。
+test("并发两个 tick 同时到期 → 只发一封，另一个判 not_due", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.cron = "7 9 * * *";
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    await enqueueAlert({ ruleId: "r1", ruleName: "规则1", targetId: "p1", targetLabel: "模型A", reason: "成功率 30%" });
+
+    const mails = [];
+    const send = (s) => {
+      mails.push(s);
+      return true;
+    };
+    const [a, b] = await Promise.all([
+      maybeSendDigest({ sendMailFn: send, getActiveJobs: () => 0 }),
+      maybeSendDigest({ sendMailFn: send, getActiveJobs: () => 0 }),
+    ]);
+
+    assert.equal(mails.length, 1, "并发两个 tick 只该发出一封");
+    const results = [a, b];
+    assert.equal(results.filter((r) => r.sent).length, 1, "只有一个该抢到");
+    assert.equal(results.find((r) => !r.sent).reason, "not_due", "没抢到的应判未到期");
+    // 抢到的那封必须带上报警，不能是空信
+    assert.match(mails[0], /1 项报警/);
+  });
+});
+
+test("并发 5 个 tick 同时到期 → 仍只发一封", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.cron = "7 9 * * *";
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    await enqueueAlert({ ruleId: "r1" });
+    const mails = [];
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => maybeSendDigest({ sendMailFn: () => (mails.push(1), true), getActiveJobs: () => 0 })),
+    );
+    assert.equal(mails.length, 1);
+    assert.equal(results.filter((r) => r.sent).length, 1);
+  });
+});
+
+// 顺延判定也在同一个原子块里：并发时不该出现「一个顺延、一个照发」的分裂。
+test("并发 tick 且调度器在忙 → 全部顺延，一封都不发", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    await enqueueAlert({ ruleId: "r1" });
+    const mails = [];
+    const results = await Promise.all(
+      Array.from({ length: 3 }, () => maybeSendDigest({ sendMailFn: () => (mails.push(1), true), getActiveJobs: () => 2 })),
+    );
+    assert.equal(mails.length, 0);
+    assert.ok(
+      results.every((r) => r.reason === "deferred_scheduler_busy"),
+      "全部应判顺延",
+    );
+    assert.equal((await loadQueue()).alerts.length, 1, "队列必须原样保留");
+  });
+});

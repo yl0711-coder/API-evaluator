@@ -62,38 +62,43 @@ export async function maybeSendDigest(opts = {}) {
   const now = opts.now || (() => Date.now());
   const getActiveJobs = opts.getActiveJobs || (() => 0);
   try {
-    const config = await loadDigestConfig();
     const nowMs = now();
-    if (!isDigestDue(config, nowMs)) return { sent: false, reason: "not_due" };
 
-    const dueAtMs = config.nextDigestAt ? Date.parse(config.nextDigestAt) : nowMs;
-    if (shouldDefer({ dueAtMs, nowMs, activeJobs: getActiveJobs() })) {
-      return { sent: false, reason: "deferred_scheduler_busy" };
-    }
+    // 【到期判定与推进节奏必须是一次原子操作】
+    // 两者若分成「读配置 → 判到期 → 写新节奏」三步，两个并发的 tick 会都在对方写入之前
+    // 读到同一个已到期的 nextDigestAt，于是【各发一封】。实测两封信的内容还是互补的残信：
+    // 第一封列出报警，第二封紧跟着说「本时段无新增报警」（队列已被第一封取空）。
+    // setInterval 不等上一个 tick 结束，长批次期间确实会有多个 tick 并行走到这里，
+    // 而 loadDigestConfig 是异步读盘 —— 两个 tick 落在这个 await 的间隙里就会撞上。
+    //
+    // 把判定搬进 updateDigestConfig 的 mutator：那条链是串行化的（一把锁排队），
+    // 于是「判到期 + 占位」不可分割，只有抢到的那一个 tick 会拿到 claimed=true。
+    const claim = await updateDigestConfig((cfg) => {
+      if (!isDigestDue(cfg, nowMs)) return { claimed: false, reason: "not_due" };
 
-    // 【顺序要紧】先推进 nextDigestAt 再发信。
-    // 反过来的话，一次发信耗时超过一个 tick（60s）时，下个 tick 会看到仍然到期的
-    // nextDigestAt 而重复触发一次汇总——收件人收到两封内容互补的残信。
-    // 推进用「当前时刻」而非原定到期时刻算下一个 cron 点：顺延过的这次不该把后续节奏也往前拖。
-    // cron 算不出下一个时刻（表达式坏了 / 手改过配置文件 / 四年内无可执行时刻）时，
-    // 【绝不能留 null】——isDigestDue 把 null 当「立即到期」，于是每个 tick 都发一封：
-    // 实测 10 个 tick 发 10 封，一天 1440 封，比「邮件太多」这个原始问题严重得多。
-    // 端点已挡掉坏 cron，但手改配置文件、跨部署拷贝配置仍能绕过，故这里必须兜住。
-    // 退化成固定 24 小时而不是停用：停用会让「每期必到」的心跳消失，
-    // 于是「没收到信」重新变得有歧义——那正是本功能要消除的东西。
-    const cronNext = computeNextRunAt({ cron: config.cron }, nowMs);
-    const nextDigestAt = cronNext || new Date(nowMs + FALLBACK_INTERVAL_MS).toISOString();
-    if (!cronNext) {
-      console.error(`[alert-digest] cron「${config.cron}」无可执行时刻，已退化为每 24 小时一封；请到报警规则页修正。`);
-    }
-    const windowFrom = config.lastDigestAt;
-    await updateDigestConfig((cfg) => {
+      const dueAtMs = cfg.nextDigestAt ? Date.parse(cfg.nextDigestAt) : nowMs;
+      if (shouldDefer({ dueAtMs, nowMs, activeJobs: getActiveJobs() })) {
+        return { claimed: false, reason: "deferred_scheduler_busy" };
+      }
+
+      // 推进用「当前时刻」而非原定到期时刻算下一个 cron 点：顺延过的这次不该把后续节奏也往前拖。
+      // cron 算不出下一个时刻（表达式坏了 / 手改过配置文件 / 四年内无可执行时刻）时，
+      // 【绝不能留 null】——isDigestDue 把 null 当「立即到期」，于是每个 tick 都发一封：
+      // 实测 10 个 tick 发 10 封，一天 1440 封，比「邮件太多」这个原始问题严重得多。
+      // 端点已挡掉坏 cron，但手改配置文件、跨部署拷贝配置仍能绕过，故这里必须兜住。
+      // 退化成固定 24 小时而不是停用：停用会让「每期必到」的心跳消失，
+      // 于是「没收到信」重新变得有歧义——那正是本功能要消除的东西。
+      const cronNext = computeNextRunAt({ cron: cfg.cron }, nowMs);
+      if (!cronNext) {
+        console.error(`[alert-digest] cron「${cfg.cron}」无可执行时刻，已退化为每 24 小时一封；请到报警规则页修正。`);
+      }
+      const windowFrom = cfg.lastDigestAt;
       cfg.lastDigestAt = new Date(nowMs).toISOString();
-      // cron 无可执行时刻（坏表达式）→ null，下个 tick 会视为立即到期。
-      // 不静默改成每日：与 auto-test-scheduler 对坏 cron 的取向一致，宁可让人看出配错了。
-      cfg.nextDigestAt = nextDigestAt;
-      return null;
+      cfg.nextDigestAt = cronNext || new Date(nowMs + FALLBACK_INTERVAL_MS).toISOString();
+      return { claimed: true, windowFrom };
     });
+    if (!claim.claimed) return { sent: false, reason: claim.reason };
+    const windowFrom = claim.windowFrom;
 
     const taken = await drainQueue();
 
