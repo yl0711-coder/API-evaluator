@@ -197,9 +197,21 @@ export async function sendDigestNow(opts = {}) {
   const sendMailFn = opts.sendMailFn || defaultSendMailFn;
   const taken = await loadQueue();
   const config = await loadDigestConfig();
+  // 与定时发的那封同样传作业表和范围：否则这封「测试信」里「本时段没跑任何测试」那段
+  // 会退回保守措辞，与真实汇总信长得不一样 —— 而这个按钮的全部用途就是【预览真实的信】。
+  //
+  // 【enabled 必须强制成 true】jobInDigestScope 在 config.enabled 为 false 时对任何作业都返回
+  // false。而本按钮在汇总【关闭】时也能按（用来试发信配置），那样作业表会被整个过滤空，
+  // 信里于是谎称「没有任何已启用的自动测试作业」——实测确实如此。作业明明都在，
+  // 只是汇总没开。这里要问的是「按当前范围设置，哪些作业会进汇总」，与开关状态无关。
+  const scopeForPreview = { enabled: true, jobScope: config.jobScope, jobIds: config.jobIds };
+  const allJobs = await (opts.loadJobsFn || loadJobs)().catch(() => null);
+  const jobs = Array.isArray(allJobs) ? allJobs.filter((j) => jobInDigestScope(scopeForPreview, j?.id)) : null;
   const { subject, body } = formatAlertDigest(taken, {
     windowFrom: config.lastDigestAt,
     windowTo: new Date().toISOString(),
+    jobs,
+    jobScope: config.jobScope,
   });
   const ok = await sendMailFn(`${subject}（手动发送）`, body);
   if (!ok) throw new Error("尚未配置 SMTP 服务器或收件人，无法发送。");

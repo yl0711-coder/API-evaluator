@@ -13,6 +13,7 @@ import {
   maybeSendDigest,
   discardQueuedAlerts,
   dropQueuedAlertsForRule,
+  sendDigestNow,
   MAX_DEFER_MS,
 } from "../server/alert-digest-sender.mjs";
 import {
@@ -577,5 +578,94 @@ test("jobScope=all：作业表不过滤（全部作业都可能产出汇总内�
     });
     assert.match(mails[0], /属正常/);
     assert.match(mails[0], /2026-12-31 09:00/);
+  });
+});
+
+// —— 「立即发送一封」（测试按钮）——
+// 这个按钮的全部用途是【预览真实的汇总信】，所以成文入参要与定时发的那封一致。
+
+test("sendDigestNow：传作业表与范围，措辞与定时汇总一致", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.jobScope = "all";
+      return null;
+    });
+    let body = "";
+    await sendDigestNow({
+      sendMailFn: (s, b) => ((body = b), true),
+      loadJobsFn: async () => [{ id: "j1", enabled: true, nextRunAt: "2026-12-31T09:00:00.000Z" }],
+    });
+    assert.match(body, /属正常/);
+    assert.match(body, /2026-12-31 09:00/);
+  });
+});
+
+// 【回归】jobInDigestScope 在 enabled=false 时对任何作业都返回 false。
+// 而本按钮在汇总【关闭】时也能按（用来试发信配置），若照搬那个判定，作业表会被整个过滤空，
+// 信里于是谎称「没有任何已启用的自动测试作业」——作业明明都在，只是汇总没开。
+test("sendDigestNow：汇总关闭时也不得谎称「没有任何已启用的作业」", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = false;
+      c.jobScope = "all";
+      return null;
+    });
+    let body = "";
+    await sendDigestNow({
+      sendMailFn: (s, b) => ((body = b), true),
+      loadJobsFn: async () => [{ id: "j1", enabled: true, nextRunAt: "2026-12-31T09:00:00.000Z" }],
+    });
+    assert.doesNotMatch(body, /没有任何【已启用】的自动测试作业/, "作业还在，只是汇总没开");
+    assert.match(body, /属正常/);
+  });
+});
+
+test("sendDigestNow：selected 范围照样生效（预览的是按当前勾选会发出的信）", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.jobScope = "selected";
+      c.jobIds = ["j-in"];
+      return null;
+    });
+    let body = "";
+    await sendDigestNow({
+      sendMailFn: (s, b) => ((body = b), true),
+      loadJobsFn: async () => [
+        { id: "j-in", enabled: true, nextRunAt: "2026-12-31T09:00:00.000Z" },
+        { id: "j-out", enabled: true, nextRunAt: "2026-01-01T10:00:00.000Z" },
+      ],
+    });
+    assert.match(body, /2026-12-31 09:00/);
+    assert.doesNotMatch(body, /2026-01-01 10:00/, "范围外作业的时刻不该出现");
+  });
+});
+
+test("sendDigestNow：标题带「手动发送」，且不清空队列", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleId: "r1", ruleName: "规则1" });
+    let subject = "";
+    const stat = await sendDigestNow({ sendMailFn: (s) => ((subject = s), true), loadJobsFn: async () => [] });
+    assert.match(subject, /手动发送/);
+    assert.equal(stat.alerts, 1);
+    assert.equal((await loadQueue()).alerts.length, 1, "测试发送不该清空队列");
+  });
+});
+
+test("sendDigestNow：作业表读失败 → 照常发信（退回保守措辞）", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      return null;
+    });
+    let body = "";
+    await sendDigestNow({
+      sendMailFn: (s, b) => ((body = b), true),
+      loadJobsFn: async () => {
+        throw new Error("读不了");
+      },
+    });
+    assert.match(body, /若定时测试本应在此期间运行/);
   });
 });

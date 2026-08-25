@@ -19,6 +19,7 @@ import {
   __writeStateForTest,
 } from "../server/alert-rule-state.mjs";
 import { __resetNotifyConfigCacheForTest } from "../server/notify-config.mjs";
+import { updateDigestConfig, loadQueue, __setDigestFilesForTest, __resetDigestChainsForTest } from "../server/alert-digest-store.mjs";
 
 test.afterEach(() => {
   __resetWriteChainForTest();
@@ -1326,5 +1327,48 @@ test("点立即运行的作业即使在汇总范围内，也立即发信", async
     await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { ...alertOptionsFromRunContext(ctx), ...opts });
     assert.equal(s.mails.length, 1, "有人在等结果，必须立即发信");
     assert.equal(s.alerts.length, 0, "不该攒进汇总队列");
+  });
+});
+
+// 端到端：不注入 digestConfigFn，走【真实的 loadDigestConfig】读盘 + 归一化。
+// 上面那批筛选用例全都注入了假配置，绕过了真实读写链路——归一化若把 jobIds 弄丢（例如
+// 忘了处理某种形状），那些用例照旧全绿。这一条补上那段。
+test("端到端：真实读盘的 selected 配置也能正确筛选（不注入配置函数）", async () => {
+  await withTempStores(async () => {
+    const dir = mkdtempSync(join(tmpdir(), "are-e2e-"));
+    __setDigestFilesForTest({ config: join(dir, "c.json"), queue: join(dir, "q.json") });
+    try {
+      await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, cooldownHours: 0.001 });
+      await updateDigestConfig((c) => {
+        c.enabled = true;
+        c.cron = "7 9 * * *";
+        c.jobScope = "selected";
+        c.jobIds = ["j-in"];
+        return null;
+      });
+
+      const mails = [];
+      const opts = { sendAlertMailFn: async (rule, entry) => mails.push(entry.model) };
+      await evaluateAlertRules({ profileId: "p1", model: "范围内模型", successRate: 0.3 }, { source: "auto", jobId: "j-in", ...opts });
+      await new Promise((r) => setTimeout(r, 10)); // 让极短冷却过期
+      await evaluateAlertRules({ profileId: "p2", model: "范围外模型", successRate: 0.3 }, { source: "auto", jobId: "j-out", ...opts });
+
+      const q = await loadQueue();
+      assert.deepEqual(
+        q.alerts.map((a) => a.targetLabel),
+        ["范围内模型"],
+        "只有范围内的作业该入队",
+      );
+      assert.deepEqual(mails, ["范围外模型"], "范围外的作业该立即发信");
+      assert.deepEqual(
+        q.runs.map((r) => r.targetLabel),
+        ["范围内模型"],
+        "运行记录也只记范围内的",
+      );
+    } finally {
+      __setDigestFilesForTest({});
+      __resetDigestChainsForTest();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
   });
 });
