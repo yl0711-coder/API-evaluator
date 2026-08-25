@@ -512,3 +512,70 @@ test("作业表可读时：汇总信采用作业状态判断措辞", async () =>
     assert.match(mails[0], /属正常/);
   });
 });
+
+// 【回归】作业表必须按汇总范围过滤后才交给成文层。
+// 不过滤会指着一个不进汇总的作业的时刻说「属正常」，而那次运行的数字永远不会出现在汇总信里。
+test("作业表按汇总范围过滤：范围外作业的下次运行时刻不得出现在信里", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.cron = "7 9 * * *";
+      c.jobScope = "selected";
+      c.jobIds = ["j-in"];
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    const mails = [];
+    await maybeSendDigest({
+      sendMailFn: (s, b) => (mails.push(b), true),
+      getActiveJobs: () => 0,
+      loadJobsFn: async () => [
+        { id: "j-in", enabled: true, nextRunAt: "2026-12-31T09:00:00.000Z" }, // 范围内，很久以后
+        { id: "j-out", enabled: true, nextRunAt: "2026-01-01T10:00:00.000Z" }, // 范围外，很早
+      ],
+    });
+    assert.equal(mails.length, 1);
+    assert.match(mails[0], /2026-12-31 09:00/, "应报范围内作业的时刻");
+    assert.doesNotMatch(mails[0], /2026-01-01 10:00/, "范围外作业的时刻不该出现——那次运行不进汇总");
+  });
+});
+
+test("jobScope=selected 且勾选的作业已全部删除 → 措辞指向勾选设置而非「没有启用作业」", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.jobScope = "selected";
+      c.jobIds = ["已删除的作业"];
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    const mails = [];
+    await maybeSendDigest({
+      sendMailFn: (s, b) => (mails.push(b), true),
+      getActiveJobs: () => 0,
+      loadJobsFn: async () => [{ id: "j-other", enabled: true, nextRunAt: "2026-12-31T09:00:00.000Z" }],
+    });
+    assert.match(mails[0], /勾选进汇总】的作业里，没有一个是启用状态/);
+    assert.doesNotMatch(mails[0], /没有任何【已启用】的自动测试作业/, "作业还在，不该谎称没有");
+  });
+});
+
+// 范围快照取自占位那一刻：期间有人改了设置，本封信仍按占位时的范围成文，判定与内容一致。
+test("jobScope=all：作业表不过滤（全部作业都可能产出汇总内容）", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.jobScope = "all";
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    const mails = [];
+    await maybeSendDigest({
+      sendMailFn: (s, b) => (mails.push(b), true),
+      getActiveJobs: () => 0,
+      loadJobsFn: async () => [{ id: "任意作业", enabled: true, nextRunAt: "2026-12-31T09:00:00.000Z" }],
+    });
+    assert.match(mails[0], /属正常/);
+    assert.match(mails[0], /2026-12-31 09:00/);
+  });
+});

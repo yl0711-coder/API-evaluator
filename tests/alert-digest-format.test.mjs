@@ -329,3 +329,36 @@ test("有运行记录时完全不出现这段（只在无记录时才判断）",
   const { body } = formatAlertDigest({ alerts: [], runs: [run()] }, { jobs: [{ enabled: true, nextRunAt: "2026-08-26T09:00:00.000Z" }] });
   assert.doesNotMatch(body, /没有完成任何测试/);
 });
+
+// —— 「没跑任何测试」的措辞要区分汇总范围 ——
+// 【回归：指着一个不进汇总的作业说「属正常」】作业表现在按汇总范围过滤后才传进来。
+// 不过滤的话，「范围内的作业今天不跑、范围外的一小时后跑」会让信里说
+// 「属正常，下一次运行在 10:00」—— 而 10:00 那次根本不进汇总，
+// 用户等到 10:00 之后仍然看不到它的数字。
+test("selected 模式下范围内无启用作业 → 不能谎称「没有任何已启用的作业」", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [] }, { jobs: [], jobScope: "selected", windowTo: "2026-08-25T09:07:00.000Z" });
+  assert.match(body, /勾选进汇总】的作业里，没有一个是启用状态/);
+  assert.doesNotMatch(body, /没有任何【已启用】的自动测试作业/, "作业可能都在，只是勾选的那几个没了——说成这样会把人引错方向");
+  assert.match(body, /报警规则/, "应指向勾选设置所在的页面");
+  assert.match(body, /没勾选的作业仍会各自立即发信/, "必须重申没勾选≠不报警");
+});
+
+test("all 模式下无启用作业 → 仍用原措辞（指向自动测试配置页）", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [] }, { jobs: [], jobScope: "all", windowTo: "2026-08-25T09:07:00.000Z" });
+  assert.match(body, /没有任何【已启用】的自动测试作业/);
+  assert.doesNotMatch(body, /勾选进汇总/);
+});
+
+test("jobScope 缺省视为 all（旧调用方不受影响）", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [] }, { jobs: [] });
+  assert.match(body, /没有任何【已启用】的自动测试作业/);
+});
+
+test("selected 模式下范围内有启用作业 → 照常报「属正常 + 下次运行时刻」", () => {
+  const { body } = formatAlertDigest(
+    { alerts: [], runs: [] },
+    { jobs: [{ enabled: true, nextRunAt: "2026-08-26T09:00:00.000Z" }], jobScope: "selected", windowTo: "2026-08-25T09:07:00.000Z" },
+  );
+  assert.match(body, /属正常/);
+  assert.match(body, /2026-08-26 09:00/);
+});

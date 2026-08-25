@@ -9,7 +9,15 @@
 //
 // best-effort：全程 try/catch 吞错，绝不影响调度主流程（与 evaluateAlertRules 同惯例）。
 import { computeNextRunAt, loadJobs } from "./auto-test-store.mjs";
-import { loadDigestConfig, updateDigestConfig, loadQueue, drainQueue, requeue, removeAlertsByRule } from "./alert-digest-store.mjs";
+import {
+  loadDigestConfig,
+  updateDigestConfig,
+  loadQueue,
+  drainQueue,
+  requeue,
+  removeAlertsByRule,
+  jobInDigestScope,
+} from "./alert-digest-store.mjs";
 import { formatAlertDigest } from "./alert-digest-format.mjs";
 import { getNotifyConfig } from "./notify-config.mjs";
 import { readSecret } from "./secret-store.mjs";
@@ -95,7 +103,10 @@ export async function maybeSendDigest(opts = {}) {
       const windowFrom = cfg.lastDigestAt;
       cfg.lastDigestAt = new Date(nowMs).toISOString();
       cfg.nextDigestAt = cronNext || new Date(nowMs + FALLBACK_INTERVAL_MS).toISOString();
-      return { claimed: true, windowFrom };
+      // 顺带把汇总范围带出来：下面成文时要按它过滤作业表。
+      // 在这里取而不是回头再 loadDigestConfig 一次，是为了拿到与本次占位【同一快照】的范围 ——
+      // 期间若有人改了设置，重读会让判定与实际发出的内容不一致。
+      return { claimed: true, windowFrom, scope: { enabled: cfg.enabled, jobScope: cfg.jobScope, jobIds: cfg.jobIds } };
     });
     if (!claim.claimed) return { sent: false, reason: claim.reason };
     const windowFrom = claim.windowFrom;
@@ -108,11 +119,18 @@ export async function maybeSendDigest(opts = {}) {
     try {
       // 作业表只在「本时段一条运行记录都没有」时才用得上（决定该不该说「请检查是否被停用」）。
       // 读失败给 null，formatAlertDigest 会退回保守措辞，不影响发信。
-      const jobs = await (opts.loadJobsFn || loadJobs)().catch(() => null);
+      //
+      // 【必须先按汇总范围过滤】只有范围内的作业才可能产出汇总内容。不过滤的话，
+      // 「范围内的作业今天不跑、范围外的一小时后跑」会让信里说
+      // 「属正常，下一次运行在 10:00」—— 而 10:00 那次根本不进汇总，
+      // 用户等到 10:00 之后仍然看不到它的数字。指着一个不相干的时刻说「属正常」是误导。
+      const allJobs = await (opts.loadJobsFn || loadJobs)().catch(() => null);
+      const jobs = Array.isArray(allJobs) ? allJobs.filter((j) => jobInDigestScope(claim.scope, j?.id)) : null;
       const { subject, body } = formatAlertDigest(taken, {
         windowFrom,
         windowTo: new Date(nowMs).toISOString(),
         jobs,
+        jobScope: claim.scope.jobScope,
       });
       const ok = await sendMailFn(subject, body);
       if (!ok) {
