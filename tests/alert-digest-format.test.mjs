@@ -281,3 +281,51 @@ test("同一目标多条记录 → runCount 相加，指标取最新那条", () 
   assert.match(body, /7 次/, "3 + 4 = 7");
   assert.match(body, /50%/, "指标取较新那条");
 });
+
+// —— 「本时段没有完成任何测试」的措辞要看本时段是否本该有测试 ——
+// 【回归：假警报训练收件人无视警告】汇总周期可能比测试周期还密（汇总每 6 小时、
+// 稳定性测试每天一次），此时多数汇总信里本来就不该有测试记录。若一律写
+// 「请检查作业是否被停用或熔断」，收件人一天见几次假警报，很快学会无视这句话 ——
+// 而它恰恰是「定时测试真的停了」时唯一的信号。训练收件人忽略警报比不发警报更糟。
+
+test("有启用作业且下次运行在未来 → 说明属正常，不发假警报", () => {
+  const { body } = formatAlertDigest(
+    { alerts: [], runs: [] },
+    { jobs: [{ enabled: true, nextRunAt: "2026-08-26T09:00:00.000Z" }], windowTo: "2026-08-25T09:07:00.000Z" },
+  );
+  assert.match(body, /属正常/);
+  assert.match(body, /2026-08-26 09:00/, "应告知下一次运行时刻");
+  assert.doesNotMatch(body, /停用或熔断/, "不得在正常情况下喊「被停用或熔断」");
+});
+
+test("一个启用作业都没有 → 明确指出「不会有实质内容」并引向配置页", () => {
+  const { body } = formatAlertDigest(
+    { alerts: [], runs: [] },
+    { jobs: [{ enabled: false, nextRunAt: null }], windowTo: "2026-08-25T09:07:00.000Z" },
+  );
+  assert.match(body, /没有任何【已启用】的自动测试作业/);
+  assert.match(body, /停用|熔断/);
+});
+
+test("作业表为空数组 → 同样按「没有启用作业」处理", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [] }, { jobs: [], windowTo: "2026-08-25T09:07:00.000Z" });
+  assert.match(body, /没有任何【已启用】的自动测试作业/);
+});
+
+test("有启用作业但都没有下次运行时刻 → 提示去确认（这反倒可疑）", () => {
+  const { body } = formatAlertDigest(
+    { alerts: [], runs: [] },
+    { jobs: [{ enabled: true, nextRunAt: null }], windowTo: "2026-08-25T09:07:00.000Z" },
+  );
+  assert.match(body, /都没有下次运行时刻/);
+});
+
+test("未传作业表（读失败）→ 退回保守措辞，不断言被停用", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [] }, { windowTo: "2026-08-25T09:07:00.000Z" });
+  assert.match(body, /若定时测试本应在此期间运行/, "应用条件句而非断言");
+});
+
+test("有运行记录时完全不出现这段（只在无记录时才判断）", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [run()] }, { jobs: [{ enabled: true, nextRunAt: "2026-08-26T09:00:00.000Z" }] });
+  assert.doesNotMatch(body, /没有完成任何测试/);
+});

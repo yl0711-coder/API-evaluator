@@ -89,7 +89,40 @@ function hasAnyMetric(r) {
   return [r?.successRate, r?.p95TotalMs].some((v) => v !== null && v !== undefined && Number.isFinite(Number(v))) || Boolean(r?.grade);
 }
 
-export function formatAlertDigest(taken, { windowFrom = null, windowTo = null } = {}) {
+// 「本时段没有完成任何测试」该怎么说，取决于本时段【是否本来就该有测试】。
+//
+// 【为什么必须区分】汇总周期可能比测试周期还密（汇总每 6 小时、稳定性测试每天一次），
+// 此时多数汇总信里本来就不该有测试记录 —— 若一律写「请检查作业是否被停用或熔断」，
+// 收件人一天见几次假警报，很快就学会无视这句话，而它恰恰是「定时测试真的停了」时唯一的信号。
+// 训练收件人忽略警报，比不发警报更糟。
+//
+// jobs 形状取 auto-test-store 的作业：{ enabled, nextRunAt }。传 null = 无从判断（保守措辞）。
+function describeNoRuns(jobs) {
+  if (!Array.isArray(jobs)) {
+    return ["本时段没有完成任何测试。若定时测试本应在此期间运行，请检查作业是否被停用或熔断。"];
+  }
+  const enabled = jobs.filter((j) => j?.enabled);
+  if (!enabled.length) {
+    // 一个启用的作业都没有 —— 这时汇总信永远不会有内容，多半是配置状态本身出了问题。
+    return [
+      "本时段没有完成任何测试，且当前没有任何【已启用】的自动测试作业。",
+      "  报警汇总因此不会有实质内容。请到「自动测试配置」页确认作业是否被停用或已被连续失败熔断。",
+    ];
+  }
+  // 所有启用作业的下次运行都还在未来（且晚于本时段结束）→ 本时段本就不该有测试，属正常。
+  const times = enabled.map((j) => Date.parse(j.nextRunAt || "")).filter((t) => Number.isFinite(t));
+  const soonest = times.length ? Math.min(...times) : null;
+  if (soonest !== null) {
+    return [
+      `本时段没有完成任何测试（属正常：${enabled.length} 个作业均已启用，下一次运行在 ${clock(new Date(soonest).toISOString())}）。`,
+      "  若汇总频率比测试频率更密，多数汇总信都会是这样。",
+    ];
+  }
+  // 有启用作业但一个 nextRunAt 都读不出来 —— 反倒可疑（刚迁移或状态被写坏）。
+  return [`本时段没有完成任何测试。有 ${enabled.length} 个作业已启用但都没有下次运行时刻，请到「自动测试配置」页确认。`];
+}
+
+export function formatAlertDigest(taken, { windowFrom = null, windowTo = null, jobs = null } = {}) {
   // 【不能只靠默认参数】`taken = {}` 只在传 undefined 时生效，传 null 仍会走进来并在
   // taken.alerts 上抛 TypeError。本函数在 best-effort 链路上（maybeSendDigest 的 try/catch 里），
   // 抛错的后果是那一期汇总信整封发不出去 —— 而队列已经被 drainQueue 取空了。
@@ -167,8 +200,8 @@ export function formatAlertDigest(taken, { windowFrom = null, windowTo = null } 
       );
     }
   } else {
-    // 没有任何运行记录 = 定时测试根本没跑（作业停用/熔断/进程重启），这比"跑了但都正常"严重得多。
-    lines.push("本时段没有完成任何测试。请检查自动测试作业是否被停用或熔断。", "");
+    // 没有运行记录时的措辞取决于本时段是否本该有测试，见 describeNoRuns 的说明。
+    lines.push(...describeNoRuns(jobs), "");
   }
 
   return { subject, body: lines.join("\n") };

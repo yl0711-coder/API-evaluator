@@ -8,8 +8,8 @@
 //   一到点就发会把同一批结果切成两封，后几个渠道落进下一封 —— 那正是你要避免的。
 //
 // best-effort：全程 try/catch 吞错，绝不影响调度主流程（与 evaluateAlertRules 同惯例）。
-import { computeNextRunAt } from "./auto-test-store.mjs";
-import { loadDigestConfig, updateDigestConfig, loadQueue, drainQueue, requeue } from "./alert-digest-store.mjs";
+import { computeNextRunAt, loadJobs } from "./auto-test-store.mjs";
+import { loadDigestConfig, updateDigestConfig, loadQueue, drainQueue, requeue, removeAlertsByRule } from "./alert-digest-store.mjs";
 import { formatAlertDigest } from "./alert-digest-format.mjs";
 import { getNotifyConfig } from "./notify-config.mjs";
 import { readSecret } from "./secret-store.mjs";
@@ -106,9 +106,13 @@ export async function maybeSendDigest(opts = {}) {
     // formatAlertDigest 是纯函数、理应不抛，但"理应不抛"不是保证——把它和发信一起纳入
     // 同一个 catch，任何失败都走回填重试。
     try {
+      // 作业表只在「本时段一条运行记录都没有」时才用得上（决定该不该说「请检查是否被停用」）。
+      // 读失败给 null，formatAlertDigest 会退回保守措辞，不影响发信。
+      const jobs = await (opts.loadJobsFn || loadJobs)().catch(() => null);
       const { subject, body } = formatAlertDigest(taken, {
         windowFrom,
         windowTo: new Date(nowMs).toISOString(),
+        jobs,
       });
       const ok = await sendMailFn(subject, body);
       if (!ok) {
@@ -149,6 +153,24 @@ export async function discardQueuedAlerts(opts = {}) {
   const ruleIds = [...new Set(taken.alerts.map((a) => a.ruleId).filter(Boolean))];
   for (const id of ruleIds) await clearFn(id);
   return { alerts: taken.alerts.length, rules: ruleIds.length };
+}
+
+// 某条规则被删除时，把它在队列里尚未发出的报警一并丢掉。
+//
+// 【为什么要丢】删除一条规则的含义是「别再就这件事提醒我」。留着的话，
+// 汇总信会在数小时后报出一条【已经不存在的规则】——收件人按名字去页面上找，找不到。
+// 而且这与删除时已有的 clearRuleState（清冷却）不一致：既然冷却记录都清了，
+// 待发内容更该清。
+// 不清冷却：规则都没了，冷却桶由 clearRuleState 那边负责。
+// best-effort：失败不影响删除本身（规则已删，残留几条队列项只会多一行陈旧信息）。
+export async function dropQueuedAlertsForRule(ruleId) {
+  if (!ruleId) return 0;
+  try {
+    return await removeAlertsByRule(ruleId);
+  } catch (error) {
+    console.error("[alert-digest] 清理已删除规则的待发报警失败：", error?.message || error);
+    return 0;
+  }
 }
 
 // 立即发一封（供「发送测试汇总」按钮用）。不看 cron、不推进节奏、不清空队列——

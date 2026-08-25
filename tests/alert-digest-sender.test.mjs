@@ -7,7 +7,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isDigestDue, shouldDefer, maybeSendDigest, discardQueuedAlerts, MAX_DEFER_MS } from "../server/alert-digest-sender.mjs";
+import {
+  isDigestDue,
+  shouldDefer,
+  maybeSendDigest,
+  discardQueuedAlerts,
+  dropQueuedAlertsForRule,
+  MAX_DEFER_MS,
+} from "../server/alert-digest-sender.mjs";
 import {
   loadDigestConfig,
   updateDigestConfig,
@@ -419,5 +426,89 @@ test("并发 tick 且调度器在忙 → 全部顺延，一封都不发", async 
       "全部应判顺延",
     );
     assert.equal((await loadQueue()).alerts.length, 1, "队列必须原样保留");
+  });
+});
+
+// —— 规则删除时丢掉它的待发报警 ——
+test("dropQueuedAlertsForRule：只丢该规则的待发报警", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleId: "keep", ruleName: "留下" });
+    await enqueueAlert({ ruleId: "gone", ruleName: "已删除的规则" });
+    const n = await dropQueuedAlertsForRule("gone");
+    assert.equal(n, 1);
+    const q = await loadQueue();
+    assert.deepEqual(
+      q.alerts.map((a) => a.ruleId),
+      ["keep"],
+    );
+  });
+});
+
+test("dropQueuedAlertsForRule：空 id / 无匹配 → 返回 0，不报错", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleId: "r1" });
+    assert.equal(await dropQueuedAlertsForRule(""), 0);
+    assert.equal(await dropQueuedAlertsForRule(null), 0);
+    assert.equal(await dropQueuedAlertsForRule("不存在"), 0);
+    assert.equal((await loadQueue()).alerts.length, 1);
+  });
+});
+
+// 汇总信里不该出现已删除规则的名字。
+test("删除规则后再发汇总：信里不再提到它", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.cron = "7 9 * * *";
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    await enqueueAlert({ ruleId: "gone", ruleName: "已删除的规则", targetLabel: "模型A", reason: "成功率 30%" });
+    await enqueueAlert({ ruleId: "keep", ruleName: "仍存在的规则", targetLabel: "模型A", reason: "P95 过高" });
+    await dropQueuedAlertsForRule("gone");
+
+    const mails = [];
+    await maybeSendDigest({ sendMailFn: (s, b) => (mails.push(b), true), getActiveJobs: () => 0 });
+    assert.equal(mails.length, 1);
+    assert.doesNotMatch(mails[0], /已删除的规则/, "已删除规则的名字不该出现——收件人按名字去页面上找不到");
+    assert.match(mails[0], /仍存在的规则/);
+  });
+});
+
+// 作业表读失败不该影响发信（只影响「没有运行记录」那段的措辞）。
+test("作业表读取抛错 → 照常发信，措辞退回保守版本", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    const mails = [];
+    const r = await maybeSendDigest({
+      sendMailFn: (s, b) => (mails.push(b), true),
+      getActiveJobs: () => 0,
+      loadJobsFn: async () => {
+        throw new Error("作业配置读不了");
+      },
+    });
+    assert.equal(r.sent, true, "作业表读失败不该阻断汇总发信");
+    assert.match(mails[0], /若定时测试本应在此期间运行/, "应退回条件句措辞");
+  });
+});
+
+test("作业表可读时：汇总信采用作业状态判断措辞", async () => {
+  await withTempFiles(async () => {
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    const mails = [];
+    await maybeSendDigest({
+      sendMailFn: (s, b) => (mails.push(b), true),
+      getActiveJobs: () => 0,
+      loadJobsFn: async () => [{ enabled: true, nextRunAt: new Date(Date.now() + 86400000).toISOString() }],
+    });
+    assert.match(mails[0], /属正常/);
   });
 });

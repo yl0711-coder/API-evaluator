@@ -113,7 +113,7 @@ import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-ri
 import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
 import { clearRuleState } from "./server/alert-rule-state.mjs";
 import { loadDigestConfig, updateDigestConfig, loadQueue } from "./server/alert-digest-store.mjs";
-import { maybeSendDigest, sendDigestNow, discardQueuedAlerts } from "./server/alert-digest-sender.mjs";
+import { maybeSendDigest, sendDigestNow, discardQueuedAlerts, dropQueuedAlertsForRule } from "./server/alert-digest-sender.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, redactSensitiveText, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -1240,8 +1240,13 @@ async function handleAlertRuleDelete(req, res, { params }) {
     return true;
   });
   // 顺带清掉该规则的冷却记录，否则键会永久留在状态文件里（只增不减）。
-  // best-effort：清理失败不影响删除结果（规则已删，残留键无害）。
-  if (removed) await clearRuleState(id);
+  // 同时丢掉它在汇总队列里尚未发出的报警：否则汇总信会在数小时后报出一条【已不存在的规则】，
+  // 收件人按名字去页面上找会找不到。两者语义一致——删除的含义是「别再就这件事提醒我」。
+  // 均为 best-effort：失败不影响删除结果。
+  if (removed) {
+    await clearRuleState(id);
+    await dropQueuedAlertsForRule(id);
+  }
   sendJson(res, 200, { ok: true });
   return;
 }

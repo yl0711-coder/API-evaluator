@@ -13,6 +13,7 @@ import {
   enqueueAlert,
   enqueueRun,
   drainQueue,
+  removeAlertsByRule,
   requeue,
   MAX_QUEUE_ENTRIES,
   __setDigestFilesForTest,
@@ -251,5 +252,61 @@ test("一个吵闹渠道刷 600 次，不得挤掉安静渠道（runs 上界 = �
     assert.ok(quiet, "成功率仅 10% 的安静渠道必须还在——它恰恰是最该被看到的");
     assert.equal(quiet.successRate, 0.1);
     assert.equal(q.runs.find((r) => r.targetId === "noisy").runCount, MAX_QUEUE_ENTRIES + 100);
+  });
+});
+
+// —— 规则被删除时移除它的待发报警 ——
+// 删除一条规则的含义是「别再就这件事提醒我」。留着的话，汇总信会在数小时后报出一条
+// 【已经不存在的规则】，收件人按名字去页面上找会找不到；且这与删除时已有的
+// clearRuleState（清冷却）不一致——既然冷却记录都清了，待发内容更该清。
+
+test("removeAlertsByRule：只移除该规则的报警，其它规则不受影响", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleId: "keep", ruleName: "留下" });
+    await enqueueAlert({ ruleId: "drop", ruleName: "删掉" });
+    await enqueueAlert({ ruleId: "drop", ruleName: "删掉" });
+    const n = await removeAlertsByRule("drop");
+    assert.equal(n, 2, "应报告移除 2 条");
+    const q = await loadQueue();
+    assert.deepEqual(
+      q.alerts.map((a) => a.ruleId),
+      ["keep"],
+    );
+  });
+});
+
+test("removeAlertsByRule：运行记录不动（runs 记的是跑了什么，与规则无关）", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleId: "drop" });
+    await enqueueRun({ targetId: "p1", targetLabel: "模型A", successRate: 0.5 });
+    await removeAlertsByRule("drop");
+    const q = await loadQueue();
+    assert.equal(q.alerts.length, 0);
+    assert.equal(q.runs.length, 1, "运行记录必须保留——汇总信仍要列出实测数字");
+  });
+});
+
+test("removeAlertsByRule：无匹配 / 空 id → 返回 0，不报错", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleId: "r1" });
+    assert.equal(await removeAlertsByRule("不存在"), 0);
+    assert.equal(await removeAlertsByRule(""), 0);
+    assert.equal(await removeAlertsByRule(null), 0);
+    assert.equal((await loadQueue()).alerts.length, 1, "都不该动到现有内容");
+  });
+});
+
+// id 前缀相同的规则不该被波及（与 clearRuleState 的同类护栏对应）。
+test("removeAlertsByRule：id 前缀相同的另一条规则不受影响", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleId: "alr_1" });
+    await enqueueAlert({ ruleId: "alr_12" });
+    await removeAlertsByRule("alr_1");
+    const q = await loadQueue();
+    assert.deepEqual(
+      q.alerts.map((a) => a.ruleId),
+      ["alr_12"],
+      "alr_12 不该被 alr_1 的清理波及",
+    );
   });
 });

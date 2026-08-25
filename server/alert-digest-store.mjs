@@ -191,6 +191,17 @@ export async function drainQueue() {
   });
 }
 
+// 移除某条规则在队列里尚未发出的报警，返回移除条数。规则被删除时调用。
+// 运行记录（runs）不动：它记的是「跑了什么」，与哪条规则无关。
+export async function removeAlertsByRule(ruleId) {
+  if (!ruleId) return 0;
+  return updateQueue((queue) => {
+    const before = queue.alerts.length;
+    queue.alerts = queue.alerts.filter((a) => a?.ruleId !== ruleId);
+    return before - queue.alerts.length;
+  });
+}
+
 // 发信失败时把取走的内容放回队列头部（它们比队列里现有的更旧），下个周期重试。
 export async function requeue(taken) {
   const alerts = Array.isArray(taken?.alerts) ? taken.alerts : [];
