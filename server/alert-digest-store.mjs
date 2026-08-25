@@ -144,11 +144,19 @@ export async function enqueueAlert(entry) {
 }
 
 // 入队一条「本时段跑过什么」的记录（无论是否命中报警）。汇总信用它列实测数字。
+//
+// 【按目标覆盖，不追加】同一目标在一个汇总窗口内只保留最后一次，另记本窗口内跑了几次。
+// 汇总表本来就只显示每目标的最后一次，所以追加没有信息增益，却会引入一个真实故障：
+// runs 与 alerts 共用 500 条上限、裁剪时丢最旧的，于是【一个吵闹的渠道会把安静的渠道整个挤出汇总表】。
+// 实测：一个渠道每分钟一测（550 条）+ 一个成功率仅 10% 的安静渠道，
+// 裁剪后安静渠道被挤光——恰恰是最该被看到的那个消失了。
+// 覆盖式记账让 runs 的条数上界变成「目标数」，与测试频率无关，这个失败模式随之消失。
 export async function enqueueRun(entry) {
+  const targetId = entry?.targetId || "";
   return updateQueue((queue) => {
-    queue.runs.push({
+    const next = {
       at: new Date().toISOString(),
-      targetId: entry?.targetId || "",
+      targetId,
       targetLabel: entry?.targetLabel || "",
       testType: entry?.testType || "",
       runId: entry?.runId || "",
@@ -156,7 +164,15 @@ export async function enqueueRun(entry) {
       successRate: entry?.successRate ?? null,
       p95TotalMs: entry?.p95TotalMs ?? null,
       grade: entry?.grade || null,
-    });
+      runCount: 1,
+    };
+    const idx = queue.runs.findIndex((r) => (r.targetId || "") === targetId);
+    if (idx >= 0) {
+      next.runCount = (Number(queue.runs[idx].runCount) || 1) + 1;
+      queue.runs[idx] = next;
+    } else {
+      queue.runs.push(next);
+    }
     capList(queue.runs);
     return queue.runs.length;
   });

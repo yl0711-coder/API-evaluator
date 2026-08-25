@@ -66,14 +66,27 @@ function groupByTarget(alerts) {
 }
 
 // 每个目标在本时段的最后一次运行（同一目标可能跑了多次，取最新的那次做代表）。
+// enqueueRun 已按目标覆盖式记账，正常情况下这里每个目标本就只有一条；
+// 但回填（requeue）与早期形状的队列文件仍可能出现同一目标多条，故保留归并。
+// runCount 取各条之和：覆盖记账时它已是累计值，回填合并时要把两段窗口的次数加起来。
 function latestRunPerTarget(runs) {
   const map = new Map();
   for (const r of runs) {
     const key = r.targetId || labelOf(r);
     const prev = map.get(key);
-    if (!prev || String(r.at || "") >= String(prev.at || "")) map.set(key, r);
+    const count = (Number(prev?.runCount) || (prev ? 1 : 0)) + (Number(r.runCount) || 1);
+    // at 相同时取后出现的那条（入队顺序即时间顺序）。
+    const newer = !prev || String(r.at || "") >= String(prev.at || "") ? r : prev;
+    map.set(key, { ...newer, runCount: count });
   }
   return [...map.values()];
+}
+
+// 该次运行有没有报出任何可读的指标。全是 null 时不能只显示三个横杠 ——
+// 那与「这个目标没测」长得一模一样，而真相是「测了，但上游一个数都没给出来」，
+// 通常意味着连接失败/全部超时，是最严重的情形之一。
+function hasAnyMetric(r) {
+  return [r?.successRate, r?.p95TotalMs].some((v) => v !== null && v !== undefined && Number.isFinite(Number(v))) || Boolean(r?.grade);
 }
 
 export function formatAlertDigest(taken, { windowFrom = null, windowTo = null } = {}) {
@@ -128,13 +141,31 @@ export function formatAlertDigest(taken, { windowFrom = null, windowTo = null } 
 
   if (runRows.length) {
     lines.push(`本时段完成的测试（${runRows.length} 个目标，同一目标取最后一次）：`, "");
-    lines.push("目标 | 测试类型 | 成功率 | P95 | 等级");
-    lines.push("--- | --- | --- | --- | ---");
-    for (const r of runRows) {
+    lines.push("目标 | 测试类型 | 次数 | 成功率 | P95 | 等级");
+    lines.push("--- | --- | --- | --- | --- | ---");
+    // 一个数都没报出来的目标排在最前：那通常是连不上/全超时，比数字难看更严重。
+    const ordered = [...runRows].sort((a, b) => Number(hasAnyMetric(a)) - Number(hasAnyMetric(b)));
+    const mute = [];
+    for (const r of ordered) {
       const type = TEST_TYPE_LABELS[r.testType] || r.testType || "-";
-      lines.push(`${labelOf(r)} | ${type} | ${pct(r.successRate)} | ${ms(r.p95TotalMs)} | ${r.grade || "-"}`);
+      const times = Number(r.runCount) > 1 ? `${r.runCount} 次` : "1 次";
+      if (!hasAnyMetric(r)) {
+        // 显式标注，不能只留三个横杠——那与「这个目标没测」无法区分。
+        lines.push(`${labelOf(r)} | ${type} | ${times} | 未报出 | 未报出 | -`);
+        mute.push(labelOf(r));
+        continue;
+      }
+      lines.push(`${labelOf(r)} | ${type} | ${times} | ${pct(r.successRate)} | ${ms(r.p95TotalMs)} | ${r.grade || "-"}`);
     }
     lines.push("");
+    if (mute.length) {
+      lines.push(
+        `⚠ 以下目标测了但一个指标都没报出来：${mute.join("、")}。`,
+        "  这通常意味着连接失败或全部请求超时，而非「表现正常」。阈值规则在指标缺失时按「不满足」处理，",
+        "  所以这种情况【不会】触发报警——请直接查这些目标的报告。",
+        "",
+      );
+    }
   } else {
     // 没有任何运行记录 = 定时测试根本没跑（作业停用/熔断/进程重启），这比"跑了但都正常"严重得多。
     lines.push("本时段没有完成任何测试。请检查自动测试作业是否被停用或熔断。", "");

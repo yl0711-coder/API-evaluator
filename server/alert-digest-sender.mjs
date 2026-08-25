@@ -14,6 +14,7 @@ import { formatAlertDigest } from "./alert-digest-format.mjs";
 import { getNotifyConfig } from "./notify-config.mjs";
 import { readSecret } from "./secret-store.mjs";
 import { sendMail } from "./mailer.mjs";
+import { clearRuleState } from "./alert-rule-state.mjs";
 
 const SMTP_PASSWORD_REF = "notify:smtp-password";
 
@@ -123,6 +124,26 @@ export async function maybeSendDigest(opts = {}) {
     console.error("[alert-digest] 汇总流程异常：", error?.message || error);
     return { sent: false, reason: "error" };
   }
+}
+
+// 关闭汇总时处置队列里已攒的报警。
+//
+// 【为什么不能就这么放着】maybeSendDigest 在功能关闭时直接早退，既不发也不清。
+// 而这些报警【入队时已经记过冷却】（入队即视为已交付），于是关掉汇总意味着：
+//   ① 它们永不送达，且在冷却期内不会重报 —— 等于被静默吞掉；
+//   ② 日后重新开启时，一封信里会冒出几周前的陈旧报警（实测会诈尸）。
+// 处置：清空队列，并清掉这些规则的冷却记录，让下一次命中立刻重新报警
+// （此时汇总已关，会走立即发信）。宁可重复报一次，不可静默丢失。
+//
+// 抽成函数而非写在端点里，是为了可测 —— 端点路径上很难造出「队列非空」的状态。
+// opts.clearRuleStateFn 供测试注入。
+export async function discardQueuedAlerts(opts = {}) {
+  const clearFn = opts.clearRuleStateFn || clearRuleState;
+  const taken = await drainQueue();
+  if (!taken.alerts.length) return null;
+  const ruleIds = [...new Set(taken.alerts.map((a) => a.ruleId).filter(Boolean))];
+  for (const id of ruleIds) await clearFn(id);
+  return { alerts: taken.alerts.length, rules: ruleIds.length };
 }
 
 // 立即发一封（供「发送测试汇总」按钮用）。不看 cron、不推进节奏、不清空队列——

@@ -204,3 +204,52 @@ test("队列坏 JSON / 非对象条目 → 过滤掉，不抛错", async () => {
     assert.deepEqual(q.runs, []);
   });
 });
+
+// —— runs 按目标覆盖式记账 ——
+// 【回归：吵闹渠道挤掉安静渠道】runs 与 alerts 共用 500 条上限、裁剪丢最旧的。
+// 若 runs 追加式记账，一个每分钟一测的渠道会在一天里产生上千条，把其它渠道整个挤出汇总表。
+// 实测：吵闹渠道 550 条 + 一个成功率仅 10% 的安静渠道 → 裁剪后安静渠道被挤光，
+// 恰恰是最该被看到的那个消失了。改为按目标覆盖后，runs 条数上界 = 目标数，与测试频率无关。
+
+test("enqueueRun：同一目标重复入队 → 覆盖而非追加，只留最后一次", async () => {
+  await withTempFiles(async () => {
+    await enqueueRun({ targetId: "p1", targetLabel: "模型A", successRate: 1, p95TotalMs: 30000 });
+    await enqueueRun({ targetId: "p1", targetLabel: "模型A", successRate: 0.4, p95TotalMs: 90000 });
+    const q = await loadQueue();
+    assert.equal(q.runs.length, 1, "同一目标只留一条");
+    assert.equal(q.runs[0].successRate, 0.4, "留的是最后一次");
+    assert.equal(q.runs[0].p95TotalMs, 90000);
+  });
+});
+
+test("enqueueRun：覆盖时累计 runCount（看得出本时段跑了几次）", async () => {
+  await withTempFiles(async () => {
+    for (let i = 0; i < 7; i += 1) await enqueueRun({ targetId: "p1", targetLabel: "模型A", successRate: 1 });
+    const q = await loadQueue();
+    assert.equal(q.runs.length, 1);
+    assert.equal(q.runs[0].runCount, 7);
+  });
+});
+
+test("enqueueRun：不同目标各占一条，互不覆盖", async () => {
+  await withTempFiles(async () => {
+    await enqueueRun({ targetId: "p1", targetLabel: "模型A", successRate: 1 });
+    await enqueueRun({ targetId: "p2", targetLabel: "模型B", successRate: 1 });
+    assert.equal((await loadQueue()).runs.length, 2);
+  });
+});
+
+test("一个吵闹渠道刷 600 次，不得挤掉安静渠道（runs 上界 = 目标数）", async () => {
+  await withTempFiles(async () => {
+    await enqueueRun({ targetId: "quiet", targetLabel: "安静渠道", successRate: 0.1 });
+    for (let i = 0; i < MAX_QUEUE_ENTRIES + 100; i += 1) {
+      await enqueueRun({ targetId: "noisy", targetLabel: "吵闹渠道", successRate: 1 });
+    }
+    const q = await loadQueue();
+    assert.equal(q.runs.length, 2, "条数上界应为目标数，不随测试频率增长");
+    const quiet = q.runs.find((r) => r.targetId === "quiet");
+    assert.ok(quiet, "成功率仅 10% 的安静渠道必须还在——它恰恰是最该被看到的");
+    assert.equal(quiet.successRate, 0.1);
+    assert.equal(q.runs.find((r) => r.targetId === "noisy").runCount, MAX_QUEUE_ENTRIES + 100);
+  });
+});

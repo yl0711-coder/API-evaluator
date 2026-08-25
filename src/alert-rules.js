@@ -202,11 +202,17 @@ export function createAlertRules({ state, confirm }) {
     }
     digestSaveBtn.disabled = true;
     try {
-      await api("/api/alert-rules/digest", {
+      const r = await api("/api/alert-rules/digest", {
         method: "PUT",
         body: JSON.stringify({ enabled: digestEnabled.checked, cron }),
       });
-      toast(digestEnabled.checked ? "汇总设置已保存。" : "已关闭报警汇总。");
+      // 关闭时若队列里还有没发出去的报警，后端会清掉它们并解除对应规则的冷却。
+      // 必须说给管理员听：静默丢弃报警正是这个功能要避免的事。
+      if (r.flushed?.alerts) {
+        toast(`已关闭报警汇总。队列中 ${r.flushed.alerts} 条未发出的报警已清除，相关规则的冷却已解除，下次命中会立即发信。`);
+      } else {
+        toast(digestEnabled.checked ? "汇总设置已保存。" : "已关闭报警汇总。");
+      }
       await loadDigest();
     } catch (error) {
       toast(`保存失败：${error.message}`, true);

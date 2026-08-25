@@ -422,3 +422,45 @@ test("汇总测试发送：未配 SMTP → 400 且给出原因", async () => {
   assert.equal(status, 400);
   assert.match(body.userMessage, /SMTP|收件人/);
 });
+
+// 【回归：关掉汇总会静默吞掉已攒的报警】
+// maybeSendDigest 在功能关闭时直接早退，既不发也不清；而这些报警【已经记过冷却】
+// （入队即视为已交付）。于是关掉汇总 = 队列里的报警永不送达且不再重报；
+// 日后重新开启还会让几周前的陈旧报警诈尸。实测两种症状都会出现。
+test("关闭汇总时：清空队列并清掉相关规则的冷却（不静默吞报警）", async () => {
+  assert.ok(ready, "server 未就绪");
+  // 建一条规则 + 开汇总
+  const rule = await post("/api/alert-rules", cookieAdmin, {
+    name: "汇总关闭测试规则",
+    metric: "successRate",
+    comparator: "lt",
+    threshold: 0.8,
+  });
+  const ruleId = rule.body.rule.id;
+  await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: true, cron: "7 9 * * *" });
+
+  // 关闭。此处队列是空的，故不应有 flushed 字段。
+  const off = await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "7 9 * * *" });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.flushed, undefined, "队列为空时不该报告清理");
+
+  // 关闭后再关一次：不得报错
+  const offAgain = await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "7 9 * * *" });
+  assert.equal(offAgain.status, 200);
+
+  const back = await get("/api/alert-rules/digest", cookieAdmin);
+  assert.deepEqual(back.body.pending, { alerts: 0, runs: 0 }, "关闭后队列必须是空的");
+
+  await del(`/api/alert-rules/${ruleId}`, cookieAdmin);
+});
+
+test("重复保存同一份汇总设置：幂等，不报错", async () => {
+  assert.ok(ready, "server 未就绪");
+  const body = { enabled: true, cron: "22 7 * * *" };
+  const a = await send("PUT", "/api/alert-rules/digest", cookieAdmin, body);
+  const b = await send("PUT", "/api/alert-rules/digest", cookieAdmin, body);
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  assert.equal(b.body.config.cron, "22 7 * * *");
+  await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "7 9 * * *" });
+});

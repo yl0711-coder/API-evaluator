@@ -113,7 +113,7 @@ import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-ri
 import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
 import { clearRuleState } from "./server/alert-rule-state.mjs";
 import { loadDigestConfig, updateDigestConfig, loadQueue } from "./server/alert-digest-store.mjs";
-import { maybeSendDigest, sendDigestNow } from "./server/alert-digest-sender.mjs";
+import { maybeSendDigest, sendDigestNow, discardQueuedAlerts } from "./server/alert-digest-sender.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, redactSensitiveText, requiredString, sendJson } from "./server/utils.mjs";
 import { saveRunArtifacts } from "./server/workspace-store.mjs";
@@ -1272,18 +1272,22 @@ async function handleAlertDigestConfigSave(req, res) {
     sendJson(res, 400, { error: "invalid_cron", userMessage: "定时表达式在未来四年内没有可执行时刻，请检查。" });
     return;
   }
+  const wasEnabled = (await loadDigestConfig()).enabled;
   const config = await updateDigestConfig((cfg) => {
-    const wasEnabled = cfg.enabled;
     cfg.enabled = enabled;
     if (cron) cfg.cron = cron;
     // 从关到开、或改了 cron：重算下一个到期时刻。
     // 不这样做的话，旧的 nextDigestAt（可能是很久以前）会让开启后的第一个 tick 立刻发一封，
     // 而那封信的内容是「上次汇总以来」——对刚开启的人来说是一封莫名其妙的空信。
-    if (!wasEnabled || cron) cfg.nextDigestAt = computeNextRunAt({ cron: cfg.cron }, Date.now());
+    if (!cfg.enabled || cron) cfg.nextDigestAt = computeNextRunAt({ cron: cfg.cron }, Date.now());
     if (!enabled) cfg.nextDigestAt = null; // 关闭时清掉，避免下次开启沿用过期时刻
     return { ...cfg };
   });
-  sendJson(res, 200, { ok: true, config });
+
+  // 从开到关：队列里已攒的报警必须处置，不能就这么放着。理由见 discardQueuedAlerts 的注释
+  // （它们已记过冷却 → 静默吞掉；日后重开还会让陈旧报警诈尸）。
+  const flushed = wasEnabled && !enabled ? await discardQueuedAlerts() : null;
+  sendJson(res, 200, { ok: true, config, ...(flushed ? { flushed } : {}) });
   return;
 }
 

@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isDigestDue, shouldDefer, maybeSendDigest, MAX_DEFER_MS } from "../server/alert-digest-sender.mjs";
+import { isDigestDue, shouldDefer, maybeSendDigest, discardQueuedAlerts, MAX_DEFER_MS } from "../server/alert-digest-sender.mjs";
 import {
   loadDigestConfig,
   updateDigestConfig,
@@ -17,16 +17,21 @@ import {
   __setDigestFilesForTest,
   __resetDigestChainsForTest,
 } from "../server/alert-digest-store.mjs";
+import { getLastFiredAt, markFired, __setRuleStateFileForTest, __resetRuleStateWriteChainForTest } from "../server/alert-rule-state.mjs";
 
 test.afterEach(() => {
   __resetDigestChainsForTest();
+  __resetRuleStateWriteChainForTest();
 });
 
 function withTempFiles(fn) {
   const dir = mkdtempSync(join(tmpdir(), "ar-digest-send-"));
   __setDigestFilesForTest({ config: join(dir, "c.json"), queue: join(dir, "q.json") });
+  // 冷却状态文件也隔离：discardQueuedAlerts 会清冷却，不隔离会写到真实 /data 下。
+  __setRuleStateFileForTest(join(dir, "state.json"));
   return Promise.resolve(fn()).finally(() => {
     __setDigestFilesForTest({});
+    __setRuleStateFileForTest(null);
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 }
@@ -277,5 +282,67 @@ test("cron 坏掉时仍保持启用（心跳不能断，否则「没收到信」
     });
     await maybeSendDigest({ sendMailFn: () => true, getActiveJobs: () => 0 });
     assert.equal((await loadDigestConfig()).enabled, true, "不得自作主张停用");
+  });
+});
+
+// —— 关闭汇总时处置队列 ——
+// 【回归：关掉汇总会静默吞掉已攒的报警】maybeSendDigest 在功能关闭时直接早退，既不发也不清；
+// 而这些报警入队时【已经记过冷却】（入队即视为已交付）。于是关掉汇总意味着它们永不送达、
+// 且在冷却期内不会重报；日后重新开启还会让几周前的陈旧报警诈尸。实测两种症状都会出现。
+
+test("discardQueuedAlerts：清空队列并清掉相关规则的冷却", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleId: "r1", ruleName: "规则1" });
+    await enqueueAlert({ ruleId: "r1", ruleName: "规则1" }); // 同一规则两条
+    await enqueueAlert({ ruleId: "r2", ruleName: "规则2" });
+    await enqueueRun({ targetId: "p1" });
+
+    const cleared = [];
+    const stat = await discardQueuedAlerts({ clearRuleStateFn: async (id) => cleared.push(id) });
+
+    assert.deepEqual(stat, { alerts: 3, rules: 2 }, "应报告清了 3 条报警、涉及 2 条规则");
+    assert.deepEqual(cleared.sort(), ["r1", "r2"], "每条涉及的规则都要清冷却，且去重");
+    const q = await loadQueue();
+    assert.deepEqual(q, { alerts: [], runs: [] }, "队列必须清空（runs 也一并清掉）");
+  });
+});
+
+test("discardQueuedAlerts：队列为空 → 返回 null，不做无谓清理", async () => {
+  await withTempFiles(async () => {
+    const cleared = [];
+    const stat = await discardQueuedAlerts({ clearRuleStateFn: async (id) => cleared.push(id) });
+    assert.equal(stat, null);
+    assert.deepEqual(cleared, [], "没有报警就不该动任何规则的冷却");
+  });
+});
+
+// 只有运行记录、没有报警时也不该报告「清理了报警」。
+test("discardQueuedAlerts：只有运行记录 → 返回 null", async () => {
+  await withTempFiles(async () => {
+    await enqueueRun({ targetId: "p1" });
+    const stat = await discardQueuedAlerts({ clearRuleStateFn: async () => {} });
+    assert.equal(stat, null);
+  });
+});
+
+test("discardQueuedAlerts：缺 ruleId 的脏条目不参与清冷却，也不报错", async () => {
+  await withTempFiles(async () => {
+    await enqueueAlert({ ruleName: "无 id" }); // ruleId 为空
+    const cleared = [];
+    const stat = await discardQueuedAlerts({ clearRuleStateFn: async (id) => cleared.push(id) });
+    assert.equal(stat.alerts, 1);
+    assert.equal(stat.rules, 0);
+    assert.deepEqual(cleared, []);
+  });
+});
+
+// 清冷却是为了让下一次命中能立刻重新报警：验证清完之后冷却确实不再拦。
+test("清完冷却后：同一规则的下次命中不再被冷却拦住", async () => {
+  await withTempFiles(async () => {
+    await markFired("r1", "all");
+    assert.ok(await getLastFiredAt("r1", "all"), "先确认有冷却记录");
+    await enqueueAlert({ ruleId: "r1" });
+    await discardQueuedAlerts();
+    assert.equal(await getLastFiredAt("r1", "all"), null, "冷却记录必须被清掉");
   });
 });

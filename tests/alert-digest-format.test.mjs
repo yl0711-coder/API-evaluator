@@ -96,15 +96,16 @@ test("实测数字表：同一目标跑了多次时取最后一次", () => {
   assert.doesNotMatch(body, /30000ms/, "较早那次不该出现");
 });
 
-test("缺测值显示为 -，不显示 0（0 与「没测到」必须可区分）", () => {
+test("部分缺测显示为 -，绝不显示成 0（0 与「没测到」必须可区分）", () => {
+  // 只缺 P95、成功率有值：该目标仍算「报出了指标」，走正常行。
   const { body } = formatAlertDigest({
     alerts: [],
-    runs: [run({ successRate: null, p95TotalMs: null, grade: null })],
+    runs: [run({ successRate: 1, p95TotalMs: null, grade: null })],
   });
   const row = body.split("\n").find((l) => l.includes("claude-sonnet-5") && l.includes("|"));
   assert.ok(row, "应有该目标的数据行");
-  assert.match(row, /\|\s*-\s*\|/, "缺测应显示为 -");
-  assert.doesNotMatch(row, /\b0%/, "缺测不得显示成 0%");
+  assert.match(row, /\|\s*-\s*\|/, "缺测项应显示为 -");
+  assert.doesNotMatch(row, /0ms/, "缺测的 P95 不得显示成 0ms");
 });
 
 test("真实的 0% 与 0ms 照常显示（全失败运行是真实观测）", () => {
@@ -207,4 +208,76 @@ test("乱序入队 → 区间取真正的最早与最晚", () => {
   const row = body.split("\n").find((l) => l.includes("[阈值]"));
   assert.match(row, /03:00 ~ 2026-08-25 15:00/, "应取最早 03:00 与最晚 15:00，而非数组首尾");
   assert.match(row, /共 3 次/);
+});
+
+// —— 指标全缺的目标必须被显式标注 ——
+// 【回归】一次运行的所有指标都是 null（上游连不上 / 全部超时）时，原先整行显示三个横杠，
+// 与「这个目标没测」长得一模一样；而阈值规则在指标缺失时按「不满足」处理，故它也不会触发报警。
+// 结果是最严重的情形（完全不可用）在汇总信里最不显眼。
+test("指标全 null 的目标 → 标注「未报出」并单独警示，不与「没测」混同", () => {
+  const { body } = formatAlertDigest({
+    alerts: [],
+    runs: [
+      run({ targetId: "dead", targetLabel: "全超时渠道", successRate: null, p95TotalMs: null, grade: null }),
+      run({ targetId: "ok", targetLabel: "正常渠道", successRate: 1, p95TotalMs: 30000 }),
+    ],
+  });
+  const deadRow = body.split("\n").find((l) => l.includes("全超时渠道"));
+  assert.match(deadRow, /未报出/, "不能只留横杠");
+  assert.match(body, /⚠ 以下目标测了但一个指标都没报出来：全超时渠道/);
+  assert.match(body, /连接失败或全部请求超时/);
+  assert.match(body, /不会】触发报警/, "必须说明这种情况不触发报警，否则读者以为没报警就是没事");
+});
+
+test("指标全缺的目标排在表格最前（最严重的最显眼）", () => {
+  const { body } = formatAlertDigest({
+    alerts: [],
+    runs: [
+      run({ targetId: "a", targetLabel: "正常A", successRate: 1 }),
+      run({ targetId: "b", targetLabel: "全缺B", successRate: null, p95TotalMs: null, grade: null }),
+      run({ targetId: "c", targetLabel: "正常C", successRate: 1 }),
+    ],
+  });
+  const rows = body.split("\n").filter((l) => /^(正常A|全缺B|正常C) \|/.test(l));
+  assert.equal(rows.length, 3);
+  assert.match(rows[0], /全缺B/, "指标全缺的应排第一");
+});
+
+test("全部目标都报出了指标 → 不出现警示段（不无故添噪）", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [run({ successRate: 1, p95TotalMs: 30000 })] });
+  assert.doesNotMatch(body, /⚠/);
+  assert.doesNotMatch(body, /未报出/);
+});
+
+// 只有 grade（准入运行可能只报等级）也算报出了指标。
+test("只报出 grade → 算已报出，不进警示段", () => {
+  const { body } = formatAlertDigest({
+    alerts: [],
+    runs: [run({ successRate: null, p95TotalMs: null, grade: "C", testType: "admission" })],
+  });
+  assert.doesNotMatch(body, /⚠/);
+  assert.match(body, /\| C$/m);
+});
+
+test("表格显示本时段运行次数（runCount）", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [run({ runCount: 12 })] });
+  assert.match(body, /12 次/);
+});
+
+test("无 runCount 的旧条目 → 按 1 次显示（兼容回填与早期队列）", () => {
+  const { body } = formatAlertDigest({ alerts: [], runs: [run()] });
+  assert.match(body, /1 次/);
+});
+
+// 回填（requeue）会让同一目标出现多条，此时次数应相加而非取其一。
+test("同一目标多条记录 → runCount 相加，指标取最新那条", () => {
+  const { body } = formatAlertDigest({
+    alerts: [],
+    runs: [
+      run({ at: "2026-08-25T08:00:00.000Z", runCount: 3, successRate: 1 }),
+      run({ at: "2026-08-25T09:00:00.000Z", runCount: 4, successRate: 0.5 }),
+    ],
+  });
+  assert.match(body, /7 次/, "3 + 4 = 7");
+  assert.match(body, /50%/, "指标取较新那条");
 });
