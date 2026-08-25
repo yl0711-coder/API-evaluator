@@ -1449,7 +1449,7 @@
           <div class="section-header">
             <div>
               <h2><span class="step">高级 · 报警</span>报警规则</h2>
-              <p class="section-desc">配置自定义阈值报警规则：测试运行完成后，若某项原始指标触发阈值，即向邮件报警配置的收件人发信提醒。每条规则可选“全部渠道+模型”或指定具体渠道+模型，命中后有固定冷却时长，避免重复轰炸邮箱。发信配置见「邮件报警配置」页。</p>
+              <p class="section-desc">配置自定义阈值报警规则：测试运行完成后，若某项原始指标触发阈值，即向邮件报警配置的收件人发信提醒。每条规则可选“全部渠道+模型”或指定具体渠道+模型，命中后有固定冷却时长，避免重复轰炸邮箱。若多个渠道排在同一时段跑定时测试，可在下方开启「报警汇总」把它们并成一封信。发信配置见「邮件报警配置」页。</p>
             </div>
           </div>
 
@@ -1460,6 +1460,49 @@
               <button type="button" id="ar-reload" class="secondary">刷新</button>
             </div>
             <div id="ar-rule-list">正在加载…</div>
+          </div>
+
+          <div class="panel">
+            <div class="action-row atc-list-head">
+              <h3>报警汇总</h3>
+              <button id="ar-digest-doc" class="secondary" type="button">汇总说明</button>
+            </div>
+            <p class="section-desc">
+              开启后，<strong>定时自动测试</strong>产生的报警不再逐条发信，而是攒到设定时刻并成一封；即使一条报警都没有也照发，
+              附上本时段各渠道的实测数字。手动测试触发的报警不受影响，仍然立即发信。
+            </p>
+            <div class="form-grid">
+              <label class="wide">
+                <input type="checkbox" id="ar-digest-enabled" />
+                启用报警汇总
+              </label>
+              <label>
+                汇总频率
+                <select id="ar-digest-freq">
+                  <option value="daily" selected>每天一次</option>
+                  <option value="h6">每 6 小时</option>
+                  <option value="h12">每 12 小时</option>
+                  <option value="custom">自定义 crontab</option>
+                </select>
+              </label>
+              <label id="ar-digest-time-label">
+                发送时刻
+                <input type="time" id="ar-digest-time" value="09:07" step="60" />
+                <small class="field-hint">北京时间。建议避开整点，也避开自动测试正在跑的时段。</small>
+              </label>
+              <label class="wide hidden" id="ar-digest-cron-label">
+                crontab 表达式
+                <input type="text" id="ar-digest-cron" placeholder="7 9 * * *" maxlength="200" />
+                <small class="field-hint">五段式：分 时 日 月 星期。多个时刻用分号分隔。</small>
+              </label>
+              <div class="wide">
+                <small class="field-hint" id="ar-digest-preview">—</small>
+              </div>
+              <div class="wide action-row">
+                <button type="button" id="ar-digest-save">保存汇总设置</button>
+                <button type="button" id="ar-digest-test" class="secondary">立即发送一封（测试）</button>
+              </div>
+            </div>
           </div>
 
           <form id="ar-form" class="panel form-grid">

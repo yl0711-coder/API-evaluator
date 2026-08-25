@@ -1,0 +1,141 @@
+// server/alert-digest-sender.mjs
+// 报警汇总的发信时机与发信动作。
+//
+// 时机（按你定的口径）：cron 定点 + 等调度器空闲。
+//   到点后若自动测试还在跑，顺延到下一个 tick 再看 —— 因为自动测试并发默认是 1
+//   （EVALUATOR_AUTO_TEST_CONCURRENCY=1，给手动测试留槽位），作业是【串行】跑的：
+//   5 个渠道各跑一次稳定性测试、每次几分钟，整批实际要 20-30 分钟。
+//   一到点就发会把同一批结果切成两封，后几个渠道落进下一封 —— 那正是你要避免的。
+//
+// best-effort：全程 try/catch 吞错，绝不影响调度主流程（与 evaluateAlertRules 同惯例）。
+import { computeNextRunAt } from "./auto-test-store.mjs";
+import { loadDigestConfig, updateDigestConfig, loadQueue, drainQueue, requeue } from "./alert-digest-store.mjs";
+import { formatAlertDigest } from "./alert-digest-format.mjs";
+import { getNotifyConfig } from "./notify-config.mjs";
+import { readSecret } from "./secret-store.mjs";
+import { sendMail } from "./mailer.mjs";
+
+const SMTP_PASSWORD_REF = "notify:smtp-password";
+
+// 顺延上限：到点后若调度器一直忙，最多等这么久就强制发，避免"永远在忙"导致汇总信永不发出
+// （例如某个作业卡死在网络读取上，activeJobs 会长期 > 0）。
+// 6 小时是权衡：足够长以容纳一整批串行的稳定性测试，又不至于让一天一封变成隔天才到。
+export const MAX_DEFER_MS = 6 * 3600 * 1000;
+
+// cron 算不出下一个时刻时的退化间隔。见 maybeSendDigest 里的用法说明：
+// 这一层兜住「nextDigestAt 落 null → 每 tick 一封」的失控循环。
+export const FALLBACK_INTERVAL_MS = 24 * 3600 * 1000;
+
+async function defaultSendMailFn(subject, body) {
+  const cfg = getNotifyConfig();
+  if (!cfg.smtpHost || !cfg.recipients) return false; // 未配置 SMTP：静默跳过，与单条报警同口径
+  const smtpPassword = await readSecret(SMTP_PASSWORD_REF);
+  await sendMail({ ...cfg, smtpPassword }, subject, body);
+  return true;
+}
+
+// 是否到了该发汇总的时刻。纯判定，不改状态，便于单测。
+//
+// nextDigestAt 为空（刚开启功能/迁移）时视为立即到期，并由调用方算出并持久化下一个时刻——
+// 与 auto-test-scheduler.isDue 对 nextRunAt 缺失的处理同一思路。
+export function isDigestDue(config, nowMs) {
+  if (!config?.enabled) return false;
+  if (!config.nextDigestAt) return true;
+  const t = Date.parse(config.nextDigestAt);
+  return !Number.isFinite(t) || t <= nowMs;
+}
+
+// 到期后是否该为「调度器还在忙」而顺延。
+// 超过 MAX_DEFER_MS 仍在忙 → 不再等，强制发（宁可切成两封，也不能永不发信）。
+export function shouldDefer({ dueAtMs, nowMs, activeJobs }) {
+  if (!activeJobs) return false;
+  if (!Number.isFinite(dueAtMs)) return true; // 无从判断已等多久：先等着
+  return nowMs - dueAtMs < MAX_DEFER_MS;
+}
+
+// 尝试发一次汇总。由调度器每 tick 调用；未到期/需顺延时什么都不做并返回原因。
+//
+// opts.sendMailFn / opts.now / opts.getActiveJobs 供测试注入（同 mailer 的 transportFactory 惯例）。
+export async function maybeSendDigest(opts = {}) {
+  const sendMailFn = opts.sendMailFn || defaultSendMailFn;
+  const now = opts.now || (() => Date.now());
+  const getActiveJobs = opts.getActiveJobs || (() => 0);
+  try {
+    const config = await loadDigestConfig();
+    const nowMs = now();
+    if (!isDigestDue(config, nowMs)) return { sent: false, reason: "not_due" };
+
+    const dueAtMs = config.nextDigestAt ? Date.parse(config.nextDigestAt) : nowMs;
+    if (shouldDefer({ dueAtMs, nowMs, activeJobs: getActiveJobs() })) {
+      return { sent: false, reason: "deferred_scheduler_busy" };
+    }
+
+    // 【顺序要紧】先推进 nextDigestAt 再发信。
+    // 反过来的话，一次发信耗时超过一个 tick（60s）时，下个 tick 会看到仍然到期的
+    // nextDigestAt 而重复触发一次汇总——收件人收到两封内容互补的残信。
+    // 推进用「当前时刻」而非原定到期时刻算下一个 cron 点：顺延过的这次不该把后续节奏也往前拖。
+    // cron 算不出下一个时刻（表达式坏了 / 手改过配置文件 / 四年内无可执行时刻）时，
+    // 【绝不能留 null】——isDigestDue 把 null 当「立即到期」，于是每个 tick 都发一封：
+    // 实测 10 个 tick 发 10 封，一天 1440 封，比「邮件太多」这个原始问题严重得多。
+    // 端点已挡掉坏 cron，但手改配置文件、跨部署拷贝配置仍能绕过，故这里必须兜住。
+    // 退化成固定 24 小时而不是停用：停用会让「每期必到」的心跳消失，
+    // 于是「没收到信」重新变得有歧义——那正是本功能要消除的东西。
+    const cronNext = computeNextRunAt({ cron: config.cron }, nowMs);
+    const nextDigestAt = cronNext || new Date(nowMs + FALLBACK_INTERVAL_MS).toISOString();
+    if (!cronNext) {
+      console.error(`[alert-digest] cron「${config.cron}」无可执行时刻，已退化为每 24 小时一封；请到报警规则页修正。`);
+    }
+    const windowFrom = config.lastDigestAt;
+    await updateDigestConfig((cfg) => {
+      cfg.lastDigestAt = new Date(nowMs).toISOString();
+      // cron 无可执行时刻（坏表达式）→ null，下个 tick 会视为立即到期。
+      // 不静默改成每日：与 auto-test-scheduler 对坏 cron 的取向一致，宁可让人看出配错了。
+      cfg.nextDigestAt = nextDigestAt;
+      return null;
+    });
+
+    const taken = await drainQueue();
+
+    // 【成文也必须在回填保护之内】队列已经被取空了，此后任何抛错都会让这批报警凭空消失。
+    // formatAlertDigest 是纯函数、理应不抛，但"理应不抛"不是保证——把它和发信一起纳入
+    // 同一个 catch，任何失败都走回填重试。
+    try {
+      const { subject, body } = formatAlertDigest(taken, {
+        windowFrom,
+        windowTo: new Date(nowMs).toISOString(),
+      });
+      const ok = await sendMailFn(subject, body);
+      if (!ok) {
+        // 未配 SMTP：内容放回队列。否则开着汇总但没配发信时，队列会被反复清空，
+        // 等真正配好 SMTP 后，之前所有报警都已无声消失。
+        await requeue(taken);
+        return { sent: false, reason: "smtp_not_configured" };
+      }
+      return { sent: true, alerts: taken.alerts.length, runs: taken.runs.length };
+    } catch (error) {
+      // 发信（或成文）失败：内容回填队列，下个周期连同新报警一起重试。
+      // 与单条报警「markFired 只在发信成功后才记」同一取向——绝不让失败的发信吞掉报警。
+      await requeue(taken);
+      console.error("[alert-digest] 汇总发信失败（内容已回填队列）：", error?.message || error);
+      return { sent: false, reason: "send_failed" };
+    }
+  } catch (error) {
+    console.error("[alert-digest] 汇总流程异常：", error?.message || error);
+    return { sent: false, reason: "error" };
+  }
+}
+
+// 立即发一封（供「发送测试汇总」按钮用）。不看 cron、不推进节奏、不清空队列——
+// 只把当前队列内容渲染出来发一封，让管理员确认收件人/格式对不对。
+export async function sendDigestNow(opts = {}) {
+  const sendMailFn = opts.sendMailFn || defaultSendMailFn;
+  const taken = await loadQueue();
+  const config = await loadDigestConfig();
+  const { subject, body } = formatAlertDigest(taken, {
+    windowFrom: config.lastDigestAt,
+    windowTo: new Date().toISOString(),
+  });
+  const ok = await sendMailFn(`${subject}（手动发送）`, body);
+  if (!ok) throw new Error("尚未配置 SMTP 服务器或收件人，无法发送。");
+  return { alerts: taken.alerts.length, runs: taken.runs.length };
+}

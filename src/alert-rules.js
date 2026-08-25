@@ -7,6 +7,7 @@ import { api } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
 import alertRulesGuideDoc from "./docs/alert-rules-guide.md?raw";
+import alertDigestGuideDoc from "./docs/alert-digest-guide.md?raw";
 
 const METRIC_LABEL = {
   successRate: "成功率",
@@ -83,6 +84,16 @@ export function createAlertRules({ state, confirm }) {
   const reloadBtn = requireElement("#ar-reload");
   const metricDocBtn = requireElement("#ar-metric-doc");
   const listBox = requireElement("#ar-rule-list");
+  const digestDocBtn = requireElement("#ar-digest-doc");
+  const digestEnabled = requireElement("#ar-digest-enabled");
+  const digestFreq = requireElement("#ar-digest-freq");
+  const digestTimeLabel = requireElement("#ar-digest-time-label");
+  const digestTime = requireElement("#ar-digest-time");
+  const digestCronLabel = requireElement("#ar-digest-cron-label");
+  const digestCron = requireElement("#ar-digest-cron");
+  const digestPreview = requireElement("#ar-digest-preview");
+  const digestSaveBtn = requireElement("#ar-digest-save");
+  const digestTestBtn = requireElement("#ar-digest-test");
 
   // 新标签页渲染 md 文档，与「测试场景维护」页的评分器/类别说明同款惯用法。
   function openDocInNewTab(title, md) {
@@ -104,6 +115,120 @@ export function createAlertRules({ state, confirm }) {
     w.document.close();
   }
   metricDocBtn.addEventListener("click", () => openDocInNewTab("报警规则说明", alertRulesGuideDoc));
+  digestDocBtn.addEventListener("click", () => openDocInNewTab("报警汇总说明", alertDigestGuideDoc));
+
+  // —— 报警汇总 ——
+  // 频率下拉 → crontab。只提供三种常用节奏 + 自定义，不搬「自动测试配置」页那套完整 cron 构建器：
+  // 汇总是低频设置（配一次就不动），那套 UI 有星期/时段/固定时刻十来个控件，用在这里过重。
+  function buildDigestCron() {
+    if (digestFreq.value === "custom") return digestCron.value.trim();
+    const [h, m] = String(digestTime.value || "09:07").split(":");
+    const hour = Math.min(23, Math.max(0, Number(h) || 0));
+    const minute = Math.min(59, Math.max(0, Number(m) || 0));
+    // 步长必须写成范围形式「起点-23/步长」。本项目的 cron 解析器（server/cron-schedule.mjs
+    // 的 expandField）对裸数字带步长的写法 `3/6` 会取 lo=hi=3，只展开出【一个】小时 ——
+    // 那样「每 6 小时」会静默变成「每天一次」。已用真实解析器验证：
+    //   `7 3/6 * * *`    → 小时集合 {3}
+    //   `7 3-23/6 * * *` → 小时集合 {3,9,15,21}
+    const step = digestFreq.value === "h6" ? 6 : digestFreq.value === "h12" ? 12 : 0;
+    if (step) return `${minute} ${hour % step}-23/${step} * * *`;
+    return `${minute} ${hour} * * *`;
+  }
+
+  // crontab → 回填下拉与时刻。认不出的表达式落到「自定义」，原样显示，绝不猜着改写用户配置。
+  function fillDigestCron(cron) {
+    const raw = String(cron || "").trim();
+    digestCron.value = raw;
+    // 与 buildDigestCron 的两种产物对应：「分 时 * * *」和「分 起点-23/步长 * * *」。
+    // 注意回填的时刻是当天【首个】触发时刻，可能不等于用户当初填的那个：
+    // 填 09:07 + 每 6 小时 → cron `7 3-23/6 * * *`（9%6=3）→ 触发于 03:07/09:07/15:07/21:07，
+    // 回填显示 03:07。两者是同一个触发集合的规范形式，标签写的也是「从 X 起算」，故不算失真。
+    const m = raw.match(/^(\d{1,2}) (\d{1,2})(?:-23\/(6|12))? \* \* \*$/);
+    if (!m) {
+      digestFreq.value = "custom";
+      syncDigestFreq();
+      return;
+    }
+    const [, minute, hour, step] = m;
+    digestFreq.value = step === "6" ? "h6" : step === "12" ? "h12" : "daily";
+    digestTime.value = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    syncDigestFreq();
+  }
+
+  function describeDigest() {
+    if (!digestEnabled.checked) return "当前关闭：报警仍按每条规则各自发信。";
+    const cron = buildDigestCron();
+    if (!cron) return "请填写 crontab 表达式。";
+    if (digestFreq.value === "custom") return `按 crontab「${cron}」发送汇总。`;
+    const t = digestTime.value || "09:07";
+    const freqText =
+      digestFreq.value === "h6" ? `每 6 小时（从 ${t} 起算）` : digestFreq.value === "h12" ? `每 12 小时（从 ${t} 起算）` : `每天 ${t}`;
+    return `${freqText} 发一封汇总；若届时自动测试仍在跑，会等它跑完。`;
+  }
+
+  function syncDigestFreq() {
+    const custom = digestFreq.value === "custom";
+    digestCronLabel.classList.toggle("hidden", !custom);
+    digestTimeLabel.classList.toggle("hidden", custom);
+    digestPreview.textContent = describeDigest();
+  }
+
+  for (const el of [digestFreq, digestTime, digestCron, digestEnabled]) {
+    el.addEventListener("change", syncDigestFreq);
+    el.addEventListener("input", syncDigestFreq);
+  }
+
+  async function loadDigest() {
+    try {
+      const r = await api("/api/alert-rules/digest");
+      const cfg = r.config || {};
+      digestEnabled.checked = cfg.enabled === true;
+      fillDigestCron(cfg.cron);
+      const pending = r.pending || {};
+      const queued = Number(pending.alerts) || 0;
+      // 让管理员看得见汇总确实在攒东西——否则开了之后一整天收不到信，无从判断是在攒还是坏了。
+      const extra = cfg.enabled && queued ? `　当前已攒下 ${queued} 条待发报警。` : "";
+      digestPreview.textContent = describeDigest() + extra;
+    } catch (error) {
+      digestPreview.textContent = `加载汇总设置失败：${error.message}`;
+    }
+  }
+
+  digestSaveBtn.addEventListener("click", async () => {
+    const cron = buildDigestCron();
+    if (digestEnabled.checked && !cron) {
+      toast("请填写 crontab 表达式。", true);
+      return;
+    }
+    digestSaveBtn.disabled = true;
+    try {
+      await api("/api/alert-rules/digest", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: digestEnabled.checked, cron }),
+      });
+      toast(digestEnabled.checked ? "汇总设置已保存。" : "已关闭报警汇总。");
+      await loadDigest();
+    } catch (error) {
+      toast(`保存失败：${error.message}`, true);
+    } finally {
+      digestSaveBtn.disabled = false;
+    }
+  });
+
+  digestTestBtn.addEventListener("click", async () => {
+    digestTestBtn.disabled = true;
+    const original = digestTestBtn.textContent;
+    digestTestBtn.textContent = "发送中…";
+    try {
+      const r = await api("/api/alert-rules/digest/test", { method: "POST" });
+      toast(`已发送：${r.alerts || 0} 条报警、${r.runs || 0} 条运行记录。队列未清空。`);
+    } catch (error) {
+      toast(`发送失败：${error.message}`, true);
+    } finally {
+      digestTestBtn.disabled = false;
+      digestTestBtn.textContent = original;
+    }
+  });
 
   const cascade = createCascadeTargetPicker(channelSelect, modelSelect);
 
@@ -423,7 +548,7 @@ export function createAlertRules({ state, confirm }) {
 
   async function load() {
     cascade.refresh({ modelTargets: state.modelTargets, channels: state.channels, profiles: state.profiles });
-    await loadRules();
+    await Promise.all([loadRules(), loadDigest()]);
   }
 
   function refreshTargets(data) {

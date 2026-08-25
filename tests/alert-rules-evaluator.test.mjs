@@ -897,3 +897,191 @@ test("发信成功 → markFired；随后一次发信失败也不清空已有的
     assert.equal(await getLastFiredAt("alr_0", "all"), firedAt, "冷却期内即使又尝试发信（且失败），触发时间也不应被覆盖或清空");
   });
 });
+
+// —— 汇总模式：定时自动测试的报警攒成一封，手动测试仍立即发信 ——
+// 这批用例全部用注入的假入队函数，不碰 alert-digest-store 的真实文件。
+
+// 收集器：替代真实的 enqueueAlert / enqueueRun / sendAlertMail，便于断言"走了哪条路"。
+function makeSpies({ digestEnabled = false } = {}) {
+  const alerts = [];
+  const runs = [];
+  const mails = [];
+  return {
+    alerts,
+    runs,
+    mails,
+    opts: {
+      digestConfigFn: async () => ({ enabled: digestEnabled }),
+      enqueueAlertFn: async (e) => alerts.push(e),
+      enqueueRunFn: async (e) => runs.push(e),
+      sendAlertMailFn: async (rule, entry, reason) => mails.push({ rule: rule.name, reason }),
+    },
+  };
+}
+
+test("汇总关闭时：自动测试仍是命中即发信（旧行为完全不变）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: false });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...s.opts });
+    assert.equal(s.mails.length, 1, "汇总关闭 → 立即发信");
+    assert.equal(s.alerts.length, 0, "不该入队");
+  });
+});
+
+test("汇总开启时：自动测试的报警入队，不立即发信", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, name: "成功率过低" });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...s.opts });
+    assert.equal(s.mails.length, 0, "汇总模式下不得逐条发信");
+    assert.equal(s.alerts.length, 1);
+    assert.equal(s.alerts[0].ruleName, "成功率过低");
+    assert.equal(s.alerts[0].targetLabel, "claude-sonnet-5");
+    assert.ok(s.alerts[0].reason, "入队条目必须带原因文本");
+  });
+});
+
+// 你选定的口径：手动测试时人就在屏幕前，攒到几小时后再发没有意义。
+test("手动测试即使开着汇总也立即发信（不进队列）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "manual", ...s.opts });
+    assert.equal(s.mails.length, 1, "手动测试必须立即发信");
+    assert.equal(s.alerts.length, 0);
+    assert.equal(s.runs.length, 0, "手动测试也不记运行记录");
+  });
+});
+
+test("source 缺省视为手动（保守：宁可立即发信，不可静默攒着）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), s.opts);
+    assert.equal(s.mails.length, 1);
+    assert.equal(s.alerts.length, 0);
+  });
+});
+
+// 汇总信要附「本时段实测数字」，所以没命中报警的运行也必须记账。
+test("汇总模式：没命中任何报警的运行也记进运行记录", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(stabilityResult({ successRate: 1, p95TotalMs: 30000 }), { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 0, "成功率 100% 不该报警");
+    assert.equal(s.runs.length, 1, "但必须留下运行记录");
+    assert.equal(s.runs[0].successRate, 1);
+    assert.equal(s.runs[0].p95TotalMs, 30000);
+  });
+});
+
+// 一条规则都没配时也要记运行记录，否则汇总信会说「本时段没有完成任何测试」——那是假话。
+test("汇总模式：一条规则都没配，运行记录照样入队", async () => {
+  await withTempStores(async () => {
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(stabilityResult({ successRate: 1 }), { source: "auto", ...s.opts });
+    assert.equal(s.runs.length, 1, "无规则也要记账，否则汇总信谎称没跑测试");
+  });
+});
+
+test("汇总模式：批量运行的每个 target 各记一条运行记录", async () => {
+  await withTempStores(async () => {
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(
+      {
+        batchId: "b1",
+        results: [
+          { profileId: "p1", model: "模型A", successRate: 1, p95TotalMs: 30000 },
+          { profileId: "p2", model: "模型B", successRate: 0.9, p95TotalMs: 40000 },
+        ],
+      },
+      { source: "auto", ...s.opts },
+    );
+    assert.equal(s.runs.length, 2);
+    assert.deepEqual(
+      s.runs.map((r) => r.targetLabel),
+      ["模型A", "模型B"],
+    );
+    assert.equal(s.runs[0].testType, "batch-stability");
+  });
+});
+
+// 冷却语义在汇总模式下必须一致：入队成功才算"已交付"、才记冷却。
+test("汇总模式：入队成功后记冷却，第二次命中被冷却拦住", async () => {
+  await withTempStores(async () => {
+    const rule = await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, cooldownHours: 1 });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 1);
+    assert.ok(await getLastFiredAt(rule.id, "all"), "入队成功应记冷却");
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 1, "冷却期内不得重复入队");
+  });
+});
+
+// 与「markFired 只在发信成功后才记」同一取向：入队失败不记冷却，下次立即重试。
+test("汇总模式：入队抛错 → 不记冷却，下次命中立即重试", async () => {
+  await withTempStores(async () => {
+    const rule = await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: true });
+    let fail = true;
+    const opts = {
+      ...s.opts,
+      enqueueAlertFn: async (e) => {
+        if (fail) throw new Error("盘满");
+        s.alerts.push(e);
+      },
+    };
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...opts });
+    assert.equal(await getLastFiredAt(rule.id, "all"), null, "入队失败不得记冷却");
+    fail = false;
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...opts });
+    assert.equal(s.alerts.length, 1, "下次应能重试成功");
+  });
+});
+
+// 读配置失败时的取向：宁可多发几封，不可静默丢报警。
+test("读汇总配置抛错 → 退回立即发信（不静默丢报警）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: true });
+    const opts = {
+      ...s.opts,
+      digestConfigFn: async () => {
+        throw new Error("配置文件坏了");
+      },
+    };
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...opts });
+    assert.equal(s.mails.length, 1, "读配置失败应退回立即发信");
+    assert.equal(s.alerts.length, 0);
+  });
+});
+
+// 运行记录入队失败不该妨碍报警本身入队（前者只是汇总信的附加信息）。
+test("运行记录入队失败 → 报警仍照常入队", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: true });
+    const opts = {
+      ...s.opts,
+      enqueueRunFn: async () => {
+        throw new Error("盘满");
+      },
+    };
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...opts });
+    assert.equal(s.alerts.length, 1, "运行记录失败不该拖累报警入队");
+  });
+});
+
+test("汇总模式：复合规则（抖动）的多行原因完整入队", async () => {
+  await withTempStores(async () => {
+    await addJitterRule({ jitterRatioMax: 6 });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(stabilityResult({ successRate: 1, p50TotalMs: 5000, p95TotalMs: 40000 }), { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 1);
+    assert.equal(s.alerts[0].ruleKind, JITTER_KIND, "入队条目要带规则类型，汇总信据此显示标签");
+    assert.match(s.alerts[0].reason, /抖动/);
+  });
+});

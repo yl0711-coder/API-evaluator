@@ -31,6 +31,10 @@ export const NOTIFY_CONFIG_FILE = join(CONFIG_DIR, "notify-config.json");
 export const ALERT_RULES_FILE = join(CONFIG_DIR, "alert-rules.json");
 // 报警规则触发状态：各规则×目标的上次触发时间（冷却判断用），与规则定义分离避免频繁写入污染配置文件。
 export const ALERT_RULE_STATE_FILE = join(CONFIG_DIR, "alert-rule-state.json");
+// 报警汇总的开关与节奏（cron/上次发信时刻）。与规则定义分离：这是一份全局设置，不隶属任何单条规则。
+export const ALERT_DIGEST_CONFIG_FILE = join(CONFIG_DIR, "alert-digest-config.json");
+// 报警汇总的待发队列：定时运行命中的报警先攒在这里，到汇总时刻一次发一封。频繁读改写，故独立成文件。
+export const ALERT_DIGEST_QUEUE_FILE = join(CONFIG_DIR, "alert-digest-queue.json");
 export const SQLITE_DB_FILE = envCompat("SQLITE_DB") || join(DATA_DIR, "evaluator.db");
 export const REQUEST_LOG_FILE = join(LOGS_DIR, "requests.jsonl");
 export const TEST_RUNS_FILE = join(LOGS_DIR, "test-runs.jsonl");
