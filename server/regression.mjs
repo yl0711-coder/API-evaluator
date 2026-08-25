@@ -7,9 +7,17 @@
 
 import { percentile } from "./utils.mjs";
 
-const isNum = (v) => Number.isFinite(Number(v));
-// 判「确实报出了数值」：null/undefined/"" 都算没报出。
-// 不能用 isNum——Number(null)===0、Number("")===0 都是有限值，会把「缺失」当成 0 通过。
+// 判「确实报出了数值」：null/undefined/"" 都算没报出，0 与 0% 是真实数值。
+// 【为什么全文只有这一个数值判别】曾经并存一个 isNum = Number.isFinite(Number(v))，
+// 而 Number(null)===0、Number("")===0 都是有限值 —— 于是「没报出来」被当成「报出了 0」。
+// 它造成过三种真实故障（见 tests/regression.test.mjs 末尾三个回归用例）：
+//   ① 跑了 0 条记录的空运行（test-runner.mjs:229 显式写 successRate: null）被读成 0%，
+//      对着 100% 的基线误报「↓100pp，明显退化，high」，且专为此加的 incomparable 兜底
+//      被假 0 绕过（hasComparableMetric 看到 0 认为报出了指标）；
+//   ② 全失败运行的 p95TotalMs 本是 null（无成功请求可统计），被读成 0ms —— 全挂的一次
+//      在趋势图上显示为「延迟 0ms」，即最快的一次；
+//   ③ median 的过滤同样漏 null，null 占多数时 P95 基线中位数变成 0，
+//      于后续 `baseline.p95Ms > 0` 不成立 → P95 维静默，×4 的真实劣化判成 stable（假阴性）。
 const hasNum = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
 
 // 该趋势点是否报出了至少一个可与基线比对的指标。两处共用：
@@ -51,7 +59,7 @@ export function summarizeRoundStats(rounds) {
 
 function median(values) {
   const a = (values || [])
-    .filter(isNum)
+    .filter(hasNum)
     .map(Number)
     .sort((x, y) => x - y);
   const n = a.length;
@@ -71,9 +79,9 @@ const GRADE_DROP = 2; // 准入等级下滑 ≥ 2 档
 export function toTrendPoint(summary = {}) {
   // 快检(quick-verify)历史上只记了 successCount/requestCount、没记 successRate，会被趋势与回归漏掉
   // （明明常失败却不进成功率曲线）。这里为它按成败比补出成功率，让既有的快检运行也追溯地进图/进告警。
-  const successRate = isNum(summary.successRate)
+  const successRate = hasNum(summary.successRate)
     ? Number(summary.successRate)
-    : summary.type === "quick-verify" && isNum(summary.successCount) && isNum(summary.requestCount) && Number(summary.requestCount) > 0
+    : summary.type === "quick-verify" && hasNum(summary.successCount) && hasNum(summary.requestCount) && Number(summary.requestCount) > 0
       ? Number(summary.successCount) / Number(summary.requestCount)
       : null;
   return {
@@ -81,8 +89,8 @@ export function toTrendPoint(summary = {}) {
     type: summary.type || "",
     at: summary.endedAt || summary.startedAt || null,
     successRate,
-    p95Ms: isNum(summary.p95TotalMs) ? Number(summary.p95TotalMs) : null,
-    score: isNum(summary.score) ? Number(summary.score) : null,
+    p95Ms: hasNum(summary.p95TotalMs) ? Number(summary.p95TotalMs) : null,
+    score: hasNum(summary.score) ? Number(summary.score) : null,
     grade: summary.grade || null,
     totalTokens: summary.actualConsumption?.totalTokens ?? null,
     cost: summary.actualConsumption?.estimatedCost ?? null,
@@ -148,7 +156,7 @@ export function detectRegression({ current, history = [] } = {}) {
       });
     }
   }
-  if (isNum(cur.p95Ms) && isNum(baseline.p95Ms) && baseline.p95Ms > 0 && cur.p95Ms >= baseline.p95Ms * P95_WORSEN) {
+  if (hasNum(cur.p95Ms) && hasNum(baseline.p95Ms) && baseline.p95Ms > 0 && cur.p95Ms >= baseline.p95Ms * P95_WORSEN) {
     changes.push({
       metric: "p95",
       severity: cur.p95Ms >= baseline.p95Ms * 2 ? "high" : "medium",
