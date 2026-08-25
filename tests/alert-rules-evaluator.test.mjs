@@ -101,8 +101,11 @@ function historySeries({ baseline = 20, recent = 3, baselineOpts = {}, recentOpt
   return out;
 }
 
-// scope=all 的规则冷却状态永远记在 "all" 桶（无论哪个渠道触发），不是按 entry.targetId 分桶——
-// 全局规则的冷却是「全局共享」的，这是刻意设计而非疏漏，测试统一按 "all" 断言。
+// scope=all 的规则在【立即发信模式】下，冷却状态记在 "all" 桶（无论哪个渠道触发），
+// 不按 entry.targetId 分桶——全局规则的冷却是「全局共享」的，这是刻意的降噪设计而非疏漏，
+// 故下面这批用例统一按 "all" 断言。
+// 【汇总模式例外】那里的桶是 `all::<targetId>`（按渠道各算），理由见文件末尾「冷却桶」那组用例：
+// 汇总反正只发一封信，共用桶不再省邮件，只会低报故障范围。
 test("result 为空/非对象 → 不抛错、无副作用", async () => {
   await withTempStores(async () => {
     await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
@@ -1015,7 +1018,8 @@ test("汇总模式：入队成功后记冷却，第二次命中被冷却拦住",
     const s = makeSpies({ digestEnabled: true });
     await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...s.opts });
     assert.equal(s.alerts.length, 1);
-    assert.ok(await getLastFiredAt(rule.id, "all"), "入队成功应记冷却");
+    // 汇总模式下 scope=all 的桶是 `all::<targetId>`（按渠道各算），见下方「冷却桶」那组用例。
+    assert.ok(await getLastFiredAt(rule.id, "all::p1"), "入队成功应记冷却");
     await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...s.opts });
     assert.equal(s.alerts.length, 1, "冷却期内不得重复入队");
   });
@@ -1083,5 +1087,117 @@ test("汇总模式：复合规则（抖动）的多行原因完整入队", async
     assert.equal(s.alerts.length, 1);
     assert.equal(s.alerts[0].ruleKind, JITTER_KIND, "入队条目要带规则类型，汇总信据此显示标签");
     assert.match(s.alerts[0].reason, /抖动/);
+  });
+});
+
+// —— scope=all 的冷却桶：两种模式各自的口径 ——
+// 立即发信模式共用一个桶（"all"）是有意降噪：20 个渠道同时出问题不该一次发 20 封信。
+// 汇总模式按渠道各算，因为那条取舍的前提变了——汇总反正只发一封，压掉其余渠道
+// 不再节省任何邮件，只会让报警列表与标题【低报故障范围】。
+// 实测（修前）：5 个渠道同时挂，报警列表只出现 1 条、标题写「1 个目标」。
+
+const allBrokenBatch = {
+  batchId: "b1",
+  results: [
+    { profileId: "p1", model: "模型A", successRate: 0.1 },
+    { profileId: "p2", model: "模型B", successRate: 0.2 },
+    { profileId: "p3", model: "模型C", successRate: 0.3 },
+    { profileId: "p4", model: "模型D", successRate: 0.4 },
+    { profileId: "p5", model: "模型E", successRate: 0.5 },
+  ],
+};
+
+test("汇总模式 + scope=all：5 个渠道同时挂 → 入队 5 条（不低报故障范围）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, scope: { type: "all" } });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(allBrokenBatch, { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 5, "每个出问题的渠道都该各占一条");
+    assert.deepEqual(
+      s.alerts.map((a) => a.targetLabel),
+      ["模型A", "模型B", "模型C", "模型D", "模型E"],
+    );
+  });
+});
+
+test("立即发信模式 + scope=all：仍共用一个冷却桶，只发 1 封（降噪口径不变）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, scope: { type: "all" } });
+    const s = makeSpies({ digestEnabled: false });
+    await evaluateAlertRules(allBrokenBatch, { source: "auto", ...s.opts });
+    assert.equal(s.mails.length, 1, "立即模式不得因本次改动变成 5 封");
+  });
+});
+
+test("汇总模式 + scope=all：冷却按渠道各自计时，第二轮全被拦住", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, scope: { type: "all" }, cooldownHours: 1 });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(allBrokenBatch, { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 5);
+    await evaluateAlertRules(allBrokenBatch, { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 5, "冷却期内不得重复入队");
+  });
+});
+
+// 只有部分渠道恢复时，仍在挂的那些不该被已恢复渠道的冷却影响（各自独立记账的直接体现）。
+test("汇总模式 + scope=all：某渠道恢复后，新出问题的渠道照样能报", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, scope: { type: "all" }, cooldownHours: 1 });
+    const s = makeSpies({ digestEnabled: true });
+    // 第一轮：只有 p1 挂
+    await evaluateAlertRules(
+      { batchId: "b1", results: [{ profileId: "p1", model: "模型A", successRate: 0.1 }] },
+      { source: "auto", ...s.opts },
+    );
+    assert.equal(s.alerts.length, 1);
+    // 第二轮：p1 仍挂（冷却拦住）+ p2 新挂（该报）
+    await evaluateAlertRules(
+      {
+        batchId: "b2",
+        results: [
+          { profileId: "p1", model: "模型A", successRate: 0.1 },
+          { profileId: "p2", model: "模型B", successRate: 0.2 },
+        ],
+      },
+      { source: "auto", ...s.opts },
+    );
+    assert.equal(s.alerts.length, 2, "p2 是新故障，不该被 p1 的冷却压掉");
+    assert.equal(s.alerts[1].targetLabel, "模型B");
+  });
+});
+
+// 两种模式的冷却桶不互通：切换开关后各自按自己的口径重新计时。
+test("两种模式的冷却桶不互通（切换开关不会互相压制首条报警）", async () => {
+  await withTempStores(async () => {
+    const rule = await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, scope: { type: "all" }, cooldownHours: 24 });
+    // 先在立即模式下触发，占用 "all" 桶
+    const s1 = makeSpies({ digestEnabled: false });
+    await evaluateAlertRules({ profileId: "p1", model: "模型A", successRate: 0.1 }, { source: "auto", ...s1.opts });
+    assert.equal(s1.mails.length, 1);
+    assert.ok(await getLastFiredAt(rule.id, "all"), "立即模式用 all 桶");
+
+    // 切到汇总模式：不该被 "all" 桶的 24 小时冷却压掉
+    const s2 = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules({ profileId: "p1", model: "模型A", successRate: 0.1 }, { source: "auto", ...s2.opts });
+    assert.equal(s2.alerts.length, 1, "汇总模式首条报警不该被立即模式攒下的冷却压掉");
+    assert.ok(await getLastFiredAt(rule.id, "all::p1"), "汇总模式用 all::<targetId> 桶");
+  });
+});
+
+// scope=target 的规则不受本次改动影响（它本来就按 targetId 记账）。
+test("scope=target 的冷却桶不受影响（两种模式都用 targetId）", async () => {
+  await withTempStores(async () => {
+    const rule = await addRule({
+      metric: "successRate",
+      comparator: "lt",
+      threshold: 0.8,
+      scope: { type: "target", targetId: "p1" },
+    });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules({ profileId: "p1", model: "模型A", successRate: 0.1 }, { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 1);
+    assert.ok(await getLastFiredAt(rule.id, "p1"), "应仍用裸 targetId 作桶");
+    assert.equal(await getLastFiredAt(rule.id, "all::p1"), null);
   });
 });

@@ -385,7 +385,19 @@ export async function evaluateAlertRules(result, opts = {}) {
           reason = describeHit(rule, entry);
         }
 
-        const targetKey = rule.scope?.type === "all" ? "all" : entry.targetId;
+        // 冷却记账的桶。
+        //
+        // 立即发信模式：scope=all 的规则共用一个桶（"all"）—— 这是有意的降噪，
+        //   否则 20 个渠道同时出问题会一次发出 20 封信。
+        //
+        // 汇总模式：按渠道各算一个桶。理由是这条取舍的前提变了 ——
+        //   共用一个桶的收益是「少发邮件」，而汇总模式下无论几个渠道出问题都只发一封，
+        //   压掉其余渠道不再节省任何邮件，只会让报警列表和标题【低报故障范围】：
+        //   实测 5 个渠道同时挂，报警列表里只出现 1 条、标题写「1 个目标」。
+        //   （runs 表仍列出全部 5 个的实测数字，故信息未丢，但读信人先看到的是报警列表。）
+        // 两种模式的桶不互通，这是刻意的：切换汇总开关后各自按自己的口径重新计时，
+        // 不会出现「立即模式攒的冷却把汇总模式的首条报警压掉」这种跨口径干扰。
+        const targetKey = rule.scope?.type === "all" ? (digestMode ? `all::${entry.targetId}` : "all") : entry.targetId;
         const lastFiredAt = await getLastFiredAt(rule.id, targetKey);
         if (lastFiredAt) {
           const elapsedHours = (Date.now() - new Date(lastFiredAt).getTime()) / 3_600_000;
