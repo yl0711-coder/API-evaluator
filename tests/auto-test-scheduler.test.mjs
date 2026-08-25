@@ -687,7 +687,7 @@ test("onRunComplete 收到作业身份（jobId/jobName/jobKind）", async () => 
   const s = build(store, runners, { onRunComplete: (result, ctx) => seen.push({ result, ctx }) });
   await s.tick();
   assert.equal(seen.length, 1);
-  assert.deepEqual(seen[0].ctx, { jobId: "j1", jobName: "每日快检", jobKind: "quick" });
+  assert.deepEqual(seen[0].ctx, { jobId: "j1", jobName: "每日快检", jobKind: "quick", trigger: "schedule" });
 });
 
 test("onRunComplete 第一个参数仍是 result（不破坏既有调用方）", async () => {
@@ -721,4 +721,35 @@ test("runJobNow 触发的运行也带作业身份", async () => {
   await new Promise((r) => setTimeout(r, 50)); // runJobNow 是后台触发
   assert.equal(seen.length, 1);
   assert.equal(seen[0].jobId, "j1");
+});
+
+// 【回归：点「立即运行」的报警被攒进汇总】页面上点【立即运行】走的也是本调度器，
+// 若不区分触发来源，server.mjs 会一律按 source:"auto" 处理 —— 于是有人正在屏幕前等结果，
+// 他的报警却被攒到几小时后的汇总里。判据应是「此刻有没有人在等」，不是「哪个子系统跑的」。
+test("到点自动触发 → trigger 为 schedule", async () => {
+  const store = makeStore([{ id: "j1", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners } = makeRunners();
+  const seen = [];
+  const s = build(store, runners, { onRunComplete: (result, ctx) => seen.push(ctx.trigger) });
+  await s.tick();
+  assert.deepEqual(seen, ["schedule"]);
+});
+
+test("runJobNow（页面点立即运行）→ trigger 为 manual", async () => {
+  const store = makeStore([{ id: "j1", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners } = makeRunners();
+  const seen = [];
+  const s = build(store, runners, { onRunComplete: (result, ctx) => seen.push(ctx.trigger) });
+  await s.runJobNow("j1");
+  await new Promise((r) => setTimeout(r, 50)); // runJobNow 是后台触发
+  assert.deepEqual(seen, ["manual"], "点立即运行的人在等结果，报警不该被攒起来");
+});
+
+test("fireJob 未传 trigger → 默认 schedule（内部调用不受影响）", async () => {
+  const store = makeStore([{ id: "j1", kind: "quick", targetId: "p1", enabled: true, nextRunAt: null }]);
+  const { runners } = makeRunners();
+  const seen = [];
+  const s = build(store, runners, { onRunComplete: (result, ctx) => seen.push(ctx.trigger) });
+  await s.fireJob({ id: "j1", kind: "quick", targetId: "p1", enabled: true });
+  assert.deepEqual(seen, ["schedule"]);
 });

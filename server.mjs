@@ -110,7 +110,7 @@ import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobV
 import { loadRules, updateRules, normalizeRule, validateRule, RuleValidationError } from "./server/alert-rules-store.mjs";
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
-import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
+import { evaluateAlertRules, alertOptionsFromRunContext } from "./server/alert-rules-evaluator.mjs";
 import { clearRuleState } from "./server/alert-rule-state.mjs";
 import { loadDigestConfig, updateDigestConfig, loadQueue, JOB_SCOPES } from "./server/alert-digest-store.mjs";
 import { maybeSendDigest, sendDigestNow, discardQueuedAlerts, dropQueuedAlertsForRule } from "./server/alert-digest-sender.mjs";
@@ -216,9 +216,10 @@ const autoTestScheduler = createAutoTestScheduler({
   reportIdFromHtmlPath,
   onRunComplete: (result, ctx) => {
     noteRunIfEnabled(result); // 高危报告提示：自动测试完成时按开关判危记录
-    // 自动测试：开了汇总且该作业在汇总范围内就入队（到汇总时刻一次发一封），
-    // 否则命中即发信（旧行为）。jobId 用于按作业筛选——同一渠道+模型可配多个作业。
-    evaluateAlertRules(result, { source: "auto", jobId: ctx?.jobId || "" });
+    // 开了汇总且该作业在汇总范围内就入队（到汇总时刻一次发一封），否则命中即发信（旧行为）。
+    // 映射规则（含「点立即运行的人在等结果，不该攒着」）在 alertOptionsFromRunContext 里，
+    // 抽成纯函数才有测试守得住——内联在这个对象字面量里的话，改坏了全套用例照旧全绿。
+    evaluateAlertRules(result, alertOptionsFromRunContext(ctx));
   },
   // 报警汇总：每 tick 判一次「到点了吗 + 调度器空闲了吗」，满足才发一封汇总信。
   onTickEnd: ({ activeJobs }) => maybeSendDigest({ getActiveJobs: () => activeJobs }),

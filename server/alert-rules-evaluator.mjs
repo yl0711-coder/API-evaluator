@@ -278,6 +278,22 @@ async function sendAlertMail(rule, entry, reason) {
   await sendMail({ ...cfg, smtpPassword }, subject, body);
 }
 
+// 调度器的运行上下文 → evaluateAlertRules 的 opts。
+//
+// 【为什么要有这个函数】这段映射原本内联在 server.mjs 的 createAutoTestScheduler 配置里，
+// 那是个顶层对象字面量，测试碰不到 —— 实测把它改坏（source 恒为 "auto"）全套 1649 个用例
+// 照旧全绿。抽成纯函数才守得住。
+//
+// trigger:"manual" 表示有人在页面上点了【立即运行】，正在等结果 ——
+// 判据是「此刻有没有人在等」，不是「哪个子系统跑的」。攒到几小时后的汇总里对他没有意义，
+// 故与手动测试同样处理：立即发信。
+export function alertOptionsFromRunContext(ctx) {
+  return {
+    source: ctx?.trigger === "manual" ? "manual" : "auto",
+    jobId: ctx?.jobId || "",
+  };
+}
+
 // 运行完成钩子：对该次结果的每个目标条目 × 每条启用规则做匹配/阈值/冷却判断，命中则发信。
 // best-effort：任何异常吞掉并记日志，绝不向上抛出。
 //

@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { evaluateAlertRules } from "../server/alert-rules-evaluator.mjs";
+import { evaluateAlertRules, alertOptionsFromRunContext } from "../server/alert-rules-evaluator.mjs";
 import { updateRules, JITTER_KIND, DECLINE_KIND, __setRulesFileForTest, __resetWriteChainForTest } from "../server/alert-rules-store.mjs";
 import {
   getLastFiredAt,
@@ -1284,5 +1284,47 @@ test("没勾选的作业走立即发信 → scope=all 规则用 all 冷却桶（
     await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_2", ...s.opts });
     assert.ok(await getLastFiredAt(rule.id, "all"), "立即发信路径应用共用桶");
     assert.equal(await getLastFiredAt(rule.id, "all::p1"), null);
+  });
+});
+
+// —— 调度器上下文 → 评估选项 ——
+// 【回归：点「立即运行」的报警被攒进汇总】页面上点【立即运行】走的也是自动测试调度器。
+// 若一律按 source:"auto" 处理，有人正在屏幕前等结果，他的报警却被攒到几小时后的汇总里。
+// 判据是「此刻有没有人在等」，不是「哪个子系统跑的」。
+//
+// 这段映射曾内联在 server.mjs 的调度器配置里（顶层对象字面量），测试碰不到 ——
+// 实测把它改坏（source 恒为 "auto"）全套用例照旧全绿。抽成纯函数才守得住。
+test("alertOptionsFromRunContext：trigger=manual → source=manual（点立即运行的人在等）", () => {
+  assert.deepEqual(alertOptionsFromRunContext({ jobId: "j1", trigger: "manual" }), { source: "manual", jobId: "j1" });
+});
+
+test("alertOptionsFromRunContext：trigger=schedule → source=auto（到点自动跑，可以攒）", () => {
+  assert.deepEqual(alertOptionsFromRunContext({ jobId: "j1", trigger: "schedule" }), { source: "auto", jobId: "j1" });
+});
+
+// 缺省视为自动：调度器一定会传 trigger，缺省只可能来自旧代码或别的调用方。
+// 此时按 auto 处理是安全的——它只影响「攒还是立即发」，不影响是否报警。
+test("alertOptionsFromRunContext：trigger 缺省/未知 → source=auto", () => {
+  assert.equal(alertOptionsFromRunContext({ jobId: "j1" }).source, "auto");
+  assert.equal(alertOptionsFromRunContext({ jobId: "j1", trigger: "别的" }).source, "auto");
+  assert.equal(alertOptionsFromRunContext(null).source, "auto");
+});
+
+test("alertOptionsFromRunContext：jobId 缺失 → 空串（评估器据此走保守路径）", () => {
+  assert.equal(alertOptionsFromRunContext({}).jobId, "");
+  assert.equal(alertOptionsFromRunContext(undefined).jobId, "");
+});
+
+// 端到端：manual 触发 + 开着汇总 + 该作业在汇总范围内 → 仍然立即发信。
+test("点立即运行的作业即使在汇总范围内，也立即发信", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: true });
+    const opts = { ...s.opts, digestConfigFn: async () => ({ enabled: true, jobScope: "selected", jobIds: ["j1"] }) };
+    // 模拟 server.mjs 的接线：ctx → opts
+    const ctx = { jobId: "j1", jobName: "手点的", jobKind: "quick", trigger: "manual" };
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { ...alertOptionsFromRunContext(ctx), ...opts });
+    assert.equal(s.mails.length, 1, "有人在等结果，必须立即发信");
+    assert.equal(s.alerts.length, 0, "不该攒进汇总队列");
   });
 });
