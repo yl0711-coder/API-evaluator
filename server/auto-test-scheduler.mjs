@@ -116,7 +116,10 @@ export function createAutoTestScheduler({
     }
   }
 
-  async function fireJob(job) {
+  // trigger："schedule" = 到点自动触发；"manual" = 有人在页面上点了【立即运行】。
+  // 这个区分传给 onRunComplete，让报警汇总能判断「此刻有没有人在等结果」——
+  // 点了立即运行的人就在屏幕前，把他的报警攒到几小时后的汇总里没有意义。
+  async function fireJob(job, { trigger = "schedule" } = {}) {
     // 先同步查重 + 占位：在任何 await 之前把 id 记入 runningJobIds，
     // 这样即便本作业还在信号量队列里等待，跨 tick 也不会被重复触发。
     if (runningJobIds.has(job.id)) return;
@@ -149,8 +152,11 @@ export function createAutoTestScheduler({
         try {
           const result = await run();
           // 运行完成回调（高危报告提示按开关判危记录）：best-effort，绝不影响调度与状态回写。
+          // 第二个参数带上触发这次运行的作业身份：报警汇总要按作业筛选（哪些作业的报警攒起来、
+          // 哪些立即发），而 result 里只有 profileId/type，认不出是哪个作业 ——
+          // 同一个渠道+模型可以配多个作业（不同种类、不同节奏），profileId 不足以区分。
           try {
-            await onRunComplete?.(result);
+            await onRunComplete?.(result, { jobId: job.id, jobName: job.name, jobKind: job.kind, trigger });
           } catch {
             /* 回调失败不影响调度 */
           }
@@ -275,7 +281,9 @@ export function createAutoTestScheduler({
       });
       return { ok: false, message: "定时表达式没有可执行时刻，作业已停用；请修正后重新启用。" };
     }
-    void fireJob(job); // 后台触发，不阻塞 HTTP 响应（测试可能跑数分钟）
+    // trigger:"manual" —— 有人在页面上点了【立即运行】，正在等结果。
+    // 报警汇总据此走立即发信，不把他的报警攒到几小时后的汇总里。
+    void fireJob(job, { trigger: "manual" }); // 后台触发，不阻塞 HTTP 响应（测试可能跑数分钟）
     return { ok: true };
   }
 

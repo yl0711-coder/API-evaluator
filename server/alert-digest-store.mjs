@@ -21,12 +21,21 @@ import { writeJsonAtomic } from "./utils.mjs";
 // 溢出时丢【最旧】的：报警的价值随时间衰减，最近的更值得送达。
 export const MAX_QUEUE_ENTRIES = 500;
 
+// 哪些自动测试作业的报警走汇总。
+//   all      —— 全部自动测试作业，日后新建的作业【自动包含】；
+//   selected —— 只有 jobIds 里列出的作业，日后新建的作业【不包含】（其报警按老规矩立即发信）。
+// 语义要点：不在汇总范围内 ≠ 不报警。它只是不攒着，而是命中即发 —— 与关掉汇总时的行为一致。
+// 绝不能理解成「静默」：那会让「取消勾选」变成一个悄悄关掉报警的开关，是最危险的误解。
+export const JOB_SCOPES = ["all", "selected"];
+
 const DEFAULTS = {
   // 默认关闭：装了这个版本的现有用户行为完全不变（仍是命中即发），要汇总得显式开。
   enabled: false,
   // 汇总时刻。默认每天 09:07 —— 避开整点，跟 cron 调度那边同一个考虑（整点是所有人的默认值，
   // 容易和别的定时任务撞在一起）。
   cron: "7 9 * * *",
+  jobScope: "all",
+  jobIds: [],
 };
 
 let configFile = ALERT_DIGEST_CONFIG_FILE;
@@ -41,14 +50,35 @@ export function __setDigestFilesForTest({ config, queue } = {}) {
 
 function normalizeConfig(raw) {
   const cron = typeof raw?.cron === "string" && raw.cron.trim() ? raw.cron.trim() : DEFAULTS.cron;
+  // 脏 jobScope 落回 "all"：宁可多汇总，不可因脏数据把某些作业的报警变成「立即发」而让人措手不及。
+  const jobScope = JOB_SCOPES.includes(raw?.jobScope) ? raw.jobScope : DEFAULTS.jobScope;
+  const jobIds = Array.isArray(raw?.jobIds)
+    ? [...new Set(raw.jobIds.map((x) => String(x ?? "").trim()).filter(Boolean))].slice(0, 500)
+    : [];
   return {
     enabled: raw?.enabled === true,
     cron,
+    jobScope,
+    jobIds,
     // 上次汇总发信时刻（ISO）。用于算下一个到期时刻；null = 从未发过。
     lastDigestAt: typeof raw?.lastDigestAt === "string" && raw.lastDigestAt ? raw.lastDigestAt : null,
     // 下一个到期时刻（ISO）。由 cron 算出并持久化，进程重启后凭它追补，与自动测试作业同一思路。
     nextDigestAt: typeof raw?.nextDigestAt === "string" && raw.nextDigestAt ? raw.nextDigestAt : null,
   };
+}
+
+// 这次运行的报警该不该攒进汇总。纯函数，便于单测。
+//
+// jobId 为空 = 无从判断是哪个作业触发的（手动测试，或调度器没传上下文）。
+// 此时【不攒】—— 与 evaluateAlertRules 里「source 缺省视为手动」同一保守取向：
+// 宁可多发几封立即信，不可把报警攒进一个可能几小时后才发的队列。
+export function jobInDigestScope(config, jobId) {
+  if (!config?.enabled) return false;
+  if (config.jobScope === "selected") {
+    if (!jobId) return false;
+    return Array.isArray(config.jobIds) && config.jobIds.includes(jobId);
+  }
+  return true; // "all"：全部自动测试作业，含日后新建的
 }
 
 export async function loadDigestConfig() {

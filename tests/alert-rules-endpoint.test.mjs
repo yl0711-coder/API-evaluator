@@ -464,3 +464,125 @@ test("重复保存同一份汇总设置：幂等，不报错", async () => {
   assert.equal(b.body.config.cron, "22 7 * * *");
   await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "7 9 * * *" });
 });
+
+// —— 汇总的作业筛选 ——
+
+test("汇总配置 GET：回作业清单（供前端渲染勾选框）+ 默认 jobScope=all", async () => {
+  assert.ok(ready, "server 未就绪");
+  const { status, body } = await get("/api/alert-rules/digest", cookieAdmin);
+  assert.equal(status, 200);
+  assert.equal(body.config.jobScope, "all");
+  assert.deepEqual(body.config.jobIds, []);
+  assert.ok(Array.isArray(body.jobs), "必须回作业清单");
+});
+
+test("汇总配置 GET：作业清单只含渲染要用的字段，不带 options 大块内容", async () => {
+  assert.ok(ready, "server 未就绪");
+  // 先建一个作业（需要一个可运行目标）。
+  // 【三个字段都要与本文件其它用例不同】渠道查重按 baseUrl + 模型 + Key 三者全一致判定
+  // （见 server/profile-store.mjs findDuplicateProfile）。照抄上面 scope=target 用例的
+  // api.example.com + gpt-4o + sk-test1234567890 会被判重复、渠道压根建不出来，
+  // 随后 targetId 为 undefined —— 症状是本用例单跑绿、全文件跑红。
+  await post("/api/channels", cookieAdmin, {
+    name: "汇总作业筛选渠道",
+    baseUrl: "https://digest-jobs.example.com",
+    protocol: "openai_chat",
+    models: "gpt-4o-digest",
+    apiKey: "sk-digestjobs0987654321",
+  });
+  const channels = await get("/api/channels", cookieAdmin);
+  const channelId = channels.body.find((c) => c.name === "汇总作业筛选渠道")?.id;
+  assert.ok(channelId, "渠道应已建好（若为空，多半是与其它用例撞了查重三元组）");
+  await post("/api/model-targets", cookieAdmin, { channelId, model: "gpt-4o-digest" });
+  const targets = await get("/api/model-targets", cookieAdmin);
+  const targetId = targets.body.find((t) => t.channelId === channelId)?.id;
+  assert.ok(targetId);
+
+  const job = await post("/api/auto-test-jobs", cookieAdmin, {
+    name: "筛选用作业",
+    targetId,
+    kind: "quick",
+    periodHours: 24,
+    enabled: true,
+  });
+  assert.equal(job.status, 200);
+  const jobId = job.body.job.id;
+
+  const { body } = await get("/api/alert-rules/digest", cookieAdmin);
+  const found = body.jobs.find((j) => j.id === jobId);
+  assert.ok(found, "新建的作业应出现在清单里");
+  assert.equal(found.name, "筛选用作业");
+  assert.equal(found.kind, "quick");
+  assert.ok(found.targetName, "应补出渠道/模型名（勾选框上要显示）");
+  assert.equal(found.options, undefined, "不该把 options 送到浏览器");
+  assert.equal(found.scenarioIds, undefined);
+
+  // 勾选该作业
+  const saved = await send("PUT", "/api/alert-rules/digest", cookieAdmin, {
+    enabled: true,
+    cron: "7 9 * * *",
+    jobScope: "selected",
+    jobIds: [jobId],
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.config.jobScope, "selected");
+  assert.deepEqual(saved.body.config.jobIds, [jobId]);
+
+  // 删掉作业 → 该 id 变成 stale，GET 要如实报出来
+  await del(`/api/auto-test-jobs/${jobId}`, cookieAdmin);
+  const after = await get("/api/alert-rules/digest", cookieAdmin);
+  assert.deepEqual(after.body.staleJobIds, [jobId], "已删除的作业 id 要如实报出，不能让配置里躺着看不见的东西");
+
+  await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "7 9 * * *" }); // 复位
+});
+
+// 选了「只汇总勾选的」却一个都没勾：存下去后每期汇总信都是空的，而用户以为开着汇总。
+test("汇总配置 PUT：jobScope=selected 但 jobIds 为空 → 400", async () => {
+  assert.ok(ready, "server 未就绪");
+  const { status, body } = await send("PUT", "/api/alert-rules/digest", cookieAdmin, {
+    enabled: true,
+    cron: "7 9 * * *",
+    jobScope: "selected",
+    jobIds: [],
+  });
+  assert.equal(status, 400);
+  assert.equal(body.error, "no_jobs_selected");
+  assert.match(body.userMessage, /至少勾一个|全部自动测试/);
+});
+
+// 关闭状态下允许存空勾选（用户可能先关掉、回头再配）。
+test("汇总配置 PUT：关闭时 jobScope=selected 且空勾选 → 允许（不拦已关闭的配置）", async () => {
+  assert.ok(ready, "server 未就绪");
+  const { status } = await send("PUT", "/api/alert-rules/digest", cookieAdmin, {
+    enabled: false,
+    cron: "7 9 * * *",
+    jobScope: "selected",
+    jobIds: [],
+  });
+  assert.equal(status, 200);
+});
+
+test("汇总配置 PUT：jobScope=all 时清空 jobIds（避免残留看不见的勾选）", async () => {
+  assert.ok(ready, "server 未就绪");
+  const saved = await send("PUT", "/api/alert-rules/digest", cookieAdmin, {
+    enabled: true,
+    cron: "7 9 * * *",
+    jobScope: "all",
+    jobIds: ["atj_残留"],
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.body.config.jobIds, [], "选了全部就不该留着勾选清单");
+  await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "7 9 * * *" });
+});
+
+test("汇总配置 PUT：jobScope 脏值 → 落回 all", async () => {
+  assert.ok(ready, "server 未就绪");
+  const saved = await send("PUT", "/api/alert-rules/digest", cookieAdmin, {
+    enabled: true,
+    cron: "7 9 * * *",
+    jobScope: "bogus",
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.config.jobScope, "all");
+  await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "7 9 * * *" });
+});

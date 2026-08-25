@@ -6,6 +6,9 @@ import { escapeHtml, toast, renderMarkdown } from "./client-utils.js";
 import { api } from "./api-client.js";
 import { requireElement } from "./dom-utils.js";
 import { createCascadeTargetPicker } from "./target-picker.js";
+// 汇总的「人话预设 ↔ cron」映射：纯函数，与 tests/alert-digest-cron-presets.test.mjs 共用同一份，
+// 不在本文件里复刻（那会让测试拿副本跟自己比）。它内部再复用 cron-ui.js。
+import { buildDigestCron as buildDigestCronFrom, digestTimesOfDay, parseDigestCron, WEEKLY_FREQ } from "./alert-digest-schedule.js";
 import alertRulesGuideDoc from "./docs/alert-rules-guide.md?raw";
 import alertDigestGuideDoc from "./docs/alert-digest-guide.md?raw";
 
@@ -87,13 +90,20 @@ export function createAlertRules({ state, confirm }) {
   const digestDocBtn = requireElement("#ar-digest-doc");
   const digestEnabled = requireElement("#ar-digest-enabled");
   const digestFreq = requireElement("#ar-digest-freq");
-  const digestTimeLabel = requireElement("#ar-digest-time-label");
   const digestTime = requireElement("#ar-digest-time");
-  const digestCronLabel = requireElement("#ar-digest-cron-label");
-  const digestCron = requireElement("#ar-digest-cron");
+  const digestWeekdayLabel = requireElement("#ar-digest-weekday-label");
+  const digestWeekday = requireElement("#ar-digest-weekday");
   const digestPreview = requireElement("#ar-digest-preview");
+  const digestJobScope = requireElement("#ar-digest-job-scope");
+  const digestJobPicker = requireElement("#ar-digest-job-picker");
+  const digestJobList = requireElement("#ar-digest-job-list");
+  const digestJobAllBtn = requireElement("#ar-digest-job-all");
+  const digestJobNoneBtn = requireElement("#ar-digest-job-none");
   const digestSaveBtn = requireElement("#ar-digest-save");
   const digestTestBtn = requireElement("#ar-digest-test");
+  // 认不出的手写 cron（手改过配置文件 / 从别处拷来）。非空时预览行会提示，
+  // 且不去猜着回填控件——打开页面看一眼不该变成一次静默的配置变更。
+  let unknownCron = "";
 
   // 新标签页渲染 md 文档，与「测试场景维护」页的评分器/类别说明同款惯用法。
   function openDocInNewTab(title, md) {
@@ -118,72 +128,143 @@ export function createAlertRules({ state, confirm }) {
   digestDocBtn.addEventListener("click", () => openDocInNewTab("报警汇总说明", alertDigestGuideDoc));
 
   // —— 报警汇总 ——
-  // 频率下拉 → crontab。只提供三种常用节奏 + 自定义，不搬「自动测试配置」页那套完整 cron 构建器：
-  // 汇总是低频设置（配一次就不动），那套 UI 有星期/时段/固定时刻十来个控件，用在这里过重。
-  function buildDigestCron() {
-    if (digestFreq.value === "custom") return digestCron.value.trim();
+  //
+  // 【为什么界面上没有 crontab 输入框】crontab 是给程序员看的。这一页的使用者是任意管理员，
+  // 让他们理解「7 3-23/6 * * *」不合理，写错了还会造成实质后果（分钟字段写成 `*` 就是每分钟一封）。
+  // 改为五个人话选项 + 一个时刻，由 cron-ui.js 的 buildCron 拼出表达式，用户全程看不到 cron。
+  //
+  // 【为什么用 fixed 形态而不是步长形态】步长形态（`分 起点-23/步长`）无法保住用户选的分钟：
+  // cron-ui 的小时级频率会把分钟字段固定成 0，「每 6 小时，从 09:07 起」就变成 09:00 那一档。
+  // fixed 形态把每个时刻单独列出（`7 3 * * *;7 9 * * *;…`，分号分隔，后端 cron 引擎支持），
+  // 分钟原样保留，反解析也能精确还原。五种预设已全部用真实 cron 引擎验证过触发时刻。
+  // 从控件读出预设参数，喂给 alert-digest-schedule 的纯函数。
+  function digestFormValues() {
     const [h, m] = String(digestTime.value || "09:07").split(":");
-    const hour = Math.min(23, Math.max(0, Number(h) || 0));
-    const minute = Math.min(59, Math.max(0, Number(m) || 0));
-    // 步长必须写成范围形式「起点-23/步长」。本项目的 cron 解析器（server/cron-schedule.mjs
-    // 的 expandField）对裸数字带步长的写法 `3/6` 会取 lo=hi=3，只展开出【一个】小时 ——
-    // 那样「每 6 小时」会静默变成「每天一次」。已用真实解析器验证：
-    //   `7 3/6 * * *`    → 小时集合 {3}
-    //   `7 3-23/6 * * *` → 小时集合 {3,9,15,21}
-    const step = digestFreq.value === "h6" ? 6 : digestFreq.value === "h12" ? 12 : 0;
-    if (step) return `${minute} ${hour % step}-23/${step} * * *`;
-    return `${minute} ${hour} * * *`;
+    return {
+      freq: digestFreq.value,
+      hour: Math.min(23, Math.max(0, Number(h) || 0)),
+      minute: Math.min(59, Math.max(0, Number(m) || 0)),
+      weekday: Number(digestWeekday.value) || 1,
+    };
   }
 
-  // crontab → 回填下拉与时刻。认不出的表达式落到「自定义」，原样显示，绝不猜着改写用户配置。
+  function buildDigestCron() {
+    return buildDigestCronFrom(digestFormValues());
+  }
+
+  // cron → 回填五个人话选项。走 alert-digest-schedule 的 parseDigestCron（内部用 cron-ui 反解析）。
+  //
+  // 认不出的表达式（手改过配置文件、或从别处拷来的）：保持当前控件不动，只在预览行提示，
+  // 绝不猜着改写用户的配置——那会让「打开页面看一眼」变成一次静默的配置变更。
   function fillDigestCron(cron) {
     const raw = String(cron || "").trim();
-    digestCron.value = raw;
-    // 与 buildDigestCron 的两种产物对应：「分 时 * * *」和「分 起点-23/步长 * * *」。
-    // 注意回填的时刻是当天【首个】触发时刻，可能不等于用户当初填的那个：
-    // 填 09:07 + 每 6 小时 → cron `7 3-23/6 * * *`（9%6=3）→ 触发于 03:07/09:07/15:07/21:07，
-    // 回填显示 03:07。两者是同一个触发集合的规范形式，标签写的也是「从 X 起算」，故不算失真。
-    const m = raw.match(/^(\d{1,2}) (\d{1,2})(?:-23\/(6|12))? \* \* \*$/);
-    if (!m) {
-      digestFreq.value = "custom";
+    unknownCron = "";
+    const parsed = parseDigestCron(raw);
+    if (!parsed) {
+      unknownCron = raw;
       syncDigestFreq();
       return;
     }
-    const [, minute, hour, step] = m;
-    digestFreq.value = step === "6" ? "h6" : step === "12" ? "h12" : "daily";
-    digestTime.value = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    digestFreq.value = parsed.freq;
+    if (parsed.freq === WEEKLY_FREQ) digestWeekday.value = String(parsed.weekday);
+    // 回填的是当天【最早】那个时刻，可能不等于用户当初填的那个：
+    // 选 09:07 + 每天四次会生成 03:07/09:07/15:07/21:07，回填显示 03:07。
+    // 两者是同一个触发集合，且原样再保存会生成完全相同的 cron（幂等性有测试钉住），故不算失真。
+    digestTime.value = `${String(parsed.hour).padStart(2, "0")}:${String(parsed.minute).padStart(2, "0")}`;
     syncDigestFreq();
   }
 
+  // 预览行用大白话说清「什么时候发」，把实际会触发的每个时刻都列出来 ——
+  // 不复用 cron-ui 的 describeSchedule：那句话是给「跑测试」写的（「每天，固定在 09:07 运行」），
+  // 这里要说的是发信，且要说清顺延规则。
+  const DOW_TEXT = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
   function describeDigest() {
-    if (!digestEnabled.checked) return "当前关闭：报警仍按每条规则各自发信。";
-    const cron = buildDigestCron();
-    if (!cron) return "请填写 crontab 表达式。";
-    if (digestFreq.value === "custom") return `按 crontab「${cron}」发送汇总。`;
-    const t = digestTime.value || "09:07";
-    const freqText =
-      digestFreq.value === "h6" ? `每 6 小时（从 ${t} 起算）` : digestFreq.value === "h12" ? `每 12 小时（从 ${t} 起算）` : `每天 ${t}`;
-    return `${freqText} 发一封汇总；若届时自动测试仍在跑，会等它跑完。`;
+    if (!digestEnabled.checked) return "当前关闭：报警仍按每条规则各自立即发信。";
+    if (unknownCron) {
+      return `当前配置是手写的定时表达式「${unknownCron}」，本页的选项认不出它。改动上面任一项并保存即会替换成新设置。`;
+    }
+    const v = digestFormValues();
+    const times = digestTimesOfDay(v.hour, v.minute, v.freq)
+      .slice()
+      .sort((a, b) => a.hour - b.hour || a.minute - b.minute)
+      .map((t) => `${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")}`);
+    const when =
+      digestFreq.value === WEEKLY_FREQ
+        ? `每${DOW_TEXT[Number(digestWeekday.value) || 1]}`
+        : digestFreq.value === "weekday"
+          ? "每个工作日"
+          : "每天";
+    const scopeText = digestJobScope.value === "selected" ? `已勾选的 ${countSelectedJobs()} 个作业` : "全部自动测试";
+    return `${when} ${times.join("、")} 各发一封汇总（${scopeText}）。若届时自动测试还在跑，会等它跑完再发，最多等 6 小时。`;
   }
 
   function syncDigestFreq() {
-    const custom = digestFreq.value === "custom";
-    digestCronLabel.classList.toggle("hidden", !custom);
-    digestTimeLabel.classList.toggle("hidden", custom);
+    digestWeekdayLabel.classList.toggle("hidden", digestFreq.value !== WEEKLY_FREQ);
+    digestJobPicker.classList.toggle("hidden", digestJobScope.value !== "selected");
     digestPreview.textContent = describeDigest();
   }
 
-  for (const el of [digestFreq, digestTime, digestCron, digestEnabled]) {
+  for (const el of [digestFreq, digestTime, digestWeekday, digestEnabled, digestJobScope]) {
     el.addEventListener("change", syncDigestFreq);
     el.addEventListener("input", syncDigestFreq);
   }
+
+  // —— 作业勾选 ——
+  const JOB_KIND_TEXT = { quick: "快速验证", admission: "准入评测", stability: "稳定性", scenario: "场景测试" };
+
+  function countSelectedJobs() {
+    return digestJobList.querySelectorAll("input[data-digest-job]:checked").length;
+  }
+
+  function selectedJobIds() {
+    return [...digestJobList.querySelectorAll("input[data-digest-job]:checked")].map((el) => el.dataset.digestJob);
+  }
+
+  // 渲染作业勾选清单。已停用的作业也列出来但标注——它现在不跑，日后重新启用就会跑，
+  // 此时若不在清单里，用户会以为「启用后自动进汇总」，而实际不会（jobScope=selected 只认勾选的 id）。
+  function renderJobList(jobs, checkedIds, staleIds) {
+    const checked = new Set(checkedIds || []);
+    if (!jobs.length) {
+      digestJobList.innerHTML = `<div class="muted">还没有配置任何自动测试作业。请先到「自动测试配置」页新建。</div>`;
+      return;
+    }
+    const rows = jobs
+      .map((job) => {
+        const kind = JOB_KIND_TEXT[job.kind] || job.kind || "";
+        const who = job.targetName || job.targetId || "目标未知";
+        const off = job.enabled === false ? `<span class="pill">已停用</span>` : "";
+        const name = job.name || `${kind}作业`;
+        return `<label class="ar-digest-job"><input type="checkbox" data-digest-job="${escapeHtml(job.id)}"${
+          checked.has(job.id) ? " checked" : ""
+        } /> <strong>${escapeHtml(name)}</strong>　${escapeHtml(kind)}　${escapeHtml(who)} ${off}</label>`;
+      })
+      .join("");
+    // 已勾选但作业已被删除的 id：明确告知，否则配置里躺着一个界面上看不见的东西。
+    const stale = staleIds?.length
+      ? `<div class="field-hint">另有 ${staleIds.length} 个已勾选的作业已被删除，保存后会自动清掉。</div>`
+      : "";
+    digestJobList.innerHTML = rows + stale;
+  }
+
+  digestJobList.addEventListener("change", syncDigestFreq);
+  digestJobAllBtn.addEventListener("click", () => {
+    for (const el of digestJobList.querySelectorAll("input[data-digest-job]")) el.checked = true;
+    syncDigestFreq();
+  });
+  digestJobNoneBtn.addEventListener("click", () => {
+    for (const el of digestJobList.querySelectorAll("input[data-digest-job]")) el.checked = false;
+    syncDigestFreq();
+  });
 
   async function loadDigest() {
     try {
       const r = await api("/api/alert-rules/digest");
       const cfg = r.config || {};
       digestEnabled.checked = cfg.enabled === true;
-      fillDigestCron(cfg.cron);
+      digestJobScope.value = cfg.jobScope === "selected" ? "selected" : "all";
+      renderJobList(Array.isArray(r.jobs) ? r.jobs : [], cfg.jobIds || [], r.staleJobIds);
+      fillDigestCron(cfg.cron); // 内部会调 syncDigestFreq，故放在勾选渲染之后
       const pending = r.pending || {};
       const queued = Number(pending.alerts) || 0;
       // 让管理员看得见汇总确实在攒东西——否则开了之后一整天收不到信，无从判断是在攒还是坏了。
@@ -196,15 +277,23 @@ export function createAlertRules({ state, confirm }) {
 
   digestSaveBtn.addEventListener("click", async () => {
     const cron = buildDigestCron();
+    // 认不出的手写表达式：改动任一项后 buildDigestCron 会产出新的，这里不该被旧值挡住。
     if (digestEnabled.checked && !cron) {
-      toast("请填写 crontab 表达式。", true);
+      toast("定时设置不完整，请检查频率与时刻。", true);
+      return;
+    }
+    const jobScope = digestJobScope.value === "selected" ? "selected" : "all";
+    const jobIds = jobScope === "selected" ? selectedJobIds() : [];
+    // 前端先挡一次，给出比后端 400 更贴近操作的提示（后端仍有同样的校验兜底）。
+    if (digestEnabled.checked && jobScope === "selected" && !jobIds.length) {
+      toast("选了「只汇总下面勾选的作业」但一个都没勾。请至少勾一个，或改选「全部自动测试」。", true);
       return;
     }
     digestSaveBtn.disabled = true;
     try {
       const r = await api("/api/alert-rules/digest", {
         method: "PUT",
-        body: JSON.stringify({ enabled: digestEnabled.checked, cron }),
+        body: JSON.stringify({ enabled: digestEnabled.checked, cron, jobScope, jobIds }),
       });
       // 关闭时若队列里还有没发出去的报警，后端会清掉它们并解除对应规则的冷却。
       // 必须说给管理员听：静默丢弃报警正是这个功能要避免的事。

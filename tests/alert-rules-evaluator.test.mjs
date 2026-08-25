@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { evaluateAlertRules } from "../server/alert-rules-evaluator.mjs";
+import { evaluateAlertRules, alertOptionsFromRunContext } from "../server/alert-rules-evaluator.mjs";
 import { updateRules, JITTER_KIND, DECLINE_KIND, __setRulesFileForTest, __resetWriteChainForTest } from "../server/alert-rules-store.mjs";
 import {
   getLastFiredAt,
@@ -19,6 +19,7 @@ import {
   __writeStateForTest,
 } from "../server/alert-rule-state.mjs";
 import { __resetNotifyConfigCacheForTest } from "../server/notify-config.mjs";
+import { updateDigestConfig, loadQueue, __setDigestFilesForTest, __resetDigestChainsForTest } from "../server/alert-digest-store.mjs";
 
 test.afterEach(() => {
   __resetWriteChainForTest();
@@ -1199,5 +1200,175 @@ test("scope=target 的冷却桶不受影响（两种模式都用 targetId）", a
     assert.equal(s.alerts.length, 1);
     assert.ok(await getLastFiredAt(rule.id, "p1"), "应仍用裸 targetId 作桶");
     assert.equal(await getLastFiredAt(rule.id, "all::p1"), null);
+  });
+});
+
+// —— 按作业筛选：部分自动测试走汇总，部分仍立即发信 ——
+// 【最要紧的语义】没被汇总的作业不是「不报警」，而是「不攒着、命中即发」。
+// 若哪天有人把它改成静默，下面这批用例应当立刻变红。
+
+function spiesWithScope({ jobScope = "all", jobIds = [] } = {}) {
+  const s = makeSpies({ digestEnabled: true });
+  return { ...s, opts: { ...s.opts, digestConfigFn: async () => ({ enabled: true, jobScope, jobIds }) } };
+}
+
+test("jobScope=selected：勾选的作业 → 入队", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_1", ...s.opts });
+    assert.equal(s.alerts.length, 1, "勾选的作业该攒进汇总");
+    assert.equal(s.mails.length, 0);
+  });
+});
+
+// 这一条是整个功能的安全护栏：没勾选 ≠ 静默。
+test("jobScope=selected：没勾选的作业 → 立即发信（绝不静默）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_2", ...s.opts });
+    assert.equal(s.mails.length, 1, "没勾选的作业必须照旧立即发信——取消勾选不是关掉报警");
+    assert.equal(s.alerts.length, 0, "不该进汇总队列");
+  });
+});
+
+test("jobScope=all：任何作业都入队，含从没见过的新作业", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "all" });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_新建的", ...s.opts });
+    assert.equal(s.alerts.length, 1);
+    assert.equal(s.mails.length, 0);
+  });
+});
+
+// 保守取向：selected 模式下认不出作业身份时立即发，不攒。
+test("jobScope=selected 且没传 jobId → 立即发信（宁可多发，不可攒着）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", ...s.opts });
+    assert.equal(s.mails.length, 1);
+    assert.equal(s.alerts.length, 0);
+  });
+});
+
+// 不在汇总范围内时，运行记录也不该入队——否则汇总信会列出一个「本期不汇总」的作业的数字，
+// 而它的报警却是单独发的，两处对不上。
+test("不在汇总范围内的作业：运行记录也不入队（避免信里数字与报警对不上）", async () => {
+  await withTempStores(async () => {
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 1 }), { source: "auto", jobId: "atj_2", ...s.opts });
+    assert.equal(s.runs.length, 0);
+    // 对照：在范围内的作业照记
+    await evaluateAlertRules(stabilityResult({ successRate: 1 }), { source: "auto", jobId: "atj_1", ...s.opts });
+    assert.equal(s.runs.length, 1);
+  });
+});
+
+test("手动测试不受作业筛选影响（本来就立即发信）", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "manual", jobId: "atj_1", ...s.opts });
+    assert.equal(s.mails.length, 1);
+    assert.equal(s.alerts.length, 0);
+  });
+});
+
+// 冷却桶的选择依赖 digestMode。没进汇总的作业走立即发信路径，故 scope=all 的规则用 "all" 桶。
+test("没勾选的作业走立即发信 → scope=all 规则用 all 冷却桶（不是 all::targetId）", async () => {
+  await withTempStores(async () => {
+    const rule = await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, scope: { type: "all" } });
+    const s = spiesWithScope({ jobScope: "selected", jobIds: ["atj_1"] });
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { source: "auto", jobId: "atj_2", ...s.opts });
+    assert.ok(await getLastFiredAt(rule.id, "all"), "立即发信路径应用共用桶");
+    assert.equal(await getLastFiredAt(rule.id, "all::p1"), null);
+  });
+});
+
+// —— 调度器上下文 → 评估选项 ——
+// 【回归：点「立即运行」的报警被攒进汇总】页面上点【立即运行】走的也是自动测试调度器。
+// 若一律按 source:"auto" 处理，有人正在屏幕前等结果，他的报警却被攒到几小时后的汇总里。
+// 判据是「此刻有没有人在等」，不是「哪个子系统跑的」。
+//
+// 这段映射曾内联在 server.mjs 的调度器配置里（顶层对象字面量），测试碰不到 ——
+// 实测把它改坏（source 恒为 "auto"）全套用例照旧全绿。抽成纯函数才守得住。
+test("alertOptionsFromRunContext：trigger=manual → source=manual（点立即运行的人在等）", () => {
+  assert.deepEqual(alertOptionsFromRunContext({ jobId: "j1", trigger: "manual" }), { source: "manual", jobId: "j1" });
+});
+
+test("alertOptionsFromRunContext：trigger=schedule → source=auto（到点自动跑，可以攒）", () => {
+  assert.deepEqual(alertOptionsFromRunContext({ jobId: "j1", trigger: "schedule" }), { source: "auto", jobId: "j1" });
+});
+
+// 缺省视为自动：调度器一定会传 trigger，缺省只可能来自旧代码或别的调用方。
+// 此时按 auto 处理是安全的——它只影响「攒还是立即发」，不影响是否报警。
+test("alertOptionsFromRunContext：trigger 缺省/未知 → source=auto", () => {
+  assert.equal(alertOptionsFromRunContext({ jobId: "j1" }).source, "auto");
+  assert.equal(alertOptionsFromRunContext({ jobId: "j1", trigger: "别的" }).source, "auto");
+  assert.equal(alertOptionsFromRunContext(null).source, "auto");
+});
+
+test("alertOptionsFromRunContext：jobId 缺失 → 空串（评估器据此走保守路径）", () => {
+  assert.equal(alertOptionsFromRunContext({}).jobId, "");
+  assert.equal(alertOptionsFromRunContext(undefined).jobId, "");
+});
+
+// 端到端：manual 触发 + 开着汇总 + 该作业在汇总范围内 → 仍然立即发信。
+test("点立即运行的作业即使在汇总范围内，也立即发信", async () => {
+  await withTempStores(async () => {
+    await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8 });
+    const s = makeSpies({ digestEnabled: true });
+    const opts = { ...s.opts, digestConfigFn: async () => ({ enabled: true, jobScope: "selected", jobIds: ["j1"] }) };
+    // 模拟 server.mjs 的接线：ctx → opts
+    const ctx = { jobId: "j1", jobName: "手点的", jobKind: "quick", trigger: "manual" };
+    await evaluateAlertRules(stabilityResult({ successRate: 0.5 }), { ...alertOptionsFromRunContext(ctx), ...opts });
+    assert.equal(s.mails.length, 1, "有人在等结果，必须立即发信");
+    assert.equal(s.alerts.length, 0, "不该攒进汇总队列");
+  });
+});
+
+// 端到端：不注入 digestConfigFn，走【真实的 loadDigestConfig】读盘 + 归一化。
+// 上面那批筛选用例全都注入了假配置，绕过了真实读写链路——归一化若把 jobIds 弄丢（例如
+// 忘了处理某种形状），那些用例照旧全绿。这一条补上那段。
+test("端到端：真实读盘的 selected 配置也能正确筛选（不注入配置函数）", async () => {
+  await withTempStores(async () => {
+    const dir = mkdtempSync(join(tmpdir(), "are-e2e-"));
+    __setDigestFilesForTest({ config: join(dir, "c.json"), queue: join(dir, "q.json") });
+    try {
+      await addRule({ metric: "successRate", comparator: "lt", threshold: 0.8, cooldownHours: 0.001 });
+      await updateDigestConfig((c) => {
+        c.enabled = true;
+        c.cron = "7 9 * * *";
+        c.jobScope = "selected";
+        c.jobIds = ["j-in"];
+        return null;
+      });
+
+      const mails = [];
+      const opts = { sendAlertMailFn: async (rule, entry) => mails.push(entry.model) };
+      await evaluateAlertRules({ profileId: "p1", model: "范围内模型", successRate: 0.3 }, { source: "auto", jobId: "j-in", ...opts });
+      await new Promise((r) => setTimeout(r, 10)); // 让极短冷却过期
+      await evaluateAlertRules({ profileId: "p2", model: "范围外模型", successRate: 0.3 }, { source: "auto", jobId: "j-out", ...opts });
+
+      const q = await loadQueue();
+      assert.deepEqual(
+        q.alerts.map((a) => a.targetLabel),
+        ["范围内模型"],
+        "只有范围内的作业该入队",
+      );
+      assert.deepEqual(mails, ["范围外模型"], "范围外的作业该立即发信");
+      assert.deepEqual(
+        q.runs.map((r) => r.targetLabel),
+        ["范围内模型"],
+        "运行记录也只记范围内的",
+      );
+    } finally {
+      __setDigestFilesForTest({});
+      __resetDigestChainsForTest();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
   });
 });

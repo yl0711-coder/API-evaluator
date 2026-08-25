@@ -110,9 +110,9 @@ import { loadJobs, updateJobs, normalizeJob, validateJob, computeNextRunAt, JobV
 import { loadRules, updateRules, normalizeRule, validateRule, RuleValidationError } from "./server/alert-rules-store.mjs";
 import { createAutoTestScheduler } from "./server/auto-test-scheduler.mjs";
 import { noteRunIfEnabled, listAlerts, ackAlert, ackAll } from "./server/high-risk-store.mjs";
-import { evaluateAlertRules } from "./server/alert-rules-evaluator.mjs";
+import { evaluateAlertRules, alertOptionsFromRunContext } from "./server/alert-rules-evaluator.mjs";
 import { clearRuleState } from "./server/alert-rule-state.mjs";
-import { loadDigestConfig, updateDigestConfig, loadQueue } from "./server/alert-digest-store.mjs";
+import { loadDigestConfig, updateDigestConfig, loadQueue, JOB_SCOPES } from "./server/alert-digest-store.mjs";
 import { maybeSendDigest, sendDigestNow, discardQueuedAlerts, dropQueuedAlertsForRule } from "./server/alert-digest-sender.mjs";
 import { getRawRequestPathname, resolveRequestPathInside } from "./server/static-paths.mjs";
 import { appendJsonLine, compactDate, hasProxyEnv, redactSensitiveText, requiredString, sendJson } from "./server/utils.mjs";
@@ -214,10 +214,12 @@ const autoTestScheduler = createAutoTestScheduler({
   updateJobs,
   runners: { runQuickVerify, runAdmissionTest, runStabilityTest, runScenarioTest },
   reportIdFromHtmlPath,
-  onRunComplete: (result) => {
+  onRunComplete: (result, ctx) => {
     noteRunIfEnabled(result); // 高危报告提示：自动测试完成时按开关判危记录
-    // 自动测试：开了汇总就入队（到汇总时刻一次发一封），没开则命中即发信（旧行为）。
-    evaluateAlertRules(result, { source: "auto" });
+    // 开了汇总且该作业在汇总范围内就入队（到汇总时刻一次发一封），否则命中即发信（旧行为）。
+    // 映射规则（含「点立即运行的人在等结果，不该攒着」）在 alertOptionsFromRunContext 里，
+    // 抽成纯函数才有测试守得住——内联在这个对象字面量里的话，改坏了全套用例照旧全绿。
+    evaluateAlertRules(result, alertOptionsFromRunContext(ctx));
   },
   // 报警汇总：每 tick 判一次「到点了吗 + 调度器空闲了吗」，满足才发一封汇总信。
   onTickEnd: ({ activeJobs }) => maybeSendDigest({ getActiveJobs: () => activeJobs }),
@@ -1257,12 +1259,30 @@ async function handleAlertRuleDelete(req, res, { params }) {
 // 而 /api/notify（持 SMTP 凭证）才是超管专属。改动此路径前请先看 server/api-access.mjs。
 
 async function handleAlertDigestConfigGet(req, res) {
-  const [config, queue] = await Promise.all([loadDigestConfig(), loadQueue()]);
+  const [config, queue, jobs, runnable] = await Promise.all([loadDigestConfig(), loadQueue(), loadJobs(), loadRunnableProfiles()]);
+  const byId = new Map(runnable.map((p) => [p.id, p]));
+  // 作业清单给前端渲染勾选框。只回渲染要用的字段——作业的 options 里有测试文案等大块内容，
+  // 与「选哪些作业进汇总」无关，没必要送到浏览器。
+  // targetName 顺带补出（同 handleAlertRulesList 的做法）：勾选框上要显示渠道/模型，
+  // 而作业里只有 targetId。
+  const jobList = jobs.map((job) => ({
+    id: job.id,
+    name: job.name,
+    kind: job.kind,
+    enabled: job.enabled,
+    targetId: job.targetId,
+    targetName: byId.get(job.targetId)?.name || "",
+  }));
+  // 已勾选但作业已被删除的 id：回给前端提示，避免「配置里有个看不见的东西」。
+  const knownIds = new Set(jobs.map((j) => j.id));
+  const staleJobIds = (config.jobIds || []).filter((id) => !knownIds.has(id));
   // 顺带回队列现状：前端据此显示「当前已攒下 N 条待发报警」，让管理员看得见汇总在工作。
   sendJson(res, 200, {
     ok: true,
     config,
     pending: { alerts: queue.alerts.length, runs: queue.runs.length },
+    jobs: jobList,
+    ...(staleJobIds.length ? { staleJobIds } : {}),
   });
   return;
 }
@@ -1278,9 +1298,24 @@ async function handleAlertDigestConfigSave(req, res) {
     return;
   }
   const wasEnabled = (await loadDigestConfig()).enabled;
+  // 作业范围：all = 全部（含日后新建）；selected = 只有勾选的那些，其余仍命中即发。
+  // 勾选为空却选了 selected → 等于没有任何作业走汇总，直接挡掉：这种配置存下去后
+  // 汇总信每期都是空的，而用户以为自己开着汇总，属于配置错误而非合法取向。
+  const jobScope = JOB_SCOPES.includes(body?.jobScope) ? body.jobScope : "all";
+  const jobIds = Array.isArray(body?.jobIds) ? body.jobIds.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
+  if (enabled && jobScope === "selected" && !jobIds.length) {
+    sendJson(res, 400, {
+      error: "no_jobs_selected",
+      userMessage: "选了「只汇总指定作业」但一个都没勾。请至少勾一个，或改选「全部自动测试」。",
+    });
+    return;
+  }
+
   const config = await updateDigestConfig((cfg) => {
     cfg.enabled = enabled;
     if (cron) cfg.cron = cron;
+    cfg.jobScope = jobScope;
+    cfg.jobIds = jobScope === "selected" ? [...new Set(jobIds)] : [];
     // 从关到开、或改了 cron：重算下一个到期时刻。
     // 不这样做的话，旧的 nextDigestAt（可能是很久以前）会让开启后的第一个 tick 立刻发一封，
     // 而那封信的内容是「上次汇总以来」——对刚开启的人来说是一封莫名其妙的空信。

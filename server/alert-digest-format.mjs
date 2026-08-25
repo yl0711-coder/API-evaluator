@@ -96,14 +96,27 @@ function hasAnyMetric(r) {
 // 收件人一天见几次假警报，很快就学会无视这句话，而它恰恰是「定时测试真的停了」时唯一的信号。
 // 训练收件人忽略警报，比不发警报更糟。
 //
-// jobs 形状取 auto-test-store 的作业：{ enabled, nextRunAt }。传 null = 无从判断（保守措辞）。
-function describeNoRuns(jobs) {
+// jobs 形状取 auto-test-store 的作业：{ enabled, nextRunAt }，且【已按汇总范围过滤】
+// （只有范围内的作业才可能产出汇总内容，见 maybeSendDigest 里的过滤）。
+// 传 null = 无从判断（保守措辞）。
+// scoped=true 表示当前是「只汇总勾选的作业」模式 —— 空列表在两种模式下含义不同，措辞要分开。
+function describeNoRuns(jobs, scoped) {
   if (!Array.isArray(jobs)) {
     return ["本时段没有完成任何测试。若定时测试本应在此期间运行，请检查作业是否被停用或熔断。"];
   }
   const enabled = jobs.filter((j) => j?.enabled);
   if (!enabled.length) {
-    // 一个启用的作业都没有 —— 这时汇总信永远不会有内容，多半是配置状态本身出了问题。
+    // 一个（范围内的）启用作业都没有 —— 这时汇总信永远不会有内容，多半是配置状态本身出了问题。
+    // 【两种模式措辞必须分开】selected 模式下空列表不代表「没有启用的作业」：
+    // 很可能作业都在、只是勾选的那几个被删了或被停用了。说成「没有任何已启用的作业」是假话，
+    // 会把人引到错误的地方去查。
+    if (scoped) {
+      return [
+        "本时段没有完成任何测试：当前【勾选进汇总】的作业里，没有一个是启用状态。",
+        "  可能是勾选的作业已被删除、被停用，或被连续失败熔断。请到「报警规则」页检查汇总的作业勾选，",
+        "  以及「自动测试配置」页确认这些作业的状态。注意：没勾选的作业仍会各自立即发信。",
+      ];
+    }
     return [
       "本时段没有完成任何测试，且当前没有任何【已启用】的自动测试作业。",
       "  报警汇总因此不会有实质内容。请到「自动测试配置」页确认作业是否被停用或已被连续失败熔断。",
@@ -122,7 +135,8 @@ function describeNoRuns(jobs) {
   return [`本时段没有完成任何测试。有 ${enabled.length} 个作业已启用但都没有下次运行时刻，请到「自动测试配置」页确认。`];
 }
 
-export function formatAlertDigest(taken, { windowFrom = null, windowTo = null, jobs = null } = {}) {
+// jobScope："all" | "selected"。只影响「本时段没跑任何测试」那段的措辞（见 describeNoRuns）。
+export function formatAlertDigest(taken, { windowFrom = null, windowTo = null, jobs = null, jobScope = "all" } = {}) {
   // 【不能只靠默认参数】`taken = {}` 只在传 undefined 时生效，传 null 仍会走进来并在
   // taken.alerts 上抛 TypeError。本函数在 best-effort 链路上（maybeSendDigest 的 try/catch 里），
   // 抛错的后果是那一期汇总信整封发不出去 —— 而队列已经被 drainQueue 取空了。
@@ -201,7 +215,7 @@ export function formatAlertDigest(taken, { windowFrom = null, windowTo = null, j
     }
   } else {
     // 没有运行记录时的措辞取决于本时段是否本该有测试，见 describeNoRuns 的说明。
-    lines.push(...describeNoRuns(jobs), "");
+    lines.push(...describeNoRuns(jobs, jobScope === "selected"), "");
   }
 
   return { subject, body: lines.join("\n") };
