@@ -155,8 +155,28 @@ export function createAlertRules({ state, confirm }) {
     };
   }
 
+  // 用户是否动过定时控件（星期 / 时刻）。只由真实交互置位：change 事件不因程序赋值触发，
+  // 故 fillDigestCron 的回填不会误置它。
+  //
+  // 【为什么需要这个标志】unknownCron 原先只在 fillDigestCron 里清空，而它只在加载与保存后跑。
+  // 于是配置里是手写表达式时，用户加了时刻、改了星期，预览行【照旧显示「本页认不出它」】——
+  // 看不到自己即将存进去的是什么。而那句提示还说「改动任一项并保存即会替换成新设置」，
+  // 保存却因 buildDigestCron 产出空串而被「请至少添加一个发信时刻」拦下：提示让你改，改完不让存。
+  let scheduleEdited = false;
+
   function buildDigestCron() {
+    // 认不出的手写表达式、且用户没碰过定时控件 → 原样保住它。
+    // 【为什么不能返回空串】空串会让保存被拦下，于是配置里是手写表达式时，
+    // 想只改「汇总哪些作业」都得先重建一遍发信时刻 —— 而重建就意味着那个手写表达式被替换掉，
+    // 用户并没有要求这件事。
+    if (unknownCron && !scheduleEdited) return unknownCron;
     return buildDigestCronFrom(digestFormValues());
+  }
+
+  function markScheduleEdited() {
+    scheduleEdited = true;
+    unknownCron = ""; // 用户已明确要用本页控件表达节奏，不必再守着那个认不出的表达式
+    syncDigestFreq();
   }
 
   const pad2 = (n) => String(n).padStart(2, "0");
@@ -192,7 +212,7 @@ export function createAlertRules({ state, confirm }) {
       remove.addEventListener("click", () => {
         digestTimes = digestTimes.filter((item) => item.hour !== time.hour || item.minute !== time.minute);
         renderDigestTimes();
-        syncDigestFreq();
+        markScheduleEdited();
       });
       row.append(remove);
       digestTimeList.append(row);
@@ -212,7 +232,7 @@ export function createAlertRules({ state, confirm }) {
     }
     digestTimes = normalizeDigestTimes([...digestTimes, next]);
     renderDigestTimes();
-    syncDigestFreq();
+    markScheduleEdited();
   });
 
   // cron → 回填五个人话选项。走 alert-digest-schedule 的 parseDigestCron（内部用 cron-ui 反解析）。
@@ -222,6 +242,7 @@ export function createAlertRules({ state, confirm }) {
   function fillDigestCron(cron) {
     const raw = String(cron || "").trim();
     unknownCron = "";
+    scheduleEdited = false; // 刚从服务端读回来，控件与配置一致，尚无本地改动
     const parsed = parseDigestCron(raw);
     if (!parsed) {
       unknownCron = raw;
@@ -262,7 +283,9 @@ export function createAlertRules({ state, confirm }) {
   function describeDigest() {
     if (!digestEnabled.checked) return "当前关闭：报警仍按每条规则各自立即发信。";
     if (unknownCron) {
-      return `当前配置是手写的定时表达式「${unknownCron}」，本页的选项认不出它。改动上面任一项并保存即会替换成新设置。`;
+      // 措辞要说准是「星期或发信时刻」，不能说「任一项」：只改启用开关或作业范围时，
+      // 这个手写表达式是被原样保住的（见 buildDigestCron），说成任一项就是假话。
+      return `当前配置是手写的定时表达式「${unknownCron}」，本页的选项认不出它，保存时会原样保留。改动上面的星期或发信时刻即会替换成本页的设置。`;
     }
     const v = digestFormValues();
     const times = formatDigestTimes(v.times);
@@ -279,10 +302,13 @@ export function createAlertRules({ state, confirm }) {
     digestPreview.textContent = describeDigest();
   }
 
-  for (const el of [digestDays, digestEnabled, digestJobScope]) {
+  // 星期与时刻是「定时控件」，动了它们就等于要用本页的方式表达节奏 → markScheduleEdited。
+  // 启用开关与作业范围不是：配置里是手写表达式时，只改这两项该原样保住那个表达式。
+  digestDays.addEventListener("change", markScheduleEdited);
+  digestDaysCustom.addEventListener("change", markScheduleEdited);
+  for (const el of [digestEnabled, digestJobScope]) {
     el.addEventListener("change", syncDigestFreq);
   }
-  digestDaysCustom.addEventListener("change", syncDigestFreq);
 
   // —— 作业勾选 ——
   const JOB_KIND_TEXT = { quick: "快速验证", admission: "准入评测", stability: "稳定性", scenario: "场景测试" };

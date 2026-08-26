@@ -234,6 +234,18 @@ test("认不出的 cron → 返回 null（绝不猜着改写用户配置）", ()
   }
 });
 
+// 【回归：静默删掉发信时刻】normalizeDigestTimes 会 slice 到 MAX_DIGEST_TIMES。
+// 若 parseDigestCron 放过超上限的表达式，回读手写的 15 时刻配置会得到 12 个 ——
+// 界面显示 12 个、看着完全正常，用户按一次保存就静默删掉 3 个发信时刻，且无从发现少了哪几个。
+// 实测丢的是 12:00/13:00/14:00。判认不出则原表达式被原样保住。
+test(`超过 ${MAX_DIGEST_TIMES} 个时刻的手写表达式 → 判认不出，而不是截断`, () => {
+  const over = Array.from({ length: MAX_DIGEST_TIMES + 1 }, (_, i) => `0 ${i} * * *`).join(";");
+  assert.equal(parseDigestCron(over), null, "超上限必须判认不出，否则保存会静默删掉多出来的时刻");
+  // 正好等于上限的仍要认得出，别把边界连坐。
+  const exact = Array.from({ length: MAX_DIGEST_TIMES }, (_, i) => `0 ${i} * * *`).join(";");
+  assert.equal(parseDigestCron(exact)?.times.length, MAX_DIGEST_TIMES, "正好 12 个应能回读");
+});
+
 test("formatDigestTimes：补零 + 顿号分隔 + 排序", () => {
   assert.equal(formatDigestTimes([t(18, 0), t(9, 7)]), "09:07、18:00");
   assert.equal(formatDigestTimes([]), "");

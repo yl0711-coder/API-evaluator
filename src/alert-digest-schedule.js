@@ -101,6 +101,11 @@ export function parseDigestCron(cron) {
   const sel = parseScheduleFromJob(String(cron || "").trim(), "fixed");
   if (!sel.matched || sel.freq !== "fixed" || !sel.fixedTimes?.length) return null;
   if (!DAY_PRESETS.includes(sel.days)) return null;
+  // 【超过上限判认不出，而不是截断】normalizeDigestTimes 会 slice 到 12 个。
+  // 若在这里放过，回读一个手写的 15 时刻表达式会得到 12 个 —— 界面显示 12 个、看着正常，
+  // 用户按一次保存就【静默删掉 3 个发信时刻】，而他无从发现少了哪几个。
+  // 判认不出则原表达式被原样保住（UI 不猜着回填），与本页「绝不静默改写用户配置」一致。
+  if (sel.fixedTimes.length > MAX_DIGEST_TIMES) return null;
   // custom 必须真的带上具体哪几天；空的 daysCustom 说明反解析没拿到，按认不出处理。
   if (sel.days === "custom" && !sel.daysCustom?.length) return null;
   return {
