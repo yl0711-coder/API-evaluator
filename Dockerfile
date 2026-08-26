@@ -39,7 +39,24 @@ COPY --from=build --chown=node:node /app/shared ./shared
 COPY --from=build --chown=node:node /app/scripts ./scripts
 # The application only needs `node` at runtime. Remove bundled package managers to reduce
 # attack surface, then run as the unprivileged user provided by the official Node image.
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+#
+# 【为什么要 apk upgrade】上面的基础镜像按 digest 钉死（可复现），代价是它永远不会自己跟上
+# Alpine 后来发的补丁；而 CI 的 Trivy 门是 fail-closed 的（severity=CRITICAL,HIGH，
+# exit-code=1，ignore-unfixed=false）。于是同一份 Dockerfile 在漏洞库更新后会突然变红：
+# 实测 CVE-2026-14456（openssl，libcrypto3/libssl3 3.5.7-r0 → 3.5.8-r0）就这样让 8-24 还绿的
+# 构建在 8-26 红了。换更新的 node tag 不解决问题——24.19.0-alpine3.24 与本文件钉的
+# 24.18.0-alpine3.24 base layer 是同一个（sha256:55afa1ecc21d…），同样是 3.5.7-r0。
+# 补丁只在 Alpine 仓库里，只能构建时拉。
+#
+# 【为什么是全量 upgrade 而不是只点名那两个包】点名的话，此后每来一个 OS 级 CVE 都要改一次
+# 本文件，而且每次都是在打 tag 时才发现——正是上面那种"定时炸弹"式失败。全量升不额外损失
+# 可复现性：只要构建时拉包，逐包点名同样是"拉当时的最新版"。
+#
+# 【为什么放在这个 RUN 块里】这里在所有 COPY 之后，代码一改缓存就失效、升级随之重跑，
+# 能持续跟上新补丁。放在 COPY 之前虽然缓存命中率更高，但父层只有永不变的基础镜像，
+# 那一层会被永久命中，日后的补丁再也进不来。
+RUN apk upgrade --no-cache \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg \
     && mkdir -p /data \
     && chown node:node /data

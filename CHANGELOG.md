@@ -64,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   写盘，而本功能默认关闭——等于所有没开汇总的部署都在白付一天 1440 次写。加只读前置判定。
 - **开启汇总时会重算节奏**，把用户设好的下一个发信时刻挪掉。
 - **趋势点判空用 `hasNum`**，修 null 被读成 0 引发的两处误报与一处假阴性。
+- **镜像构建在 CI 的 Trivy 门上卡住**（CVE-2026-14456，openssl 3.5.7-r0）。基础镜像按 digest 钉死，
+  永远不会自己跟上 Alpine 后来的补丁，而漏洞门是 fail-closed 的——于是同一份 Dockerfile
+  在漏洞库更新后突然变红（8-24 绿、8-26 红）。runtime 阶段加 `apk upgrade --no-cache`。
+  换更新的 node tag 不解决问题：24.19.0-alpine3.24 与钉住的 24.18.0-alpine3.24 base layer
+  是同一个，同样是 3.5.7-r0。
 
 ### Notes
 - 报警汇总**默认关闭**，升级后行为与 0.7.13 完全一致，直到你在「报警配置」页开启。
