@@ -33,17 +33,11 @@ app-data/
 *.docx
 注意事项.txt
 *笔记.md
-01-一键准入任务中心-产品需求文档-PRD.md
-02-v0.7.3-准入测试问题检查说明.md
-03-v0.7.3-准入测试修复实施方案.md
-04-阶段5-真实验收方案.md
-05-feat-auto-test-交接.md
 
 来自人类的说明.md
 .postman
 postman
 .audit/
-list.md
 # Playwright 产物（跑 pnpm test:e2e 后生成，失败时含 trace/截图）
 test-results/
 playwright-report/
