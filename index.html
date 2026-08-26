@@ -1478,32 +1478,34 @@
               </label>
 
               <label>
-                多久发一封
-                <select id="ar-digest-freq">
-                  <option value="daily" selected>每天一次</option>
-                  <option value="h12">每天两次（早晚各一次）</option>
-                  <option value="h6">每天四次（每 6 小时）</option>
-                  <option value="weekday">只在工作日，每天一次</option>
-                  <option value="weekly">每周一次</option>
+                星期
+                <select id="ar-digest-days">
+                  <option value="everyday" selected>每天</option>
+                  <option value="weekday">工作日（周一至周五）</option>
+                  <option value="weekend">周末（周六、周日）</option>
+                  <option value="custom">自定义…</option>
                 </select>
               </label>
-              <label>
-                第一封的时刻
-                <input type="time" id="ar-digest-time" value="09:07" step="60" />
-                <small class="field-hint">北京时间。选「每天两次/四次」时，后面几封按这个时刻等间隔推算。</small>
-              </label>
-              <label id="ar-digest-weekday-label" class="hidden">
-                星期几
-                <select id="ar-digest-weekday">
-                  <option value="1" selected>每周一</option>
-                  <option value="2">每周二</option>
-                  <option value="3">每周三</option>
-                  <option value="4">每周四</option>
-                  <option value="5">每周五</option>
-                  <option value="6">每周六</option>
-                  <option value="0">每周日</option>
-                </select>
-              </label>
+              <div id="ar-digest-days-custom" class="atc-weekday-picker hidden">
+                <label class="checkbox-option"><input type="checkbox" data-digest-dow="1" />周一</label>
+                <label class="checkbox-option"><input type="checkbox" data-digest-dow="2" />周二</label>
+                <label class="checkbox-option"><input type="checkbox" data-digest-dow="3" />周三</label>
+                <label class="checkbox-option"><input type="checkbox" data-digest-dow="4" />周四</label>
+                <label class="checkbox-option"><input type="checkbox" data-digest-dow="5" />周五</label>
+                <label class="checkbox-option"><input type="checkbox" data-digest-dow="6" />周六</label>
+                <label class="checkbox-option"><input type="checkbox" data-digest-dow="0" />周日</label>
+              </div>
+              <div id="ar-digest-times" class="atc-fixed-times">
+                <div class="atc-fixed-time-controls">
+                  <label>小时<select id="ar-digest-hour"></select></label>
+                  <label>分钟<select id="ar-digest-minute"></select></label>
+                  <button type="button" id="ar-digest-time-add" class="secondary">添加时刻</button>
+                </div>
+                <div id="ar-digest-time-list" class="atc-fixed-time-list"></div>
+                <small class="field-hint">
+                  北京时间，想几点发就加几点（最多 12 个）。建议避开自动测试正在跑的时段。
+                </small>
+              </div>
               <div class="wide">
                 <small class="field-hint" id="ar-digest-preview">—</small>
               </div>

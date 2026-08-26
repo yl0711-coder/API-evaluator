@@ -1,151 +1,232 @@
 // tests/alert-digest-cron-presets.test.mjs
-// 报警汇总页那五个「人话」预设 → cron 表达式的契约。
+// 报警汇总的「哪几天 × 哪几个发信时刻」→ cron 的契约。
 //
-// 【为什么单独一个文件】这五个预设是给非程序员用的：界面上没有 crontab 输入框，
-// 用户看不到也改不了表达式，所以【生成得对不对全靠这里守】。一旦生成的表达式与标签不符，
+// 【为什么单独一个文件】这套控件是给非程序员用的：界面上没有 crontab 输入框，
+// 用户看不到也改不了表达式，所以【生成得对不对全靠这里守】。一旦生成的表达式与界面显示不符，
 // 用户没有任何手段发现——他只会觉得"汇总信怎么不按我选的时间来"。
 //
-// 断言的是【实际触发时刻】而非字符串长相：字符串比对只能证明"没变过"，
-// 证明不了"是对的"。这里把表达式喂给真实 cron 引擎（server/cron-schedule.mjs）展开成
-// 触发小时/分钟集合，再与标签承诺的时刻比对。
+// 断言的是【实际触发时刻】而非字符串长相：字符串比对只能证明"没变过"，证明不了"是对的"。
+// 这里把表达式喂给真实 cron 引擎（server/cron-schedule.mjs）展开成触发小时/分钟/星期集合，
+// 再与用户选的时刻比对。
 //
-// 历史教训：曾用步长形态 `分 起点-23/步长` 生成，而本项目的 expandField 对裸数字带步长的
-// `3/6` 会取 lo=hi=3 —— 只展开出一个小时，「每 6 小时」静默变成「每天一次」。
-// 字符串比对不会发现这件事，展开成小时集合才会。
+// 历史教训两条，都是字符串比对发现不了的：
+//  ① 曾用步长形态 `分 起点-23/步长` 生成，而 expandField 对裸数字带步长的 `3/6` 会取
+//     lo=hi=3 —— 只展开出一个小时，「每 6 小时」静默变成「每天一次」。
+//  ② 曾用 parseScheduleFromCron 反解析，而 `0 HH * * *` 对它是歧义的（既像「每天一次」
+//     也像固定 HH:00），会被判成 freq:"once" —— 于是【单个整点时刻回读不出来】：
+//     存「每天 09:00」重开页面变成「认不出」。而 09:00 恰恰是最可能被选的时刻。
 import assert from "node:assert/strict";
 import test from "node:test";
 
 // 【必须 import 真实映射，不能在此复刻】复刻一份等于拿副本跟自己比：
 // 改坏了 src/ 里的真实映射，测试照旧全绿。这个坑本轮已经踩过一次（选择器正则），故直接引用。
-import { buildDigestCron, parseDigestCron, WEEKLY_FREQ } from "../src/alert-digest-schedule.js";
+import {
+  buildDigestCron,
+  parseDigestCron,
+  normalizeDigestTimes,
+  normalizeDigestDays,
+  formatDigestTimes,
+  MAX_DIGEST_TIMES,
+} from "../src/alert-digest-schedule.js";
 import { parseCron } from "../server/cron-schedule.mjs";
 import { computeNextRunAt } from "../server/auto-test-store.mjs";
 
-const ALL_FREQS = ["daily", "h12", "h6", "weekday", WEEKLY_FREQ];
+const t = (hour, minute) => ({ hour, minute });
 
-// 把（可能含分号的）cron 展开成 { hours, minutes, dows }。
+// 把（可能含分号的）cron 展开成 { hours, minutes, dows, pairs }。
+// pairs 是「时:分」组合，用来确认不是笛卡尔积——分号形式下每条表达式各自成对，
+// 只看 hours/minutes 集合会漏掉「09:07 + 18:30 被写成四个时刻」这类错误。
 function expand(cron) {
   const hours = new Set();
   const minutes = new Set();
   const dows = new Set();
+  const pairs = new Set();
   for (const expr of cron.split(";")) {
     const f = parseCron(expr.trim());
-    for (const h of f.hour) hours.add(h);
+    for (const h of f.hour) {
+      hours.add(h);
+      for (const m of f.minute) pairs.add(`${h}:${m}`);
+    }
     for (const m of f.minute) minutes.add(m);
     for (const d of f.dow) dows.add(d);
   }
   const sorted = (s) => [...s].sort((a, b) => a - b);
-  return { hours: sorted(hours), minutes: sorted(minutes), dows: sorted(dows) };
+  return { hours: sorted(hours), minutes: sorted(minutes), dows: sorted(dows), pairs: [...pairs].sort() };
 }
 
-test("每天一次：只在选定的那一个时刻触发", () => {
-  const { hours, minutes } = expand(buildDigestCron({ freq: "daily", hour: 9, minute: 7 }));
-  assert.deepEqual(hours, [9]);
-  assert.deepEqual(minutes, [7], "分钟必须保住——步长形态会把它压成 0");
+const ALL_DOWS = [0, 1, 2, 3, 4, 5, 6];
+
+test("单个时刻：只在该时刻触发", () => {
+  const { pairs, dows } = expand(buildDigestCron({ days: "everyday", times: [t(8, 30)] }));
+  assert.deepEqual(pairs, ["8:30"]);
+  assert.deepEqual(dows, ALL_DOWS);
 });
 
-test("每天两次：间隔 12 小时，分钟保住", () => {
-  const { hours, minutes } = expand(buildDigestCron({ freq: "h12", hour: 9, minute: 7 }));
-  assert.deepEqual(hours, [9, 21], "09:07 与 21:07");
-  assert.deepEqual(minutes, [7]);
+// 这条是本次改进的核心诉求：旧版「每天两次」被钉死成间隔 12 小时，表达不出 09:00 + 18:00。
+test("任意两个时刻（09:00 与 18:00）：不再被间隔 12 小时钉死", () => {
+  const { pairs } = expand(buildDigestCron({ days: "everyday", times: [t(9, 0), t(18, 0)] }));
+  assert.deepEqual(pairs, ["18:0", "9:0"].sort());
 });
 
-test("每天四次：间隔 6 小时，分钟保住", () => {
-  const { hours, minutes } = expand(buildDigestCron({ freq: "h6", hour: 9, minute: 7 }));
-  assert.deepEqual(hours, [3, 9, 15, 21], "从 09:07 起算，等间隔推到 03/09/15/21");
-  assert.deepEqual(minutes, [7]);
+test("三个时刻、分钟各不相同：每个时刻的分钟都保住，且不产生笛卡尔积", () => {
+  const { pairs } = expand(buildDigestCron({ days: "everyday", times: [t(9, 7), t(13, 15), t(19, 45)] }));
+  assert.deepEqual(pairs, ["13:15", "19:45", "9:7"].sort());
+  assert.equal(pairs.length, 3, "三个时刻就是三个组合，不该变成 3×3");
 });
 
-// 这一条钉住那个历史缺陷：绝不能只展开出一个小时。
-test("每天四次/两次绝不退化成每天一次（历史缺陷：`3/6` 只展开出一个小时）", () => {
-  for (let hour = 0; hour < 24; hour++) {
-    const c6 = buildDigestCron({ freq: "h6", hour, minute: 7 });
-    assert.equal(expand(c6).hours.length, 4, `${hour} 点起算应有 4 个触发小时，实得 "${c6}"`);
-    const c12 = buildDigestCron({ freq: "h12", hour, minute: 30 });
-    assert.equal(expand(c12).hours.length, 2, `${hour} 点起算应有 2 个触发小时，实得 "${c12}"`);
-  }
+test("整点时刻不被压掉（分钟 0 不是 falsy 缺省）", () => {
+  const { pairs } = expand(buildDigestCron({ days: "everyday", times: [t(0, 0)] }));
+  assert.deepEqual(pairs, ["0:0"]);
 });
 
-test("只在工作日：dow 为 1-5，不含周末", () => {
-  const { hours, minutes, dows } = expand(buildDigestCron({ freq: "weekday", hour: 9, minute: 7 }));
+test("只在工作日：dow 为 1-5", () => {
+  const { dows, pairs } = expand(buildDigestCron({ days: "weekday", times: [t(9, 0)] }));
   assert.deepEqual(dows, [1, 2, 3, 4, 5]);
-  assert.deepEqual(hours, [9]);
-  assert.deepEqual(minutes, [7]);
+  assert.deepEqual(pairs, ["9:0"]);
 });
 
-test("每周一次：只在选定的那一天", () => {
-  for (const weekday of [0, 1, 3, 6]) {
-    const cron = buildDigestCron({ freq: WEEKLY_FREQ, hour: 9, minute: 7, weekday });
-    assert.deepEqual(expand(cron).dows, [weekday], `每周 ${weekday} → "${cron}"`);
-  }
+test("只在周末：dow 为 0 与 6", () => {
+  assert.deepEqual(expand(buildDigestCron({ days: "weekend", times: [t(10, 20)] })).dows, [0, 6]);
 });
 
-// 端点会拒绝算不出下一个时刻的 cron（回 400）。五个预设都不该踩到。
-test("所有预设 × 全部时刻都能被端点接受（computeNextRunAt 不返回 null）", () => {
+test("自选星期几：多天全部保留（不能只留第一天）", () => {
+  const { dows } = expand(buildDigestCron({ days: "custom", daysCustom: [1, 3, 5], times: [t(9, 7)] }));
+  assert.deepEqual(dows, [1, 3, 5]);
+});
+
+test("自选星期几 × 多时刻：星期与时刻都完整", () => {
+  const { dows, pairs } = expand(buildDigestCron({ days: "custom", daysCustom: [2, 4], times: [t(9, 0), t(21, 30)] }));
+  assert.deepEqual(dows, [2, 4]);
+  assert.deepEqual(pairs, ["21:30", "9:0"].sort());
+});
+
+// 端点会拒绝算不出下一个时刻的 cron（回 400）。任何选择都不该踩到。
+test("全部 24×60 分钟组合都能被端点接受", () => {
   const bad = [];
-  for (const freq of ALL_FREQS) {
-    for (let hour = 0; hour < 24; hour++) {
-      for (const minute of [0, 7, 30, 59]) {
-        const cron = buildDigestCron({ freq, hour, minute });
-        if (computeNextRunAt({ cron }, Date.now()) === null) bad.push(`${freq} ${hour}:${minute} → "${cron}"`);
+  for (let hour = 0; hour < 24; hour++) {
+    for (const minute of [0, 1, 7, 30, 59]) {
+      for (const days of ["everyday", "weekday", "weekend"]) {
+        const cron = buildDigestCron({ days, times: [t(hour, minute)] });
+        if (computeNextRunAt({ cron }, Date.now()) === null) bad.push(`${days} ${hour}:${minute} → "${cron}"`);
       }
     }
   }
-  assert.deepEqual(bad, [], `以下预设会被端点拒绝：\n  ${bad.join("\n  ")}`);
+  assert.deepEqual(bad, [], `以下选择会被端点拒绝：\n  ${bad.join("\n  ")}`);
 });
 
-test("五个预设都能反解析回同一个预设（存盘再打开不失真）", () => {
+test("每个星期几单独选都能被端点接受", () => {
+  for (const d of ALL_DOWS) {
+    const cron = buildDigestCron({ days: "custom", daysCustom: [d], times: [t(9, 0)] });
+    assert.notEqual(computeNextRunAt({ cron }, Date.now()), null, `周${d} → "${cron}"`);
+  }
+});
+
+// —— 往返 ——
+// 【回归：整点时刻回读不出来】见文件头教训②。这一组必须覆盖 minute=0。
+test("往返：单个整点时刻能原样回读（曾因 cron 歧义丢失）", () => {
+  const cron = buildDigestCron({ days: "everyday", times: [t(9, 0)] });
+  const back = parseDigestCron(cron);
+  assert.ok(back, `"${cron}" 应能回读，实得 null`);
+  assert.deepEqual(back.times, [t(9, 0)]);
+  assert.equal(back.days, "everyday");
+});
+
+test("往返：工作日 + 单个整点时刻（同一歧义的另一种形状）", () => {
+  const back = parseDigestCron(buildDigestCron({ days: "weekday", times: [t(9, 0)] }));
+  assert.ok(back);
+  assert.equal(back.days, "weekday");
+  assert.deepEqual(back.times, [t(9, 0)]);
+});
+
+test("往返：全部整点 × 全部星期预设都不丢时刻", () => {
   const bad = [];
-  for (const freq of ALL_FREQS) {
-    for (let hour = 0; hour < 24; hour++) {
-      const cron = buildDigestCron({ freq, hour, minute: 7 });
+  for (let hour = 0; hour < 24; hour++) {
+    for (const days of ["everyday", "weekday", "weekend"]) {
+      const cron = buildDigestCron({ days, times: [t(hour, 0)] });
       const back = parseDigestCron(cron);
-      if (back?.freq !== freq) bad.push(`${freq} ${hour}:07 → "${cron}" → 回填成 ${back?.freq ?? "认不出"}`);
+      if (!back || back.times.length !== 1 || back.times[0].hour !== hour || back.days !== days) {
+        bad.push(`${days} ${hour}:00 → "${cron}" → ${JSON.stringify(back)}`);
+      }
     }
   }
-  assert.deepEqual(bad, [], `以下预设回填后变了：\n  ${bad.join("\n  ")}`);
+  assert.deepEqual(bad, [], `以下整点配置回读失真：\n  ${bad.join("\n  ")}`);
 });
 
-test("每周一次：反解析要还原星期几", () => {
-  for (const weekday of [0, 1, 5, 6]) {
-    const back = parseDigestCron(buildDigestCron({ freq: WEEKLY_FREQ, hour: 9, minute: 7, weekday }));
-    assert.equal(back.weekday, weekday);
-  }
+test("往返：多时刻 + 自选星期几完整还原", () => {
+  const sel = { days: "custom", daysCustom: [1, 3, 5], times: [t(9, 0), t(13, 15), t(21, 45)] };
+  const back = parseDigestCron(buildDigestCron(sel));
+  assert.equal(back.days, "custom");
+  assert.deepEqual(back.daysCustom, [1, 3, 5]);
+  assert.deepEqual(back.times, sel.times);
 });
 
 // 幂等：回填后不改任何选项直接再保存，应生成完全相同的表达式。
-// 「每天四次」回填显示的是当天首个时刻（09:07 → 03:07），若不幂等，
-// 每次打开页面按一次保存都会把节奏往前挪一格。
-test("回填后原样再保存 → 表达式不变（打开页面按保存不会挪动节奏）", () => {
-  for (const freq of ALL_FREQS) {
-    for (const hour of [0, 9, 22, 23]) {
-      const first = buildDigestCron({ freq, hour, minute: 7 });
-      const back = parseDigestCron(first);
-      const again = buildDigestCron({ freq: back.freq, hour: back.hour, minute: back.minute, weekday: back.weekday });
-      assert.equal(again, first, `${freq} ${hour}:07 不幂等：首次 "${first}"，回填再存 "${again}"`);
-    }
+// 否则「打开页面按一次保存」就会悄悄改变发信节奏。
+test("回填后原样再保存 → 表达式不变", () => {
+  const cases = [
+    { days: "everyday", times: [t(9, 0)] },
+    { days: "everyday", times: [t(9, 0), t(18, 0)] },
+    { days: "weekday", times: [t(8, 30)] },
+    { days: "weekend", times: [t(10, 20)] },
+    { days: "custom", daysCustom: [1, 3, 5], times: [t(9, 7)] },
+    { days: "custom", daysCustom: [0, 6], times: [t(23, 59), t(0, 0)] },
+  ];
+  for (const sel of cases) {
+    const first = buildDigestCron(sel);
+    const again = buildDigestCron(parseDigestCron(first));
+    assert.equal(again, first, `不幂等：首次 "${first}"，回填再存 "${again}"`);
   }
 });
 
-test("跨午夜的起算时刻：仍是 4 个等间隔时刻", () => {
-  const { hours, minutes } = expand(buildDigestCron({ freq: "h6", hour: 22, minute: 7 }));
-  assert.deepEqual(hours, [4, 10, 16, 22]);
-  assert.deepEqual(minutes, [7]);
+// —— 归一化 ——
+
+test("时刻列表：排序 + 去重（同一组时刻无论添加顺序都产出同一个 cron）", () => {
+  assert.deepEqual(normalizeDigestTimes([t(18, 0), t(9, 0), t(18, 0)]), [t(9, 0), t(18, 0)]);
+  const a = buildDigestCron({ days: "everyday", times: [t(18, 0), t(9, 0)] });
+  const b = buildDigestCron({ days: "everyday", times: [t(9, 0), t(18, 0)] });
+  assert.equal(a, b, "添加顺序不该影响结果");
 });
 
-test("分钟为 0 时也照常工作（不因 falsy 被当成缺省）", () => {
-  const { hours, minutes } = expand(buildDigestCron({ freq: "h12", hour: 8, minute: 0 }));
-  assert.deepEqual(hours, [8, 20]);
-  assert.deepEqual(minutes, [0]);
+test("时刻列表：非法项被丢掉，不产出坏 cron", () => {
+  assert.deepEqual(normalizeDigestTimes([t(25, 0), t(-1, 0), t(9, 60), t(9, -1), t(9, 30)]), [t(9, 30)]);
+  assert.deepEqual(normalizeDigestTimes([null, undefined, {}, "x", t(9, 0)]), [t(9, 0)]);
+  assert.deepEqual(normalizeDigestTimes(null), []);
+});
+
+test(`时刻列表上限 ${MAX_DIGEST_TIMES} 个`, () => {
+  const many = Array.from({ length: 30 }, (_, i) => t(i % 24, i));
+  assert.equal(normalizeDigestTimes(many).length, MAX_DIGEST_TIMES);
+});
+
+test("时刻列表为空 → cron 为空串（调用方据此拒绝保存）", () => {
+  assert.equal(buildDigestCron({ days: "everyday", times: [] }), "");
+  assert.equal(buildDigestCron({ days: "everyday" }), "");
+  assert.equal(buildDigestCron(null), "");
+});
+
+test("星期：脏预设落回 everyday", () => {
+  assert.deepEqual(normalizeDigestDays({ days: "bogus" }), { days: "everyday", daysCustom: [] });
+  assert.deepEqual(normalizeDigestDays({}), { days: "everyday", daysCustom: [] });
+});
+
+// custom 但一天都没勾：buildDow 会产出 "*"（即每天），与界面显示的「自己选星期几」不符。
+// 归一化把它显式变成 everyday，让存下去的东西和读回来的一致。
+test("星期：custom 但一天都没勾 → 落回 everyday（避免显示与实际不符）", () => {
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [] }), { days: "everyday", daysCustom: [] });
+  const cron = buildDigestCron({ days: "custom", daysCustom: [], times: [t(9, 0)] });
+  assert.deepEqual(parseDigestCron(cron).days, "everyday", "回读也该是 everyday，不能是 custom");
+});
+
+test("星期：越界与重复的星期号被清理", () => {
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [1, 1, 7, -1, 3] }), { days: "custom", daysCustom: [1, 3] });
 });
 
 // 认不出的表达式必须回 null，让 UI 提示用户而不是猜着回填。
-test("认不出的 cron → parseDigestCron 返回 null（绝不猜着改写用户配置）", () => {
+test("认不出的 cron → 返回 null（绝不猜着改写用户配置）", () => {
   for (const cron of [
-    "*/5 * * * *", // 分钟级步长：本页没有这个预设
-    "0 9-18/2 * * 1-5", // 时段+步长：自动测试页的形态，本页表达不出
+    "*/5 * * * *", // 分钟级步长
+    "0 9-18/2 * * 1-5", // 时段+步长：自动测试页的形态
     "7 9 1 * *", // 限定日期
-    "7 9,13,17 * * *", // 3 个时刻：不对应任何预设
     "",
     "垃圾",
   ]) {
@@ -153,7 +234,36 @@ test("认不出的 cron → parseDigestCron 返回 null（绝不猜着改写用�
   }
 });
 
-// 多天的自定义星期组合（如周一+周四）本页表达不出，必须判认不出而非错当成「每周一次」。
-test("自定义多天组合 → 认不出（不能错当成每周一次而丢掉其余那几天）", () => {
-  assert.equal(parseDigestCron("7 9 * * 1,4"), null);
+test("formatDigestTimes：补零 + 顿号分隔 + 排序", () => {
+  assert.equal(formatDigestTimes([t(18, 0), t(9, 7)]), "09:07、18:00");
+  assert.equal(formatDigestTimes([]), "");
+});
+
+// —— 自选星期等于预设时归并回预设 ——
+// 【回归：不幂等】勾「周六+周日」会得 dow 字段 `0,6`，而反解析认出它就是 weekend 预设、
+// 再建时 cron-ui 按预设写成 `6,0` —— 触发星期完全相同，但配置文件里的字符串变了一次形态。
+// 后果是「打开页面、什么都不改、按一次保存」会改写配置文件，让人以为自己动了什么。
+test("自选星期恰好等于预设 → 归并成该预设（否则往返不幂等）", () => {
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [0, 6] }), { days: "weekend", daysCustom: [] });
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [1, 2, 3, 4, 5] }), { days: "weekday", daysCustom: [] });
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [0, 1, 2, 3, 4, 5, 6] }), { days: "everyday", daysCustom: [] });
+  // 乱序输入也要认出来
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [6, 0] }), { days: "weekend", daysCustom: [] });
+});
+
+test("自选星期与预设都不等 → 保持 custom", () => {
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [1, 3, 5] }), { days: "custom", daysCustom: [1, 3, 5] });
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [1] }), { days: "custom", daysCustom: [1] });
+  // 工作日少一天 → 不是 weekday
+  assert.deepEqual(normalizeDigestDays({ days: "custom", daysCustom: [1, 2, 3, 4] }), { days: "custom", daysCustom: [1, 2, 3, 4] });
+});
+
+test("自选星期等于预设时，产出的 cron 与直接选预设逐字相同", () => {
+  const times = [t(9, 0)];
+  assert.equal(
+    buildDigestCron({ days: "custom", daysCustom: [0, 6], times }),
+    buildDigestCron({ days: "weekend", times }),
+    "custom[0,6] 与 weekend 必须产出同一个表达式",
+  );
+  assert.equal(buildDigestCron({ days: "custom", daysCustom: [1, 2, 3, 4, 5], times }), buildDigestCron({ days: "weekday", times }));
 });
