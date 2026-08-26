@@ -4589,6 +4589,45 @@ textarea:focus {
   margin: 0;
 }
 
+/* 报警汇总的「星期 + 发信时刻」两组控件。
+   结构与 class 沿用「自动测试配置」页的定时构造器（.atc-weekday-picker / .atc-fixed-times /
+   .atc-fixed-time-row），观感因此与那页一致；但那边的规则都限定在 #auto-test-config
+   作用域内，本页需自带一份（同 .atc-list-head 的处理）。
+   星期勾选本身用全站通用的 .checkbox-option（自带边框/底色/内边距），不另造。 */
+#alert-rules .atc-weekday-picker {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+#alert-rules .atc-fixed-times {
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+#alert-rules .atc-fixed-time-controls,
+#alert-rules .atc-fixed-time-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+#alert-rules .atc-fixed-time-controls label {
+  min-width: 110px;
+}
+#alert-rules .atc-fixed-time-list {
+  display: grid;
+  gap: 8px;
+}
+#alert-rules .atc-fixed-time-row {
+  align-items: center;
+  justify-content: space-between;
+  max-width: 320px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
 /* 报警汇总的作业勾选区：整行出现，内部单列纵向排列（每行一个作业，信息较长，两列会挤）。
    显隐由 JS 的 .hidden（display:none !important）控制，稳压此处的 display:grid。 */
 #alert-rules #ar-digest-job-picker {
