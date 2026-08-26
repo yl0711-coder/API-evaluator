@@ -1472,9 +1472,17 @@
               附上本时段各渠道的实测数字。手动测试触发的报警不受影响，仍然立即发信。
             </p>
             <div class="form-grid">
-              <label class="wide">
+              <!-- 本块的总开关，用全站通用的 .checkbox-option（自带边框/底色/内边距）。
+                   原先是裸 label.wide：它继承 label 的 display:grid，把复选框拉成 1066×13px
+                   横贯整行的扁条、文字另起一行，且无边框无底色——与下方规则表单的「启用」
+                   开关（同为 .checkbox-option）观感完全不一致。文字须包在 <span> 里，
+                   .checkbox-option span 负责标题/说明的两行排布。 -->
+              <label class="wide checkbox-option">
                 <input type="checkbox" id="ar-digest-enabled" />
-                启用报警汇总
+                <span>
+                  启用报警汇总
+                  <small>关闭后下方的星期、发信时刻与作业范围仍会随「保存汇总设置」一并留存，重新开启时不用再填一遍。</small>
+                </span>
               </label>
 
               <label>
@@ -1529,7 +1537,10 @@
               </div>
 
               <div class="wide action-row">
-                <button type="button" id="ar-digest-save">保存汇总设置</button>
+                <!-- class="primary" 是必需的：无 class 的 button 会退回浏览器原生样式
+                     （浅灰底 + 黑字 + 2px 黑边 + cursor:default），在深色主题上格外扎眼，
+                     而它是本块的主操作。与规则表单的「保存规则」按钮取齐。 -->
+                <button type="button" id="ar-digest-save" class="primary">保存汇总设置</button>
                 <button type="button" id="ar-digest-test" class="secondary">立即发送一封（测试）</button>
               </div>
             </div>
