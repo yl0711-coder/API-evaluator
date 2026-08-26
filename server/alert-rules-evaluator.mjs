@@ -140,35 +140,56 @@ function describeHit(rule, entry) {
   return `规则「${rule.name}」命中：${who} 的 ${rule.metric} = ${entry.metrics[rule.metric]}（阈值 ${rule.comparator} ${rule.threshold}）`;
 }
 
+// 「这是同一件事吗」的判据 —— 与 describeHit 的人话描述【刻意分开】。
+//
+// 【为什么必须分开】汇总信要把一个持续挂着的渠道在本期内的多次命中折叠成一行
+// （见 alert-digest-format.collapseRepeats）。折叠若拿 describeHit 的产出当键，
+// 而它嵌了实测值（`p95TotalMs = 61234`），那么 P95 每次都不同 → 键每次都不同 → 折叠永不发生：
+// 实测冷却 1h + 每 2h 一测 + 24h 汇总，一封信里 12 行几乎一样的报警，标题还写「12 项报警」，
+// 把「一件事坏了」报成 12 件，分诊量级失真。只有等级型指标（取值离散）才碰巧折得住。
+// 故这里另给一个【不含实测值】的键：同一条规则在同一目标上因同一原因再次命中，键就相同。
+// 阈值/比较符仍入键 —— 规则被改过之后的命中确实是另一件事，不该与改动前的折叠在一起。
+function hitKeyOf(rule) {
+  return `threshold|${rule.metric}|${rule.comparator}|${rule.threshold}`;
+}
+
 // 两种稳定性复合规则（抖动 / 退化）都只在稳定性类运行上评估。
 // p50TotalMs / retryOverheadP95Ms 本就只有稳定性汇总才产出，但 firstAttemptSuccessRate 准入也有——
 // 不门禁的话，名为「稳定性…」的规则会在准入运行上悄悄触发，违反直觉且难以解释。
 // 门禁让这两条规则的生效边界与它们的名字一致。
 const STABILITY_TYPES = new Set(["stability", "batch-stability"]);
 
-// 逐项比较已配置的子阈值，返回越界项的中文描述数组。空数组 = 不命中。
+// 逐项比较已配置的子阈值，返回越界项数组。空数组 = 不命中。
 // 未配置（null）或指标算不出（null）的项一律跳过，不误报——与 threshold 形态「指标缺失视为不满足」同口径。
+//
+// 每项形如 { code, text }：text 是给人读的（含实测值），code 是【哪一维越界】的稳定标识（不含实测值）。
+// 两者分开的原因同 hitKeyOf —— 折叠要靠 code，否则实测值一变就折不住。
 function jitterBreaches(rule, metrics) {
   const p = rule.params || {};
   const out = [];
   const { jitterRatioMax, firstAttemptSuccessRateMin, retryOverheadP95MsMax } = p;
 
   if (Number.isFinite(jitterRatioMax) && metrics.latencyJitterRatio !== null && metrics.latencyJitterRatio > jitterRatioMax) {
-    out.push(
-      `耗时抖动 ${metrics.latencyJitterRatio.toFixed(2)}×（P95 ${Math.round(metrics.p95TotalMs)}ms ÷ P50 ${Math.round(metrics.p50TotalMs)}ms），阈值 ${jitterRatioMax}×`,
-    );
+    out.push({
+      code: `jitterRatio>${jitterRatioMax}`,
+      text: `耗时抖动 ${metrics.latencyJitterRatio.toFixed(2)}×（P95 ${Math.round(metrics.p95TotalMs)}ms ÷ P50 ${Math.round(metrics.p50TotalMs)}ms），阈值 ${jitterRatioMax}×`,
+    });
   }
   if (
     Number.isFinite(firstAttemptSuccessRateMin) &&
     metrics.firstAttemptSuccessRate !== null &&
     metrics.firstAttemptSuccessRate < firstAttemptSuccessRateMin
   ) {
-    out.push(
-      `首次成功率 ${Math.round(metrics.firstAttemptSuccessRate * 100)}%（不含重试兜底），阈值 ${Math.round(firstAttemptSuccessRateMin * 100)}%`,
-    );
+    out.push({
+      code: `firstAttemptSuccessRate<${firstAttemptSuccessRateMin}`,
+      text: `首次成功率 ${Math.round(metrics.firstAttemptSuccessRate * 100)}%（不含重试兜底），阈值 ${Math.round(firstAttemptSuccessRateMin * 100)}%`,
+    });
   }
   if (Number.isFinite(retryOverheadP95MsMax) && metrics.retryOverheadP95Ms !== null && metrics.retryOverheadP95Ms > retryOverheadP95MsMax) {
-    out.push(`重试额外等待 P95 ${Math.round(metrics.retryOverheadP95Ms)}ms，阈值 ${retryOverheadP95MsMax}ms`);
+    out.push({
+      code: `retryOverheadP95Ms>${retryOverheadP95MsMax}`,
+      text: `重试额外等待 P95 ${Math.round(metrics.retryOverheadP95Ms)}ms，阈值 ${retryOverheadP95MsMax}ms`,
+    });
   }
   return out;
 }
@@ -176,7 +197,14 @@ function jitterBreaches(rule, metrics) {
 // 复合规则的邮件正文：一封信列出全部越界项，而不是每项发一封。jitter / decline 共用。
 function describeCompositeHit(rule, entry, breaches) {
   const who = entry.model || entry.profileName || entry.targetId;
-  return [`规则「${rule.name}」判定不合格：${who}`, ...breaches.map((b) => `  · ${b}`)].join("\n");
+  return [`规则「${rule.name}」判定不合格：${who}`, ...breaches.map((b) => `  · ${b.text}`)].join("\n");
+}
+
+// 复合规则的折叠键：规则形态 + 【哪几维越界】，不含实测值。
+// 越界维度集合变了（比如从「只有抖动超标」变成「抖动 + 首次成功率都超标」）算另一件事，
+// 会各占一行——那确实是状态在恶化，不该被折叠掉。
+function compositeKeyOf(rule, breaches) {
+  return `${rule.kind}|${breaches.map((b) => b.code).join("+")}`;
 }
 
 // —— 稳定性退化：与自身历史比 ——
@@ -234,7 +262,7 @@ function medianOf(points, key) {
   return percentile(vals, 0.5);
 }
 
-// 两窗口中位数对比 → 越界项中文描述数组。空数组 = 不命中。
+// 两窗口中位数对比 → 越界项数组（形状同 jitterBreaches：{ code, text }）。空数组 = 不命中。
 // 未配置（null）或某一维算不出中位数的项一律跳过，与 jitter 同口径。
 export function declineBreaches(rule, windows) {
   const { successRateDropPp, p95WorsenRatio } = rule.params || {};
@@ -250,9 +278,10 @@ export function declineBreaches(rule, windows) {
     if (recentSr !== null && baseSr !== null) {
       const drop = baseSr - recentSr;
       if (drop >= successRateDropPp) {
-        out.push(
-          `成功率中位数从 ${Math.round(baseSr * 100)}%（前 ${nBaseline} 次）跌到 ${Math.round(recentSr * 100)}%（最近 ${nRecent} 次），↓${Math.round(drop * 100)}pp，阈值 ${Math.round(successRateDropPp * 100)}pp`,
-        );
+        out.push({
+          code: `successRateDrop>=${successRateDropPp}`,
+          text: `成功率中位数从 ${Math.round(baseSr * 100)}%（前 ${nBaseline} 次）跌到 ${Math.round(recentSr * 100)}%（最近 ${nRecent} 次），↓${Math.round(drop * 100)}pp，阈值 ${Math.round(successRateDropPp * 100)}pp`,
+        });
       }
     }
   }
@@ -261,9 +290,10 @@ export function declineBreaches(rule, windows) {
     const baseP95 = medianOf(windows.baseline, "p95Ms");
     // baseP95 必须 > 0：除以 0 得 Infinity，会让任何倍数阈值都判越界——凭空报警。
     if (recentP95 !== null && baseP95 !== null && baseP95 > 0 && recentP95 / baseP95 >= p95WorsenRatio) {
-      out.push(
-        `P95 中位数从 ${Math.round(baseP95)}ms（前 ${nBaseline} 次）升到 ${Math.round(recentP95)}ms（最近 ${nRecent} 次），×${(recentP95 / baseP95).toFixed(2)}，阈值 ${p95WorsenRatio}×`,
-      );
+      out.push({
+        code: `p95Worsen>=${p95WorsenRatio}`,
+        text: `P95 中位数从 ${Math.round(baseP95)}ms（前 ${nBaseline} 次）升到 ${Math.round(recentP95)}ms（最近 ${nRecent} 次），×${(recentP95 / baseP95).toFixed(2)}，阈值 ${p95WorsenRatio}×`,
+      });
     }
   }
   return out;
@@ -380,12 +410,16 @@ export async function evaluateAlertRules(result, opts = {}) {
         if (!ruleMatchesScope(rule, entry.targetId)) continue;
 
         // 三种规则形态各自判定，命中后共用下面的冷却/发信/记账链路。
+        // reason = 给人读的描述（含实测值）；reasonKey = 「是否同一件事」的判据（不含实测值，
+        // 供汇总折叠用，见 hitKeyOf 的注释）。两者必须分开产出。
         let reason = null;
+        let reasonKey = null;
         if (rule.kind === JITTER_KIND) {
           if (!isStabilityRun) continue; // 非稳定性类运行：这条规则不适用，静默跳过
           const breaches = jitterBreaches(rule, entry.metrics);
           if (!breaches.length) continue;
           reason = describeCompositeHit(rule, entry, breaches);
+          reasonKey = compositeKeyOf(rule, breaches);
         } else if (rule.kind === DECLINE_KIND) {
           if (!needsHistory) continue; // 同上门禁（needsHistory 已含 isStabilityRun）
           const history = await historyOf(entry.targetId);
@@ -398,9 +432,11 @@ export async function evaluateAlertRules(result, opts = {}) {
           const breaches = declineBreaches(rule, windows);
           if (!breaches.length) continue;
           reason = describeCompositeHit(rule, entry, breaches);
+          reasonKey = compositeKeyOf(rule, breaches);
         } else {
           if (!ruleHits(rule)(entry.metrics)) continue;
           reason = describeHit(rule, entry);
+          reasonKey = hitKeyOf(rule);
         }
 
         // 冷却记账的桶。
@@ -442,6 +478,7 @@ export async function evaluateAlertRules(result, opts = {}) {
               targetId: entry.targetId,
               targetLabel: entry.model || entry.profileName || entry.targetId,
               reason,
+              reasonKey,
               runId: result.runId || "",
             });
           } else {

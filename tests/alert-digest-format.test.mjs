@@ -210,6 +210,70 @@ test("乱序入队 → 区间取真正的最早与最晚", () => {
   assert.match(row, /共 3 次/);
 });
 
+// —— 折叠键：reasonKey 而非 reason ——
+// 【回归】折叠原先拿 reason 当键，而 reason 是给人读的、里面嵌了实测值
+// （`p95TotalMs = 61234`）。于是 P95/耗时/分数这类每次都不同的指标永远折不起来：
+// 实测 12 次命中原样列 12 行、标题写「12 项报警」，把一件事报成 12 件。
+// 反过来，恰好折得住的只有等级型指标（取值离散）——最不需要折叠的那几个。
+// 修复：评估器另给一个不含实测值的 reasonKey（hitKeyOf / compositeKeyOf），折叠用它。
+test("实测值每次不同但 reasonKey 相同 → 仍折叠成一行（P1 回归）", () => {
+  const p95s = [61234, 62871, 60019, 71544, 65003, 69812, 63377, 74120, 60988, 67455, 72301, 68044];
+  const alerts = p95s.map((v, i) =>
+    alert({
+      at: `2026-08-25T${String(i * 2).padStart(2, "0")}:07:00.000Z`,
+      ruleName: "P95 过高",
+      reason: `规则「P95 过高」命中：claude-sonnet-5 的 p95TotalMs = ${v}（阈值 gt 60000）`,
+      reasonKey: "threshold|p95TotalMs|gt|60000",
+    }),
+  );
+  const { subject, body } = formatAlertDigest({ alerts, runs: [] });
+  assert.match(subject, /1 个目标 1 项报警/, "一个渠道持续挂 = 一件事，不是 12 件");
+  assert.doesNotMatch(subject, /12 项/);
+  const rows = body.split("\n").filter((l) => l.includes("[阈值]"));
+  assert.equal(rows.length, 1, "实测值不同不该阻止折叠");
+  assert.match(rows[0], /共 12 次/);
+  assert.match(body, /共 12 次命中，重复的已按次数折叠/);
+});
+
+// 折叠掉的那些数字各不相同，留首次的会让人按一个 24 小时前的数字判断现状。
+test("折叠后显示最后一次的实测值，并标明「数字为最后一次」", () => {
+  const { body } = formatAlertDigest({
+    alerts: [
+      alert({ at: "2026-08-25T01:00:00.000Z", reason: "…… p95TotalMs = 61000 ……", reasonKey: "k" }),
+      alert({ at: "2026-08-25T12:00:00.000Z", reason: "…… p95TotalMs = 99999 ……", reasonKey: "k" }),
+    ],
+    runs: [],
+  });
+  assert.match(body, /99999/, "应显示最后一次的实测值");
+  assert.doesNotMatch(body, /61000/, "不应显示首次的旧值");
+  assert.match(body, /数字为最后一次/, "必须标明，否则读信人以为那是首次或平均值");
+});
+
+// reasonKey 不同 = 判定维度/阈值不同 = 真的是另一件事，必须各占一行。
+test("reasonKey 不同 → 不折叠（换了越界维度是状态在恶化）", () => {
+  const { subject } = formatAlertDigest({
+    alerts: [
+      alert({ ruleKind: "stability-jitter", reason: "抖动超标", reasonKey: "stability-jitter|jitterRatio>6" }),
+      alert({
+        ruleKind: "stability-jitter",
+        reason: "抖动 + 首次成功率都超标",
+        reasonKey: "stability-jitter|jitterRatio>6+firstAttemptSuccessRate<0.9",
+      }),
+    ],
+    runs: [],
+  });
+  assert.match(subject, /1 个目标 2 项报警/);
+});
+
+// 升级前落盘的队列文件里没有 reasonKey。此时退回用 reason 当键：折不住，但不能出错。
+test("老队列条目（无 reasonKey）→ 退回 reason 当键，不抛错", () => {
+  const { subject } = formatAlertDigest({
+    alerts: [alert({ reason: "A" }), alert({ reason: "A" }), alert({ reason: "B" })],
+    runs: [],
+  });
+  assert.match(subject, /1 个目标 2 项报警/, "A 折叠成 1 项、B 另 1 项");
+});
+
 // —— 指标全缺的目标必须被显式标注 ——
 // 【回归】一次运行的所有指标都是 null（上游连不上 / 全部超时）时，原先整行显示三个横杠，
 // 与「这个目标没测」长得一模一样；而阈值规则在指标缺失时按「不满足」处理，故它也不会触发报警。

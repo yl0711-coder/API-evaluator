@@ -33,13 +33,21 @@ const labelOf = (e) => e?.targetLabel || e?.targetId || "未知目标";
 //
 // 【为什么必须折叠】冷却时长（默认 1 小时）与汇总周期（可能 24 小时）是两个独立的量。
 // 一个持续挂着的渠道，每过一个冷却期就会重新入队一条——实测：冷却 1h + 每 2h 一测 + 24h 汇总，
-// 一封信里会出现【12 条逐字相同】的报警行。那只是把「邮件太多」换成了「一封信里太吵」，
+// 一封信里会出现【12 条几乎相同】的报警行。那只是把「邮件太多」换成了「一封信里太吵」，
 // 收敛邮件数量的初衷落空了。
 // 折叠保留全部信息量：次数 + 首末时刻都在，看得出它响了多少次、持续了多久。
+//
+// 【折叠键为什么用 reasonKey 而不是 reason】reason 是给人读的，里面嵌了实测值
+// （`p95TotalMs = 61234`）。拿它当键，P95 这类每次都不同的指标就永远折不起来 ——
+// 实测 12 次命中原样列 12 行、标题写「12 项报警」，把一件事报成 12 件。
+// 只有等级型指标（grade/verdictLevel，取值离散）才碰巧折得住，而那是最不需要折叠的那几个。
+// reasonKey 由评估器另给（见 alert-rules-evaluator.hitKeyOf / compositeKeyOf），只含
+// 「规则 + 判定维度 + 阈值」，不含实测值。阈值改过之后的命中键会变 —— 那确实是另一件事。
+// 缺 reasonKey（升级前落盘的老队列文件）时退回 reason，行为与修复前一致：折不住，但不出错。
 function collapseRepeats(items) {
   const map = new Map();
   for (const a of items) {
-    const key = `${a.ruleId}||${a.targetId}||${a.reason}`;
+    const key = `${a.ruleId}||${a.targetId}||${a.reasonKey || a.reason}`;
     const hit = map.get(key);
     if (!hit) {
       map.set(key, { ...a, count: 1, firstAt: a.at, lastAt: a.at });
@@ -48,7 +56,12 @@ function collapseRepeats(items) {
     hit.count += 1;
     // at 是入队顺序，未必严格有序（并发入队），故取字符串比较的极值而非首尾元素。
     if (String(a.at || "") < String(hit.firstAt || "")) hit.firstAt = a.at;
-    if (String(a.at || "") > String(hit.lastAt || "")) hit.lastAt = a.at;
+    // 【折叠后显示最后一次的实测值】折叠掉的那些数字各不相同，留首次的会让读信人
+    // 按一个 24 小时前的数字判断现状。取最新的那条，并在行里标明这是最后一次的值。
+    if (String(a.at || "") >= String(hit.lastAt || "")) {
+      hit.lastAt = a.at;
+      hit.reason = a.reason;
+    }
   }
   return [...map.values()];
 }
@@ -167,7 +180,9 @@ export function formatAlertDigest(taken, { windowFrom = null, windowTo = null, j
       for (const a of g.items) {
         const kind = KIND_LABELS[a.ruleKind] || a.ruleKind || "阈值";
         // 重复命中：显示次数与持续区间，而不是把同一行抄 N 遍。
-        const when = a.count > 1 ? `${clock(a.firstAt)} ~ ${clock(a.lastAt)}，共 ${a.count} 次` : clock(a.firstAt || a.at);
+        // 折叠过的行必须说明「下面的数字是最后一次的」——否则读信人会拿一个可能 24 小时前的
+        // 实测值判断现状，而中间那几次的数字各不相同、已被折叠掉。
+        const when = a.count > 1 ? `${clock(a.firstAt)} ~ ${clock(a.lastAt)}，共 ${a.count} 次，数字为最后一次` : clock(a.firstAt || a.at);
         lines.push(`  [${kind}] ${a.ruleName || a.ruleId}（${when}）`);
         // reason 是多行的（复合规则会列出各越界项），逐行缩进保持层次。
         for (const line of String(a.reason || "").split("\n")) {

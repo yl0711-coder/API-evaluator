@@ -1091,6 +1091,71 @@ test("汇总模式：复合规则（抖动）的多行原因完整入队", async
   });
 });
 
+// —— reasonKey：汇总折叠的判据，必须不含实测值 ——
+// 【回归 P1】折叠原先拿 reason 当键，而 reason 是人话描述、嵌了实测值。于是 P95 这类
+// 每次都不同的指标永远折不起来：12 次命中列 12 行、标题「12 项报警」，一件事报成 12 件。
+// 修复是让评估器另给一个 reasonKey。tests/alert-digest-format.test.mjs 覆盖了「有 reasonKey
+// 时会折叠」，但那边是手写的 key —— 【评估器根本不产出 key 也照样绿】。故这里从真实评估
+// 链路上取，钉住「key 确实被发出」以及「它不含实测值」。
+test("阈值规则入队时带 reasonKey，且实测值变化不改变它（P1 回归）", async () => {
+  await withTempStores(async () => {
+    await addRule({ name: "P95 过高", metric: "p95TotalMs", comparator: "gt", threshold: 60000 });
+    const s = makeSpies({ digestEnabled: true });
+    for (const v of [61234, 62871, 74120]) {
+      // 清冷却 = 模拟「又过了一个冷却期」。注意 cooldownHours: 0 行不通：
+      // normalizeRule 把非正数落回 1 小时（alert-rules-store.mjs:176），三次里只有第一次会入队。
+      await __writeStateForTest({});
+      await evaluateAlertRules(stabilityResult({ successRate: 1, p95TotalMs: v }), { source: "auto", ...s.opts });
+    }
+    assert.equal(s.alerts.length, 3, "前提：三次都得真的入队（否则下面的断言无意义）");
+    const keys = [...new Set(s.alerts.map((a) => a.reasonKey))];
+    assert.equal(keys.length, 1, `三次实测值不同但应共用一个 reasonKey，实际得到 ${JSON.stringify(keys)}`);
+    assert.ok(keys[0], "reasonKey 不能为空——空值会让折叠退回用 reason，等于没修");
+    for (const v of [61234, 62871, 74120]) {
+      assert.doesNotMatch(keys[0], new RegExp(String(v)), "reasonKey 里不得出现实测值");
+    }
+    // reason 仍必须带实测值：那是给人读的，折叠后显示最后一次的数字靠它。
+    assert.match(s.alerts[2].reason, /74120/);
+  });
+});
+
+test("阈值改过之后的命中算另一件事（reasonKey 含阈值与比较符）", async () => {
+  await withTempStores(async () => {
+    const a = await addRule({ metric: "p95TotalMs", comparator: "gt", threshold: 60000 });
+    const s = makeSpies({ digestEnabled: true });
+    await evaluateAlertRules(stabilityResult({ p95TotalMs: 90000 }), { source: "auto", ...s.opts });
+    await updateRules((rules) => {
+      rules.find((r) => r.id === a.id).threshold = 80000;
+      return null;
+    });
+    await __writeStateForTest({}); // 清冷却，否则第二次命中被 1 小时冷却拦掉
+    await evaluateAlertRules(stabilityResult({ p95TotalMs: 90000 }), { source: "auto", ...s.opts });
+    assert.equal(s.alerts.length, 2, "前提：两次都入队");
+    assert.notEqual(s.alerts[0].reasonKey, s.alerts[1].reasonKey, "阈值变了就是另一件事，不该折叠在一起");
+  });
+});
+
+test("复合规则的 reasonKey 按【越界维度集合】区分，不含实测值", async () => {
+  await withTempStores(async () => {
+    await addJitterRule({ jitterRatioMax: 6, firstAttemptSuccessRateMin: 0.9 });
+    const s = makeSpies({ digestEnabled: true });
+    // 只有抖动超标
+    await evaluateAlertRules(stabilityResult({ successRate: 1, firstAttemptSuccessRate: 1, p50TotalMs: 5000, p95TotalMs: 40000 }), {
+      source: "auto",
+      ...s.opts,
+    });
+    // 抖动 + 首次成功率都超标 → 另一个维度集合
+    await __writeStateForTest({}); // 清冷却（默认 1h，同一 targetKey 第二次会被拦）
+    await evaluateAlertRules(stabilityResult({ successRate: 1, firstAttemptSuccessRate: 0.5, p50TotalMs: 5000, p95TotalMs: 45000 }), {
+      source: "auto",
+      ...s.opts,
+    });
+    assert.equal(s.alerts.length, 2, "前提：两次都入队");
+    assert.notEqual(s.alerts[0].reasonKey, s.alerts[1].reasonKey, "越界维度集合不同 → 各占一行");
+    assert.doesNotMatch(s.alerts[0].reasonKey, /40000|5000/, "不得含实测值");
+  });
+});
+
 // —— scope=all 的冷却桶：两种模式各自的口径 ——
 // 立即发信模式共用一个桶（"all"）是有意降噪：20 个渠道同时出问题不该一次发 20 封信。
 // 汇总模式按渠道各算，因为那条取舍的前提变了——汇总反正只发一封，压掉其余渠道

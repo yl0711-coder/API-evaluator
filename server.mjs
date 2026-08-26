@@ -1316,11 +1316,17 @@ async function handleAlertDigestConfigSave(req, res) {
     if (cron) cfg.cron = cron;
     cfg.jobScope = jobScope;
     cfg.jobIds = jobScope === "selected" ? [...new Set(jobIds)] : [];
-    // 从关到开、或改了 cron：重算下一个到期时刻。
-    // 不这样做的话，旧的 nextDigestAt（可能是很久以前）会让开启后的第一个 tick 立刻发一封，
-    // 而那封信的内容是「上次汇总以来」——对刚开启的人来说是一封莫名其妙的空信。
-    if (!cfg.enabled || cron) cfg.nextDigestAt = computeNextRunAt({ cron: cfg.cron }, Date.now());
-    if (!enabled) cfg.nextDigestAt = null; // 关闭时清掉，避免下次开启沿用过期时刻
+    // 开启状态一律重算下一个到期时刻；关闭时清空（避免下次开启沿用过期时刻）。
+    // 不重算的话，旧的 nextDigestAt（可能是很久以前，或关闭时被清成的 null）会让开启后的
+    // 第一个 tick 立刻发一封，而那封信的时间范围是「上次汇总至今」——对刚开启的人来说
+    // 是一封莫名其妙的信（实测：关闭两个月后再开，当场收到一封跨越两个月的空信）。
+    //
+    // 【为什么不能只在「改了 cron」时重算】原先的条件是 `!cfg.enabled || cron`，
+    // 于是「enabled=true 且请求里不带 cron」两个分支都不走、沿用旧值 —— 而那正是上面那个失败。
+    // 界面上开启时必定带 cron（前端先拦空时刻列表），所以只有 API 直调能走到，但这条路
+    // 本就该是对的：判据是「开着就得有个有效的下一个时刻」，与请求里带不带 cron 无关。
+    // cron 是绝对时刻（每天 HH:MM），重算与否得到的是同一个时刻，故对正常保存无副作用。
+    cfg.nextDigestAt = cfg.enabled ? computeNextRunAt({ cron: cfg.cron }, Date.now()) : null;
     return { ...cfg };
   });
 

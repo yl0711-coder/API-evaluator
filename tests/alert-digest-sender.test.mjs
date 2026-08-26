@@ -3,7 +3,7 @@
 // 「先推进节奏再发信」的顺序、发信失败/未配 SMTP 时把内容回填队列。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -32,12 +32,13 @@ test.afterEach(() => {
   __resetRuleStateWriteChainForTest();
 });
 
+// fn 收到本次的临时目录（需要直接 stat 配置文件的用例用它；其余用例忽略这个参数即可）。
 function withTempFiles(fn) {
   const dir = mkdtempSync(join(tmpdir(), "ar-digest-send-"));
   __setDigestFilesForTest({ config: join(dir, "c.json"), queue: join(dir, "q.json") });
   // 冷却状态文件也隔离：discardQueuedAlerts 会清冷却，不隔离会写到真实 /data 下。
   __setRuleStateFileForTest(join(dir, "state.json"));
-  return Promise.resolve(fn()).finally(() => {
+  return Promise.resolve(fn(dir)).finally(() => {
     __setDigestFilesForTest({});
     __setRuleStateFileForTest(null);
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -114,6 +115,51 @@ test("功能关闭 → 不发信（即使队列里有东西）", async () => {
     const r = await maybeSendDigest({ sendMailFn: () => true });
     assert.equal(r.sent, false);
     assert.equal(r.reason, "not_due");
+  });
+});
+
+// —— 未到期时不得写盘 ——
+// 【回归 P2】maybeSendDigest 原先把到期判定放在 updateDigestConfig 的 mutator 里，
+// 而那条链无论 mutator 返回什么都会 writeJsonAtomic（临时文件 + rename）。
+// 于是【每个 tick 都重写一次配置文件】——本功能默认关闭，等于所有没开汇总的部署
+// 都在白付一天 1440 次原子写。判到期是纯读操作，没有理由进串行写链。
+// 判定方式用 mtime + 内容双重比对：只看内容会漏掉「写了同样的字节」这种情况。
+test("汇总关闭 → 每个 tick 都不碰配置文件（不做无谓写盘）", async () => {
+  await withTempFiles(async (dir) => {
+    const cfgFile = join(dir, "c.json");
+    // 先落一次盘，确保文件存在且有个基准 mtime
+    await updateDigestConfig((c) => {
+      c.enabled = false;
+      return null;
+    });
+    const before = statSync(cfgFile);
+    const bytesBefore = readFileSync(cfgFile, "utf8");
+    await new Promise((r) => setTimeout(r, 12)); // 让 mtime 有可分辨的推进空间
+    for (let i = 0; i < 5; i++) {
+      const r = await maybeSendDigest({ sendMailFn: () => true, getActiveJobs: () => 0 });
+      assert.equal(r.reason, "not_due", "前提：这几个 tick 必须都判未到期");
+    }
+    const after = statSync(cfgFile);
+    assert.equal(after.mtimeMs, before.mtimeMs, "未到期的 tick 不该重写配置文件");
+    assert.equal(readFileSync(cfgFile, "utf8"), bytesBefore);
+  });
+});
+
+test("到期但调度器在忙 → 顺延期间也不写盘（长批次可能持续几十分钟）", async () => {
+  await withTempFiles(async (dir) => {
+    const cfgFile = join(dir, "c.json");
+    await updateDigestConfig((c) => {
+      c.enabled = true;
+      c.nextDigestAt = new Date(Date.now() - 60_000).toISOString();
+      return null;
+    });
+    const before = statSync(cfgFile);
+    await new Promise((r) => setTimeout(r, 12));
+    for (let i = 0; i < 3; i++) {
+      const r = await maybeSendDigest({ sendMailFn: () => true, getActiveJobs: () => 2 });
+      assert.equal(r.reason, "deferred_scheduler_busy", "前提：必须真的走顺延分支");
+    }
+    assert.equal(statSync(cfgFile).mtimeMs, before.mtimeMs, "顺延不改变任何状态，不该写盘");
   });
 });
 

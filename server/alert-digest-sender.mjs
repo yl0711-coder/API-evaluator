@@ -72,6 +72,27 @@ export async function maybeSendDigest(opts = {}) {
   try {
     const nowMs = now();
 
+    // 【先只读判一次，不到期就直接走】updateDigestConfig 的 mutator 无论返回什么都会在之后
+    // writeJsonAtomic（临时文件 + rename）。少了这道前置判定，每个 tick 都会重写一次配置文件 ——
+    // 而本功能【默认关闭】，等于所有没开汇总的部署都在白付一天 1440 次原子写。
+    // 判到期本身是纯读操作，没有理由进那条串行写链。
+    //
+    // 这只是快速路径，不承担正确性：下面 mutator 里的判定仍是权威的那一次。
+    // 两个 tick 同时通过这道前置判定是允许的 —— 它们随后在串行链里排队，只有一个拿到 claimed。
+    const snapshot = await loadDigestConfig();
+    if (!isDigestDue(snapshot, nowMs)) return { sent: false, reason: "not_due" };
+    // 顺延同样在这里先判一次：长批次期间（可能几十分钟）每个 tick 都会走到这，
+    // 否则那段时间里依旧是每分钟一次无意义的写盘。
+    if (
+      shouldDefer({
+        dueAtMs: snapshot.nextDigestAt ? Date.parse(snapshot.nextDigestAt) : nowMs,
+        nowMs,
+        activeJobs: getActiveJobs(),
+      })
+    ) {
+      return { sent: false, reason: "deferred_scheduler_busy" };
+    }
+
     // 【到期判定与推进节奏必须是一次原子操作】
     // 两者若分成「读配置 → 判到期 → 写新节奏」三步，两个并发的 tick 会都在对方写入之前
     // 读到同一个已到期的 nextDigestAt，于是【各发一封】。实测两封信的内容还是互补的残信：

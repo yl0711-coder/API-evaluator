@@ -454,6 +454,29 @@ test("关闭汇总时：清空队列并清掉相关规则的冷却（不静默�
   await del(`/api/alert-rules/${ruleId}`, cookieAdmin);
 });
 
+// —— 开启时必须重算 nextDigestAt ——
+// 【回归 P3】原先推进条件是 `!cfg.enabled || cron`，于是「enabled=true 且请求不带 cron」
+// 两个分支都不走、沿用旧值 —— 而关闭时 nextDigestAt 被清成 null，isDigestDue(null) 判「立即到期」。
+// 实测：关闭两个月后只发 {enabled:true}，下一个 tick 当场发出一封时间范围跨越两个月的空信
+// （正是该端点注释里说要避免的「莫名其妙的空信」）。界面走不到（前端开启时必带 cron），
+// 但 API 直调可达，且判据本就该是「开着就得有个有效的下一个时刻」，与请求带不带 cron 无关。
+test("开启汇总但请求不带 cron → 仍重算 nextDigestAt，不留 null（P3 回归）", async () => {
+  assert.ok(ready, "server 未就绪");
+  // 先立一个已知的 cron，再关闭（关闭会把 nextDigestAt 清成 null）
+  await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: true, cron: "13 6 * * *" });
+  const off = await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "13 6 * * *" });
+  assert.equal(off.body.config.nextDigestAt, null, "前提：关闭必须把 nextDigestAt 清成 null");
+
+  // 只发 enabled，不带 cron
+  const on = await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: true });
+  assert.equal(on.status, 200);
+  assert.ok(on.body.config.nextDigestAt, "开启后 nextDigestAt 不得为 null（null = 下一个 tick 立刻发信）");
+  assert.ok(Date.parse(on.body.config.nextDigestAt) > Date.now(), `下一个到期时刻必须在未来，实际 ${on.body.config.nextDigestAt}`);
+  assert.equal(on.body.config.cron, "13 6 * * *", "不带 cron 时应沿用已存的表达式，不被清空");
+
+  await send("PUT", "/api/alert-rules/digest", cookieAdmin, { enabled: false, cron: "7 9 * * *" });
+});
+
 test("重复保存同一份汇总设置：幂等，不报错", async () => {
   assert.ok(ready, "server 未就绪");
   const body = { enabled: true, cron: "22 7 * * *" };

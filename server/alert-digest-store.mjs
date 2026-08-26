@@ -166,6 +166,9 @@ export async function enqueueAlert(entry) {
       targetId: entry?.targetId || "",
       targetLabel: entry?.targetLabel || "",
       reason: entry?.reason || "",
+      // 折叠判据（不含实测值，见 alert-rules-evaluator.hitKeyOf）。缺省时 collapseRepeats
+      // 会退回用 reason 当键——那是老队列文件的行为，折叠不住但不会出错。
+      reasonKey: entry?.reasonKey || "",
       runId: entry?.runId || "",
     });
     capList(queue.alerts);
