@@ -10,7 +10,9 @@ test("workflow guide points operators to the next missing step", () => {
   const channelOnly = buildWorkflowStatus({ profiles: [], channels: [{ id: "c1" }], modelTargets: [], requests: [], testRuns: [] });
   assert.equal(getNextWorkflowStep(channelOnly).step, "models");
 
-  // 渠道 + 模型目标齐 -> 去准入
+  // 渠道 + 模型目标齐 -> 直接去标准评测。
+  // 准入评测已归入侧边栏「高级测试」组，是可选的深入手段，不再是标准评测的前置门槛；
+  // 推荐流程只剩 渠道→模型→标准（→交付），仪表盘流程条也同步去掉了「准入」那一环。
   const ready = buildWorkflowStatus({
     profiles: [],
     channels: [{ id: "c1" }],
@@ -18,21 +20,25 @@ test("workflow guide points operators to the next missing step", () => {
     requests: [],
     testRuns: [],
   });
-  assert.equal(getNextWorkflowStep(ready).step, "admission");
+  assert.equal(getNextWorkflowStep(ready).step, "standard");
 
-  // 老的孤儿 profile（渠道+模型二合一）也算就绪 -> 去准入
+  // 老的孤儿 profile（渠道+模型二合一）也算就绪 -> 同样直接去标准评测
   const quickStatus = buildWorkflowStatus({
     profiles: [{ role: "target" }],
     requests: [],
     testRuns: [],
   });
-  assert.equal(getNextWorkflowStep(quickStatus).step, "admission");
+  assert.equal(getNextWorkflowStep(quickStatus).step, "standard");
 
+  // 只跑过准入：status.admission 仍会被算出来（其它地方可能用），但它不再让引导跳过标准评测——
+  // 没有非准入类报告时，下一步依然是标准评测。
   const admissionStatus = buildWorkflowStatus({
     profiles: [{ role: "target" }],
     requests: [],
     testRuns: [{ type: "admission" }],
   });
+  assert.equal(admissionStatus.admission, true);
+  assert.equal(admissionStatus.standard, false);
   assert.equal(getNextWorkflowStep(admissionStatus).step, "standard");
 
   const handoffStatus = buildWorkflowStatus({

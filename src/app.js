@@ -845,11 +845,15 @@ function showPage(page) {
   if (page === "auto-test-config") {
     autoTestConfig.load();
   }
-  if (page === "alert-rules") {
-    alertRules.load();
-  }
+  // 「报警配置」页（id 沿用 notify-config）＝原「邮件报警配置」+ 原「报警规则」两页合并，
+  // 故要把两个模块都拉一遍。原 page === "alert-rules" 分支已随该页 id 消失而删除。
   if (page === "notify-config") {
-    notifyConfig.load();
+    alertRules.load();
+    // SMTP 段只有超管可见（HTML 里那个 form 带 data-requires-admin），且 /api/notify*
+    // 一律要超管。不加这个判断，普通管理员一进本页就会吃一个 403 toast。
+    if (authUser?.canConfig) {
+      notifyConfig.load();
+    }
   }
   if (page === "model-compare") {
     modelCompare.load();

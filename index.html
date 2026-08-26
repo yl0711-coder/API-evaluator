@@ -22,16 +22,22 @@
           <span>推荐流程</span>
           <button class="nav-button" type="button" data-page="channels" data-requires-admin>1） 渠道管理</button>
           <button class="nav-button" type="button" data-page="models">2） 模型管理</button>
-          <button class="nav-button" type="button" data-page="admission-test">3） 准入评测</button>
-          <button class="nav-button" type="button" data-page="standard-eval">4） 标准评测</button>
+          <!-- 「准入评测」已移到下方「高级测试」组；本组序号顺延补齐，避免出现 1）2）4） 的缺口。
+               同批跟进的还有：准入页标题改为「高级 · 准入」、本页标题由「第 4 步」顺延为
+               「第 3 步」、仪表盘流程条去掉「准入」一环（5→4），以及 workflow-guide.js 里
+               不再把准入当作标准评测的前置门槛。四处一起改才自洽。 -->
+          <button class="nav-button" type="button" data-page="standard-eval">3） 标准评测</button>
         </div>
         <div class="nav-group">
           <span>高级测试</span>
+          <!-- 自「推荐流程」组移入。去掉了原先的「3）」序号前缀：本组按钮一律无序号，
+               带着它会像是本组的第 3 项。data-page 与页面本身均未改动。 -->
+          <button class="nav-button" type="button" data-page="admission-test">准入评测</button>
           <button class="nav-button" type="button" data-page="quick-test">快速测试</button>
           <button class="nav-button" type="button" data-page="scenario-test">场景测试</button>
           <button class="nav-button" type="button" data-page="stability-test">稳定性测试</button>
           <button class="nav-button" type="button" data-page="auto-test-config">自动测试配置</button>
-          <button class="nav-button" type="button" data-page="alert-rules">报警规则</button>
+          <!-- 原「报警规则」按钮已移除：该页已并入「帮助与设置」组的「报警配置」。 -->
           <button class="nav-button" type="button" data-page="load-test" data-requires-admin>压力测试</button>
           <button class="nav-button" type="button" data-page="model-compare">模型比对</button>
         </div>
@@ -46,7 +52,10 @@
           <span>帮助与设置</span>
           <button class="nav-button" type="button" data-page="manual">使用手册</button>
           <button class="nav-button" type="button" data-page="settings">设置</button>
-          <button class="nav-button" type="button" data-page="notify-config" data-requires-admin>邮件报警配置</button>
+          <!-- 「报警配置」＝原「邮件报警配置」+ 原「报警规则」，位置沿用前者。
+               这里刻意【不】带 data-requires-admin：页内下半的报警规则登录即可用，
+               整个入口加门禁会让普通管理员(role 10)失去该功能。页内的 SMTP 段自带门禁。 -->
+          <button class="nav-button" type="button" data-page="notify-config">报警配置</button>
           <button class="nav-button" type="button" data-page="developer" data-requires-admin>测试场景维护</button>
         </div>
       </aside>
@@ -75,16 +84,17 @@
             <div id="dashboard-populated" class="bento anim">
               <section class="panel pilot hero">
                 <p class="eyebrow">当前进度</p>
+                <!-- 「准入」一环已移除：准入评测归入侧边栏「高级测试」组后是可选项，
+                     不再属于推荐流程。四环与侧边栏「推荐流程」组（1 渠道 / 2 模型 / 3 标准）
+                     加交付一一对应。data-step 的键仍由 workflow-guide.js 的 status 驱动。 -->
                 <div class="rail">
                   <div class="workflow-step" data-step="channels"><span class="bead">1</span><span class="name">渠道</span></div>
                   <span class="connector"></span>
                   <div class="workflow-step" data-step="models"><span class="bead">2</span><span class="name">模型</span></div>
                   <span class="connector"></span>
-                  <div class="workflow-step" data-step="admission"><span class="bead">3</span><span class="name">准入</span></div>
+                  <div class="workflow-step" data-step="standard"><span class="bead">3</span><span class="name">标准</span></div>
                   <span class="connector"></span>
-                  <div class="workflow-step" data-step="standard"><span class="bead">4</span><span class="name">标准</span></div>
-                  <span class="connector"></span>
-                  <div class="workflow-step" data-step="handoff"><span class="bead">5</span><span class="name">交付</span></div>
+                  <div class="workflow-step" data-step="handoff"><span class="bead">4</span><span class="name">交付</span></div>
                 </div>
                 <div id="next-action" class="next-action">正在判断当前下一步...</div>
               </section>
@@ -117,7 +127,10 @@
         <section class="page" id="admission-test">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 3 步 · 准入评测</span>模型准入评测</h2>
+              <!-- 侧边栏已把本页从「推荐流程」移到「高级测试」组，故 step 标签由「第 3 步」
+                   改为该组惯例的「高级 · XX」（同组另有 高级·快速连通 / 场景能力 / 稳定性 /
+                   自动化 / 压测 / 分析）。仪表盘流程条仍含「准入」一环，未受影响。 -->
+              <h2><span class="step">高级 · 准入</span>模型准入评测</h2>
               <p class="section-desc">先判断这个渠道是否值得继续测试。它会检查连通、结构化输出、标称一致性、工具调用、流式结构、基础编程和行为一致性，生成准入等级和报告。</p>
             </div>
           </div>
@@ -276,7 +289,9 @@
         <section class="page" id="standard-eval">
           <div class="section-header">
             <div>
-              <h2><span class="step">第 4 步 · 标准评测</span>标准评测</h2>
+              <!-- 准入评测移出「推荐流程」后，本页在该组已是第 3 项（侧边栏作「3） 标准评测」），
+                   故「第 4 步」顺延为「第 3 步」，与侧边栏序号对齐。 -->
+              <h2><span class="step">第 3 步 · 标准评测</span>标准评测</h2>
               <p class="section-desc">选一个渠道后可勾选多个模型，每个模型顺序（不并发）依次执行快速测试、10 轮稳定性测试和标准准入评测。单独的稳定性/准入测试属于高级复测。</p>
             </div>
           </div>
@@ -1200,18 +1215,27 @@
           </form>
         </section>
 
-        <section class="page" id="notify-config" data-requires-admin hidden>
+        <!-- 「报警配置」＝原「邮件报警配置」+ 原「报警规则」两页合并（位置沿用前者）。
+             ⚠️ data-requires-admin 刻意【不】放在 section 上，而是下移到下方的 SMTP 表单：
+             两个半边的后端权限本就不同——/api/notify* 一律超管（持 SMTP 凭证），
+             /api/alert-rules* 登录即可用（普通管理员也能配自己的阈值规则）。
+             整页加门禁会让 role 10 失去现有的报警规则功能；整页不加门禁又会把 SMTP
+             暴露给 role 10。applyRoleVisibility 对任意带该属性的**元素**生效（见
+             src/auth-gate.js），故按元素粒度分别控制，两边行为均与合并前一致。 -->
+        <section class="page" id="notify-config" hidden>
           <div class="section-header">
             <div>
-              <h2><span class="step">高级 · 报警</span>邮件报警配置</h2>
-              <p class="section-desc">配置报警邮件的发信信息（SMTP 服务器、账号、发件人、收件人）。本页只负责发信本身；报警触发的阈值/规则留到后续再配置。</p>
+              <h2><span class="step">高级 · 报警</span>报警配置</h2>
+              <p class="section-desc">一处配齐报警：上半是<strong>发信通道</strong>（SMTP 服务器、账号、发件人、收件人），下半是<strong>什么时候该报警</strong>（阈值规则与报警汇总）。两者缺一不可——规则命中了但发信没配好，会静默跳过，不报错也收不到邮件。</p>
             </div>
           </div>
 
-          <form id="notify-config-form" class="panel form-grid">
+          <!-- data-requires-admin 从 section 移到此处：SMTP 段持有发信凭证，
+               后端 /api/notify* 一律要超管；本页下半的报警规则则是登录即可用。 -->
+          <form id="notify-config-form" class="panel form-grid" data-requires-admin>
             <div class="form-section-title">
               <div class="action-row ntf-section-head">
-                <h3>SMTP 发信服务器</h3>
+                <h3>发信通道（SMTP）</h3>
                 <button id="ntf-sync" class="secondary" type="button">一键同步线上配置</button>
               </div>
               <p class="section-desc">默认复用线上 new-api（中转站）的发件配置；如手动改过想还原，点「一键同步线上配置」即可重新同步（覆盖下方 host/端口/SSL/账号/发件人/密码，收件人不受影响）。465 端口固定使用隐式 TLS，其它端口（如 587）走 STARTTLS。</p>
@@ -1257,199 +1281,13 @@
               <span class="field-hint" id="ntf-status"></span>
             </div>
           </form>
-        </section>
-
-        <section class="page" id="auto-test-config" hidden>
-          <div class="section-header">
+          <!-- 合并自原「报警规则」页。原来这里是该页的 h2 页标题，合并后页标题只能有一个
+               （在本 section 顶部），故降为 compact 分区标题；「发信配置见邮件报警配置页」
+               一句也删掉了——那一页就是本页上半部分，不再是要跳转的去处。 -->
+          <div class="section-header compact">
             <div>
-              <h2><span class="step">高级 · 自动化</span>自动测试配置</h2>
-              <p class="section-desc">为某渠道的某模型配置定时自动测试：到点后平台自动跑一次对应测试并生成报告。调度器为进程内运行——仅在服务器运行时生效，重启后按下次运行时间自动追补。</p>
-            </div>
-          </div>
-
-          <div class="panel">
-            <div class="action-row atc-list-head">
-              <h3>已配置的自动测试作业</h3>
-              <button type="button" id="atc-reload" class="secondary">刷新</button>
-            </div>
-            <div id="atc-job-list">正在加载…</div>
-          </div>
-
-          <form id="atc-form" class="panel form-grid">
-            <div class="form-section-title">
-              <h3 id="atc-form-title">新建自动测试作业</h3>
-            </div>
-            <input type="hidden" id="atc-job-id" value="" />
-            <label class="wide">
-              作业名称（可选）
-              <input type="text" id="atc-name" placeholder="如：每日快检 GPT-4o" maxlength="120" />
-            </label>
-            <label>
-              被测渠道
-              <select id="atc-channel-select"></select>
-            </label>
-            <label>
-              被测模型
-              <select id="atc-model-select" disabled></select>
-            </label>
-            <label>
-              调度方式
-              <select id="atc-schedule-mode">
-                <option value="interval" selected>固定间隔（每 N 小时）</option>
-                <option value="cron">定时表达式（工作日/周末、白天/黑夜不同频率）</option>
-              </select>
-            </label>
-            <label id="atc-period-label">
-              测试周期（小时）
-              <input type="number" id="atc-period" min="0.1" step="any" value="24" />
-              <small class="field-hint">支持小数，最短 0.1 小时（6 分钟）。</small>
-            </label>
-            <div id="atc-cron-builder" class="atc-opt wide hidden">
-              <label>
-                星期
-                <select id="atc-cron-days">
-                  <option value="everyday" selected>每天</option>
-                  <option value="weekday">工作日（周一至周五）</option>
-                  <option value="weekend">周末（周六、周日）</option>
-                  <option value="custom">自定义…</option>
-                </select>
-              </label>
-              <div id="atc-cron-days-custom" class="atc-weekday-picker hidden">
-                <label class="checkbox-option"><input type="checkbox" id="atc-dow-1" value="1" />周一</label>
-                <label class="checkbox-option"><input type="checkbox" id="atc-dow-2" value="2" />周二</label>
-                <label class="checkbox-option"><input type="checkbox" id="atc-dow-3" value="3" />周三</label>
-                <label class="checkbox-option"><input type="checkbox" id="atc-dow-4" value="4" />周四</label>
-                <label class="checkbox-option"><input type="checkbox" id="atc-dow-5" value="5" />周五</label>
-                <label class="checkbox-option"><input type="checkbox" id="atc-dow-6" value="6" />周六</label>
-                <label class="checkbox-option"><input type="checkbox" id="atc-dow-0" value="0" />周日</label>
-              </div>
-              <label id="atc-cron-period-label">
-                时段
-                <select id="atc-cron-period">
-                  <option value="allday" selected>全天</option>
-                  <option value="day">白天（9-18 点）</option>
-                  <option value="night">夜间（19 点至次日 8 点）</option>
-                  <option value="custom">自定义…</option>
-                </select>
-              </label>
-              <div id="atc-cron-hours-custom" class="atc-hours-picker hidden">
-                <label>起<select id="atc-cron-start-hour"></select></label>
-                <label>止<select id="atc-cron-end-hour"></select></label>
-              </div>
-              <label>
-                频率
-                <select id="atc-cron-freq">
-                  <option value="m6">每 6 分钟</option>
-                  <option value="m10">每 10 分钟</option>
-                  <option value="m12">每 12 分钟</option>
-                  <option value="m15">每 15 分钟</option>
-                  <option value="m20">每 20 分钟</option>
-                  <option value="m30">每 30 分钟</option>
-                  <option value="hourly" selected>每小时</option>
-                  <option value="h2">每 2 小时</option>
-                  <option value="h3">每 3 小时</option>
-                  <option value="h6">每 6 小时</option>
-                  <option value="h12">每 12 小时</option>
-                  <option value="once">每天一次</option>
-                  <option value="fixed">固定时刻（可多选）</option>
-                </select>
-              </label>
-              <label id="atc-cron-once" class="hidden">
-                每天几点
-                <select id="atc-cron-once-hour"></select>
-              </label>
-              <div id="atc-cron-fixed-times" class="atc-fixed-times hidden">
-                <div class="atc-fixed-time-controls">
-                  <label>小时<select id="atc-cron-fixed-hour"></select></label>
-                  <label>分钟<select id="atc-cron-fixed-minute"></select></label>
-                  <button type="button" id="atc-cron-fixed-add" class="secondary">添加时刻</button>
-                </div>
-                <div id="atc-cron-fixed-time-list" class="atc-fixed-time-list"></div>
-              </div>
-              <small class="field-hint atc-cron-preview-line">
-                <span id="atc-cron-preview">每天全天，每小时一次</span>
-              </small>
-              <input type="hidden" id="atc-cron" value="" />
-            </div>
-            <label>
-              测试种类
-              <select id="atc-kind">
-                <option value="" selected>请选择测试种类…</option>
-                <option value="quick">快速测试（连通性快检）</option>
-                <option value="admission">准入评测（计费/分词器审计）</option>
-                <option value="stability">稳定性测试（多轮成功率）</option>
-                <option value="scenario">场景测试（跑选定场景题）</option>
-              </select>
-            </label>
-
-            <div id="atc-opt-stability" class="atc-opt wide" hidden>
-              <label>
-                并发数
-                <select id="atc-concurrency">
-                  <option value="1" selected>1：顺序测试，最稳妥</option>
-                  <option value="2">2：轻并发</option>
-                  <option value="3">3：观察网关波动</option>
-                </select>
-              </label>
-              <p id="atc-stability-request-total" class="field-hint">共 0 次请求（0 组）</p>
-              <label class="wide">
-                测试文案分组（每个场景一个数量框，0 表示不选该组；每组默认测 3 遍，自定义默认 1 遍）
-                <div id="atc-stability-group-picker" class="stability-group-picker"></div>
-                <small class="field-hint">选中多个场景会在同一份报告里分组统计；也可以只加大同一个场景的数量做重复测试。</small>
-              </label>
-            </div>
-            <div id="atc-opt-admission" class="atc-opt wide" hidden>
-              <label>
-                测试包
-                <select id="atc-package-level">
-                  <option value="quick">快速准入：5 次请求</option>
-                  <option value="standard" selected>标准准入：11-12 次请求</option>
-                  <option value="deep">深度准入：12-13 次请求</option>
-                </select>
-                <small class="field-hint">新渠道首次建议选标准准入。快速准入用于低成本复核，深度准入会多做轻量长上下文。</small>
-              </label>
-            </div>
-            <div id="atc-opt-scenario" class="atc-opt wide" hidden>
-              <div class="wide" id="atc-scenario-picker"></div>
-              <select id="atc-scenario-select" multiple hidden></select>
-              <small class="wide field-hint">不选则默认「连通性：基础响应」。</small>
-            </div>
-
-            <label class="wide checkbox-option">
-              <input type="checkbox" id="atc-enabled" checked />
-              <span>
-                启用
-                <small>保存后按周期自动运行；取消勾选则只保存不自动跑。</small>
-              </span>
-            </label>
-            <div class="wide action-row atc-form-actions">
-              <button type="submit" class="primary">保存作业</button>
-              <button type="button" id="atc-reset" class="secondary">清空表单</button>
-            </div>
-          </form>
-
-          <div class="panel">
-            <div class="action-row atc-list-head">
-              <h3>巡检报告</h3>
-            </div>
-            <p class="section-desc">跨全部自动测试作业出一份周期性汇总巡检报告，对单个模型出报告见上方测试卡片。</p>
-            <div id="atc-digest-result"></div>
-            <div class="action-row" style="justify-content:flex-end;flex-wrap:wrap;gap:10px;align-items:center">
-              <select id="atc-digest-window">
-                <option value="24">最近 24 小时</option>
-                <option value="168" selected>最近 7 天</option>
-                <option value="720">最近 30 天</option>
-              </select>
-              <button type="button" id="atc-digest-generate" class="primary">生成全部巡检报告</button>
-            </div>
-          </div>
-        </section>
-
-        <section class="page" id="alert-rules" hidden>
-          <div class="section-header">
-            <div>
-              <h2><span class="step">高级 · 报警</span>报警规则</h2>
-              <p class="section-desc">配置自定义阈值报警规则：测试运行完成后，若某项原始指标触发阈值，即向邮件报警配置的收件人发信提醒。每条规则可选“全部渠道+模型”或指定具体渠道+模型，命中后有固定冷却时长，避免重复轰炸邮箱。若多个渠道排在同一时段跑定时测试，可在下方开启「报警汇总」把它们并成一封信。发信配置见「邮件报警配置」页。</p>
+              <h2>报警规则与汇总</h2>
+              <p class="section-desc">配置自定义阈值报警规则：测试运行完成后，若某项原始指标触发阈值，即向上方配置的收件人发信提醒。每条规则可选“全部渠道+模型”或指定具体渠道+模型，命中后有固定冷却时长，避免重复轰炸邮箱。若多个渠道排在同一时段跑定时测试，可在下方开启「报警汇总」把它们并成一封信。</p>
             </div>
           </div>
 
@@ -1674,6 +1512,192 @@
               <button type="button" id="ar-reset" class="secondary">清空表单</button>
             </div>
           </form>
+        </section>
+
+        <section class="page" id="auto-test-config" hidden>
+          <div class="section-header">
+            <div>
+              <h2><span class="step">高级 · 自动化</span>自动测试配置</h2>
+              <p class="section-desc">为某渠道的某模型配置定时自动测试：到点后平台自动跑一次对应测试并生成报告。调度器为进程内运行——仅在服务器运行时生效，重启后按下次运行时间自动追补。</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="action-row atc-list-head">
+              <h3>已配置的自动测试作业</h3>
+              <button type="button" id="atc-reload" class="secondary">刷新</button>
+            </div>
+            <div id="atc-job-list">正在加载…</div>
+          </div>
+
+          <form id="atc-form" class="panel form-grid">
+            <div class="form-section-title">
+              <h3 id="atc-form-title">新建自动测试作业</h3>
+            </div>
+            <input type="hidden" id="atc-job-id" value="" />
+            <label class="wide">
+              作业名称（可选）
+              <input type="text" id="atc-name" placeholder="如：每日快检 GPT-4o" maxlength="120" />
+            </label>
+            <label>
+              被测渠道
+              <select id="atc-channel-select"></select>
+            </label>
+            <label>
+              被测模型
+              <select id="atc-model-select" disabled></select>
+            </label>
+            <label>
+              调度方式
+              <select id="atc-schedule-mode">
+                <option value="interval" selected>固定间隔（每 N 小时）</option>
+                <option value="cron">定时表达式（工作日/周末、白天/黑夜不同频率）</option>
+              </select>
+            </label>
+            <label id="atc-period-label">
+              测试周期（小时）
+              <input type="number" id="atc-period" min="0.1" step="any" value="24" />
+              <small class="field-hint">支持小数，最短 0.1 小时（6 分钟）。</small>
+            </label>
+            <div id="atc-cron-builder" class="atc-opt wide hidden">
+              <label>
+                星期
+                <select id="atc-cron-days">
+                  <option value="everyday" selected>每天</option>
+                  <option value="weekday">工作日（周一至周五）</option>
+                  <option value="weekend">周末（周六、周日）</option>
+                  <option value="custom">自定义…</option>
+                </select>
+              </label>
+              <div id="atc-cron-days-custom" class="atc-weekday-picker hidden">
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-1" value="1" />周一</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-2" value="2" />周二</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-3" value="3" />周三</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-4" value="4" />周四</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-5" value="5" />周五</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-6" value="6" />周六</label>
+                <label class="checkbox-option"><input type="checkbox" id="atc-dow-0" value="0" />周日</label>
+              </div>
+              <label id="atc-cron-period-label">
+                时段
+                <select id="atc-cron-period">
+                  <option value="allday" selected>全天</option>
+                  <option value="day">白天（9-18 点）</option>
+                  <option value="night">夜间（19 点至次日 8 点）</option>
+                  <option value="custom">自定义…</option>
+                </select>
+              </label>
+              <div id="atc-cron-hours-custom" class="atc-hours-picker hidden">
+                <label>起<select id="atc-cron-start-hour"></select></label>
+                <label>止<select id="atc-cron-end-hour"></select></label>
+              </div>
+              <label>
+                频率
+                <select id="atc-cron-freq">
+                  <option value="m6">每 6 分钟</option>
+                  <option value="m10">每 10 分钟</option>
+                  <option value="m12">每 12 分钟</option>
+                  <option value="m15">每 15 分钟</option>
+                  <option value="m20">每 20 分钟</option>
+                  <option value="m30">每 30 分钟</option>
+                  <option value="hourly" selected>每小时</option>
+                  <option value="h2">每 2 小时</option>
+                  <option value="h3">每 3 小时</option>
+                  <option value="h6">每 6 小时</option>
+                  <option value="h12">每 12 小时</option>
+                  <option value="once">每天一次</option>
+                  <option value="fixed">固定时刻（可多选）</option>
+                </select>
+              </label>
+              <label id="atc-cron-once" class="hidden">
+                每天几点
+                <select id="atc-cron-once-hour"></select>
+              </label>
+              <div id="atc-cron-fixed-times" class="atc-fixed-times hidden">
+                <div class="atc-fixed-time-controls">
+                  <label>小时<select id="atc-cron-fixed-hour"></select></label>
+                  <label>分钟<select id="atc-cron-fixed-minute"></select></label>
+                  <button type="button" id="atc-cron-fixed-add" class="secondary">添加时刻</button>
+                </div>
+                <div id="atc-cron-fixed-time-list" class="atc-fixed-time-list"></div>
+              </div>
+              <small class="field-hint atc-cron-preview-line">
+                <span id="atc-cron-preview">每天全天，每小时一次</span>
+              </small>
+              <input type="hidden" id="atc-cron" value="" />
+            </div>
+            <label>
+              测试种类
+              <select id="atc-kind">
+                <option value="" selected>请选择测试种类…</option>
+                <option value="quick">快速测试（连通性快检）</option>
+                <option value="admission">准入评测（计费/分词器审计）</option>
+                <option value="stability">稳定性测试（多轮成功率）</option>
+                <option value="scenario">场景测试（跑选定场景题）</option>
+              </select>
+            </label>
+
+            <div id="atc-opt-stability" class="atc-opt wide" hidden>
+              <label>
+                并发数
+                <select id="atc-concurrency">
+                  <option value="1" selected>1：顺序测试，最稳妥</option>
+                  <option value="2">2：轻并发</option>
+                  <option value="3">3：观察网关波动</option>
+                </select>
+              </label>
+              <p id="atc-stability-request-total" class="field-hint">共 0 次请求（0 组）</p>
+              <label class="wide">
+                测试文案分组（每个场景一个数量框，0 表示不选该组；每组默认测 3 遍，自定义默认 1 遍）
+                <div id="atc-stability-group-picker" class="stability-group-picker"></div>
+                <small class="field-hint">选中多个场景会在同一份报告里分组统计；也可以只加大同一个场景的数量做重复测试。</small>
+              </label>
+            </div>
+            <div id="atc-opt-admission" class="atc-opt wide" hidden>
+              <label>
+                测试包
+                <select id="atc-package-level">
+                  <option value="quick">快速准入：5 次请求</option>
+                  <option value="standard" selected>标准准入：11-12 次请求</option>
+                  <option value="deep">深度准入：12-13 次请求</option>
+                </select>
+                <small class="field-hint">新渠道首次建议选标准准入。快速准入用于低成本复核，深度准入会多做轻量长上下文。</small>
+              </label>
+            </div>
+            <div id="atc-opt-scenario" class="atc-opt wide" hidden>
+              <div class="wide" id="atc-scenario-picker"></div>
+              <select id="atc-scenario-select" multiple hidden></select>
+              <small class="wide field-hint">不选则默认「连通性：基础响应」。</small>
+            </div>
+
+            <label class="wide checkbox-option">
+              <input type="checkbox" id="atc-enabled" checked />
+              <span>
+                启用
+                <small>保存后按周期自动运行；取消勾选则只保存不自动跑。</small>
+              </span>
+            </label>
+            <div class="wide action-row atc-form-actions">
+              <button type="submit" class="primary">保存作业</button>
+              <button type="button" id="atc-reset" class="secondary">清空表单</button>
+            </div>
+          </form>
+
+          <div class="panel">
+            <div class="action-row atc-list-head">
+              <h3>巡检报告</h3>
+            </div>
+            <p class="section-desc">跨全部自动测试作业出一份周期性汇总巡检报告，对单个模型出报告见上方测试卡片。</p>
+            <div id="atc-digest-result"></div>
+            <div class="action-row" style="justify-content:flex-end;flex-wrap:wrap;gap:10px;align-items:center">
+              <select id="atc-digest-window">
+                <option value="24">最近 24 小时</option>
+                <option value="168" selected>最近 7 天</option>
+                <option value="720">最近 30 天</option>
+              </select>
+              <button type="button" id="atc-digest-generate" class="primary">生成全部巡检报告</button>
+            </div>
+          </div>
         </section>
 
         <section class="page" id="load-test" data-requires-admin hidden>

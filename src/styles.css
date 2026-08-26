@@ -4551,7 +4551,10 @@ textarea:focus {
   border-color: rgba(var(--bad-rgb), 0.4);
 }
 
-/* —— 报警规则页：本页此前**没有任何专属样式**，导致四处对齐问题（实测 1440px 宽）——
+/* —— 「报警配置」页下半（原独立的「报警规则」页，已并入本页）——
+   ⚠️ 作用域是 #notify-config（合并后的页 id），不是 #alert-rules：那个 id 随页面合并已消失，
+   继续用它会让本段 20 条规则全部落空、下半排版整体退回未修复状态（曾经发生过一次）。
+   下列四处对齐问题为当初实测所得（1440px 宽）：
    1) #ar-form 缺 align-items:start。默认 stretch 下，「适用范围」被同行那个高得多的参数块
       拉到等高，其下拉框随之垂直居中下飘：scope=target 时错位 37px、稳定性抖动 81px、
       稳定性退化 128px。这个 bug 在 #admission-batch-form / #load-test-form / #channel-form /
@@ -4565,16 +4568,21 @@ textarea:focus {
       被推到右侧、按钮排布也不对。
    整体照抄 #auto-test-config 的既有惯例（两列网格 + .wide 跨行 + 子块内部再两列），
    不新造一套观感。 */
-#alert-rules .form-grid {
+/* 只作用于下半（原报警规则页）的两个 form-grid：规则表单自身 + 汇总块那个 panel 内的 grid。
+   刻意不写成 #notify-config .form-grid —— 上半的 SMTP 表单（#notify-config-form）也是
+   .panel.form-grid，那样会连带改掉它的间距与对齐（它一直用全站默认值，不在本次修复范围）。
+   .panel > .form-grid 选不到 SMTP 表单：后者自己就是那个 .panel，不是 .panel 的子元素。 */
+#notify-config #ar-form,
+#notify-config .panel > .form-grid {
   gap: 20px 24px;
   align-items: start;
 }
 
 /* 三个参数块：作为整行出现，内部再走两列网格，与主表单同一套行列节奏。
    显隐由 JS 的 .hidden（display:none !important）控制，稳压此处的 display:grid。 */
-#alert-rules #ar-target-picker,
-#alert-rules #ar-jitter-params,
-#alert-rules #ar-decline-params {
+#notify-config #ar-target-picker,
+#notify-config #ar-jitter-params,
+#notify-config #ar-decline-params {
   grid-column: 1 / -1;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4583,8 +4591,8 @@ textarea:focus {
 }
 
 /* 参数块内的说明文字独占整行，不参与两列（否则它会占掉第一格、把首个字段挤到右列）。 */
-#alert-rules #ar-jitter-params > .section-desc,
-#alert-rules #ar-decline-params > .section-desc {
+#notify-config #ar-jitter-params > .section-desc,
+#notify-config #ar-decline-params > .section-desc {
   grid-column: 1 / -1;
   margin: 0;
 }
@@ -4594,32 +4602,32 @@ textarea:focus {
    .atc-fixed-time-row），观感因此与那页一致；但那边的规则都限定在 #auto-test-config
    作用域内，本页需自带一份（同 .atc-list-head 的处理）。
    星期勾选本身用全站通用的 .checkbox-option（自带边框/底色/内边距），不另造。 */
-#alert-rules .atc-weekday-picker {
+#notify-config .atc-weekday-picker {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 8px 16px;
 }
-#alert-rules .atc-fixed-times {
+#notify-config .atc-fixed-times {
   display: grid;
   gap: 10px;
   grid-column: 1 / -1;
 }
-#alert-rules .atc-fixed-time-controls,
-#alert-rules .atc-fixed-time-row {
+#notify-config .atc-fixed-time-controls,
+#notify-config .atc-fixed-time-row {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
   gap: 10px;
 }
-#alert-rules .atc-fixed-time-controls label {
+#notify-config .atc-fixed-time-controls label {
   min-width: 110px;
 }
-#alert-rules .atc-fixed-time-list {
+#notify-config .atc-fixed-time-list {
   display: grid;
   gap: 8px;
 }
-#alert-rules .atc-fixed-time-row {
+#notify-config .atc-fixed-time-row {
   align-items: center;
   justify-content: space-between;
   max-width: 320px;
@@ -4630,18 +4638,18 @@ textarea:focus {
 
 /* 报警汇总的作业勾选区：整行出现，内部单列纵向排列（每行一个作业，信息较长，两列会挤）。
    显隐由 JS 的 .hidden（display:none !important）控制，稳压此处的 display:grid。 */
-#alert-rules #ar-digest-job-picker {
+#notify-config #ar-digest-job-picker {
   grid-column: 1 / -1;
   display: grid;
   gap: 10px;
 }
-#alert-rules #ar-digest-job-list {
+#notify-config #ar-digest-job-list {
   display: grid;
   gap: 8px;
 }
 /* 单个作业行：勾选框与文字同一基线，整行有边框便于点击定位。
    照 #auto-test-config .atc-fixed-time-row 的观感，只是不限宽（作业名+种类+渠道较长）。 */
-#alert-rules .ar-digest-job {
+#notify-config .ar-digest-job {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4651,22 +4659,22 @@ textarea:focus {
   border-radius: 8px;
   font-weight: 400;
 }
-#alert-rules .ar-digest-job input[type="checkbox"] {
+#notify-config .ar-digest-job input[type="checkbox"] {
   margin: 0;
 }
 
 /* 规则列表标题栏：标题贴左（.action-row 默认 flex-end 会把它推到右侧），按钮靠右。
    与 #auto-test-config .atc-list-head 同一处理，只是那条限定了页面作用域，本页需自带。 */
-#alert-rules .atc-list-head {
+#notify-config .atc-list-head {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
 }
-#alert-rules .atc-list-head h3 {
+#notify-config .atc-list-head h3 {
   margin: 0;
   margin-right: auto;
 }
-#alert-rules .atc-form-actions {
+#notify-config .atc-form-actions {
   justify-content: flex-start;
   gap: 12px;
 }

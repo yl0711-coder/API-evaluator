@@ -43,16 +43,11 @@ export function getNextWorkflowStep(status) {
       button: "去配模型",
     };
   }
+  // 准入评测已归入「高级测试」，是可选的深入手段，不再作为标准评测的前置门槛——
+  // 原先这里会先把人引去准入，跑完才让去标准评测。现在配好模型即直接引导标准评测，
+  // 与侧边栏「推荐流程」只剩 渠道→模型→标准 三步一致。
+  // status.admission 仍在 buildWorkflowStatus 里计算（其它地方可能用到），只是不再影响引导。
   if (!status.standard) {
-    if (!status.admission) {
-      return {
-        step: "admission",
-        page: "admission-test",
-        title: "先跑一次模型准入评测",
-        detail: "准入评测会检查协议结构、标称一致性、工具调用和基础行为，先确认渠道值得继续烧额度。",
-        button: "去准入评测",
-      };
-    }
     return {
       step: "standard",
       page: "standard-eval",
